@@ -17,7 +17,7 @@ EOF
 
 # 2.1. Интерактивный ввод переменных окружения
 echo "======================================"
-echo "    НАСТРОЙКА СИСТЕМЫ РАДАР (v2.5.0)"
+echo "    НАСТРОЙКА СИСТЕМЫ РАДАР (v2.5.1)"
 echo "======================================"
 
 generate_env=true
@@ -63,16 +63,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPERADMIN_ID = int(os.getenv("SUPERADMIN_ID", 0))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-BOT_VERSION = "2.5.0"
+BOT_VERSION = "2.5.1"
 CHANGELOG = (
     f"🚀 **Обновление системы Радар v{BOT_VERSION}**\n\n"
     "✨ **Что нового в этой версии:**\n"
-    "1. 🤖 **ИИ-Помощник администрации:** Прямой диалог с Gemini прямо из админ-панели.\n"
-    "2. 🌤 **Новый виджет погоды:** Текущая погода + почасовой прогноз на 6 часов вперед.\n"
-    "3. ⏱ **Гибкое расписание погоды:** Настройка произвольных интервалов или точного времени (например, 08:00).\n"
-    "4. 🔄 **Кнопка «Обновить погоду»:** Мгновенный запрос актуального прогноза из меню.\n"
-    "5. 🚨 **Исправление работы ИИ:** Восстановлена фильтрация угроз и работа оповещений.\n"
-    "6. 📢 **Авто-оповещение пользователей:** Массовая рассылка статусов и локаций при перезапуске."
+    "1. 📋 **Оптимизация интерфейса модератора/админа:** При удалении локаций, кике или изменении роли теперь автоматически выводится список всех пользователей для удобного копирования ID.\n"
 )
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -93,9 +88,9 @@ class BotStates(StatesGroup):
     waiting_for_user_id_kick = State()
     waiting_for_user_id_role = State()
     waiting_for_admin_loc_delete = State()
-    waiting_for_ai_question = State() # ИИ-помощник админа
-    waiting_for_custom_weather_time = State() # Точное время погоды
-    waiting_for_custom_weather_interval = State() # Свой интервал погоды
+    waiting_for_ai_question = State()
+    waiting_for_custom_weather_time = State()
+    waiting_for_custom_weather_interval = State()
 
 # --- АСИНХРОННАЯ БАЗА ДАННЫХ ---
 async def load_data():
@@ -135,6 +130,17 @@ def get_role(uid): return db["users"].get(str(uid), {}).get("role", None)
 def is_superadmin(uid): return get_role(uid) == "superadmin"
 def is_admin(uid): return get_role(uid) in ["superadmin", "admin"]
 def is_mod(uid): return get_role(uid) in ["superadmin", "admin", "moderator"]
+
+def get_users_list_text():
+    lines = ["👥 **Список пользователей:**\n"]
+    for uid, udata in db["users"].items():
+        role = udata.get("role", "user")
+        locs_count = len(udata.get("locs", []))
+        lines.append(f"ID: `{uid}` | Роль: {role} | Адресов: {locs_count}")
+    
+    text = "\n".join(lines)
+    if len(text) > 3500: text = text[:3500] + "\n\n... (список обрезан)"
+    return text
 
 # --- MIDDLEWARE ---
 class AccessMiddleware(BaseMiddleware):
@@ -197,7 +203,7 @@ def get_weather_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# --- НОВЫЙ ВИДЖЕТ ПОГОДЫ (OPEN-METEO) ---
+# --- ВИДЖЕТ ПОГОДЫ ---
 async def get_weather(lat, lon):
     if not lat or not lon: return "Нет точных координат для локации."
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,precipitation&hourly=temperature_2m,precipitation_probability&timezone=auto&forecast_hours=7"
@@ -244,17 +250,15 @@ async def build_user_weather_summary(uid_str):
         text_blocks.append(f"🏢 **Объект:** {loc['name']}\n{w_info}")
     return "\n\n".join(text_blocks)
 
-# --- ОПОБЕЩЕНИЯ ПРИ СТАРТЕ ОБНОВЛЕНИЯ ---
+# --- ОПОВЕЩЕНИЯ ---
 async def notify_startup_changes():
     current_time = int(time.time())
     for uid_str, udata in db["users"].items():
         try:
             uid = int(uid_str)
-            # 1. Уведомление для администрации
             if is_admin(uid):
                 await bot.send_message(uid, CHANGELOG, parse_mode="Markdown")
             
-            # 2. Уведомление для всех пользователей о локациях и погоде
             locs_list = udata.get("locs", [])
             locs_text = "\n".join([f"- {l['name']}" for l in locs_list]) if locs_list else "Локации не заданы"
             
@@ -285,7 +289,6 @@ async def monitor_loop():
             
             news_buffer = []
             
-            # 1. Парсим каналы
             for channel in db["channels"]:
                 try:
                     async with session.get(f"https://t.me/s/{channel}", timeout=10) as resp:
@@ -450,7 +453,6 @@ async def process_weather_select(call: CallbackQuery, state: FSMContext):
         await call.message.edit_text("⏱ Введите интервал вызова в минутах (например, 45) или часах (например, 2ч):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_weather")]]))
         await state.set_state(BotStates.waiting_for_custom_weather_interval)
     else:
-        # Стандартные варианты в минутах
         try:
             mins = int(action)
             db["users"][uid_str]["weather_mode"] = "interval"
@@ -509,7 +511,6 @@ async def process_settings_toggle(call: CallbackQuery):
     await save_data(db)
     await call.message.edit_reply_markup(reply_markup=get_settings_menu(call.from_user.id))
 
-# --- ЛОКАЦИИ: ДОБАВЛЕНИЕ И УДАЛЕНИЕ ---
 @dp.message(F.location)
 async def handle_loc(msg: Message):
     lat, lon = msg.location.latitude, msg.location.longitude
@@ -541,7 +542,6 @@ async def clear_my_locs(call: CallbackQuery):
     text, kb = get_locs_ui(uid_str)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-# --- МОДЕРАЦИЯ И ОЧЕРЕДЬ КАНАЛОВ ---
 @dp.message(BotStates.waiting_for_channel)
 async def fsm_suggest(msg: Message, state: FSMContext):
     ch = msg.text.replace("@", "").replace("https://t.me/", "")
@@ -573,9 +573,13 @@ async def mod_decision(call: CallbackQuery):
         await save_data(db)
     await mod_channels_view(call)
 
+# --- МОДЕРАЦИЯ И УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (С ВЫВОДОМ СПИСКА) ---
+
 @dp.callback_query(F.data == "mod_locs")
 async def ask_del_loc(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("Отправьте ID пользователя, чью локацию нужно удалить:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_mod")]]))
+    list_text = get_users_list_text()
+    prompt = f"{list_text}\n\n👇 **Отправьте ID пользователя, чью локацию нужно удалить (нажмите на ID, чтобы скопировать):**"
+    await call.message.edit_text(prompt, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_mod")]]), parse_mode="Markdown")
     await state.set_state(BotStates.waiting_for_admin_loc_delete)
 
 @dp.message(BotStates.waiting_for_admin_loc_delete)
@@ -584,12 +588,10 @@ async def fsm_del_loc(msg: Message, state: FSMContext):
     if target_id in db["users"]:
         db["users"][target_id]["locs"] = []
         await save_data(db)
-        await msg.answer(f"✅ Локации пользователя {target_id} удалены.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_mod")]]))
+        await msg.answer(f"✅ Локации пользователя `{target_id}` удалены.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_mod")]]), parse_mode="Markdown")
     else:
         await msg.answer("❌ Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_mod")]]))
     await state.clear()
-
-# --- ПАНЕЛЬ АДМИНА И ИИ-ПОМОЩНИК ---
 
 @dp.callback_query(F.data == "adm_ai")
 async def ask_ai_start(call: CallbackQuery, state: FSMContext):
@@ -620,16 +622,7 @@ async def fsm_process_ai_question(msg: Message, state: FSMContext):
 @dp.callback_query(F.data == "adm_users")
 async def view_users(call: CallbackQuery):
     if not is_admin(call.from_user.id): return
-    
-    lines = ["👥 **Список пользователей:**\n"]
-    for uid, udata in db["users"].items():
-        role = udata.get("role", "user")
-        locs_count = len(udata.get("locs", []))
-        lines.append(f"ID: `{uid}` | Роль: {role} | Адресов: {locs_count}")
-    
-    text = "\n".join(lines)
-    if len(text) > 4000: text = text[:4000] + "\n\n... (список обрезан)"
-    
+    text = get_users_list_text()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]])
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
@@ -640,7 +633,9 @@ async def gen_invite(call: CallbackQuery):
 
 @dp.callback_query(F.data == "adm_kick")
 async def ask_kick(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("Отправьте ID пользователя для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_admin")]]))
+    list_text = get_users_list_text()
+    prompt = f"{list_text}\n\n👇 **Отправьте ID пользователя для удаления (нажмите на ID, чтобы скопировать):**"
+    await call.message.edit_text(prompt, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_admin")]]), parse_mode="Markdown")
     await state.set_state(BotStates.waiting_for_user_id_kick)
 
 @dp.message(BotStates.waiting_for_user_id_kick)
@@ -653,14 +648,16 @@ async def fsm_kick(msg: Message, state: FSMContext):
     elif tid in db["users"]:
         del db["users"][tid]
         await save_data(db)
-        await msg.answer("✅ Пользователь успешно удален.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню админа", callback_data="menu_admin")]]))
+        await msg.answer(f"✅ Пользователь `{tid}` успешно удален.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню админа", callback_data="menu_admin")]]), parse_mode="Markdown")
     else: 
         await msg.answer("❌ Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]]))
     await state.clear()
 
 @dp.callback_query(F.data == "adm_role")
 async def ask_role_id(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("Отправьте ID пользователя для изменения роли (можно скопировать из списка):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_admin")]]))
+    list_text = get_users_list_text()
+    prompt = f"{list_text}\n\n👇 **Отправьте ID пользователя для изменения роли (нажмите на ID, чтобы скопировать):**"
+    await call.message.edit_text(prompt, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_admin")]]), parse_mode="Markdown")
     await state.set_state(BotStates.waiting_for_user_id_role)
 
 @dp.message(BotStates.waiting_for_user_id_role)
@@ -707,7 +704,6 @@ async def set_new_role(call: CallbackQuery, state: FSMContext):
 async def main():
     await load_data()
     asyncio.create_task(monitor_loop())
-    # Рассылка оповещений об обновлении
     asyncio.create_task(notify_startup_changes())
     await dp.start_polling(bot)
 
@@ -730,4 +726,4 @@ echo "Сборка Docker-образа..."
 docker build -t radar_image .
 echo "Запуск контейнера..."
 docker run -d --name radar_container --env-file .env --restart unless-stopped -v ~/radar_bot/data:/app/data radar_image
-echo "Готово! Бот v2.5.0 успешно запущен."
+echo "Готово! Бот v2.5.1 успешно запущен."
