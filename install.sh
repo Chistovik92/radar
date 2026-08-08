@@ -22,7 +22,6 @@ echo "======================================"
 
 generate_env=true
 if [ -f .env ]; then
-    # Читаем из /dev/tty, чтобы не сломать ввод при запуске через curl | bash
     read -p "Файл .env уже существует. Использовать текущие настройки? (y/n): " use_existing < /dev/tty
     if [ "$use_existing" == "y" ] || [ "$use_existing" == "Y" ]; then
         generate_env=false
@@ -31,7 +30,6 @@ if [ -f .env ]; then
 fi
 
 if [ "$generate_env" = true ]; then
-    # Читаем из /dev/tty
     read -p "Введите токен Telegram бота (BOT_TOKEN): " INPUT_BOT_TOKEN < /dev/tty
     read -p "Введите API ключ Gemini (GEMINI_API_KEY): " INPUT_GEMINI_API_KEY < /dev/tty
     read -p "Введите ваш Telegram ID (SUPERADMIN_ID): " INPUT_SUPERADMIN_ID < /dev/tty
@@ -80,7 +78,7 @@ db = {}
 class BotStates(StatesGroup):
     waiting_for_channel = State()
     waiting_for_user_id_kick = State()
-    waiting_for_role_assignment = State()
+    waiting_for_user_id_role = State() # Добавлено состояние для смены роли
     waiting_for_admin_loc_delete = State()
 
 # --- АСИНХРОННАЯ БАЗА ДАННЫХ ---
@@ -314,6 +312,7 @@ async def process_menu(call: CallbackQuery, state: FSMContext):
     elif action == "admin":
         if not is_admin(call.from_user.id): return
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Список пользователей", callback_data="adm_users")],
             [InlineKeyboardButton(text="🔗 Сгенерировать инвайт", callback_data="adm_invite")],
             [InlineKeyboardButton(text="🔨 Удалить пользователя", callback_data="adm_kick")],
             [InlineKeyboardButton(text="👑 Изменить роль", callback_data="adm_role")],
@@ -413,11 +412,32 @@ async def fsm_del_loc(msg: Message, state: FSMContext):
         await msg.answer("❌ Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_mod")]]))
     await state.clear()
 
+# --- ПАНЕЛЬ АДМИНА: НОВЫЕ ФУНКЦИИ ---
+
+@dp.callback_query(F.data == "adm_users")
+async def view_users(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    
+    lines = ["👥 **Список пользователей:**\n"]
+    for uid, udata in db["users"].items():
+        role = udata.get("role", "user")
+        locs_count = len(udata.get("locs", []))
+        # Форматируем ID как код для удобного копирования
+        lines.append(f"ID: `{uid}` | Роль: {role} | Адресов: {locs_count}")
+    
+    text = "\n".join(lines)
+    # Защита от превышения лимита символов в Telegram (4096)
+    if len(text) > 4000: text = text[:4000] + "\n\n... (список обрезан)"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]])
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
 @dp.callback_query(F.data == "adm_invite")
 async def gen_invite(call: CallbackQuery):
     bot_info = await bot.get_me()
     await call.message.edit_text(f"🔗 **Инвайт:**\nhttps://t.me/{bot_info.username}?start=join", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]]))
 
+# --- УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ---
 @dp.callback_query(F.data == "adm_kick")
 async def ask_kick(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text("Отправьте ID пользователя для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_admin")]]))
@@ -426,13 +446,64 @@ async def ask_kick(call: CallbackQuery, state: FSMContext):
 @dp.message(BotStates.waiting_for_user_id_kick)
 async def fsm_kick(msg: Message, state: FSMContext):
     tid = msg.text.strip()
-    if tid == str(SUPERADMIN_ID): await msg.answer("Нельзя кикнуть создателя.")
-    elif get_role(tid) == "admin" and not is_superadmin(msg.from_user.id): await msg.answer("Недостаточно прав.")
+    if tid == str(SUPERADMIN_ID): 
+        await msg.answer("❌ Нельзя удалить создателя.")
+    elif get_role(tid) == "admin" and not is_superadmin(msg.from_user.id): 
+        await msg.answer("❌ Недостаточно прав для удаления администратора.")
     elif tid in db["users"]:
         del db["users"][tid]
         await save_data(db)
-        await msg.answer("✅ Пользователь удален.")
-    else: await msg.answer("❌ Не найден.")
+        await msg.answer("✅ Пользователь успешно удален.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню админа", callback_data="menu_admin")]]))
+    else: 
+        await msg.answer("❌ Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]]))
+    await state.clear()
+
+# --- ИЗМЕНЕНИЕ РОЛИ ---
+@dp.callback_query(F.data == "adm_role")
+async def ask_role_id(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text("Отправьте ID пользователя для изменения роли (можно скопировать из списка):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="menu_admin")]]))
+    await state.set_state(BotStates.waiting_for_user_id_role)
+
+@dp.message(BotStates.waiting_for_user_id_role)
+async def fsm_ask_role(msg: Message, state: FSMContext):
+    tid = msg.text.strip()
+    
+    if tid not in db["users"]:
+        await msg.answer("❌ Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]]))
+        await state.clear()
+        return
+        
+    if tid == str(SUPERADMIN_ID):
+        await msg.answer("❌ Нельзя изменить роль создателя.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]]))
+        await state.clear()
+        return
+    
+    # Сохраняем ID пользователя во временное хранилище FSM
+    await state.update_data(target_id=tid)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Пользователь (user)", callback_data="setrole_user")],
+        [InlineKeyboardButton(text="🛡 Модератор (moderator)", callback_data="setrole_moderator")],
+        [InlineKeyboardButton(text="👑 Админ (admin)", callback_data="setrole_admin")],
+        [InlineKeyboardButton(text="Отмена", callback_data="menu_admin")]
+    ])
+    await msg.answer(f"Выберите новую роль для пользователя `{tid}`:", reply_markup=kb, parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("setrole_"))
+async def set_new_role(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id): return
+    
+    new_role = call.data.split("_")[1]
+    data = await state.get_data()
+    tid = data.get("target_id")
+    
+    if tid and tid in db["users"]:
+        db["users"][tid]["role"] = new_role
+        await save_data(db)
+        await call.message.edit_text(f"✅ Роль пользователя `{tid}` успешно изменена на **{new_role}**.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню админа", callback_data="menu_admin")]]))
+    else:
+        await call.message.edit_text("❌ Произошла ошибка. Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="menu_admin")]]))
+        
     await state.clear()
 
 async def main():
