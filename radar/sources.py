@@ -1,0 +1,155 @@
+"""Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+import xml.etree.ElementTree as ET
+from collections import deque
+from dataclasses import dataclass
+from urllib.parse import urlparse
+
+import aiohttp
+from bs4 import BeautifulSoup
+
+from . import config
+
+log = logging.getLogger("radar.sources")
+
+_TAGS = re.compile(r"<[^>]+>")
+_SPACES = re.compile(r"[ \t\u00a0]+")
+
+
+@dataclass(frozen=True)
+class Item:
+    """Одно сообщение источника."""
+
+    source: str
+    text: str
+    kind: str = "tg"  # tg | rss
+
+    @property
+    def key(self) -> str:
+        return hashlib.sha1(self.text.encode("utf-8")).hexdigest()
+
+
+class SeenStore:
+    """FIFO-хранилище хэшей уже обработанных сообщений."""
+
+    def __init__(self, maxlen: int = 2000) -> None:
+        self._order: deque[str] = deque(maxlen=maxlen)
+        self._items: set[str] = set()
+
+    def add(self, key: str) -> bool:
+        """True, если сообщение встречено впервые."""
+        if key in self._items:
+            return False
+        if self._order.maxlen and len(self._order) == self._order.maxlen:
+            self._items.discard(self._order[0])
+        self._order.append(key)
+        self._items.add(key)
+        return True
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+def clean(text: str) -> str:
+    text = _TAGS.sub(" ", text)
+    text = _SPACES.sub(" ", text)
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip()).strip()
+
+
+async def fetch_channel(
+    session: aiohttp.ClientSession, channel: str, limit: int
+) -> list[Item]:
+    """Читает веб-превью публичного канала https://t.me/s/<channel>."""
+    url = f"https://t.me/s/{channel}"
+    try:
+        async with session.get(url) as response:
+            if response.status != 200:
+                log.debug("Канал @%s: HTTP %s", channel, response.status)
+                return []
+            page = await response.text()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Канал @%s недоступен: %s", channel, exc)
+        return []
+
+    soup = BeautifulSoup(page, "html.parser")
+    blocks = soup.find_all("div", class_="tgme_widget_message_text")
+    items: list[Item] = []
+    for block in blocks[-limit:]:
+        text = clean(block.get_text(separator="\n"))
+        if len(text) >= 20:
+            items.append(Item(source=channel, text=text, kind="tg"))
+    return items
+
+
+async def fetch_rss(session: aiohttp.ClientSession, url: str, limit: int) -> list[Item]:
+    """Читает RSS/Atom-ленту СМИ или официального сайта."""
+    try:
+        async with session.get(url) as response:
+            if response.status != 200:
+                log.debug("RSS %s: HTTP %s", url, response.status)
+                return []
+            body = await response.text()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("RSS %s недоступен: %s", url, exc)
+        return []
+
+    try:
+        root = ET.fromstring(body.strip())
+    except ET.ParseError as exc:
+        log.debug("RSS %s: не разобран (%s)", url, exc)
+        return []
+
+    label = urlparse(url).netloc or url
+    entries = root.findall(".//item") or root.findall(
+        ".//{http://www.w3.org/2005/Atom}entry"
+    )
+    items: list[Item] = []
+    for entry in entries[:limit]:
+        title = _child_text(entry, "title")
+        body_text = _child_text(entry, "description") or _child_text(entry, "summary")
+        text = clean(f"{title}\n{body_text}")
+        if len(text) >= 20:
+            items.append(Item(source=label, text=text, kind="rss"))
+    return items
+
+
+def _child_text(entry: ET.Element, tag: str) -> str:
+    for candidate in (tag, f"{{http://www.w3.org/2005/Atom}}{tag}"):
+        node = entry.find(candidate)
+        if node is not None and node.text:
+            return node.text
+    return ""
+
+
+async def collect(
+    session: aiohttp.ClientSession,
+    channels: list[str],
+    feeds: list[str],
+    seen: SeenStore,
+    limit: int = config.MSG_PER_SOURCE,
+    *,
+    warmup: bool = False,
+) -> list[Item]:
+    """Обходит все источники и возвращает только новые сообщения.
+
+    При warmup=True сообщения помечаются прочитанными, но не возвращаются —
+    так первый запуск не рассылает всю ленту разом.
+    """
+    fresh: list[Item] = []
+
+    for channel in list(channels):
+        for item in await fetch_channel(session, channel, limit):
+            if seen.add(item.key) and not warmup:
+                fresh.append(item)
+
+    for url in list(feeds):
+        for item in await fetch_rss(session, url, limit):
+            if seen.add(item.key) and not warmup:
+                fresh.append(item)
+
+    return fresh

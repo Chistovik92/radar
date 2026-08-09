@@ -1,0 +1,17 @@
+services:
+  radar:
+    build:
+      context: .
+      args:
+        TZ: ${TZ:-Europe/Saratov}
+    image: radar_image
+    container_name: radar_container
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

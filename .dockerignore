@@ -1,0 +1,11 @@
+.git
+.github
+.env
+data
+tests
+tools
+README.md
+install.sh
+LICENSE
+__pycache__
+*.pyc

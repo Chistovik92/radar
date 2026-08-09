@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Тесты логики
+        run: python -m unittest discover -s tests -v
+
+      - name: Импорт всех модулей с заглушками
+        run: python tools/stubcheck.py
+
+      - name: Сверка перекрёстных имён
+        run: python tools/lint_names.py
+
+      - name: Синтаксис bash
+        run: bash -n install.sh && bash -n tools/install.template.sh
+
+      - name: install.sh соответствует исходникам
+        run: |
+          python tools/build_installer.py
+          git diff --exit-code install.sh \
+            || { echo "install.sh устарел: выполните python3 tools/build_installer.py"; exit 1; }
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Сборка образа
+        run: docker build -t radar_image:ci .
