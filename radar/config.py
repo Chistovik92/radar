@@ -32,10 +32,10 @@ BOT_TOKEN: str = (os.getenv("BOT_TOKEN") or "").strip()
 SUPERADMIN_ID: int = _int("SUPERADMIN_ID", 0)
 
 GEMINI_API_KEY: str = (os.getenv("GEMINI_API_KEY") or "").strip()
-GEMINI_MODEL: str = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+GEMINI_MODEL: str = (os.getenv("GEMINI_MODEL") or "gemini-3.6-flash").strip()
 # Разбор новостей — задача классификации: дешёвая модель с большей квотой.
 GEMINI_MODEL_ANALYSIS: str = (
-    os.getenv("GEMINI_MODEL_ANALYSIS") or "gemini-2.5-flash-lite"
+    os.getenv("GEMINI_MODEL_ANALYSIS") or "gemini-3.5-flash-lite"
 ).strip()
 AI_CONCURRENCY: int = max(1, _int("AI_CONCURRENCY", 2))
 AI_TIMEOUT: int = max(20, _int("AI_TIMEOUT", 90))

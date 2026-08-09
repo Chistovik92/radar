@@ -73,7 +73,7 @@ async def cmd_help(message: Message, role: str) -> None:
         lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")
         lines.append("/quota — расход квоты Gemini")
     if roles.is_admin(role):
-        lines.append("/stats — статистика системы")
+        lines.append("/stats — статистика системы - /models — модели Gemini")
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
 
@@ -154,7 +154,8 @@ def _stats_text() -> str:
         f"Локаций: <b>{locations}</b>",
         f"Каналов: <b>{len(storage.channels())}</b>, RSS: <b>{len(storage.rss_feeds())}</b>, "
         f"в очереди: <b>{len(storage.pending())}</b>",
-        f"ИИ: <b>{esc(config.GEMINI_MODEL) if ai.ENABLED else 'выключен (эвристика)'}</b>",
+        f"ИИ: <b>{esc(ai.current_model(ai.ASSISTANT)) if ai.ENABLED else 'выключен (эвристика)'}</b>"
+        + (f" | разбор: <b>{esc(ai.current_model(ai.ANALYSIS))}</b>" if ai.ENABLED else ""),
         f"Циклов: <b>{data['cycles']}</b>, сообщений: <b>{data['items']}</b>, "
         f"оповещений: <b>{data['alerts']}</b>",
         f"Кэш анализов: <b>{data['cache']}</b>, помечено прочитанным: <b>{data['seen']}</b>",
@@ -187,11 +188,43 @@ async def cmd_quota(message: Message, role: str) -> None:
         f"Сэкономлено: фильтр <b>{counters['prefiltered']}</b>, "
         f"кэш <b>{counters['cached']}</b>, эвристика <b>{counters['heuristic']}</b>",
         "",
-        f"Анализ: <code>{esc(config.GEMINI_MODEL_ANALYSIS)}</code>, "
-        f"ассистент: <code>{esc(config.GEMINI_MODEL)}</code>",
+        f"Анализ: <code>{esc(ai.current_model(ai.ANALYSIS))}</code>, "
+        f"ассистент: <code>{esc(ai.current_model(ai.ASSISTANT))}</code>",
         "<i>Суточный лимит обнуляется в полночь по тихоокеанскому времени "
         "(около 10–11 утра по Москве).</i>",
     ]
+    await message.answer("\n".join(lines), reply_markup=back_kb())
+
+
+@router.message(Command("models"))
+async def cmd_models(message: Message, role: str) -> None:
+    if not roles.is_admin(role):
+        return
+    report = ai.models_report()
+    lines = [
+        "🤖 <b>Модели Gemini</b>",
+        f"Ассистент: <code>{esc(report['assistant'])}</code>",
+        f"Разбор новостей: <code>{esc(report['analysis'])}</code>",
+    ]
+    if report["unavailable"]:
+        lines.append(
+            "Отключены ключом: " + ", ".join(f"<code>{esc(m)}</code>" for m in report["unavailable"])
+        )
+    available = [m for m in report["available"] if "gemini" in m]
+    if available:
+        lines.append("")
+        lines.append(f"<b>Доступно ключу ({len(available)}):</b>")
+        lines.extend(f"• <code>{esc(name)}</code>" for name in available[:40])
+        if len(available) > 40:
+            lines.append(f"…и ещё {len(available) - 40}")
+    else:
+        lines.append("")
+        lines.append("<i>Список моделей получить не удалось — используются значения из .env.</i>")
+    lines.append("")
+    lines.append(
+        "<i>Модель подбирается автоматически. Чтобы закрепить свою — задайте "
+        "GEMINI_MODEL в .env и перезапустите контейнер.</i>"
+    )
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
 

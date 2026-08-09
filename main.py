@@ -13,7 +13,7 @@ from radar import config
 log = config.setup_logging()
 config.validate()
 
-from radar import handlers, monitor, roles, storage  # noqa: E402
+from radar import ai, handlers, monitor, roles, storage  # noqa: E402
 from radar.middlewares import AccessMiddleware  # noqa: E402
 from radar.tg import bot, dp, send_html  # noqa: E402
 
@@ -32,7 +32,9 @@ CHANGELOG = (
     "👥 <b>Роли</b>: суперадминистратор назначает администраторов, администратор — "
     "модераторов; правка локаций и оповещений — с модератора, удаление — с администратора.\n"
     "📉 <b>Экономия квоты Gemini</b>: предфильтр, пакетный разбор и резерв запросов "
-    "под ассистента. Расход — командой /quota."
+    "под ассистента. Расход — командой /quota.\n"
+    "🔄 <b>Модель выбирается автоматически</b> из доступных ключу: при отключении "
+    "одной версии бот сам переходит на следующую. Список — командой /models."
 )
 
 
@@ -63,6 +65,13 @@ async def main() -> None:
         os.getenv("TZ", "system"),
         config.POLL_INTERVAL,
     )
+
+    if ai.ENABLED:
+        await ai.discover_models()
+        log.info(
+            "Модели: ассистент «%s», анализ «%s»",
+            ai.current_model(ai.ASSISTANT), ai.current_model(ai.ANALYSIS),
+        )
 
     background = asyncio.create_task(monitor.run(), name="monitor")
     asyncio.create_task(announce(), name="announce")

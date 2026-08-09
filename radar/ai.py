@@ -1,6 +1,21 @@
-"""Слой Google Gemini: устойчивые запросы, экономный разбор новостей, ассистент.
+"""Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
-Экономия квоты бесплатного тарифа держится на четырёх приёмах:
+Устойчивость к отключению моделей
+---------------------------------
+Google выводит модели из обращения быстрее объявленных дат: `gemini-2.5-flash`
+закрыт для новых ключей до наступления официальной даты отключения. Поэтому
+имя модели не зашито намертво: при старте список кандидатов сверяется с тем,
+что реально доступно ключу (`models.list`), а при ответе 404 модель на лету
+понижается и берётся следующая из списка.
+
+Различия поколений
+------------------
+Начиная с Gemini 3.x: `temperature`/`top_p`/`top_k` устарели и игнорируются,
+`thinking_budget` заменён строковым `thinking_level`, запрос не должен
+заканчиваться ходом роли `model`. Всё это учитывается в `_build_config`.
+
+Экономия квоты
+--------------
   1. предфильтр по ключевым словам — заведомо нерелевантное не уходит в модель;
   2. пакетный разбор — до AI_BATCH_SIZE новостей одним запросом;
   3. кэш результатов по хэшу текста — повтор не оплачивается;
@@ -46,41 +61,193 @@ limiter = RateLimiter(
 # Возможности отключаются автоматически, если SDK или модель их не принимают.
 _features = {"thinking": True, "safety": True, "search": config.AI_SEARCH}
 
+ASSISTANT = "assistant"
+ANALYSIS = "analysis"
+
+# Порядок предпочтения. Первым идёт значение из .env, если оно задано.
+_CANDIDATES: dict[str, list[str]] = {
+    ASSISTANT: [
+        config.GEMINI_MODEL,
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
+    ANALYSIS: [
+        config.GEMINI_MODEL_ANALYSIS,
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+    ],
+}
+
+
+def _dedup(names: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    result = []
+    for name in names:
+        clean = (name or "").strip().removeprefix("models/")
+        if clean and clean not in seen:
+            seen.add(clean)
+            result.append(clean)
+    return result
+
+
+_chain: dict[str, list[str]] = {role: _dedup(names) for role, names in _CANDIDATES.items()}
+_current: dict[str, str] = {role: chain[0] for role, chain in _chain.items() if chain}
+_available: list[str] = []      # что реально видит ключ
+_unavailable: set[str] = set()  # модели, ответившие 404
+
 
 class AIError(RuntimeError):
     """Ошибка обращения к модели с понятным пользователю текстом."""
 
 
-def _config(
+# --------------------------------------------------------------------------
+#  Выбор модели
+# --------------------------------------------------------------------------
+
+def is_gen3(model: str) -> bool:
+    """Модель поколения 3.x и новее: другой набор параметров запроса."""
+    match = re.search(r"gemini-(\d+)(?:\.(\d+))?", model or "")
+    return bool(match) and int(match.group(1)) >= 3
+
+
+def current_model(role: str) -> str:
+    return _current.get(role) or config.GEMINI_MODEL
+
+
+def _demote(role: str, model: str) -> str | None:
+    """Помечает модель недоступной и переходит к следующей из цепочки."""
+    _unavailable.add(model)
+    for candidate in _chain.get(role, []):
+        if candidate not in _unavailable:
+            _current[role] = candidate
+            log.warning("Модель «%s» недоступна — перехожу на «%s»", model, candidate)
+            return candidate
+    log.error("Ни одна модель из списка не доступна для роли «%s»", role)
+    return None
+
+
+async def discover_models() -> list[str]:
+    """Спрашивает у API, какие модели доступны ключу, и подбирает рабочие."""
+    global _available
+    if not ENABLED:
+        return []
+    names: list[str] = []
+    try:
+        pager = await _client.aio.models.list()
+        async for item in pager:
+            raw = getattr(item, "name", "") or ""
+            actions = (
+                getattr(item, "supported_actions", None)
+                or getattr(item, "supported_generation_methods", None)
+                or []
+            )
+            if actions and not any("generateContent" in str(a) for a in actions):
+                continue
+            names.append(raw.removeprefix("models/"))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Не удалось получить список моделей (%s) — работаю по умолчанию", exc)
+        return []
+
+    _available = sorted(names)
+    log.info("Ключу доступно моделей: %d", len(_available))
+
+    for role, chain in _chain.items():
+        picked = next((name for name in chain if name in _available), None)
+        if picked:
+            if picked != _current.get(role):
+                log.info("Модель для роли «%s»: %s", role, picked)
+            _current[role] = picked
+        else:
+            log.warning(
+                "Ни один кандидат для роли «%s» не найден среди доступных; оставляю «%s»",
+                role, _current.get(role),
+            )
+    return _available
+
+
+def models_report() -> dict[str, Any]:
+    return {
+        "assistant": current_model(ASSISTANT),
+        "analysis": current_model(ANALYSIS),
+        "available": list(_available),
+        "unavailable": sorted(_unavailable),
+    }
+
+
+# --------------------------------------------------------------------------
+#  Сборка запроса
+# --------------------------------------------------------------------------
+
+def _thinking_config(model: str):
+    """Минимальное «мышление»: у 3.x — thinking_level, у 2.5 — thinking_budget."""
+    if not _features["thinking"]:
+        return None
+    try:
+        if is_gen3(model):
+            return types.ThinkingConfig(thinking_level="minimal")
+        return types.ThinkingConfig(thinking_budget=0)
+    except Exception as exc:  # noqa: BLE001 — старый SDK не знает поле
+        log.warning("ThinkingConfig не поддерживается SDK (%s) — отключаю", exc)
+        _features["thinking"] = False
+        return None
+
+
+def _build_config(
+    model: str,
     system: str | None,
     json_mode: bool,
     max_tokens: int,
     temperature: float,
     search: bool,
 ):
-    kwargs: dict[str, Any] = {"temperature": temperature, "max_output_tokens": max_tokens}
+    kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
+
+    # У Gemini 3.x параметры сэмплирования устарели: игнорируются сейчас
+    # и вернут 400 в следующих поколениях.
+    if not is_gen3(model):
+        kwargs["temperature"] = temperature
+
     if system:
         kwargs["system_instruction"] = system
     if json_mode:
         kwargs["response_mime_type"] = "application/json"
-    if _features["thinking"]:
-        # Без этого модели 2.5 расходуют весь бюджет токенов на размышления
-        # и возвращают пустой response.text.
-        kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+
+    thinking = _thinking_config(model)
+    if thinking is not None:
+        kwargs["thinking_config"] = thinking
+
     if _features["safety"]:
-        kwargs["safety_settings"] = [
-            types.SafetySetting(category=category, threshold="BLOCK_ONLY_HIGH")
-            for category in (
-                "HARM_CATEGORY_HARASSMENT",
-                "HARM_CATEGORY_HATE_SPEECH",
-                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "HARM_CATEGORY_DANGEROUS_CONTENT",
-            )
-        ]
+        try:
+            kwargs["safety_settings"] = [
+                types.SafetySetting(category=category, threshold="BLOCK_ONLY_HIGH")
+                for category in (
+                    "HARM_CATEGORY_HARASSMENT",
+                    "HARM_CATEGORY_HATE_SPEECH",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "HARM_CATEGORY_DANGEROUS_CONTENT",
+                )
+            ]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("SafetySetting не поддерживается (%s) — отключаю", exc)
+            _features["safety"] = False
+
     if search and _features["search"] and not json_mode:
-        # Поиск в интернете несовместим со строгим JSON-режимом,
-        # поэтому включается только для свободного диалога.
-        kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+        # Поиск несовместим со строгим JSON-режимом, поэтому только для диалога.
+        try:
+            kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Поиск в интернете не поддерживается SDK (%s)", exc)
+            _features["search"] = False
+
     return types.GenerateContentConfig(**kwargs)
 
 
@@ -108,6 +275,16 @@ def _finish_reason(response: Any) -> str:
     return "UNKNOWN"
 
 
+def _strip_trailing_model_turn(contents: Any) -> Any:
+    """Gemini 3.x отвергает запрос, если последний ход — роли model (400)."""
+    if not isinstance(contents, list):
+        return contents
+    trimmed = list(contents)
+    while trimmed and str(getattr(trimmed[-1], "role", "")) == "model":
+        trimmed.pop()
+    return trimmed
+
+
 async def generate(
     contents: Any,
     *,
@@ -116,11 +293,11 @@ async def generate(
     max_tokens: int = 2048,
     temperature: float = 0.4,
     retries: int = 3,
-    model: str | None = None,
+    role: str = ASSISTANT,
     priority: bool = True,
     search: bool = False,
 ) -> str:
-    """Запрос к модели с учётом квот.
+    """Запрос к модели с учётом квот и автоподменой недоступной модели.
 
     priority=True — живой диалог: ждём свободный слот в пределах таймаута.
     priority=False — фоновая задача: при нехватке квоты сразу QuotaExceeded.
@@ -139,15 +316,17 @@ async def generate(
     elif not await limiter.try_acquire(priority=False):
         raise QuotaExceeded("нет свободной квоты для фонового анализа")
 
-    target = model or config.GEMINI_MODEL
+    payload = _strip_trailing_model_turn(contents)
     last: AIError | None = None
+
     for attempt in range(retries):
-        cfg = _config(system, json_mode, max_tokens, temperature, search)
+        model = current_model(role)
+        cfg = _build_config(model, system, json_mode, max_tokens, temperature, search)
         try:
             async with _semaphore:
                 response = await asyncio.wait_for(
                     _client.aio.models.generate_content(
-                        model=target, contents=contents, config=cfg
+                        model=model, contents=payload, config=cfg
                     ),
                     timeout=config.AI_TIMEOUT,
                 )
@@ -159,9 +338,20 @@ async def generate(
             detail = f"{type(exc).__name__}: {exc}"
             low = detail.lower()
             last = AIError(detail)
+
+            # Модель отключена или недоступна ключу — берём следующую из цепочки.
+            if "404" in low or "not found" in low or "no longer available" in low:
+                replacement = _demote(role, model)
+                if replacement:
+                    continue
+                raise AIError(
+                    f"Модель «{model}» недоступна для этого ключа, и запасных не осталось. "
+                    "Укажите актуальную модель в GEMINI_MODEL — список доступных: /models"
+                ) from exc
+
             if "thinking" in low and _features["thinking"]:
                 _features["thinking"] = False
-                log.warning("Отключаю thinking_config: %s", detail)
+                log.warning("Отключаю thinking-параметры: %s", detail)
                 continue
             if "safety" in low and _features["safety"]:
                 _features["safety"] = False
@@ -171,20 +361,22 @@ async def generate(
                 _features["search"] = False
                 log.warning("Отключаю поиск в интернете: %s", detail)
                 continue
+            if any(key in low for key in ("temperature", "top_p", "top_k", "candidate_count")):
+                # Параметр устарел в новом поколении — повторяем без него.
+                log.warning("Параметр отвергнут моделью: %s", detail)
+                continue
             if any(key in low for key in ("429", "resource_exhausted", "quota", "rate limit")):
                 limiter.note_rejection()
                 raise AIError(
                     "Превышена квота Gemini (429). Суточный лимит бесплатного тарифа "
                     "обнуляется в полночь по тихоокеанскому времени — около 10–11 утра "
-                    "по Москве. Проверить расход: /quota"
+                    "по Москве. Расход: /quota"
                 ) from exc
             if any(key in low for key in ("500", "503", "unavailable", "internal", "deadline")):
                 await asyncio.sleep(3 * (attempt + 1))
                 continue
             if any(key in low for key in ("api key", "401", "403", "permission", "unauthenticated")):
                 raise AIError("Неверный или неактивный GEMINI_API_KEY.") from exc
-            if "not found" in low or "404" in low:
-                raise AIError(f"Модель «{target}» недоступна для этого ключа.") from exc
             raise last from exc
 
         answer = _extract_text(response)
@@ -208,7 +400,8 @@ async def generate(
 
 ANALYST_SYSTEM = (
     "Ты — аналитик оперативных сообщений городских служб, администраций и СМИ. "
-    "Ты всегда отвечаешь одним валидным JSON-массивом без пояснений и без Markdown."
+    "Ты всегда отвечаешь одним валидным JSON-массивом без пояснений и без Markdown. "
+    "Работаешь строго по правилам из запроса, ничего не додумывая."
 )
 
 ANALYST_PROMPT = """Разбери сообщения из городских источников.
@@ -328,7 +521,7 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
                 json_mode=True,
                 max_tokens=700 * len(chunk) + 300,
                 temperature=0.1,
-                model=config.GEMINI_MODEL_ANALYSIS,
+                role=ANALYSIS,
                 priority=False,
             )
             _counters["requests"] += 1
@@ -392,7 +585,8 @@ ASSISTANT_SYSTEM = (
     "и администраторам: отвечаешь на вопросы, формулируешь оповещения для жителей, "
     "разбираешь ситуации по ЖКХ, ЧС и связи, объясняешь работу самого бота, помогаешь "
     "искать официальные каналы и источники. Если пользуешься поиском — приводи ссылки. "
-    "Отвечай по-русски, кратко и по делу. Разметка: **жирный**, `код`, списки."
+    "Отвечай по-русски, кратко и по делу. Разметка: **жирный**, `код`, списки. "
+    "Не используй заголовки и таблицы: ответ читают в Telegram."
 )
 
 
@@ -411,7 +605,7 @@ async def assistant(history: list[types.Content], question: str) -> str:
         system=ASSISTANT_SYSTEM,
         max_tokens=2048,
         temperature=0.6,
-        model=config.GEMINI_MODEL,
+        role=ASSISTANT,
         priority=True,
         search=True,
     )
