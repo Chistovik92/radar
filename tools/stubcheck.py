@@ -123,7 +123,7 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.storage", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
+        "radar.storage", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",

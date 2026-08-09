@@ -71,6 +71,7 @@ async def cmd_help(message: Message, role: str) -> None:
     ]
     if roles.can_use_assistant(role):
         lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")
+        lines.append("/quota — расход квоты Gemini")
     if roles.is_admin(role):
         lines.append("/stats — статистика системы")
     await message.answer("\n".join(lines), reply_markup=back_kb())
@@ -130,6 +131,15 @@ async def menu_about(call: CallbackQuery) -> None:
     await safe_edit(call, text, back_kb())
 
 
+def _quota_line() -> str:
+    quota = ai.quota_snapshot()
+    state = " ⏸ пауза после 429" if quota["paused"] else ""
+    return (
+        f"Квота Gemini: <b>{quota['used_today']}/{quota['limit_day']}</b> за сутки, "
+        f"<b>{quota['in_minute']}/{quota['limit_minute']}</b> за минуту{state}"
+    )
+
+
 def _stats_text() -> str:
     counters: dict[str, int] = {}
     locations = 0
@@ -148,6 +158,9 @@ def _stats_text() -> str:
         f"Циклов: <b>{data['cycles']}</b>, сообщений: <b>{data['items']}</b>, "
         f"оповещений: <b>{data['alerts']}</b>",
         f"Кэш анализов: <b>{data['cache']}</b>, помечено прочитанным: <b>{data['seen']}</b>",
+        f"Разбор: ИИ <b>{data['ai']}</b>, из кэша <b>{data['cached']}</b>, "
+        f"отсеяно фильтром <b>{data['prefiltered']}</b>, эвристикой <b>{data['heuristic']}</b>",
+        _quota_line(),
         f"Интервал опроса: <b>{config.POLL_INTERVAL} с</b>",
         f"Время сервера: <b>{datetime.now():%Y-%m-%d %H:%M:%S}</b>",
     ]
@@ -159,6 +172,27 @@ async def cmd_stats(message: Message, role: str) -> None:
     if not roles.is_admin(role):
         return
     await message.answer(_stats_text(), reply_markup=back_kb())
+
+
+@router.message(Command("quota"))
+async def cmd_quota(message: Message, role: str) -> None:
+    if not roles.is_moderator(role):
+        return
+    counters = ai.counters()
+    lines = [
+        "📉 <b>Расход квоты Gemini</b>",
+        _quota_line(),
+        f"Запросов к модели: <b>{counters['requests']}</b> "
+        f"(разобрано сообщений: {counters['ai']})",
+        f"Сэкономлено: фильтр <b>{counters['prefiltered']}</b>, "
+        f"кэш <b>{counters['cached']}</b>, эвристика <b>{counters['heuristic']}</b>",
+        "",
+        f"Анализ: <code>{esc(config.GEMINI_MODEL_ANALYSIS)}</code>, "
+        f"ассистент: <code>{esc(config.GEMINI_MODEL)}</code>",
+        "<i>Суточный лимит обнуляется в полночь по тихоокеанскому времени "
+        "(около 10–11 утра по Москве).</i>",
+    ]
+    await message.answer("\n".join(lines), reply_markup=back_kb())
 
 
 @router.callback_query(F.data == "menu:stats")

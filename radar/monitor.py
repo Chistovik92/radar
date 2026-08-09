@@ -21,8 +21,8 @@ seen = sources.SeenStore()
 _stats = {"cycles": 0, "items": 0, "alerts": 0, "last_cycle": 0}
 
 
-def stats() -> dict[str, int]:
-    return dict(_stats, seen=len(seen), cache=ai.cache_size())
+def stats() -> dict[str, Any]:
+    return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())
 
 
 # --------------------------------------------------------------------------
@@ -147,17 +147,20 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     _stats["last_cycle"] = int(time.time())
 
     analyses: list[Analysis] = []
-    for item in items:
-        try:
-            analysis = await ai.analyze(item.text, item.source)
-        except Exception:  # noqa: BLE001
-            log.exception("Не удалось разобрать сообщение из %s", item.source)
-            continue
-        if analysis.relevant:
-            analyses.append(analysis)
-
     if items:
-        log.info("Новых сообщений: %d, значимых событий: %d", len(items), len(analyses))
+        try:
+            parsed = await ai.analyze_batch([(item.text, item.source) for item in items])
+        except Exception:  # noqa: BLE001
+            log.exception("Пакетный разбор сообщений не удался")
+            parsed = []
+        analyses = [analysis for analysis in parsed if analysis.relevant]
+        counters = ai.counters()
+        log.info(
+            "Новых сообщений: %d, значимых: %d | запросов к ИИ: %d, "
+            "отсеяно фильтром: %d, из кэша: %d, эвристикой: %d",
+            len(items), len(analyses), counters["requests"],
+            counters["prefiltered"], counters["cached"], counters["heuristic"],
+        )
 
     now_ts = int(time.time())
     now = datetime.now()

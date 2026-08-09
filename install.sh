@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Система «Радар» v3.0.0 — автономный установщик.
+# Система «Радар» v3.1.0 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -15,7 +15,7 @@
 
 set -Eeuo pipefail
 
-VERSION="3.0.0"
+VERSION="3.1.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -161,7 +161,9 @@ CHANGELOG = (
     "плюс RSS-ленты СМИ.\n"
     "🧠 <b>ИИ-ассистент</b> в диалоге — начиная с роли «Модератор».\n"
     "👥 <b>Роли</b>: суперадминистратор назначает администраторов, администратор — "
-    "модераторов; правка локаций и оповещений — с модератора, удаление — с администратора."
+    "модераторов; правка локаций и оповещений — с модератора, удаление — с администратора.\n"
+    "📉 <b>Экономия квоты Gemini</b>: предфильтр, пакетный разбор и резерв запросов "
+    "под ассистента. Расход — командой /quota."
 )
 
 
@@ -219,7 +221,7 @@ printf "  %s\n" "radar/__init__.py"
 cat > "radar/__init__.py" <<'RADAR_FILE_04'
 """Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя."""
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 __all__ = ["__version__"]
 RADAR_FILE_04
 printf "  %s\n" "radar/config.py"
@@ -259,12 +261,30 @@ SUPERADMIN_ID: int = _int("SUPERADMIN_ID", 0)
 
 GEMINI_API_KEY: str = (os.getenv("GEMINI_API_KEY") or "").strip()
 GEMINI_MODEL: str = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+# Разбор новостей — задача классификации: дешёвая модель с большей квотой.
+GEMINI_MODEL_ANALYSIS: str = (
+    os.getenv("GEMINI_MODEL_ANALYSIS") or "gemini-2.5-flash-lite"
+).strip()
 AI_CONCURRENCY: int = max(1, _int("AI_CONCURRENCY", 2))
 AI_TIMEOUT: int = max(20, _int("AI_TIMEOUT", 90))
 
+# Квоты бесплатного тарифа Gemini. Уточняйте актуальные значения в AI Studio.
+AI_RPM: int = max(1, _int("AI_RPM", 10))
+AI_RPD: int = max(1, _int("AI_RPD", 250))
+# Сколько суточных запросов держать в резерве только под ИИ-ассистента.
+AI_RESERVE: int = max(0, _int("AI_RESERVE", 40))
+# Сколько новостей отправлять в модель одним запросом.
+AI_BATCH_SIZE: int = max(1, _int("AI_BATCH_SIZE", 8))
+# Пауза фонового анализа после ответа 429, секунды.
+AI_COOLDOWN: int = max(60, _int("AI_COOLDOWN", 900))
+# Прогонять сообщения через фильтр по ключевым словам до обращения к модели.
+AI_PREFILTER: bool = (os.getenv("AI_PREFILTER") or "1").strip().lower() not in ("0", "false", "no")
+# Поиск в интернете для ассистента (grounding).
+AI_SEARCH: bool = (os.getenv("AI_SEARCH") or "1").strip().lower() not in ("0", "false", "no")
+
 DATA_FILE: str = (os.getenv("DATA_FILE") or "data/db.json").strip()
 POLL_INTERVAL: int = max(60, _int("POLL_INTERVAL", 180))
-MSG_PER_SOURCE: int = max(1, _int("MSG_PER_SOURCE", 8))
+MSG_PER_SOURCE: int = max(1, _int("MSG_PER_SOURCE", 5))
 CLUSTER_RADIUS_M: int = max(0, _int("CLUSTER_RADIUS_M", 1000))
 MAX_LOCATIONS: int = _int("MAX_LOCATIONS", 0)  # 0 — без ограничения
 DEFAULT_CITY: str = (os.getenv("DEFAULT_CITY") or "").strip()
@@ -676,8 +696,130 @@ def can_moderate_sources(actor_role: str | None) -> bool:
 def can_use_assistant(actor_role: str | None) -> bool:
     return is_moderator(actor_role)
 RADAR_FILE_07
+printf "  %s\n" "radar/ratelimit.py"
+cat > "radar/ratelimit.py" <<'RADAR_FILE_08'
+"""Учёт квот Gemini: запросы в минуту, запросы в сутки, резерв под ассистента.
+
+Бесплатный тариф Gemini ограничен по RPM и RPD (для 2.5-flash — порядка
+10 запросов в минуту), поэтому фоновый анализ новостей обязан уступать
+дорогу живому диалогу с ассистентом. Дневной счётчик сбрасывается в полночь
+по тихоокеанскому времени — так, как это делает Google.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections import deque
+from datetime import datetime, timedelta, timezone
+
+log = logging.getLogger("radar.ratelimit")
+
+# Тихоокеанское время: UTC-8 зимой, UTC-7 летом. Для суточной границы
+# достаточно приблизительного смещения.
+_PACIFIC_OFFSET = timedelta(hours=-8)
+
+
+def pacific_day() -> str:
+    return (datetime.now(timezone.utc) + _PACIFIC_OFFSET).strftime("%Y-%m-%d")
+
+
+class QuotaExceeded(RuntimeError):
+    """Лимит исчерпан; вызывающая сторона решает, ждать или деградировать."""
+
+
+class RateLimiter:
+    """Скользящее окно по минуте плюс суточный счётчик с резервом."""
+
+    def __init__(self, rpm: int, rpd: int, reserve: int = 0, cooldown: int = 900) -> None:
+        self.rpm = max(1, rpm)
+        self.rpd = max(1, rpd)
+        self.reserve = max(0, reserve)      # запросов, доступных только ассистенту
+        self.cooldown = cooldown            # пауза фонового анализа после 429, сек
+        self._minute: deque[float] = deque()
+        self._day = pacific_day()
+        self._used = 0
+        self._blocked_until = 0.0
+        self._lock = asyncio.Lock()
+
+    # -- внутреннее --------------------------------------------------------
+
+    def _roll(self) -> None:
+        now = time.monotonic()
+        while self._minute and now - self._minute[0] >= 60:
+            self._minute.popleft()
+        today = pacific_day()
+        if today != self._day:
+            self._day = today
+            self._used = 0
+            self._blocked_until = 0.0
+            log.info("Суточная квота Gemini обнулена (новый день %s по PT)", today)
+
+    def _budget(self, priority: bool) -> int:
+        return self.rpd if priority else max(0, self.rpd - self.reserve)
+
+    # -- публичное ---------------------------------------------------------
+
+    @property
+    def paused(self) -> bool:
+        """Фоновый анализ временно остановлен после ответа 429."""
+        return time.monotonic() < self._blocked_until
+
+    async def try_acquire(self, priority: bool = False) -> bool:
+        """Берёт слот без ожидания. False — вызывающий переходит на эвристику."""
+        async with self._lock:
+            self._roll()
+            if not priority and self.paused:
+                return False
+            if self._used >= self._budget(priority):
+                return False
+            if len(self._minute) >= self.rpm:
+                return False
+            self._minute.append(time.monotonic())
+            self._used += 1
+            return True
+
+    async def wait_acquire(self, priority: bool = True, timeout: float = 45.0) -> None:
+        """Ждёт свободный слот. Бросает QuotaExceeded, если не дождались."""
+        deadline = time.monotonic() + timeout
+        while True:
+            async with self._lock:
+                self._roll()
+                if self._used >= self._budget(priority):
+                    raise QuotaExceeded("суточная квота исчерпана")
+                if len(self._minute) < self.rpm:
+                    self._minute.append(time.monotonic())
+                    self._used += 1
+                    return
+                oldest = self._minute[0]
+            pause = max(0.5, 60 - (time.monotonic() - oldest))
+            if time.monotonic() + pause > deadline:
+                raise QuotaExceeded("лимит запросов в минуту, попробуйте позже")
+            await asyncio.sleep(min(pause, 5.0))
+
+    def note_rejection(self) -> None:
+        """Google ответил 429: приостанавливаем фоновый анализ и считаем сутки занятыми."""
+        self._blocked_until = time.monotonic() + self.cooldown
+        self._used = max(self._used, self._budget(False))
+        log.warning(
+            "Получен 429: фоновый анализ приостановлен на %d мин, "
+            "оставшаяся квота зарезервирована под ассистента",
+            self.cooldown // 60,
+        )
+
+    def snapshot(self) -> dict[str, int | bool]:
+        self._roll()
+        return {
+            "used_today": self._used,
+            "limit_day": self.rpd,
+            "in_minute": len(self._minute),
+            "limit_minute": self.rpm,
+            "paused": self.paused,
+        }
+RADAR_FILE_08
 printf "  %s\n" "radar/matching.py"
-cat > "radar/matching.py" <<'RADAR_FILE_08'
+cat > "radar/matching.py" <<'RADAR_FILE_09'
 """Модель разобранной новости, правила сопоставления с локациями и сборка сообщений.
 
 Только стандартная библиотека — модуль полностью покрывается тестами офлайн.
@@ -1076,9 +1218,9 @@ def plan_alerts(
             )
         )
     return messages
-RADAR_FILE_08
+RADAR_FILE_09
 printf "  %s\n" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_09'
+cat > "radar/storage.py" <<'RADAR_FILE_10'
 """JSON-хранилище с атомарной записью, блокировкой и миграцией с версий 2.x."""
 
 from __future__ import annotations
@@ -1314,10 +1456,17 @@ def pending() -> list[str]:
 
 def meta() -> dict[str, Any]:
     return DB.setdefault("meta", {})
-RADAR_FILE_09
+RADAR_FILE_10
 printf "  %s\n" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_10'
-"""Слой Google Gemini: устойчивые запросы, разбор новостей, ИИ-ассистент."""
+cat > "radar/ai.py" <<'RADAR_FILE_11'
+"""Слой Google Gemini: устойчивые запросы, экономный разбор новостей, ассистент.
+
+Экономия квоты бесплатного тарифа держится на четырёх приёмах:
+  1. предфильтр по ключевым словам — заведомо нерелевантное не уходит в модель;
+  2. пакетный разбор — до AI_BATCH_SIZE новостей одним запросом;
+  3. кэш результатов по хэшу текста — повтор не оплачивается;
+  4. учёт RPM/RPD с резервом суточных запросов под живой диалог.
+"""
 
 from __future__ import annotations
 
@@ -1327,13 +1476,14 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from typing import Any
+from typing import Any, Sequence
 
 from google import genai
 from google.genai import types
 
 from . import config
 from .matching import Analysis, heuristic_analysis
+from .ratelimit import QuotaExceeded, RateLimiter
 
 log = logging.getLogger("radar.ai")
 
@@ -1347,16 +1497,28 @@ if config.AI_ENABLED:
 
 ENABLED = _client is not None
 _semaphore = asyncio.Semaphore(config.AI_CONCURRENCY)
+limiter = RateLimiter(
+    rpm=config.AI_RPM,
+    rpd=config.AI_RPD,
+    reserve=config.AI_RESERVE,
+    cooldown=config.AI_COOLDOWN,
+)
 
 # Возможности отключаются автоматически, если SDK или модель их не принимают.
-_features = {"thinking": True, "safety": True}
+_features = {"thinking": True, "safety": True, "search": config.AI_SEARCH}
 
 
 class AIError(RuntimeError):
     """Ошибка обращения к модели с понятным пользователю текстом."""
 
 
-def _config(system: str | None, json_mode: bool, max_tokens: int, temperature: float):
+def _config(
+    system: str | None,
+    json_mode: bool,
+    max_tokens: int,
+    temperature: float,
+    search: bool,
+):
     kwargs: dict[str, Any] = {"temperature": temperature, "max_output_tokens": max_tokens}
     if system:
         kwargs["system_instruction"] = system
@@ -1376,6 +1538,10 @@ def _config(system: str | None, json_mode: bool, max_tokens: int, temperature: f
                 "HARM_CATEGORY_DANGEROUS_CONTENT",
             )
         ]
+    if search and _features["search"] and not json_mode:
+        # Поиск в интернете несовместим со строгим JSON-режимом,
+        # поэтому включается только для свободного диалога.
+        kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
     return types.GenerateContentConfig(**kwargs)
 
 
@@ -1411,18 +1577,38 @@ async def generate(
     max_tokens: int = 2048,
     temperature: float = 0.4,
     retries: int = 3,
+    model: str | None = None,
+    priority: bool = True,
+    search: bool = False,
 ) -> str:
+    """Запрос к модели с учётом квот.
+
+    priority=True — живой диалог: ждём свободный слот в пределах таймаута.
+    priority=False — фоновая задача: при нехватке квоты сразу QuotaExceeded.
+    """
     if not ENABLED:
         raise AIError("Gemini недоступен: не задан GEMINI_API_KEY.")
 
+    if priority:
+        try:
+            await limiter.wait_acquire(priority=True)
+        except QuotaExceeded as exc:
+            raise AIError(
+                f"Квота Gemini исчерпана ({exc}). Суточный лимит бесплатного тарифа "
+                "обнуляется в полночь по тихоокеанскому времени — около 10–11 утра по Москве."
+            ) from exc
+    elif not await limiter.try_acquire(priority=False):
+        raise QuotaExceeded("нет свободной квоты для фонового анализа")
+
+    target = model or config.GEMINI_MODEL
     last: AIError | None = None
     for attempt in range(retries):
-        cfg = _config(system, json_mode, max_tokens, temperature)
+        cfg = _config(system, json_mode, max_tokens, temperature, search)
         try:
             async with _semaphore:
                 response = await asyncio.wait_for(
                     _client.aio.models.generate_content(
-                        model=config.GEMINI_MODEL, contents=contents, config=cfg
+                        model=target, contents=contents, config=cfg
                     ),
                     timeout=config.AI_TIMEOUT,
                 )
@@ -1442,17 +1628,24 @@ async def generate(
                 _features["safety"] = False
                 log.warning("Отключаю safety_settings: %s", detail)
                 continue
-            if any(key in low for key in ("429", "resource_exhausted", "quota", "rate limit")):
-                last = AIError("Превышена квота Gemini (429). Повторите позже.")
-                await asyncio.sleep(6 * (attempt + 1))
+            if ("tool" in low or "google_search" in low) and _features["search"]:
+                _features["search"] = False
+                log.warning("Отключаю поиск в интернете: %s", detail)
                 continue
+            if any(key in low for key in ("429", "resource_exhausted", "quota", "rate limit")):
+                limiter.note_rejection()
+                raise AIError(
+                    "Превышена квота Gemini (429). Суточный лимит бесплатного тарифа "
+                    "обнуляется в полночь по тихоокеанскому времени — около 10–11 утра "
+                    "по Москве. Проверить расход: /quota"
+                ) from exc
             if any(key in low for key in ("500", "503", "unavailable", "internal", "deadline")):
                 await asyncio.sleep(3 * (attempt + 1))
                 continue
             if any(key in low for key in ("api key", "401", "403", "permission", "unauthenticated")):
                 raise AIError("Неверный или неактивный GEMINI_API_KEY.") from exc
             if "not found" in low or "404" in low:
-                raise AIError(f"Модель «{config.GEMINI_MODEL}» недоступна для этого ключа.") from exc
+                raise AIError(f"Модель «{target}» недоступна для этого ключа.") from exc
             raise last from exc
 
         answer = _extract_text(response)
@@ -1476,95 +1669,179 @@ async def generate(
 
 ANALYST_SYSTEM = (
     "Ты — аналитик оперативных сообщений городских служб, администраций и СМИ. "
-    "Ты всегда отвечаешь одним валидным JSON-объектом без пояснений и без Markdown."
+    "Ты всегда отвечаешь одним валидным JSON-массивом без пояснений и без Markdown."
 )
 
-ANALYST_PROMPT = """Разбери сообщение из источника «{source}».
-
-СООБЩЕНИЕ:
-\"\"\"{text}\"\"\"
+ANALYST_PROMPT = """Разбери сообщения из городских источников.
 
 Категории:
 - "bpla"      — БПЛА, беспилотники, ракетная опасность, воздушная тревога, работа ПВО, взрывы, угрозы военного характера;
 - "mchs"      — экстренные оповещения МЧС: ЧС, штормовое предупреждение, крупные пожары, эвакуация, паводок;
-- "jkh"       — ЖКХ: отключения холодной и горячей воды, электричества, газа, отопления, аварии и порывы на сетях, плановые ремонтные работы, вывоз мусора, лифты;
+- "jkh"       — ЖКХ: отключения холодной и горячей воды, электричества, газа, отопления, аварии и порывы на сетях, плановые ремонтные работы, лифты;
 - "whitelist" — связь: ограничения мобильного интернета, «белые списки» сервисов, восстановление связи.
 
-Верни строго такой JSON:
-{{"relevant": true|false,
-  "categories": ["jkh"],
-  "severity": "critical"|"warning"|"info",
-  "scope": "region"|"city"|"district"|"street",
-  "region": "Саратовская область",
-  "city": "Саратов",
-  "districts": ["Кировский район"],
-  "streets": [{{"street": "улица Чапаева", "houses": ["12", "14", "16-20"]}}],
-  "summary": "1-3 предложения: что произошло, где, когда восстановят"}}
+СООБЩЕНИЯ:
+{items}
+
+Верни JSON-массив, по одному объекту на каждое сообщение, в том же порядке:
+[{{"index": 1,
+   "relevant": true,
+   "categories": ["jkh"],
+   "severity": "critical" | "warning" | "info",
+   "scope": "region" | "city" | "district" | "street",
+   "region": "Саратовская область",
+   "city": "Саратов",
+   "districts": ["Кировский район"],
+   "streets": [{{"street": "улица Чапаева", "houses": ["12", "14", "16-20"]}}],
+   "summary": "1-3 предложения: что произошло, где, когда восстановят"}}]
 
 Правила:
 1. Реклама, розыгрыши, спорт, культура, политические новости, поздравления → relevant=false, categories=[].
-2. Для "bpla" всегда scope="city" или "region" — военные угрозы касаются всего города, улицы не указывай.
-3. Для "jkh" обязательно вытащи улицы и номера домов, если они названы; диапазон домов пиши как "12-20".
+2. Для "bpla" всегда scope="city" или "region": военные угрозы касаются всего города, улицы не указывай.
+3. Для "jkh" обязательно вытащи улицы и номера домов, если они названы; диапазон пиши как "12-20".
 4. Если ЖКХ-событие затрагивает весь город или район без перечисления улиц — scope="city" либо "district", streets=[].
 5. Названия улиц пиши полностью, как в тексте («улица имени Чапаева В.И.» → «улица Чапаева»).
 6. Незаполненные поля возвращай пустой строкой или пустым списком, поля не пропускай.
-7. summary — по-русски, без эмодзи и разметки."""
+7. summary — по-русски, без эмодзи и разметки.
+8. Количество объектов в массиве должно совпадать с количеством сообщений."""
 
 _cache: "OrderedDict[str, Analysis]" = OrderedDict()
 _CACHE_LIMIT = 800
+_counters = {"ai": 0, "cached": 0, "prefiltered": 0, "heuristic": 0, "requests": 0}
+
+
+def counters() -> dict[str, int]:
+    return dict(_counters)
 
 
 def _cache_key(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def _parse_json(raw: str) -> dict[str, Any]:
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.S)
-    match = re.search(r"\{.*\}", cleaned, re.S)
-    if not match:
-        raise ValueError(f"JSON не найден: {cleaned[:200]}")
-    parsed = json.loads(match.group(0))
-    if not isinstance(parsed, dict):
-        raise ValueError("Ожидался JSON-объект")
-    return parsed
-
-
-async def analyze(text: str, source: str) -> Analysis:
-    """Разбирает сообщение один раз и кэширует результат для всех пользователей."""
-    key = _cache_key(text)
-    cached = _cache.get(key)
-    if cached is not None:
-        _cache.move_to_end(key)
-        return cached
-
-    analysis: Analysis
-    if ENABLED:
-        try:
-            raw = await generate(
-                ANALYST_PROMPT.format(source=source or "неизвестен", text=text[:4000]),
-                system=ANALYST_SYSTEM,
-                json_mode=True,
-                max_tokens=900,
-                temperature=0.1,
-            )
-            analysis = Analysis.from_payload(_parse_json(raw), source=source, raw=text)
-        except (AIError, ValueError, json.JSONDecodeError) as exc:
-            log.warning("Разбор через Gemini не удался (%s), включаю эвристику", exc)
-            analysis = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
-    else:
-        analysis = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
-
-    if not analysis.city and config.DEFAULT_CITY:
-        analysis.city = config.DEFAULT_CITY
-
-    _cache[key] = analysis
+def _remember(text: str, analysis: Analysis) -> Analysis:
+    _cache[_cache_key(text)] = analysis
     while len(_cache) > _CACHE_LIMIT:
         _cache.popitem(last=False)
     return analysis
 
 
+def _parse_array(raw: str) -> list[dict[str, Any]]:
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.S)
+    match = re.search(r"\[.*\]", cleaned, re.S)
+    if match:
+        parsed = json.loads(match.group(0))
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+    match = re.search(r"\{.*\}", cleaned, re.S)
+    if match:
+        parsed = json.loads(match.group(0))
+        if isinstance(parsed, dict):
+            return [parsed]
+    raise ValueError(f"JSON не найден: {cleaned[:200]}")
+
+
+def _fallback(text: str, source: str) -> Analysis:
+    analysis = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
+    if not analysis.city and config.DEFAULT_CITY:
+        analysis.city = config.DEFAULT_CITY
+    return analysis
+
+
+async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
+    """Разбирает список пар (текст, источник), тратя минимум запросов к модели."""
+    results: list[Analysis | None] = [None] * len(items)
+    todo: list[int] = []
+
+    for index, (text, source) in enumerate(items):
+        key = _cache_key(text)
+        cached = _cache.get(key)
+        if cached is not None:
+            _cache.move_to_end(key)
+            _counters["cached"] += 1
+            results[index] = cached
+            continue
+
+        if config.AI_PREFILTER:
+            # Дешёвая проверка: если ключевых слов нет вовсе, модель не нужна.
+            probe = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
+            if not probe.relevant:
+                _counters["prefiltered"] += 1
+                results[index] = _remember(text, probe)
+                continue
+
+        if not ENABLED:
+            _counters["heuristic"] += 1
+            results[index] = _remember(text, _fallback(text, source))
+            continue
+
+        todo.append(index)
+
+    for start in range(0, len(todo), config.AI_BATCH_SIZE):
+        chunk = todo[start:start + config.AI_BATCH_SIZE]
+        listing = "\n\n".join(
+            f"[{position + 1}] источник «{items[index][1]}»:\n{items[index][0][:2500]}"
+            for position, index in enumerate(chunk)
+        )
+        try:
+            raw = await generate(
+                ANALYST_PROMPT.format(items=listing),
+                system=ANALYST_SYSTEM,
+                json_mode=True,
+                max_tokens=700 * len(chunk) + 300,
+                temperature=0.1,
+                model=config.GEMINI_MODEL_ANALYSIS,
+                priority=False,
+            )
+            _counters["requests"] += 1
+            payloads = _parse_array(raw)
+        except QuotaExceeded:
+            log.info("Квота исчерпана — оставшиеся %d сообщений по эвристике", len(chunk))
+            for index in chunk:
+                _counters["heuristic"] += 1
+                results[index] = _remember(items[index][0], _fallback(*items[index]))
+            continue
+        except (AIError, ValueError, json.JSONDecodeError) as exc:
+            log.warning("Пакетный разбор не удался (%s) — эвристика", exc)
+            for index in chunk:
+                _counters["heuristic"] += 1
+                results[index] = _remember(items[index][0], _fallback(*items[index]))
+            continue
+
+        by_position: dict[int, dict[str, Any]] = {}
+        for position, payload in enumerate(payloads):
+            marker = payload.get("index")
+            if isinstance(marker, (int, str)) and str(marker).isdigit():
+                by_position[int(marker) - 1] = payload
+            else:
+                by_position.setdefault(position, payload)
+
+        for position, index in enumerate(chunk):
+            payload = by_position.get(position)
+            text, source = items[index]
+            if payload is None:
+                _counters["heuristic"] += 1
+                results[index] = _remember(text, _fallback(text, source))
+                continue
+            analysis = Analysis.from_payload(payload, source=source, raw=text)
+            if not analysis.city and config.DEFAULT_CITY:
+                analysis.city = config.DEFAULT_CITY
+            _counters["ai"] += 1
+            results[index] = _remember(text, analysis)
+
+    return [item if item is not None else Analysis(relevant=False) for item in results]
+
+
+async def analyze(text: str, source: str) -> Analysis:
+    """Разбор одного сообщения (обёртка над пакетным)."""
+    return (await analyze_batch([(text, source)]))[0]
+
+
 def cache_size() -> int:
     return len(_cache)
+
+
+def quota_snapshot() -> dict[str, int | bool]:
+    return limiter.snapshot()
 
 
 # --------------------------------------------------------------------------
@@ -1574,7 +1851,8 @@ def cache_size() -> int:
 ASSISTANT_SYSTEM = (
     "Ты — ИИ-ассистент системы городского мониторинга «Радар». Помогаешь модераторам "
     "и администраторам: отвечаешь на вопросы, формулируешь оповещения для жителей, "
-    "разбираешь ситуации по ЖКХ, ЧС и связи, объясняешь работу самого бота. "
+    "разбираешь ситуации по ЖКХ, ЧС и связи, объясняешь работу самого бота, помогаешь "
+    "искать официальные каналы и источники. Если пользуешься поиском — приводи ссылки. "
     "Отвечай по-русски, кратко и по делу. Разметка: **жирный**, `код`, списки."
 )
 
@@ -1590,11 +1868,17 @@ def model_turn(text: str) -> types.Content:
 async def assistant(history: list[types.Content], question: str) -> str:
     contents = list(history) + [user_turn(question)]
     return await generate(
-        contents, system=ASSISTANT_SYSTEM, max_tokens=2048, temperature=0.6
+        contents,
+        system=ASSISTANT_SYSTEM,
+        max_tokens=2048,
+        temperature=0.6,
+        model=config.GEMINI_MODEL,
+        priority=True,
+        search=True,
     )
-RADAR_FILE_10
+RADAR_FILE_11
 printf "  %s\n" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_11'
+cat > "radar/geocode.py" <<'RADAR_FILE_12'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 from __future__ import annotations
@@ -1699,9 +1983,9 @@ def _fallback(lat: float, lon: float) -> dict[str, str]:
         "district": "",
         "region": "",
     }
-RADAR_FILE_11
+RADAR_FILE_12
 printf "  %s\n" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_12'
+cat > "radar/weather.py" <<'RADAR_FILE_13'
 """Погода и краткий прогноз через Open-Meteo (без ключа API)."""
 
 from __future__ import annotations
@@ -1786,9 +2070,9 @@ async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> st
     if slots:
         return head + "\n⏱ <b>6 часов:</b> " + " | ".join(slots)
     return head
-RADAR_FILE_12
+RADAR_FILE_13
 printf "  %s\n" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_13'
+cat > "radar/sources.py" <<'RADAR_FILE_14'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 from __future__ import annotations
@@ -1944,9 +2228,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_13
+RADAR_FILE_14
 printf "  %s\n" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_14'
+cat > "radar/tg.py" <<'RADAR_FILE_15'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 from __future__ import annotations
@@ -2038,9 +2322,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_14
+RADAR_FILE_15
 printf "  %s\n" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_15'
+cat > "radar/keyboards.py" <<'RADAR_FILE_16'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 from __future__ import annotations
@@ -2257,9 +2541,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_15
+RADAR_FILE_16
 printf "  %s\n" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_16'
+cat > "radar/states.py" <<'RADAR_FILE_17'
 """Состояния FSM."""
 
 from __future__ import annotations
@@ -2274,9 +2558,9 @@ class Form(StatesGroup):
     weather_time = State()
     weather_interval = State()
     manual_address = State()
-RADAR_FILE_16
+RADAR_FILE_17
 printf "  %s\n" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_17'
+cat > "radar/middlewares.py" <<'RADAR_FILE_18'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 from __future__ import annotations
@@ -2341,9 +2625,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_17
+RADAR_FILE_18
 printf "  %s\n" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_18'
+cat > "radar/monitor.py" <<'RADAR_FILE_19'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 from __future__ import annotations
@@ -2367,8 +2651,8 @@ seen = sources.SeenStore()
 _stats = {"cycles": 0, "items": 0, "alerts": 0, "last_cycle": 0}
 
 
-def stats() -> dict[str, int]:
-    return dict(_stats, seen=len(seen), cache=ai.cache_size())
+def stats() -> dict[str, Any]:
+    return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())
 
 
 # --------------------------------------------------------------------------
@@ -2493,17 +2777,20 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     _stats["last_cycle"] = int(time.time())
 
     analyses: list[Analysis] = []
-    for item in items:
-        try:
-            analysis = await ai.analyze(item.text, item.source)
-        except Exception:  # noqa: BLE001
-            log.exception("Не удалось разобрать сообщение из %s", item.source)
-            continue
-        if analysis.relevant:
-            analyses.append(analysis)
-
     if items:
-        log.info("Новых сообщений: %d, значимых событий: %d", len(items), len(analyses))
+        try:
+            parsed = await ai.analyze_batch([(item.text, item.source) for item in items])
+        except Exception:  # noqa: BLE001
+            log.exception("Пакетный разбор сообщений не удался")
+            parsed = []
+        analyses = [analysis for analysis in parsed if analysis.relevant]
+        counters = ai.counters()
+        log.info(
+            "Новых сообщений: %d, значимых: %d | запросов к ИИ: %d, "
+            "отсеяно фильтром: %d, из кэша: %d, эвристикой: %d",
+            len(items), len(analyses), counters["requests"],
+            counters["prefiltered"], counters["cached"], counters["heuristic"],
+        )
 
     now_ts = int(time.time())
     now = datetime.now()
@@ -2539,9 +2826,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_18
+RADAR_FILE_19
 printf "  %s\n" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_19'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_20'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 from __future__ import annotations
@@ -2562,9 +2849,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_19
+RADAR_FILE_20
 printf "  %s\n" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_20'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_21'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 from __future__ import annotations
@@ -2638,6 +2925,7 @@ async def cmd_help(message: Message, role: str) -> None:
     ]
     if roles.can_use_assistant(role):
         lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")
+        lines.append("/quota — расход квоты Gemini")
     if roles.is_admin(role):
         lines.append("/stats — статистика системы")
     await message.answer("\n".join(lines), reply_markup=back_kb())
@@ -2697,6 +2985,15 @@ async def menu_about(call: CallbackQuery) -> None:
     await safe_edit(call, text, back_kb())
 
 
+def _quota_line() -> str:
+    quota = ai.quota_snapshot()
+    state = " ⏸ пауза после 429" if quota["paused"] else ""
+    return (
+        f"Квота Gemini: <b>{quota['used_today']}/{quota['limit_day']}</b> за сутки, "
+        f"<b>{quota['in_minute']}/{quota['limit_minute']}</b> за минуту{state}"
+    )
+
+
 def _stats_text() -> str:
     counters: dict[str, int] = {}
     locations = 0
@@ -2715,6 +3012,9 @@ def _stats_text() -> str:
         f"Циклов: <b>{data['cycles']}</b>, сообщений: <b>{data['items']}</b>, "
         f"оповещений: <b>{data['alerts']}</b>",
         f"Кэш анализов: <b>{data['cache']}</b>, помечено прочитанным: <b>{data['seen']}</b>",
+        f"Разбор: ИИ <b>{data['ai']}</b>, из кэша <b>{data['cached']}</b>, "
+        f"отсеяно фильтром <b>{data['prefiltered']}</b>, эвристикой <b>{data['heuristic']}</b>",
+        _quota_line(),
         f"Интервал опроса: <b>{config.POLL_INTERVAL} с</b>",
         f"Время сервера: <b>{datetime.now():%Y-%m-%d %H:%M:%S}</b>",
     ]
@@ -2728,6 +3028,27 @@ async def cmd_stats(message: Message, role: str) -> None:
     await message.answer(_stats_text(), reply_markup=back_kb())
 
 
+@router.message(Command("quota"))
+async def cmd_quota(message: Message, role: str) -> None:
+    if not roles.is_moderator(role):
+        return
+    counters = ai.counters()
+    lines = [
+        "📉 <b>Расход квоты Gemini</b>",
+        _quota_line(),
+        f"Запросов к модели: <b>{counters['requests']}</b> "
+        f"(разобрано сообщений: {counters['ai']})",
+        f"Сэкономлено: фильтр <b>{counters['prefiltered']}</b>, "
+        f"кэш <b>{counters['cached']}</b>, эвристика <b>{counters['heuristic']}</b>",
+        "",
+        f"Анализ: <code>{esc(config.GEMINI_MODEL_ANALYSIS)}</code>, "
+        f"ассистент: <code>{esc(config.GEMINI_MODEL)}</code>",
+        "<i>Суточный лимит обнуляется в полночь по тихоокеанскому времени "
+        "(около 10–11 утра по Москве).</i>",
+    ]
+    await message.answer("\n".join(lines), reply_markup=back_kb())
+
+
 @router.callback_query(F.data == "menu:stats")
 async def stats_button(call: CallbackQuery, role: str) -> None:
     if not roles.is_admin(role):
@@ -2735,9 +3056,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s\n" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_21'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_22'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 from __future__ import annotations
@@ -2889,9 +3210,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
             lat, lon = cluster_center(cluster)
             blocks.append((cluster, await weather.forecast(session, lat, lon)))
     await send_html(call.message.chat.id, build_weather_message(blocks), back_kb())
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s\n" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_22'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_23'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 from __future__ import annotations
@@ -3029,9 +3350,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
     await message.answer(
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s\n" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_23'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_24'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 from __future__ import annotations
@@ -3209,9 +3530,9 @@ async def add_rss(message: Message, state: FSMContext, role: str) -> None:
         if added else "⚠️ Корректных адресов не найдено."
     )
     await message.answer(text, reply_markup=back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s\n" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_24'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_25'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 from __future__ import annotations
@@ -3412,9 +3733,9 @@ async def invite(call: CallbackQuery, role: str) -> None:
         "<i>Перешедший по ней получает роль «Пользователь».</i>",
         back_kb("menu:admin", "◀️ Назад"),
     )
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s\n" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_25'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_26'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -3554,7 +3875,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_25
+RADAR_FILE_26
 ok "Файлы записаны"
 
 # --- 3. Настройки ---------------------------------------------------------
@@ -3600,12 +3921,20 @@ BOT_TOKEN=${IN_TOKEN}
 SUPERADMIN_ID=${IN_ADMIN}
 GEMINI_API_KEY=${IN_GEMINI:-}
 GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL_ANALYSIS=gemini-2.5-flash-lite
 AI_CONCURRENCY=2
 AI_TIMEOUT=90
+AI_RPM=10
+AI_RPD=250
+AI_RESERVE=40
+AI_BATCH_SIZE=8
+AI_COOLDOWN=900
+AI_PREFILTER=1
+AI_SEARCH=1
 TZ=${IN_TZ}
 DEFAULT_CITY=${IN_CITY}
 POLL_INTERVAL=180
-MSG_PER_SOURCE=8
+MSG_PER_SOURCE=5
 CLUSTER_RADIUS_M=1000
 MAX_LOCATIONS=0
 EXTRA_CHANNELS=
