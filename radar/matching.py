@@ -25,7 +25,7 @@ CATEGORY_TITLES = {
     "bpla": "БПЛА / ракетная опасность",
     "mchs": "Экстренные оповещения МЧС",
     "jkh": "ЖКХ и аварии на сетях",
-    "whitelist": "Связь и «белые списки»",
+    "whitelist": "Предупреждать о «белых списках»",
 }
 
 CATEGORY_ICONS = {"bpla": "🛸", "mchs": "🆘", "jkh": "🛠", "whitelist": "📶"}
@@ -36,6 +36,18 @@ CITY_WIDE_ALWAYS = {"bpla"}
 CITY_WIDE_DEFAULT = {"whitelist"}
 
 SEVERITY_ICONS = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
+
+# О «белых списках» в городских пабликах почти не пишут — операторы вводят их
+# молча. Поэтому предупреждение выдаётся не по новости, а автоматически:
+# объявлена угроза БПЛА или ракетная опасность → значит связь, скорее всего,
+# уже ограничена.
+WHITELIST_NOTICE = (
+    "📵 <b>Мобильный интернет</b>\n"
+    "При угрозе с воздуха операторы включают «белые списки»: работают только "
+    "госуслуги, банки, карты и такси. Мессенджеры и соцсети могут не открываться.\n"
+    "Домашний проводной интернет и Wi-Fi обычно продолжают работать. "
+    "Для срочной связи — звонки и SMS."
+)
 
 
 @dataclass
@@ -281,13 +293,25 @@ def _event_line(analysis: Analysis) -> str:
     return f"{icon} <b>{source}</b>{mark}\n{esc(analysis.text())}"
 
 
-def build_city_alert(city: str, locations: Sequence[dict[str, Any]], events: Sequence[Analysis]) -> str:
+def build_city_alert(
+    city: str,
+    locations: Sequence[dict[str, Any]],
+    events: Sequence[Analysis],
+    whitelist_notice: bool = False,
+) -> str:
     """Одно сообщение на город: военные и другие общегородские угрозы."""
     titles = {analysis.title() for analysis in events}
     head = f"🚨 <b>ОПАСНОСТЬ — {esc(city or 'город')}</b>"
-    lines = [head, f"<b>{esc(' / '.join(sorted(titles)))}</b>", format_locations_header(locations, "весь город")]
-    lines.append("")
+    lines = [
+        head,
+        f"<b>{esc(' / '.join(sorted(titles)))}</b>",
+        format_locations_header(locations, "весь город"),
+        "",
+    ]
     lines.extend(_event_line(analysis) for analysis in events)
+    if whitelist_notice:
+        lines.append("")
+        lines.append(WHITELIST_NOTICE)
     return "\n".join(lines)
 
 
@@ -303,15 +327,12 @@ def build_utility_alert(locations: Sequence[dict[str, Any]], events: Sequence[An
     return "\n".join(lines)
 
 
-def build_weather_message(blocks: Sequence[tuple[Sequence[dict[str, Any]], str]]) -> str:
-    """Погода: по одному блоку на группу локаций."""
-    parts = ["🌤 <b>Погода по вашим локациям</b>"]
-    for locations, weather in blocks:
-        note = "в пределах 1 км" if len(locations) > 1 else ""
-        parts.append("")
-        parts.append(format_locations_header(locations, note))
-        parts.append(weather)
-    return "\n".join(parts)
+def cluster_title(cluster: Sequence[dict[str, Any]]) -> str:
+    """Заголовок сводки погоды: одна локация или список объединённых."""
+    names = ", ".join(_loc_label(loc) for loc in cluster)
+    if len(cluster) > 1:
+        return f"📍 <b>{names}</b> <i>(в пределах 1 км)</i>"
+    return f"📍 <b>{names}</b>"
 
 
 # --------------------------------------------------------------------------
@@ -349,6 +370,7 @@ def plan_alerts(
         return []
 
     enabled = {key for key, value in (settings or {}).items() if value}
+    warn_about_whitelist = "whitelist" in enabled
     clusters = cluster_locations(locations, radius_m)
 
     city_buckets: dict[str, dict[str, Any]] = {}
@@ -383,8 +405,17 @@ def plan_alerts(
 
     messages: list[tuple[str, str]] = []
     for bucket in city_buckets.values():
+        military = any("bpla" in analysis.categories for analysis in bucket["events"])
         messages.append(
-            ("city", build_city_alert(bucket["city"], list(bucket["locs"].values()), bucket["events"]))
+            (
+                "city",
+                build_city_alert(
+                    bucket["city"],
+                    list(bucket["locs"].values()),
+                    bucket["events"],
+                    whitelist_notice=military and warn_about_whitelist,
+                ),
+            )
         )
     for bucket in cluster_buckets.values():
         messages.append(

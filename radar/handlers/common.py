@@ -118,17 +118,23 @@ async def menu_admin(call: CallbackQuery, state: FSMContext, role: str) -> None:
 @router.callback_query(F.data == "menu:about")
 async def menu_about(call: CallbackQuery) -> None:
     await call.answer()
-    text = (
-        f"ℹ️ <b>Система «Радар» v{config.VERSION}</b>\n\n"
+    parts = [
+        f"ℹ️ <b>Система «Радар» v{config.VERSION}</b>",
+        "",
         "Мониторит публичные Telegram-каналы служб ЖКХ, МЧС, администраций города, "
         "района и области, а также ленты СМИ. Сообщения разбирает ИИ Google Gemini, "
-        "после чего события сопоставляются с вашими локациями.\n\n"
-        "🛸 Военные угрозы — на весь город.\n"
-        "🛠 ЖКХ — адресно, по улице и дому.\n"
-        "🌤 Погода — по каждой группе локаций.\n\n"
-        "<i>Система не заменяет официальные каналы оповещения.</i>"
-    )
-    await safe_edit(call, text, back_kb())
+        "после чего события сопоставляются с вашими локациями.",
+        "",
+        "🛸 Военные угрозы — на весь город.",
+        "🛠 ЖКХ — адресно, по улице и дому.",
+        "📵 При угрозе с воздуха предупреждаем о «белых списках» связи.",
+        "🌤 Погода — по каждой группе локаций.",
+        "",
+        "<i>Система не заменяет официальные каналы оповещения.</i>",
+    ]
+    if config.PROMO_ENABLED and config.PROMO_TEXT:
+        parts += ["", "———", "", config.PROMO_TEXT]
+    await safe_edit(call, "\n".join(parts), keyboards.promo_only() or back_kb())
 
 
 def _quota_line() -> str:

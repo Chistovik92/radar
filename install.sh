@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Система «Радар» v3.2.0 — автономный установщик.
+# Система «Радар» v3.3.0 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -15,7 +15,7 @@
 
 set -Eeuo pipefail
 
-VERSION="3.2.0"
+VERSION="3.3.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -126,6 +126,9 @@ install.sh
 LICENSE
 __pycache__
 *.pyc
+
+# стенд сравнения провайдеров не нужен в образе
+bench
 RADAR_FILE_02
 printf "  %s\n" "main.py"
 cat > "main.py" <<'RADAR_FILE_03'
@@ -165,7 +168,11 @@ CHANGELOG = (
     "📉 <b>Экономия квоты Gemini</b>: предфильтр, пакетный разбор и резерв запросов "
     "под ассистента. Расход — командой /quota.\n"
     "🔄 <b>Модель выбирается автоматически</b> из доступных ключу: при отключении "
-    "одной версии бот сам переходит на следующую. Список — командой /models."
+    "одной версии бот сам переходит на следующую. Список — командой /models.\n"
+    "📦 <b>Источники выгружаются и загружаются файлом</b> — кнопки в панели модератора.\n"
+    "🌤 <b>Погода переработана</b>: почасовая таблица, прогноз на три дня, восход и закат.\n"
+    "📵 <b>Белые списки</b> больше не ищутся в новостях — предупреждение выдаётся "
+    "автоматически вместе с оповещением о БПЛА или ракетной опасности."
 )
 
 
@@ -230,7 +237,7 @@ printf "  %s\n" "radar/__init__.py"
 cat > "radar/__init__.py" <<'RADAR_FILE_04'
 """Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя."""
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 __all__ = ["__version__"]
 RADAR_FILE_04
 printf "  %s\n" "radar/config.py"
@@ -299,6 +306,19 @@ MAX_LOCATIONS: int = _int("MAX_LOCATIONS", 0)  # 0 — без ограничен
 DEFAULT_CITY: str = (os.getenv("DEFAULT_CITY") or "").strip()
 EXTRA_CHANNELS: list[str] = _list("EXTRA_CHANNELS")
 EXTRA_RSS: list[str] = [u for u in (os.getenv("EXTRA_RSS") or "").split(",") if u.strip()]
+
+# --- партнёрский блок (кнопка в меню) ---
+PROMO_ENABLED: bool = (os.getenv("PROMO_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
+PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🛡 HydraVPN — обход блокировок").strip()
+PROMO_URL: str = (os.getenv("PROMO_URL") or "https://t.me/+WWJFBZVhxBs4ZmNi").strip()
+PROMO_TEXT: str = (
+    os.getenv("PROMO_TEXT")
+    or "🛡 <b>HydraVPN</b> — собственный VPN-сервис команды «Радар».\n"
+       "Мультипротокольный клиент, свои серверы, без логов.\n"
+       "Подробности и доступ — в канале проекта."
+).strip()
+# Показывать промо внутри оповещений об угрозах (по умолчанию выключено)
+PROMO_IN_ALERTS: bool = (os.getenv("PROMO_IN_ALERTS") or "0").strip().lower() in ("1", "true", "yes")
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 USER_AGENT: str = (
@@ -856,7 +876,7 @@ CATEGORY_TITLES = {
     "bpla": "БПЛА / ракетная опасность",
     "mchs": "Экстренные оповещения МЧС",
     "jkh": "ЖКХ и аварии на сетях",
-    "whitelist": "Связь и «белые списки»",
+    "whitelist": "Предупреждать о «белых списках»",
 }
 
 CATEGORY_ICONS = {"bpla": "🛸", "mchs": "🆘", "jkh": "🛠", "whitelist": "📶"}
@@ -867,6 +887,18 @@ CITY_WIDE_ALWAYS = {"bpla"}
 CITY_WIDE_DEFAULT = {"whitelist"}
 
 SEVERITY_ICONS = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
+
+# О «белых списках» в городских пабликах почти не пишут — операторы вводят их
+# молча. Поэтому предупреждение выдаётся не по новости, а автоматически:
+# объявлена угроза БПЛА или ракетная опасность → значит связь, скорее всего,
+# уже ограничена.
+WHITELIST_NOTICE = (
+    "📵 <b>Мобильный интернет</b>\n"
+    "При угрозе с воздуха операторы включают «белые списки»: работают только "
+    "госуслуги, банки, карты и такси. Мессенджеры и соцсети могут не открываться.\n"
+    "Домашний проводной интернет и Wi-Fi обычно продолжают работать. "
+    "Для срочной связи — звонки и SMS."
+)
 
 
 @dataclass
@@ -1112,13 +1144,25 @@ def _event_line(analysis: Analysis) -> str:
     return f"{icon} <b>{source}</b>{mark}\n{esc(analysis.text())}"
 
 
-def build_city_alert(city: str, locations: Sequence[dict[str, Any]], events: Sequence[Analysis]) -> str:
+def build_city_alert(
+    city: str,
+    locations: Sequence[dict[str, Any]],
+    events: Sequence[Analysis],
+    whitelist_notice: bool = False,
+) -> str:
     """Одно сообщение на город: военные и другие общегородские угрозы."""
     titles = {analysis.title() for analysis in events}
     head = f"🚨 <b>ОПАСНОСТЬ — {esc(city or 'город')}</b>"
-    lines = [head, f"<b>{esc(' / '.join(sorted(titles)))}</b>", format_locations_header(locations, "весь город")]
-    lines.append("")
+    lines = [
+        head,
+        f"<b>{esc(' / '.join(sorted(titles)))}</b>",
+        format_locations_header(locations, "весь город"),
+        "",
+    ]
     lines.extend(_event_line(analysis) for analysis in events)
+    if whitelist_notice:
+        lines.append("")
+        lines.append(WHITELIST_NOTICE)
     return "\n".join(lines)
 
 
@@ -1134,15 +1178,12 @@ def build_utility_alert(locations: Sequence[dict[str, Any]], events: Sequence[An
     return "\n".join(lines)
 
 
-def build_weather_message(blocks: Sequence[tuple[Sequence[dict[str, Any]], str]]) -> str:
-    """Погода: по одному блоку на группу локаций."""
-    parts = ["🌤 <b>Погода по вашим локациям</b>"]
-    for locations, weather in blocks:
-        note = "в пределах 1 км" if len(locations) > 1 else ""
-        parts.append("")
-        parts.append(format_locations_header(locations, note))
-        parts.append(weather)
-    return "\n".join(parts)
+def cluster_title(cluster: Sequence[dict[str, Any]]) -> str:
+    """Заголовок сводки погоды: одна локация или список объединённых."""
+    names = ", ".join(_loc_label(loc) for loc in cluster)
+    if len(cluster) > 1:
+        return f"📍 <b>{names}</b> <i>(в пределах 1 км)</i>"
+    return f"📍 <b>{names}</b>"
 
 
 # --------------------------------------------------------------------------
@@ -1180,6 +1221,7 @@ def plan_alerts(
         return []
 
     enabled = {key for key, value in (settings or {}).items() if value}
+    warn_about_whitelist = "whitelist" in enabled
     clusters = cluster_locations(locations, radius_m)
 
     city_buckets: dict[str, dict[str, Any]] = {}
@@ -1214,8 +1256,17 @@ def plan_alerts(
 
     messages: list[tuple[str, str]] = []
     for bucket in city_buckets.values():
+        military = any("bpla" in analysis.categories for analysis in bucket["events"])
         messages.append(
-            ("city", build_city_alert(bucket["city"], list(bucket["locs"].values()), bucket["events"]))
+            (
+                "city",
+                build_city_alert(
+                    bucket["city"],
+                    list(bucket["locs"].values()),
+                    bucket["events"],
+                    whitelist_notice=military and warn_about_whitelist,
+                ),
+            )
         )
     for bucket in cluster_buckets.values():
         messages.append(
@@ -1466,8 +1517,211 @@ def pending() -> list[str]:
 def meta() -> dict[str, Any]:
     return DB.setdefault("meta", {})
 RADAR_FILE_10
+printf "  %s\n" "radar/exporting.py"
+cat > "radar/exporting.py" <<'RADAR_FILE_11'
+"""Обмен списками источников: экспорт в файл и импорт обратно.
+
+Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
+читался будущими версиями бота. Правила совместимости:
+
+* `schema` — номер формата. Импортёр принимает всё, что не новее известного ему,
+  и честно отказывается читать файл из более новой версии.
+* Неизвестные поля игнорируются, отсутствующие берутся по умолчанию —
+  добавление полей в будущем не ломает старые файлы.
+* Принимаются также «сырые» варианты: массив строк, файл `db.json` целиком
+  или список каналов текстом — так можно перенести настройки из версий 2.x.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+FORMAT = "radar-sources"
+SCHEMA = 1
+
+CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
+URL_RE = re.compile(r"^https?://", re.I)
+TELEGRAM_RE = re.compile(r"^(https?://)?(www\.)?(t\.me|telegram\.me)/", re.I)
+
+
+def is_feed_url(value: str) -> bool:
+    """Ссылка на ленту, а не на Telegram-канал."""
+    return bool(URL_RE.match(value)) and not TELEGRAM_RE.match(value)
+
+
+def normalize_channel(raw: str) -> str:
+    value = re.sub(r"^(https?://)?(t\.me/|telegram\.me/)?@?", "", (raw or "").strip(), flags=re.I)
+    return value.strip("/ ").split("/")[0].split("?")[0]
+
+
+@dataclass
+class Bundle:
+    """Разобранный набор источников."""
+
+    channels: list[str] = field(default_factory=list)
+    rss: list[str] = field(default_factory=list)
+    pending: list[str] = field(default_factory=list)
+    origin: str = ""      # версия бота, из которой выгружено
+    schema: int = SCHEMA
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.channels) + len(self.rss)
+
+
+class ImportError_(ValueError):
+    """Файл не удалось прочитать."""
+
+
+def export_bundle(
+    channels: list[str], rss: list[str], pending: list[str], version: str
+) -> bytes:
+    """Собирает файл выгрузки."""
+    payload = {
+        "format": FORMAT,
+        "schema": SCHEMA,
+        "generator": f"radar/{version}",
+        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "counts": {"channels": len(channels), "rss": len(rss), "pending": len(pending)},
+        "channels": sorted(set(channels)),
+        "rss": sorted(set(rss)),
+        "pending": sorted(set(pending)),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def export_filename(version: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    return f"radar-sources-{version}-{stamp}.json"
+
+
+def _clean(values: Any, kind: str, warnings: list[str]) -> list[str]:
+    result: list[str] = []
+    if not isinstance(values, (list, tuple)):
+        return result
+    for item in values:
+        if isinstance(item, dict):  # запас на будущее: {"ref": ..., "type": ...}
+            item = item.get("ref") or item.get("url") or item.get("name") or ""
+        text = str(item).strip()
+        if not text:
+            continue
+        if kind == "rss":
+            if is_feed_url(text):
+                result.append(text)
+            elif TELEGRAM_RE.match(text):
+                warnings.append(
+                    f"«{text[:40]}» — Telegram-канал, а не лента: перенесите в channels"
+                )
+            else:
+                warnings.append(f"пропущена лента «{text[:40]}»: не похоже на адрес")
+            continue
+        channel = normalize_channel(text)
+        if CHANNEL_RE.match(channel):
+            result.append(channel)
+        else:
+            warnings.append(f"пропущен канал «{text[:40]}»: некорректный юзернейм")
+    # порядок сохраняем, дубликаты убираем
+    return list(dict.fromkeys(result))
+
+
+def parse_bundle(raw: bytes | str) -> Bundle:
+    """Читает файл выгрузки, db.json версии 2.x или простой список строк."""
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ImportError_("файл не в кодировке UTF-8") from exc
+
+    text = raw.strip()
+    if not text:
+        raise ImportError_("файл пуст")
+
+    warnings: list[str] = []
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # Не JSON — принимаем простой список каналов текстом.
+        parts = [part for part in re.split(r"[,\s\n;]+", text) if part]
+        # Ссылка на t.me — это канал, а не лента.
+        channels = _clean([p for p in parts if not is_feed_url(p)], "channel", warnings)
+        feeds = _clean([p for p in parts if is_feed_url(p)], "rss", warnings)
+        if not channels and not feeds:
+            raise ImportError_("не найдено ни одного источника")
+        return Bundle(channels=channels, rss=feeds, warnings=warnings, origin="текстовый список")
+
+    if isinstance(data, list):
+        return Bundle(
+            channels=_clean(
+                [item for item in data if not is_feed_url(str(item))], "channel", warnings
+            ),
+            rss=_clean([item for item in data if is_feed_url(str(item))], "rss", warnings),
+            warnings=warnings,
+            origin="массив",
+        )
+
+    if not isinstance(data, dict):
+        raise ImportError_("неподдерживаемая структура файла")
+
+    schema = data.get("schema")
+    if isinstance(schema, int) and schema > SCHEMA:
+        raise ImportError_(
+            f"файл формата версии {schema}, а бот понимает до {SCHEMA} — обновите бота"
+        )
+
+    if data.get("format") and data.get("format") != FORMAT:
+        warnings.append(f"неизвестный формат «{data['format']}», читаю как смогу")
+
+    channels = _clean(data.get("channels"), "channel", warnings)
+    rss = _clean(data.get("rss") or data.get("feeds"), "rss", warnings)
+    pending = _clean(data.get("pending"), "channel", warnings)
+
+    if not channels and not rss:
+        raise ImportError_("в файле нет ни каналов, ни лент")
+
+    return Bundle(
+        channels=channels,
+        rss=rss,
+        pending=pending,
+        origin=str(data.get("generator") or "неизвестно"),
+        schema=schema if isinstance(schema, int) else 0,
+        warnings=warnings,
+    )
+
+
+def merge(
+    bundle: Bundle,
+    channels: list[str],
+    rss: list[str],
+    *,
+    replace: bool = False,
+) -> tuple[int, int]:
+    """Вливает набор в текущие списки. Возвращает (добавлено каналов, лент)."""
+    if replace:
+        channels.clear()
+        rss.clear()
+
+    added_channels = 0
+    for name in bundle.channels:
+        if name not in channels:
+            channels.append(name)
+            added_channels += 1
+
+    added_rss = 0
+    for url in bundle.rss:
+        if url not in rss:
+            rss.append(url)
+            added_rss += 1
+
+    return added_channels, added_rss
+RADAR_FILE_11
 printf "  %s\n" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_11'
+cat > "radar/ai.py" <<'RADAR_FILE_12'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -2079,9 +2333,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_11
+RADAR_FILE_12
 printf "  %s\n" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_12'
+cat > "radar/geocode.py" <<'RADAR_FILE_13'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 from __future__ import annotations
@@ -2186,14 +2440,25 @@ def _fallback(lat: float, lon: float) -> dict[str, str]:
         "district": "",
         "region": "",
     }
-RADAR_FILE_12
+RADAR_FILE_13
 printf "  %s\n" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_13'
-"""Погода и краткий прогноз через Open-Meteo (без ключа API)."""
+cat > "radar/weather.py" <<'RADAR_FILE_14'
+"""Погода Open-Meteo: получение данных и оформление сводки.
+
+Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
+функция, которую можно покрыть тестами офлайн.
+
+Вёрстка ориентирована на то, как погоду показывают поисковики и мобильные
+приложения: крупное текущее значение, строка деталей, почасовая таблица
+с колонкой осадков и столбиком температуры, затем прогноз по дням.
+Почасовая часть выводится моноширинным блоком — иначе колонки разъезжаются.
+"""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime
 
 import aiohttp
 
@@ -2201,81 +2466,312 @@ log = logging.getLogger("radar.weather")
 
 _URL = "https://api.open-meteo.com/v1/forecast"
 
-CODES = {
-    0: "☀️ ясно", 1: "🌤 малооблачно", 2: "⛅️ облачно", 3: "☁️ пасмурно",
-    45: "🌫 туман", 48: "🌫 изморозь",
-    51: "🌦 морось", 53: "🌦 морось", 55: "🌦 сильная морось",
-    56: "🌧 ледяная морось", 57: "🌧 ледяная морось",
-    61: "🌧 небольшой дождь", 63: "🌧 дождь", 65: "🌧 сильный дождь",
-    66: "🌧 ледяной дождь", 67: "🌧 ледяной дождь",
-    71: "🌨 небольшой снег", 73: "🌨 снег", 75: "❄️ сильный снег", 77: "🌨 снежная крупа",
-    80: "🌧 ливень", 81: "🌧 ливень", 82: "⛈ сильный ливень",
-    85: "🌨 снегопад", 86: "🌨 сильный снегопад",
-    95: "⛈ гроза", 96: "⛈ гроза с градом", 99: "⛈ сильная гроза с градом",
+# Коды погоды WMO: описание и значок (день / ночь).
+CODES: dict[int, tuple[str, str, str]] = {
+    0: ("ясно", "☀️", "🌙"),
+    1: ("малооблачно", "🌤", "🌙"),
+    2: ("переменная облачность", "⛅️", "☁️"),
+    3: ("пасмурно", "☁️", "☁️"),
+    45: ("туман", "🌫", "🌫"),
+    48: ("изморозь", "🌫", "🌫"),
+    51: ("морось", "🌦", "🌧"),
+    53: ("морось", "🌦", "🌧"),
+    55: ("сильная морось", "🌦", "🌧"),
+    56: ("ледяная морось", "🌧", "🌧"),
+    57: ("ледяная морось", "🌧", "🌧"),
+    61: ("небольшой дождь", "🌦", "🌧"),
+    63: ("дождь", "🌧", "🌧"),
+    65: ("сильный дождь", "🌧", "🌧"),
+    66: ("ледяной дождь", "🌧", "🌧"),
+    67: ("ледяной дождь", "🌧", "🌧"),
+    71: ("небольшой снег", "🌨", "🌨"),
+    73: ("снег", "🌨", "🌨"),
+    75: ("сильный снег", "❄️", "❄️"),
+    77: ("снежная крупа", "🌨", "🌨"),
+    80: ("ливень", "🌦", "🌧"),
+    81: ("ливень", "🌧", "🌧"),
+    82: ("сильный ливень", "⛈", "⛈"),
+    85: ("снегопад", "🌨", "🌨"),
+    86: ("сильный снегопад", "❄️", "❄️"),
+    95: ("гроза", "⛈", "⛈"),
+    96: ("гроза с градом", "⛈", "⛈"),
+    99: ("сильная гроза с градом", "⛈", "⛈"),
 }
 
+SPARK = "▁▂▃▄▅▆▇█"
+WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
-async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
-    """HTML-блок: текущая погода и прогноз на 6 часов."""
+
+def describe(code: int | None, day: bool = True) -> tuple[str, str]:
+    name, icon_day, icon_night = CODES.get(int(code) if code is not None else -1,
+                                          ("", "🌡", "🌡"))
+    return name, (icon_day if day else icon_night)
+
+
+@dataclass
+class Hour:
+    label: str          # «14ч»
+    temp: float
+    probability: int
+    code: int | None = None
+    day: bool = True
+
+
+@dataclass
+class Day:
+    label: str          # «сегодня», «завтра», «пт 15»
+    low: float
+    high: float
+    probability: int
+    code: int | None = None
+
+
+@dataclass
+class Weather:
+    ok: bool = False
+    error: str = ""
+    temp: float | None = None
+    feels: float | None = None
+    wind: float | None = None
+    gusts: float | None = None
+    humidity: int | None = None
+    pressure: float | None = None
+    code: int | None = None
+    is_day: bool = True
+    sunrise: str = ""
+    sunset: str = ""
+    hourly: list[Hour] = field(default_factory=list)
+    daily: list[Day] = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+#  Получение данных
+# --------------------------------------------------------------------------
+
+async def fetch(
+    session: aiohttp.ClientSession, lat: float, lon: float, hours: int = 8
+) -> Weather:
     if not lat and not lon:
-        return "⚠️ Нет координат — отправьте геопозицию заново."
+        return Weather(ok=False, error="нет координат — отправьте геопозицию заново")
 
     params = {
         "latitude": f"{lat}",
         "longitude": f"{lon}",
         "current": "temperature_2m,apparent_temperature,relative_humidity_2m,"
-                   "wind_speed_10m,precipitation,weather_code",
-        "hourly": "temperature_2m,precipitation_probability",
+                   "wind_speed_10m,wind_gusts_10m,surface_pressure,weather_code,is_day",
+        "hourly": "temperature_2m,precipitation_probability,weather_code,is_day",
+        "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,"
+                 "weather_code,sunrise,sunset",
         "timezone": "auto",
-        "forecast_hours": "7",
+        "forecast_days": "4",
         "wind_speed_unit": "ms",
     }
     try:
         async with session.get(_URL, params=params) as response:
             if response.status != 200:
-                return f"⚠️ Сервис погоды вернул код {response.status}."
+                return Weather(ok=False, error=f"сервис погоды вернул код {response.status}")
             data = await response.json(content_type=None)
     except Exception as exc:  # noqa: BLE001
         log.warning("Погода недоступна: %s", exc)
-        return "⚠️ Сбой получения погоды."
+        return Weather(ok=False, error="сбой получения погоды")
 
+    return parse(data, hours)
+
+
+def parse(data: dict, hours: int = 8) -> Weather:
+    """Превращает ответ Open-Meteo в структуру. Вынесено ради тестируемости."""
     current = data.get("current") or {}
-    try:
-        code = CODES.get(int(current.get("weather_code", -1)), "")
-    except (TypeError, ValueError):
-        code = ""
-
-    temp = current.get("temperature_2m", "?")
-    feels = current.get("apparent_temperature")
-    wind = current.get("wind_speed_10m", "?")
-    humidity = current.get("relative_humidity_2m")
-
-    head = f"🌡 <b>Сейчас:</b> {temp}°C"
-    if feels is not None:
-        head += f" (ощущается {feels}°C)"
-    head += f" | 💨 {wind} м/с"
-    if humidity is not None:
-        head += f" | 💧 {humidity}%"
-    if code:
-        head += f" | {code}"
+    weather = Weather(
+        ok=True,
+        temp=_number(current.get("temperature_2m")),
+        feels=_number(current.get("apparent_temperature")),
+        wind=_number(current.get("wind_speed_10m")),
+        gusts=_number(current.get("wind_gusts_10m")),
+        humidity=_integer(current.get("relative_humidity_2m")),
+        pressure=_number(current.get("surface_pressure")),
+        code=_integer(current.get("weather_code")),
+        is_day=bool(current.get("is_day", 1)),
+    )
 
     hourly = data.get("hourly") or {}
     times = hourly.get("time") or []
     temps = hourly.get("temperature_2m") or []
-    probs = hourly.get("precipitation_probability") or []
-    slots = []
-    for index in range(1, min(7, len(times))):
-        clock = times[index].split("T")[1][:5] if "T" in times[index] else f"+{index}ч"
-        value = temps[index] if index < len(temps) else "?"
-        chance = probs[index] if index < len(probs) else 0
-        slots.append(f"<code>{clock}</code> {value}°C ({chance}%)")
+    probabilities = hourly.get("precipitation_probability") or []
+    codes = hourly.get("weather_code") or []
+    day_flags = hourly.get("is_day") or []
 
-    if slots:
-        return head + "\n⏱ <b>6 часов:</b> " + " | ".join(slots)
-    return head
-RADAR_FILE_13
+    now = _now_index(times, current.get("time"))
+    for index in range(now, min(now + hours, len(times))):
+        temp = _number(temps[index] if index < len(temps) else None)
+        if temp is None:
+            continue
+        stamp = times[index]
+        label = stamp.split("T")[1][:2] + "ч" if "T" in stamp else f"+{index - now}ч"
+        weather.hourly.append(
+            Hour(
+                label=label,
+                temp=temp,
+                probability=_integer(
+                    probabilities[index] if index < len(probabilities) else 0
+                ) or 0,
+                code=_integer(codes[index]) if index < len(codes) else None,
+                day=bool(day_flags[index]) if index < len(day_flags) else True,
+            )
+        )
+
+    daily = data.get("daily") or {}
+    dates = daily.get("time") or []
+    lows = daily.get("temperature_2m_min") or []
+    highs = daily.get("temperature_2m_max") or []
+    day_probabilities = daily.get("precipitation_probability_max") or []
+    day_codes = daily.get("weather_code") or []
+    sunrises = daily.get("sunrise") or []
+    sunsets = daily.get("sunset") or []
+
+    if sunrises:
+        weather.sunrise = str(sunrises[0]).split("T")[-1][:5]
+    if sunsets:
+        weather.sunset = str(sunsets[0]).split("T")[-1][:5]
+
+    for index, date in enumerate(dates[:4]):
+        low = _number(lows[index] if index < len(lows) else None)
+        high = _number(highs[index] if index < len(highs) else None)
+        if low is None or high is None:
+            continue
+        weather.daily.append(
+            Day(
+                label=_day_label(date, index),
+                low=low,
+                high=high,
+                probability=_integer(
+                    day_probabilities[index] if index < len(day_probabilities) else 0
+                ) or 0,
+                code=_integer(day_codes[index]) if index < len(day_codes) else None,
+            )
+        )
+
+    return weather
+
+
+def _number(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _integer(value) -> int | None:
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _now_index(times: list, current_time) -> int:
+    """Первый час, который ещё не прошёл."""
+    if not times:
+        return 0
+    marker = str(current_time or "")[:13]
+    for index, stamp in enumerate(times):
+        if str(stamp)[:13] >= marker:
+            return index
+    return 0
+
+
+def _day_label(date: str, index: int) -> str:
+    if index == 0:
+        return "сегодня"
+    if index == 1:
+        return "завтра"
+    try:
+        parsed = datetime.strptime(str(date)[:10], "%Y-%m-%d")
+        return f"{WEEKDAYS[parsed.weekday()]} {parsed.day}"
+    except ValueError:
+        return str(date)[:10]
+
+
+# --------------------------------------------------------------------------
+#  Оформление
+# --------------------------------------------------------------------------
+
+def _sparkline(values: list[float]) -> list[str]:
+    if not values:
+        return []
+    low, high = min(values), max(values)
+    span = high - low
+    if span < 0.5:  # ровная температура — рисуем середину
+        return ["▄"] * len(values)
+    return [SPARK[min(7, int((value - low) / span * 7.99))] for value in values]
+
+
+def _temp(value: float | None) -> str:
+    return f"{round(value):+d}°".replace("+", "") if value is not None else "—"
+
+
+def render(weather: Weather, title: str = "") -> str:
+    """Собирает готовый HTML-блок сводки."""
+    if not weather.ok:
+        return f"⚠️ {weather.error or 'нет данных о погоде'}"
+
+    name, icon = describe(weather.code, weather.is_day)
+    lines: list[str] = []
+    if title:
+        lines.append(title)
+
+    head = f"{icon} <b>{_temp(weather.temp)}</b>"
+    if name:
+        head += f" — {name}"
+    lines.append(head)
+
+    details: list[str] = []
+    if weather.feels is not None and weather.temp is not None:
+        if abs(weather.feels - weather.temp) >= 1:
+            details.append(f"ощущается {_temp(weather.feels)}")
+    if weather.wind is not None:
+        wind = f"💨 {weather.wind:.0f} м/с"
+        if weather.gusts and weather.gusts - (weather.wind or 0) >= 3:
+            wind += f" (порывы {weather.gusts:.0f})"
+        details.append(wind)
+    if weather.humidity is not None:
+        details.append(f"💧 {weather.humidity}%")
+    if weather.pressure:
+        details.append(f"{weather.pressure * 0.750062:.0f} мм")
+    if details:
+        lines.append(" · ".join(details))
+
+    if weather.hourly:
+        bars = _sparkline([hour.temp for hour in weather.hourly])
+        rows = []
+        for hour, bar in zip(weather.hourly, bars):
+            _, hour_icon = describe(hour.code, hour.day)
+            chance = f"{hour.probability:>3d}%" if hour.probability else "   ·"
+            rows.append(f"{hour.label:<4}{hour_icon} {_temp(hour.temp):>4} {bar} {chance}")
+        lines.append("")
+        lines.append("<pre>" + "\n".join(rows) + "</pre>")
+
+    if weather.daily:
+        lines.append("")
+        rows = []
+        for day in weather.daily[:3]:
+            _, day_icon = describe(day.code, True)
+            chance = f"  ☔️ {day.probability}%" if day.probability >= 20 else ""
+            rows.append(
+                f"{day.label:<8}{day_icon} {_temp(day.high):>4} … {_temp(day.low):<4}{chance}"
+            )
+        lines.append("<pre>" + "\n".join(rows) + "</pre>")
+
+    if weather.sunrise and weather.sunset:
+        lines.append(f"🌅 {weather.sunrise}   🌇 {weather.sunset}")
+
+    return "\n".join(lines)
+
+
+async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
+    """Совместимость: получить и сразу оформить."""
+    return render(await fetch(session, lat, lon))
+RADAR_FILE_14
 printf "  %s\n" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_14'
+cat > "radar/sources.py" <<'RADAR_FILE_15'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 from __future__ import annotations
@@ -2431,9 +2927,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_14
+RADAR_FILE_15
 printf "  %s\n" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_15'
+cat > "radar/tg.py" <<'RADAR_FILE_16'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 from __future__ import annotations
@@ -2525,9 +3021,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_15
+RADAR_FILE_16
 printf "  %s\n" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_16'
+cat > "radar/keyboards.py" <<'RADAR_FILE_17'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 from __future__ import annotations
@@ -2536,7 +3032,7 @@ from typing import Any, Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import roles
+from . import config, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 
@@ -2558,7 +3054,22 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if roles.is_admin(role):
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
+    promo = promo_row()
+    if promo:
+        rows.append(promo)
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def promo_row() -> list[InlineKeyboardButton]:
+    """Партнёрская кнопка. Ведёт по внешней ссылке, отключается через .env."""
+    if not config.PROMO_ENABLED or not config.PROMO_URL:
+        return []
+    return [InlineKeyboardButton(text=config.PROMO_TITLE, url=config.PROMO_URL)]
+
+
+def promo_only() -> InlineKeyboardMarkup | None:
+    row = promo_row()
+    return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
 
 
 def weather_label(user: dict[str, Any]) -> str:
@@ -2655,6 +3166,10 @@ def moderation_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
             [InlineKeyboardButton(text="➕ Добавить канал", callback_data="src:add")],
             [InlineKeyboardButton(text="🌐 Добавить RSS СМИ", callback_data="src:addrss")],
+            [
+                InlineKeyboardButton(text="⬇️ Скачать список", callback_data="src:export"),
+                InlineKeyboardButton(text="⬆️ Загрузить список", callback_data="src:import"),
+            ],
             [InlineKeyboardButton(text="👥 Пользователи и локации", callback_data="usr:list:0")],
             [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")],
         ]
@@ -2744,9 +3259,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_16
+RADAR_FILE_17
 printf "  %s\n" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_17'
+cat > "radar/states.py" <<'RADAR_FILE_18'
 """Состояния FSM."""
 
 from __future__ import annotations
@@ -2761,9 +3276,9 @@ class Form(StatesGroup):
     weather_time = State()
     weather_interval = State()
     manual_address = State()
-RADAR_FILE_17
+RADAR_FILE_18
 printf "  %s\n" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_18'
+cat > "radar/middlewares.py" <<'RADAR_FILE_19'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 from __future__ import annotations
@@ -2828,9 +3343,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_18
+RADAR_FILE_19
 printf "  %s\n" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_19'
+cat > "radar/monitor.py" <<'RADAR_FILE_20'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 from __future__ import annotations
@@ -2844,7 +3359,7 @@ from typing import Any
 import aiohttp
 
 from . import ai, config, geocode, sources, storage, weather
-from .matching import Analysis, build_weather_message, plan_alerts
+from .matching import Analysis, cluster_title, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
 
@@ -2942,13 +3457,13 @@ async def dispatch_user(
     changed = False
     if weather_due(user, now_ts, now):
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
-        blocks = []
-        for cluster in clusters:
+        for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            blocks.append((cluster, await weather.forecast(session, lat, lon)))
-        if blocks:
-            await send_html(uid, build_weather_message(blocks), back_kb())
+            data = await weather.fetch(session, lat, lon)
+            markup = back_kb() if index == len(clusters) - 1 else None
+            await send_html(uid, weather.render(data, cluster_title(cluster)), markup)
             sent += 1
+            await asyncio.sleep(0.2)
         user["last_weather"] = now_ts
         if user.get("weather_mode") == "time":
             user["last_fixed_date"] = now.strftime("%Y-%m-%d")
@@ -3029,9 +3544,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_19
+RADAR_FILE_20
 printf "  %s\n" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_20'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_21'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 from __future__ import annotations
@@ -3052,9 +3567,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s\n" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_21'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_22'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 from __future__ import annotations
@@ -3175,17 +3690,23 @@ async def menu_admin(call: CallbackQuery, state: FSMContext, role: str) -> None:
 @router.callback_query(F.data == "menu:about")
 async def menu_about(call: CallbackQuery) -> None:
     await call.answer()
-    text = (
-        f"ℹ️ <b>Система «Радар» v{config.VERSION}</b>\n\n"
+    parts = [
+        f"ℹ️ <b>Система «Радар» v{config.VERSION}</b>",
+        "",
         "Мониторит публичные Telegram-каналы служб ЖКХ, МЧС, администраций города, "
         "района и области, а также ленты СМИ. Сообщения разбирает ИИ Google Gemini, "
-        "после чего события сопоставляются с вашими локациями.\n\n"
-        "🛸 Военные угрозы — на весь город.\n"
-        "🛠 ЖКХ — адресно, по улице и дому.\n"
-        "🌤 Погода — по каждой группе локаций.\n\n"
-        "<i>Система не заменяет официальные каналы оповещения.</i>"
-    )
-    await safe_edit(call, text, back_kb())
+        "после чего события сопоставляются с вашими локациями.",
+        "",
+        "🛸 Военные угрозы — на весь город.",
+        "🛠 ЖКХ — адресно, по улице и дому.",
+        "📵 При угрозе с воздуха предупреждаем о «белых списках» связи.",
+        "🌤 Погода — по каждой группе локаций.",
+        "",
+        "<i>Система не заменяет официальные каналы оповещения.</i>",
+    ]
+    if config.PROMO_ENABLED and config.PROMO_TEXT:
+        parts += ["", "———", "", config.PROMO_TEXT]
+    await safe_edit(call, "\n".join(parts), keyboards.promo_only() or back_kb())
 
 
 def _quota_line() -> str:
@@ -3292,9 +3813,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s\n" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_22'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_23'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 from __future__ import annotations
@@ -3306,7 +3827,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
 from .. import config, geocode, keyboards, roles, storage, weather
-from ..matching import build_weather_message
+from ..matching import cluster_title
 from ..textutils import cluster_center, cluster_locations, esc, haversine_m
 from ..tg import back_kb, safe_edit, send_html
 
@@ -3440,15 +3961,19 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
 
     await call.answer("Запрашиваю прогноз…")
     clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
-    blocks = []
     async with _session() as session:
-        for cluster in clusters:
+        for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            blocks.append((cluster, await weather.forecast(session, lat, lon)))
-    await send_html(call.message.chat.id, build_weather_message(blocks), back_kb())
-RADAR_FILE_22
+            data = await weather.fetch(session, lat, lon)
+            markup = back_kb() if index == len(clusters) - 1 else None
+            await send_html(
+                call.message.chat.id,
+                weather.render(data, cluster_title(cluster)),
+                markup,
+            )
+RADAR_FILE_23
 printf "  %s\n" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_23'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_24'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 from __future__ import annotations
@@ -3586,9 +4111,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
     await message.answer(
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s\n" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_24'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_25'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 from __future__ import annotations
@@ -3597,9 +4122,9 @@ import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import keyboards, roles, storage
+from .. import config, exporting, keyboards, roles, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
@@ -3766,9 +4291,108 @@ async def add_rss(message: Message, state: FSMContext, role: str) -> None:
         if added else "⚠️ Корректных адресов не найдено."
     )
     await message.answer(text, reply_markup=back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_24
+
+
+# --------------------------------------------------------------------------
+#  Выгрузка и загрузка списка источников
+# --------------------------------------------------------------------------
+
+MAX_IMPORT_BYTES = 1_000_000
+
+
+@router.callback_query(F.data == "src:export")
+async def export_sources(call: CallbackQuery, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await call.answer("Готовлю файл…")
+
+    payload = exporting.export_bundle(
+        storage.channels(), storage.rss_feeds(), storage.pending(), config.VERSION
+    )
+    document = BufferedInputFile(payload, filename=exporting.export_filename(config.VERSION))
+    caption = (
+        "📦 <b>Источники системы «Радар»</b>\n"
+        f"Каналов: <b>{len(storage.channels())}</b>, "
+        f"RSS: <b>{len(storage.rss_feeds())}</b>, "
+        f"в очереди: <b>{len(storage.pending())}</b>\n\n"
+        "<i>Файл читается будущими версиями бота. Чтобы восстановить список — "
+        "просто пришлите его сюда.</i>"
+    )
+    await call.message.answer_document(document, caption=caption, reply_markup=back_kb("menu:mod", "◀️ Назад"))
+
+
+@router.callback_query(F.data == "src:import")
+async def ask_import(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Загрузка доступна администраторам.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(
+        call,
+        "⬆️ <b>Загрузка источников</b>\n\n"
+        "Пришлите файл, выгруженный кнопкой «Скачать список». "
+        "Принимаются также простой список каналов текстовым файлом и "
+        "<code>db.json</code> от версий 2.x.\n\n"
+        "<i>Существующие источники сохраняются — новые добавляются к ним.</i>",
+        back_kb("menu:mod", "Отмена"),
+    )
+
+
+@router.message(F.document)
+async def import_sources(message: Message, role: str) -> None:
+    if not roles.is_admin(role):
+        await message.answer("⛔️ Загрузка источников доступна администраторам.")
+        return
+
+    document = message.document
+    if document.file_size and document.file_size > MAX_IMPORT_BYTES:
+        await message.answer("❌ Файл слишком большой (лимит 1 МБ).")
+        return
+
+    try:
+        buffer = await message.bot.download(document)
+        raw = buffer.read()
+    except Exception as exc:  # noqa: BLE001
+        await message.answer(f"❌ Не удалось скачать файл: {esc(exc)}")
+        return
+
+    try:
+        bundle = exporting.parse_bundle(raw)
+    except exporting.ImportError_ as exc:
+        await message.answer(f"❌ {esc(exc)}", reply_markup=back_kb("menu:mod", "◀️ Назад"))
+        return
+
+    added_channels, added_rss = exporting.merge(
+        bundle, storage.channels(), storage.rss_feeds()
+    )
+    added_pending = 0
+    for name in bundle.pending:
+        if name not in storage.channels() and name not in storage.pending():
+            storage.pending().append(name)
+            added_pending += 1
+    await storage.save()
+
+    lines = [
+        "✅ <b>Список загружен</b>",
+        f"Из файла: каналов {len(bundle.channels)}, лент {len(bundle.rss)}"
+        + (f" (источник: {esc(bundle.origin)})" if bundle.origin else ""),
+        f"Добавлено: <b>{added_channels}</b> каналов, <b>{added_rss}</b> лент",
+    ]
+    if added_pending:
+        lines.append(f"В очередь модерации: <b>{added_pending}</b>")
+    if not (added_channels or added_rss or added_pending):
+        lines.append("<i>Все источники из файла уже были в базе.</i>")
+    if bundle.warnings:
+        lines.append("")
+        lines.append("⚠️ " + "\n⚠️ ".join(esc(item) for item in bundle.warnings[:8]))
+        if len(bundle.warnings) > 8:
+            lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
+
+    await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
+RADAR_FILE_25
 printf "  %s\n" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_25'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_26'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 from __future__ import annotations
@@ -3969,9 +4593,9 @@ async def invite(call: CallbackQuery, role: str) -> None:
         "<i>Перешедший по ней получает роль «Пользователь».</i>",
         back_kb("menu:admin", "◀️ Назад"),
     )
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s\n" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_26'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_27'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -4111,7 +4735,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_26
+RADAR_FILE_27
 ok "Файлы записаны"
 
 # --- 3. Настройки ---------------------------------------------------------
@@ -4176,6 +4800,10 @@ MAX_LOCATIONS=0
 EXTRA_CHANNELS=
 EXTRA_RSS=
 LOG_LEVEL=INFO
+PROMO_ENABLED=1
+PROMO_TITLE=🛡 HydraVPN — обход блокировок
+PROMO_URL=https://t.me/+WWJFBZVhxBs4ZmNi
+PROMO_IN_ALERTS=0
 ENVEOF
     umask 022
     chmod 600 .env

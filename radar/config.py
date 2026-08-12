@@ -63,6 +63,19 @@ DEFAULT_CITY: str = (os.getenv("DEFAULT_CITY") or "").strip()
 EXTRA_CHANNELS: list[str] = _list("EXTRA_CHANNELS")
 EXTRA_RSS: list[str] = [u for u in (os.getenv("EXTRA_RSS") or "").split(",") if u.strip()]
 
+# --- партнёрский блок (кнопка в меню) ---
+PROMO_ENABLED: bool = (os.getenv("PROMO_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
+PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🛡 HydraVPN — обход блокировок").strip()
+PROMO_URL: str = (os.getenv("PROMO_URL") or "https://t.me/+WWJFBZVhxBs4ZmNi").strip()
+PROMO_TEXT: str = (
+    os.getenv("PROMO_TEXT")
+    or "🛡 <b>HydraVPN</b> — собственный VPN-сервис команды «Радар».\n"
+       "Мультипротокольный клиент, свои серверы, без логов.\n"
+       "Подробности и доступ — в канале проекта."
+).strip()
+# Показывать промо внутри оповещений об угрозах (по умолчанию выключено)
+PROMO_IN_ALERTS: bool = (os.getenv("PROMO_IN_ALERTS") or "0").strip().lower() in ("1", "true", "yes")
+
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 USER_AGENT: str = (
     os.getenv("USER_AGENT") or f"RadarBot/{VERSION} (+https://github.com/Chistovik92/radar)"

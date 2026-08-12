@@ -31,6 +31,7 @@ MANIFEST = [
     "radar/ratelimit.py",
     "radar/matching.py",
     "radar/storage.py",
+    "radar/exporting.py",
     "radar/ai.py",
     "radar/geocode.py",
     "radar/weather.py",

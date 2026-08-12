@@ -6,7 +6,7 @@ from typing import Any, Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import roles
+from . import config, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 
@@ -28,7 +28,22 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if roles.is_admin(role):
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
+    promo = promo_row()
+    if promo:
+        rows.append(promo)
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def promo_row() -> list[InlineKeyboardButton]:
+    """Партнёрская кнопка. Ведёт по внешней ссылке, отключается через .env."""
+    if not config.PROMO_ENABLED or not config.PROMO_URL:
+        return []
+    return [InlineKeyboardButton(text=config.PROMO_TITLE, url=config.PROMO_URL)]
+
+
+def promo_only() -> InlineKeyboardMarkup | None:
+    row = promo_row()
+    return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
 
 
 def weather_label(user: dict[str, Any]) -> str:
@@ -125,6 +140,10 @@ def moderation_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
             [InlineKeyboardButton(text="➕ Добавить канал", callback_data="src:add")],
             [InlineKeyboardButton(text="🌐 Добавить RSS СМИ", callback_data="src:addrss")],
+            [
+                InlineKeyboardButton(text="⬇️ Скачать список", callback_data="src:export"),
+                InlineKeyboardButton(text="⬆️ Загрузить список", callback_data="src:import"),
+            ],
             [InlineKeyboardButton(text="👥 Пользователи и локации", callback_data="usr:list:0")],
             [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")],
         ]

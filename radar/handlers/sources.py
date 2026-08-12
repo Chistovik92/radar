@@ -6,9 +6,9 @@ import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import keyboards, roles, storage
+from .. import config, exporting, keyboards, roles, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
@@ -175,3 +175,102 @@ async def add_rss(message: Message, state: FSMContext, role: str) -> None:
         if added else "⚠️ Корректных адресов не найдено."
     )
     await message.answer(text, reply_markup=back_kb("menu:mod", "◀️ Назад"))
+
+
+# --------------------------------------------------------------------------
+#  Выгрузка и загрузка списка источников
+# --------------------------------------------------------------------------
+
+MAX_IMPORT_BYTES = 1_000_000
+
+
+@router.callback_query(F.data == "src:export")
+async def export_sources(call: CallbackQuery, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await call.answer("Готовлю файл…")
+
+    payload = exporting.export_bundle(
+        storage.channels(), storage.rss_feeds(), storage.pending(), config.VERSION
+    )
+    document = BufferedInputFile(payload, filename=exporting.export_filename(config.VERSION))
+    caption = (
+        "📦 <b>Источники системы «Радар»</b>\n"
+        f"Каналов: <b>{len(storage.channels())}</b>, "
+        f"RSS: <b>{len(storage.rss_feeds())}</b>, "
+        f"в очереди: <b>{len(storage.pending())}</b>\n\n"
+        "<i>Файл читается будущими версиями бота. Чтобы восстановить список — "
+        "просто пришлите его сюда.</i>"
+    )
+    await call.message.answer_document(document, caption=caption, reply_markup=back_kb("menu:mod", "◀️ Назад"))
+
+
+@router.callback_query(F.data == "src:import")
+async def ask_import(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Загрузка доступна администраторам.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(
+        call,
+        "⬆️ <b>Загрузка источников</b>\n\n"
+        "Пришлите файл, выгруженный кнопкой «Скачать список». "
+        "Принимаются также простой список каналов текстовым файлом и "
+        "<code>db.json</code> от версий 2.x.\n\n"
+        "<i>Существующие источники сохраняются — новые добавляются к ним.</i>",
+        back_kb("menu:mod", "Отмена"),
+    )
+
+
+@router.message(F.document)
+async def import_sources(message: Message, role: str) -> None:
+    if not roles.is_admin(role):
+        await message.answer("⛔️ Загрузка источников доступна администраторам.")
+        return
+
+    document = message.document
+    if document.file_size and document.file_size > MAX_IMPORT_BYTES:
+        await message.answer("❌ Файл слишком большой (лимит 1 МБ).")
+        return
+
+    try:
+        buffer = await message.bot.download(document)
+        raw = buffer.read()
+    except Exception as exc:  # noqa: BLE001
+        await message.answer(f"❌ Не удалось скачать файл: {esc(exc)}")
+        return
+
+    try:
+        bundle = exporting.parse_bundle(raw)
+    except exporting.ImportError_ as exc:
+        await message.answer(f"❌ {esc(exc)}", reply_markup=back_kb("menu:mod", "◀️ Назад"))
+        return
+
+    added_channels, added_rss = exporting.merge(
+        bundle, storage.channels(), storage.rss_feeds()
+    )
+    added_pending = 0
+    for name in bundle.pending:
+        if name not in storage.channels() and name not in storage.pending():
+            storage.pending().append(name)
+            added_pending += 1
+    await storage.save()
+
+    lines = [
+        "✅ <b>Список загружен</b>",
+        f"Из файла: каналов {len(bundle.channels)}, лент {len(bundle.rss)}"
+        + (f" (источник: {esc(bundle.origin)})" if bundle.origin else ""),
+        f"Добавлено: <b>{added_channels}</b> каналов, <b>{added_rss}</b> лент",
+    ]
+    if added_pending:
+        lines.append(f"В очередь модерации: <b>{added_pending}</b>")
+    if not (added_channels or added_rss or added_pending):
+        lines.append("<i>Все источники из файла уже были в базе.</i>")
+    if bundle.warnings:
+        lines.append("")
+        lines.append("⚠️ " + "\n⚠️ ".join(esc(item) for item in bundle.warnings[:8]))
+        if len(bundle.warnings) > 8:
+            lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
+
+    await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))

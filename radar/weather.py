@@ -1,8 +1,19 @@
-"""Погода и краткий прогноз через Open-Meteo (без ключа API)."""
+"""Погода Open-Meteo: получение данных и оформление сводки.
+
+Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
+функция, которую можно покрыть тестами офлайн.
+
+Вёрстка ориентирована на то, как погоду показывают поисковики и мобильные
+приложения: крупное текущее значение, строка деталей, почасовая таблица
+с колонкой осадков и столбиком температуры, затем прогноз по дням.
+Почасовая часть выводится моноширинным блоком — иначе колонки разъезжаются.
+"""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime
 
 import aiohttp
 
@@ -10,75 +21,306 @@ log = logging.getLogger("radar.weather")
 
 _URL = "https://api.open-meteo.com/v1/forecast"
 
-CODES = {
-    0: "☀️ ясно", 1: "🌤 малооблачно", 2: "⛅️ облачно", 3: "☁️ пасмурно",
-    45: "🌫 туман", 48: "🌫 изморозь",
-    51: "🌦 морось", 53: "🌦 морось", 55: "🌦 сильная морось",
-    56: "🌧 ледяная морось", 57: "🌧 ледяная морось",
-    61: "🌧 небольшой дождь", 63: "🌧 дождь", 65: "🌧 сильный дождь",
-    66: "🌧 ледяной дождь", 67: "🌧 ледяной дождь",
-    71: "🌨 небольшой снег", 73: "🌨 снег", 75: "❄️ сильный снег", 77: "🌨 снежная крупа",
-    80: "🌧 ливень", 81: "🌧 ливень", 82: "⛈ сильный ливень",
-    85: "🌨 снегопад", 86: "🌨 сильный снегопад",
-    95: "⛈ гроза", 96: "⛈ гроза с градом", 99: "⛈ сильная гроза с градом",
+# Коды погоды WMO: описание и значок (день / ночь).
+CODES: dict[int, tuple[str, str, str]] = {
+    0: ("ясно", "☀️", "🌙"),
+    1: ("малооблачно", "🌤", "🌙"),
+    2: ("переменная облачность", "⛅️", "☁️"),
+    3: ("пасмурно", "☁️", "☁️"),
+    45: ("туман", "🌫", "🌫"),
+    48: ("изморозь", "🌫", "🌫"),
+    51: ("морось", "🌦", "🌧"),
+    53: ("морось", "🌦", "🌧"),
+    55: ("сильная морось", "🌦", "🌧"),
+    56: ("ледяная морось", "🌧", "🌧"),
+    57: ("ледяная морось", "🌧", "🌧"),
+    61: ("небольшой дождь", "🌦", "🌧"),
+    63: ("дождь", "🌧", "🌧"),
+    65: ("сильный дождь", "🌧", "🌧"),
+    66: ("ледяной дождь", "🌧", "🌧"),
+    67: ("ледяной дождь", "🌧", "🌧"),
+    71: ("небольшой снег", "🌨", "🌨"),
+    73: ("снег", "🌨", "🌨"),
+    75: ("сильный снег", "❄️", "❄️"),
+    77: ("снежная крупа", "🌨", "🌨"),
+    80: ("ливень", "🌦", "🌧"),
+    81: ("ливень", "🌧", "🌧"),
+    82: ("сильный ливень", "⛈", "⛈"),
+    85: ("снегопад", "🌨", "🌨"),
+    86: ("сильный снегопад", "❄️", "❄️"),
+    95: ("гроза", "⛈", "⛈"),
+    96: ("гроза с градом", "⛈", "⛈"),
+    99: ("сильная гроза с градом", "⛈", "⛈"),
 }
 
+SPARK = "▁▂▃▄▅▆▇█"
+WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
-async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
-    """HTML-блок: текущая погода и прогноз на 6 часов."""
+
+def describe(code: int | None, day: bool = True) -> tuple[str, str]:
+    name, icon_day, icon_night = CODES.get(int(code) if code is not None else -1,
+                                          ("", "🌡", "🌡"))
+    return name, (icon_day if day else icon_night)
+
+
+@dataclass
+class Hour:
+    label: str          # «14ч»
+    temp: float
+    probability: int
+    code: int | None = None
+    day: bool = True
+
+
+@dataclass
+class Day:
+    label: str          # «сегодня», «завтра», «пт 15»
+    low: float
+    high: float
+    probability: int
+    code: int | None = None
+
+
+@dataclass
+class Weather:
+    ok: bool = False
+    error: str = ""
+    temp: float | None = None
+    feels: float | None = None
+    wind: float | None = None
+    gusts: float | None = None
+    humidity: int | None = None
+    pressure: float | None = None
+    code: int | None = None
+    is_day: bool = True
+    sunrise: str = ""
+    sunset: str = ""
+    hourly: list[Hour] = field(default_factory=list)
+    daily: list[Day] = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+#  Получение данных
+# --------------------------------------------------------------------------
+
+async def fetch(
+    session: aiohttp.ClientSession, lat: float, lon: float, hours: int = 8
+) -> Weather:
     if not lat and not lon:
-        return "⚠️ Нет координат — отправьте геопозицию заново."
+        return Weather(ok=False, error="нет координат — отправьте геопозицию заново")
 
     params = {
         "latitude": f"{lat}",
         "longitude": f"{lon}",
         "current": "temperature_2m,apparent_temperature,relative_humidity_2m,"
-                   "wind_speed_10m,precipitation,weather_code",
-        "hourly": "temperature_2m,precipitation_probability",
+                   "wind_speed_10m,wind_gusts_10m,surface_pressure,weather_code,is_day",
+        "hourly": "temperature_2m,precipitation_probability,weather_code,is_day",
+        "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,"
+                 "weather_code,sunrise,sunset",
         "timezone": "auto",
-        "forecast_hours": "7",
+        "forecast_days": "4",
         "wind_speed_unit": "ms",
     }
     try:
         async with session.get(_URL, params=params) as response:
             if response.status != 200:
-                return f"⚠️ Сервис погоды вернул код {response.status}."
+                return Weather(ok=False, error=f"сервис погоды вернул код {response.status}")
             data = await response.json(content_type=None)
     except Exception as exc:  # noqa: BLE001
         log.warning("Погода недоступна: %s", exc)
-        return "⚠️ Сбой получения погоды."
+        return Weather(ok=False, error="сбой получения погоды")
 
+    return parse(data, hours)
+
+
+def parse(data: dict, hours: int = 8) -> Weather:
+    """Превращает ответ Open-Meteo в структуру. Вынесено ради тестируемости."""
     current = data.get("current") or {}
-    try:
-        code = CODES.get(int(current.get("weather_code", -1)), "")
-    except (TypeError, ValueError):
-        code = ""
-
-    temp = current.get("temperature_2m", "?")
-    feels = current.get("apparent_temperature")
-    wind = current.get("wind_speed_10m", "?")
-    humidity = current.get("relative_humidity_2m")
-
-    head = f"🌡 <b>Сейчас:</b> {temp}°C"
-    if feels is not None:
-        head += f" (ощущается {feels}°C)"
-    head += f" | 💨 {wind} м/с"
-    if humidity is not None:
-        head += f" | 💧 {humidity}%"
-    if code:
-        head += f" | {code}"
+    weather = Weather(
+        ok=True,
+        temp=_number(current.get("temperature_2m")),
+        feels=_number(current.get("apparent_temperature")),
+        wind=_number(current.get("wind_speed_10m")),
+        gusts=_number(current.get("wind_gusts_10m")),
+        humidity=_integer(current.get("relative_humidity_2m")),
+        pressure=_number(current.get("surface_pressure")),
+        code=_integer(current.get("weather_code")),
+        is_day=bool(current.get("is_day", 1)),
+    )
 
     hourly = data.get("hourly") or {}
     times = hourly.get("time") or []
     temps = hourly.get("temperature_2m") or []
-    probs = hourly.get("precipitation_probability") or []
-    slots = []
-    for index in range(1, min(7, len(times))):
-        clock = times[index].split("T")[1][:5] if "T" in times[index] else f"+{index}ч"
-        value = temps[index] if index < len(temps) else "?"
-        chance = probs[index] if index < len(probs) else 0
-        slots.append(f"<code>{clock}</code> {value}°C ({chance}%)")
+    probabilities = hourly.get("precipitation_probability") or []
+    codes = hourly.get("weather_code") or []
+    day_flags = hourly.get("is_day") or []
 
-    if slots:
-        return head + "\n⏱ <b>6 часов:</b> " + " | ".join(slots)
-    return head
+    now = _now_index(times, current.get("time"))
+    for index in range(now, min(now + hours, len(times))):
+        temp = _number(temps[index] if index < len(temps) else None)
+        if temp is None:
+            continue
+        stamp = times[index]
+        label = stamp.split("T")[1][:2] + "ч" if "T" in stamp else f"+{index - now}ч"
+        weather.hourly.append(
+            Hour(
+                label=label,
+                temp=temp,
+                probability=_integer(
+                    probabilities[index] if index < len(probabilities) else 0
+                ) or 0,
+                code=_integer(codes[index]) if index < len(codes) else None,
+                day=bool(day_flags[index]) if index < len(day_flags) else True,
+            )
+        )
+
+    daily = data.get("daily") or {}
+    dates = daily.get("time") or []
+    lows = daily.get("temperature_2m_min") or []
+    highs = daily.get("temperature_2m_max") or []
+    day_probabilities = daily.get("precipitation_probability_max") or []
+    day_codes = daily.get("weather_code") or []
+    sunrises = daily.get("sunrise") or []
+    sunsets = daily.get("sunset") or []
+
+    if sunrises:
+        weather.sunrise = str(sunrises[0]).split("T")[-1][:5]
+    if sunsets:
+        weather.sunset = str(sunsets[0]).split("T")[-1][:5]
+
+    for index, date in enumerate(dates[:4]):
+        low = _number(lows[index] if index < len(lows) else None)
+        high = _number(highs[index] if index < len(highs) else None)
+        if low is None or high is None:
+            continue
+        weather.daily.append(
+            Day(
+                label=_day_label(date, index),
+                low=low,
+                high=high,
+                probability=_integer(
+                    day_probabilities[index] if index < len(day_probabilities) else 0
+                ) or 0,
+                code=_integer(day_codes[index]) if index < len(day_codes) else None,
+            )
+        )
+
+    return weather
+
+
+def _number(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _integer(value) -> int | None:
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _now_index(times: list, current_time) -> int:
+    """Первый час, который ещё не прошёл."""
+    if not times:
+        return 0
+    marker = str(current_time or "")[:13]
+    for index, stamp in enumerate(times):
+        if str(stamp)[:13] >= marker:
+            return index
+    return 0
+
+
+def _day_label(date: str, index: int) -> str:
+    if index == 0:
+        return "сегодня"
+    if index == 1:
+        return "завтра"
+    try:
+        parsed = datetime.strptime(str(date)[:10], "%Y-%m-%d")
+        return f"{WEEKDAYS[parsed.weekday()]} {parsed.day}"
+    except ValueError:
+        return str(date)[:10]
+
+
+# --------------------------------------------------------------------------
+#  Оформление
+# --------------------------------------------------------------------------
+
+def _sparkline(values: list[float]) -> list[str]:
+    if not values:
+        return []
+    low, high = min(values), max(values)
+    span = high - low
+    if span < 0.5:  # ровная температура — рисуем середину
+        return ["▄"] * len(values)
+    return [SPARK[min(7, int((value - low) / span * 7.99))] for value in values]
+
+
+def _temp(value: float | None) -> str:
+    return f"{round(value):+d}°".replace("+", "") if value is not None else "—"
+
+
+def render(weather: Weather, title: str = "") -> str:
+    """Собирает готовый HTML-блок сводки."""
+    if not weather.ok:
+        return f"⚠️ {weather.error or 'нет данных о погоде'}"
+
+    name, icon = describe(weather.code, weather.is_day)
+    lines: list[str] = []
+    if title:
+        lines.append(title)
+
+    head = f"{icon} <b>{_temp(weather.temp)}</b>"
+    if name:
+        head += f" — {name}"
+    lines.append(head)
+
+    details: list[str] = []
+    if weather.feels is not None and weather.temp is not None:
+        if abs(weather.feels - weather.temp) >= 1:
+            details.append(f"ощущается {_temp(weather.feels)}")
+    if weather.wind is not None:
+        wind = f"💨 {weather.wind:.0f} м/с"
+        if weather.gusts and weather.gusts - (weather.wind or 0) >= 3:
+            wind += f" (порывы {weather.gusts:.0f})"
+        details.append(wind)
+    if weather.humidity is not None:
+        details.append(f"💧 {weather.humidity}%")
+    if weather.pressure:
+        details.append(f"{weather.pressure * 0.750062:.0f} мм")
+    if details:
+        lines.append(" · ".join(details))
+
+    if weather.hourly:
+        bars = _sparkline([hour.temp for hour in weather.hourly])
+        rows = []
+        for hour, bar in zip(weather.hourly, bars):
+            _, hour_icon = describe(hour.code, hour.day)
+            chance = f"{hour.probability:>3d}%" if hour.probability else "   ·"
+            rows.append(f"{hour.label:<4}{hour_icon} {_temp(hour.temp):>4} {bar} {chance}")
+        lines.append("")
+        lines.append("<pre>" + "\n".join(rows) + "</pre>")
+
+    if weather.daily:
+        lines.append("")
+        rows = []
+        for day in weather.daily[:3]:
+            _, day_icon = describe(day.code, True)
+            chance = f"  ☔️ {day.probability}%" if day.probability >= 20 else ""
+            rows.append(
+                f"{day.label:<8}{day_icon} {_temp(day.high):>4} … {_temp(day.low):<4}{chance}"
+            )
+        lines.append("<pre>" + "\n".join(rows) + "</pre>")
+
+    if weather.sunrise and weather.sunset:
+        lines.append(f"🌅 {weather.sunrise}   🌇 {weather.sunset}")
+
+    return "\n".join(lines)
+
+
+async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
+    """Совместимость: получить и сразу оформить."""
+    return render(await fetch(session, lat, lon))

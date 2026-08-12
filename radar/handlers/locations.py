@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
 from .. import config, geocode, keyboards, roles, storage, weather
-from ..matching import build_weather_message
+from ..matching import cluster_title
 from ..textutils import cluster_center, cluster_locations, esc, haversine_m
 from ..tg import back_kb, safe_edit, send_html
 
@@ -143,9 +143,13 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
 
     await call.answer("Запрашиваю прогноз…")
     clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
-    blocks = []
     async with _session() as session:
-        for cluster in clusters:
+        for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            blocks.append((cluster, await weather.forecast(session, lat, lon)))
-    await send_html(call.message.chat.id, build_weather_message(blocks), back_kb())
+            data = await weather.fetch(session, lat, lon)
+            markup = back_kb() if index == len(clusters) - 1 else None
+            await send_html(
+                call.message.chat.id,
+                weather.render(data, cluster_title(cluster)),
+                markup,
+            )

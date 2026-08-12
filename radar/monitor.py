@@ -11,7 +11,7 @@ from typing import Any
 import aiohttp
 
 from . import ai, config, geocode, sources, storage, weather
-from .matching import Analysis, build_weather_message, plan_alerts
+from .matching import Analysis, cluster_title, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
 
@@ -109,13 +109,13 @@ async def dispatch_user(
     changed = False
     if weather_due(user, now_ts, now):
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
-        blocks = []
-        for cluster in clusters:
+        for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            blocks.append((cluster, await weather.forecast(session, lat, lon)))
-        if blocks:
-            await send_html(uid, build_weather_message(blocks), back_kb())
+            data = await weather.fetch(session, lat, lon)
+            markup = back_kb() if index == len(clusters) - 1 else None
+            await send_html(uid, weather.render(data, cluster_title(cluster)), markup)
             sent += 1
+            await asyncio.sleep(0.2)
         user["last_weather"] = now_ts
         if user.get("weather_mode") == "time":
             user["last_fixed_date"] = now.strftime("%Y-%m-%d")
