@@ -13,6 +13,7 @@ from typing import Any
 import aiofiles
 
 from . import config
+from . import presets
 from .matching import CATEGORY_TITLES
 from .roles import SUPERADMIN, USER
 
@@ -121,10 +122,12 @@ def migrate(data: dict[str, Any]) -> dict[str, Any]:
     else:
         data["users"][superadmin]["role"] = SUPERADMIN
 
-    for channel in config.DEFAULT_CHANNELS + config.EXTRA_CHANNELS:
+    # Стартовый набор: федеральные источники плюс пресеты городов из SOURCE_CITIES.
+    cities = config.SOURCE_CITIES or ([config.DEFAULT_CITY] if config.DEFAULT_CITY else [])
+    for channel in presets.channels_for(cities) + config.EXTRA_CHANNELS:
         if channel and channel not in data["channels"]:
             data["channels"].append(channel)
-    for feed in config.DEFAULT_RSS + config.EXTRA_RSS:
+    for feed in presets.rss_for(cities) + config.EXTRA_RSS:
         if feed and feed not in data["rss"]:
             data["rss"].append(feed)
 

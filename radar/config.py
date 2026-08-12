@@ -65,12 +65,16 @@ EXTRA_RSS: list[str] = [u for u in (os.getenv("EXTRA_RSS") or "").split(",") if 
 
 # --- партнёрский блок (кнопка в меню) ---
 PROMO_ENABLED: bool = (os.getenv("PROMO_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
-PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🛡 HydraVPN — обход блокировок").strip()
+PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🐙 HydraVPN").strip()
 PROMO_URL: str = (os.getenv("PROMO_URL") or "https://t.me/+WWJFBZVhxBs4ZmNi").strip()
 PROMO_TEXT: str = (
     os.getenv("PROMO_TEXT")
-    or "🛡 <b>HydraVPN</b> — собственный VPN-сервис команды «Радар».\n"
-       "Мультипротокольный клиент, свои серверы, без логов.\n"
+    or "🐙 <b>HydraVPN</b> — второй проект команды «Радар».\n\n"
+       "Мультипротокольный VPN-клиент для Android: WireGuard, AmneziaWG, SSTP. "
+       "Свои серверы, шифрование базы, раздельное туннелирование по приложениям "
+       "и доменам.\n\n"
+       "Пригодится, когда включают «белые списки»: мессенджеры и соцсети "
+       "перестают открываться на мобильной сети.\n\n"
        "Подробности и доступ — в канале проекта."
 ).strip()
 # Показывать промо внутри оповещений об угрозах (по умолчанию выключено)
@@ -81,17 +85,9 @@ USER_AGENT: str = (
     os.getenv("USER_AGENT") or f"RadarBot/{VERSION} (+https://github.com/Chistovik92/radar)"
 ).strip()
 
-# Каналы по умолчанию: службы ЖКХ, МЧС, администрации, городские СМИ.
-DEFAULT_CHANNELS: list[str] = [
-    "saratov_24",
-    "mchs_saratov",
-    "saratovmeriya",
-    "saratovzhkh",
-    "saratovvodokanal",
-    "tplus_saratov",
-]
-
-DEFAULT_RSS: list[str] = []
+# Города, чьи наборы источников подключаются при первом запуске.
+# Доступны: saratov, moscow, spb, kazan, samara (см. radar/presets.py).
+SOURCE_CITIES: list[str] = _list("SOURCE_CITIES")
 
 AI_ENABLED: bool = bool(GEMINI_API_KEY)
 

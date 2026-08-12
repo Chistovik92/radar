@@ -30,6 +30,7 @@ MANIFEST = [
     "radar/roles.py",
     "radar/ratelimit.py",
     "radar/matching.py",
+    "radar/presets.py",
     "radar/storage.py",
     "radar/exporting.py",
     "radar/ai.py",

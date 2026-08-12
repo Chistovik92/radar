@@ -81,9 +81,23 @@ class TestMigration(unittest.TestCase):
         self.assertIn("rss", self.data)
         self.assertIn("meta", self.data)
         self.assertEqual(self.data["meta"]["schema"], 3)
-        self.assertIn("saratovvodokanal", self.data["channels"])
+        # Существующие каналы сохраняются, федеральные добавляются всегда.
         self.assertIn("saratov_24", self.data["channels"])
+        self.assertIn("mchs_official", self.data["channels"])
         self.assertEqual(self.data["pending"], ["someChannel"])
+
+    def test_city_preset_applied(self):
+        """Набор источников города подключается по SOURCE_CITIES."""
+        from radar import config
+
+        saved = config.SOURCE_CITIES
+        config.SOURCE_CITIES = ["kazan"]
+        try:
+            data = storage.migrate({})
+        finally:
+            config.SOURCE_CITIES = saved
+        self.assertIn("vodokanalkzn", data["channels"])
+        self.assertIn("mchs_official", data["channels"])
 
     def test_migration_is_idempotent(self):
         once = storage.migrate(self.data)

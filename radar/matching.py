@@ -13,6 +13,7 @@ from .textutils import (
     cluster_locations,
     district_matches,
     esc,
+    esc_attr,
     house_in_range,
     normalize_city,
     same_city,
@@ -41,6 +42,12 @@ SEVERITY_ICONS = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
 # молча. Поэтому предупреждение выдаётся не по новости, а автоматически:
 # объявлена угроза БПЛА или ракетная опасность → значит связь, скорее всего,
 # уже ограничена.
+ALL_CLEAR_NOTICE = (
+    "📶 <b>Мобильный интернет</b>\n"
+    "«Белые списки» могут быть отключены в ближайшее время — связь обычно "
+    "восстанавливают не сразу после отбоя, а в течение нескольких часов."
+)
+
 WHITELIST_NOTICE = (
     "📵 <b>Мобильный интернет</b>\n"
     "При угрозе с воздуха операторы включают «белые списки»: работают только "
@@ -65,10 +72,14 @@ class Analysis:
     summary: str = ""
     source: str = ""
     raw: str = ""
+    link: str = ""            # ссылка на новость (для RSS)
+    all_clear: bool = False   # отбой ранее объявленной опасности
     engine: str = "ai"  # ai | heuristic
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any], *, source: str, raw: str) -> "Analysis":
+    def from_payload(
+        cls, payload: dict[str, Any], *, source: str, raw: str, link: str = ""
+    ) -> "Analysis":
         streets: list[dict[str, Any]] = []
         for item in payload.get("streets") or []:
             if isinstance(item, str):
@@ -96,6 +107,8 @@ class Analysis:
             summary=str(payload.get("summary") or "").strip(),
             source=source,
             raw=raw,
+            link=link,
+            all_clear=bool(payload.get("all_clear")),
         )
 
     @property
@@ -147,6 +160,15 @@ _HEURISTICS: list[tuple[str, re.Pattern]] = [
         r"|перебо\w* (?:со )?связ|ограничен\w* связи", re.I)),
 ]
 
+ALL_CLEAR_RE = re.compile(
+    r"отбо[йя]\b|снят\w*\s+(?:режим\w*\s+)?(?:беспилотн\w*|ракетн\w*|воздушн\w*|опасн\w*)|"
+    r"опасност\w*\s+снят|угроза\s+снят|тревога\s+отмен|"
+    r"режим\w*\s+беспилотн\w*\s+опасност\w*\s+отмен|"
+    r"отмен\w*\s+(?:режим\w*\s+)?(?:беспилотн\w*|ракетн\w*|воздушн\w*)|"
+    r"обстановка\s+спокойн|угроз\w*\s+миновал",
+    re.I,
+)
+
 _STREET_TYPE_RE = (
     r"(?:ул(?:ица|\.)?|пр(?:оспект|-т|\.)?|пер(?:еулок|\.)?|б(?:ульвар|-р)|"
     r"ш(?:оссе|\.)?|пл(?:ощадь|\.)?|проезд|наб(?:ережная|\.)?|тракт|мкр(?:орайон)?)"
@@ -162,11 +184,15 @@ _DISTRICT = re.compile(r"([А-ЯЁ][а-яё\-]+)\s+район", re.U)
 _CITY = re.compile(r"(?:в|город[еа]?|г\.)\s+([А-ЯЁ][а-яё\-]+)", re.U)
 
 
-def heuristic_analysis(text: str, *, source: str = "", default_city: str = "") -> Analysis:
+def heuristic_analysis(
+    text: str, *, source: str = "", default_city: str = "", link: str = ""
+) -> Analysis:
     """Резервный разбор без ИИ: ключевые слова + извлечение улиц и домов."""
     categories = [key for key, pattern in _HEURISTICS if pattern.search(text)]
     if not categories:
-        return Analysis(relevant=False, source=source, raw=text, engine="heuristic")
+        return Analysis(
+            relevant=False, source=source, raw=text, link=link, engine="heuristic"
+        )
 
     streets: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -193,10 +219,15 @@ def heuristic_analysis(text: str, *, source: str = "", default_city: str = "") -
     else:
         scope = "city"
 
-    severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
+    all_clear = bool(ALL_CLEAR_RE.search(text))
+    if all_clear:
+        severity = "info"
+    else:
+        severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
     summary = re.sub(r"\s+", " ", text).strip()
     return Analysis(
         relevant=True,
+        all_clear=all_clear,
         categories=categories,
         severity=severity,
         scope=scope,
@@ -206,6 +237,7 @@ def heuristic_analysis(text: str, *, source: str = "", default_city: str = "") -
         summary=summary[:400],
         source=source,
         raw=text,
+        link=link,
         engine="heuristic",
     )
 
@@ -285,12 +317,22 @@ def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "")
     return f"📍 <b>Совпавшие локации:</b> {names}{suffix}"
 
 
-def _event_line(analysis: Analysis) -> str:
-    icon = SEVERITY_ICONS.get(analysis.severity, "🔵")
+def _source_label(analysis: Analysis) -> str:
     label = analysis.source or "источник"
-    source = esc(label) if ("." in label or "/" in label) else f"@{esc(label)}"
+    name = esc(label) if ("." in label or "/" in label) else f"@{esc(label)}"
+    # У новости из RSS есть прямая ссылка — делаем заголовок кликабельным.
+    if analysis.link:
+        return f'<a href="{esc_attr(analysis.link)}">{name}</a>'
+    return name
+
+
+def _event_line(analysis: Analysis) -> str:
+    icon = "✅" if analysis.all_clear else SEVERITY_ICONS.get(analysis.severity, "🔵")
     mark = "" if analysis.engine == "ai" else " <i>(без ИИ)</i>"
-    return f"{icon} <b>{source}</b>{mark}\n{esc(analysis.text())}"
+    line = f"{icon} <b>{_source_label(analysis)}</b>{mark}\n{esc(analysis.text())}"
+    if analysis.link:
+        line += f'\n🔗 <a href="{esc_attr(analysis.link)}">Читать источник</a>'
+    return line
 
 
 def build_city_alert(
@@ -312,6 +354,27 @@ def build_city_alert(
     if whitelist_notice:
         lines.append("")
         lines.append(WHITELIST_NOTICE)
+    return "\n".join(lines)
+
+
+def build_all_clear(
+    city: str,
+    locations: Sequence[dict[str, Any]],
+    events: Sequence[Analysis],
+    whitelist_notice: bool = False,
+) -> str:
+    """Отбой опасности: спокойный тон, другой сигнал, без слова «ОПАСНОСТЬ»."""
+    titles = {analysis.title() for analysis in events}
+    lines = [
+        f"✅ <b>ОТБОЙ — {esc(city or 'город')}</b>",
+        f"<b>{esc(' / '.join(sorted(titles)))}</b> — опасность снята",
+        format_locations_header(locations, "весь город"),
+        "",
+    ]
+    lines.extend(_event_line(analysis) for analysis in events)
+    if whitelist_notice:
+        lines.append("")
+        lines.append(ALL_CLEAR_NOTICE)
     return "\n".join(lines)
 
 
@@ -385,7 +448,12 @@ def plan_alerts(
 
         if analysis.is_city_wide:
             key, label = _city_of(analysis, matched, default_city)
-            bucket = city_buckets.setdefault(key, {"city": label, "locs": {}, "events": []})
+            # Отбой не должен смешиваться с действующей тревогой в одном сообщении.
+            bucket_key = f"{key}:clear" if analysis.all_clear else key
+            bucket = city_buckets.setdefault(
+                bucket_key,
+                {"city": label, "locs": {}, "events": [], "all_clear": analysis.all_clear},
+            )
             bucket["events"].append(analysis)
             for loc in matched:
                 bucket["locs"][loc.get("id") or loc.get("name")] = loc
@@ -406,17 +474,16 @@ def plan_alerts(
     messages: list[tuple[str, str]] = []
     for bucket in city_buckets.values():
         military = any("bpla" in analysis.categories for analysis in bucket["events"])
-        messages.append(
-            (
-                "city",
-                build_city_alert(
-                    bucket["city"],
-                    list(bucket["locs"].values()),
-                    bucket["events"],
-                    whitelist_notice=military and warn_about_whitelist,
-                ),
+        notice = military and warn_about_whitelist
+        locs = list(bucket["locs"].values())
+        if bucket["all_clear"]:
+            messages.append(
+                ("clear", build_all_clear(bucket["city"], locs, bucket["events"], notice))
             )
-        )
+        else:
+            messages.append(
+                ("city", build_city_alert(bucket["city"], locs, bucket["events"], notice))
+            )
     for bucket in cluster_buckets.values():
         messages.append(
             (

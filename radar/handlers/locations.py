@@ -6,6 +6,7 @@ from typing import Any
 
 import aiohttp
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
 
 from .. import config, geocode, keyboards, roles, storage, weather
@@ -49,7 +50,9 @@ def locations_text(user: dict[str, Any], owner_label: str = "") -> str:
     return f"{head}\n{body}{tail if not owner_label else ''}"
 
 
-@router.message(F.location)
+# StateFilter(None) обязателен: иначе этот обработчик перехватит геопозицию,
+# отправленную администратором при добавлении локации другому пользователю.
+@router.message(StateFilter(None), F.location)
 async def add_location(message: Message, user: dict[str, Any]) -> None:
     lat = message.location.latitude
     lon = message.location.longitude

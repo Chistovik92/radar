@@ -102,3 +102,85 @@ def _fallback(lat: float, lon: float) -> dict[str, str]:
         "district": "",
         "region": "",
     }
+
+
+_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+
+
+async def forward(
+    session: aiohttp.ClientSession, query: str, city_hint: str = ""
+) -> list[dict[str, str]]:
+    """Прямое геокодирование: по строке адреса вернуть варианты с координатами.
+
+    Нужно администрации, чтобы добавлять локации пользователям без геопозиции.
+    """
+    text = (query or "").strip()
+    if len(text) < 3:
+        return []
+    if city_hint and city_hint.lower() not in text.lower():
+        text = f"{text}, {city_hint}"
+
+    await _throttle()
+    params = {
+        "q": text,
+        "format": "jsonv2",
+        "addressdetails": "1",
+        "accept-language": "ru",
+        "limit": "5",
+        "countrycodes": "ru",
+    }
+    try:
+        async with session.get(
+            _SEARCH_URL, params=params, headers={"User-Agent": config.USER_AGENT}
+        ) as response:
+            if response.status != 200:
+                log.warning("Nominatim search вернул %s", response.status)
+                return []
+            payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Поиск адреса не удался: %s", exc)
+        return []
+
+    results: list[dict[str, str]] = []
+    for item in payload if isinstance(payload, list) else []:
+        try:
+            lat = float(item.get("lat"))
+            lon = float(item.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        address = item.get("address") or {}
+        street = (
+            address.get("road")
+            or address.get("pedestrian")
+            or address.get("residential")
+            or ""
+        )
+        house = address.get("house_number") or ""
+        city = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or ""
+        )
+        label = ", ".join(part for part in (street, house) if part)
+        if not label:
+            label = str(item.get("name") or "").strip()
+        if not label:
+            continue
+        if city and city not in label:
+            label = f"{label} ({city})"
+        results.append(
+            {
+                "name": label,
+                "display": str(item.get("display_name") or label),
+                "lat": f"{lat}",
+                "lon": f"{lon}",
+                "street": street,
+                "house": house,
+                "city": city,
+                "district": address.get("city_district") or address.get("suburb") or "",
+                "region": address.get("state") or "",
+            }
+        )
+    return results

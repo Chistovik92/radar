@@ -8,7 +8,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
 from .. import ai, config, keyboards, monitor, roles, storage
 from ..textutils import esc
@@ -33,6 +33,14 @@ def greeting(role: str) -> str:
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
+    # Закреплённые кнопки ставятся отдельным сообщением: Telegram не позволяет
+    # приложить reply-клавиатуру и inline-меню к одному и тому же сообщению.
+    keyboard = keyboards.persistent_keyboard()
+    if keyboard is not None:
+        await message.answer(
+            "Кнопки <b>Меню</b> и <b>HydraVPN</b> закреплены под полем ввода.",
+            reply_markup=keyboard,
+        )
     await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
 
 
@@ -40,6 +48,28 @@ async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
 async def cmd_menu(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
     await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+
+
+@router.message(F.text == keyboards.BTN_MENU)
+async def button_menu(message: Message, state: FSMContext, role: str) -> None:
+    await state.clear()
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+
+
+@router.message(F.text == keyboards.BTN_PROMO)
+async def button_promo(message: Message) -> None:
+    if not config.PROMO_ENABLED or not config.PROMO_URL:
+        return
+    await message.answer(
+        config.PROMO_TEXT,
+        reply_markup=keyboards.promo_only(),
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
+
+
+@router.message(Command("vpn"))
+async def cmd_vpn(message: Message) -> None:
+    await button_promo(message)
 
 
 @router.message(Command("cancel"))
@@ -68,6 +98,7 @@ async def cmd_help(message: Message, role: str) -> None:
         "",
         "<b>Команды</b>",
         "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод",
+        "/vpn — о проекте HydraVPN",
     ]
     if roles.can_use_assistant(role):
         lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")

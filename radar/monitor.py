@@ -149,7 +149,9 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     analyses: list[Analysis] = []
     if items:
         try:
-            parsed = await ai.analyze_batch([(item.text, item.source) for item in items])
+            parsed = await ai.analyze_batch(
+                [(item.text, item.source, item.link) for item in items]
+            )
         except Exception:  # noqa: BLE001
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []

@@ -12,3 +12,4 @@ class Form(StatesGroup):
     weather_time = State()
     weather_interval = State()
     manual_address = State()
+    admin_add_location = State()   # ввод адреса для чужого пользователя

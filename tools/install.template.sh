@@ -111,8 +111,11 @@ if [ "$RECREATE_ENV" = true ]; then
     ask "  Ключ Google Gemini (Enter — без ИИ): " IN_GEMINI '^.{20,}$' no
     ask "  Часовой пояс [Europe/Saratov]: " IN_TZ '^[A-Za-z]+/[A-Za-z_+-]+$' no
     ask "  Город по умолчанию [Саратов]: " IN_CITY '.+' no
+    echo "  Наборы источников: saratov, moscow, spb, kazan, samara (через запятую)"
+    ask "  Какие подключить [saratov]: " IN_PRESET '^[a-z, ]+$' no
     : "${IN_TZ:=Europe/Saratov}"
     : "${IN_CITY:=Саратов}"
+    : "${IN_PRESET:=saratov}"
 
     umask 077
     cat > .env <<ENVEOF
@@ -132,6 +135,7 @@ AI_PREFILTER=1
 AI_SEARCH=1
 TZ=${IN_TZ}
 DEFAULT_CITY=${IN_CITY}
+SOURCE_CITIES=${IN_PRESET}
 POLL_INTERVAL=180
 MSG_PER_SOURCE=5
 CLUSTER_RADIUS_M=1000
@@ -140,7 +144,7 @@ EXTRA_CHANNELS=
 EXTRA_RSS=
 LOG_LEVEL=INFO
 PROMO_ENABLED=1
-PROMO_TITLE=🛡 HydraVPN — обход блокировок
+PROMO_TITLE=🐙 HydraVPN
 PROMO_URL=https://t.me/+WWJFBZVhxBs4ZmNi
 PROMO_IN_ALERTS=0
 ENVEOF

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 from . import config, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
@@ -44,6 +49,25 @@ def promo_row() -> list[InlineKeyboardButton]:
 def promo_only() -> InlineKeyboardMarkup | None:
     row = promo_row()
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
+
+
+# Подписи закреплённых кнопок. Reply-кнопки не умеют открывать ссылки напрямую,
+# поэтому «HydraVPN» присылает сообщение с обычной inline-кнопкой-ссылкой.
+BTN_MENU = "☰ Меню"
+BTN_PROMO = "🐙 HydraVPN"
+
+
+def persistent_keyboard() -> ReplyKeyboardMarkup | None:
+    """Две кнопки, закреплённые под полем ввода после запуска бота."""
+    row = [KeyboardButton(text=BTN_MENU)]
+    if config.PROMO_ENABLED and config.PROMO_URL:
+        row.append(KeyboardButton(text=BTN_PROMO))
+    return ReplyKeyboardMarkup(
+        keyboard=[row],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Отправьте геопозицию или задайте вопрос",
+    )
 
 
 def weather_label(user: dict[str, Any]) -> str:
@@ -121,6 +145,9 @@ def locations_menu(locations: Sequence[dict[str, Any]], owner: str = "") -> Inli
         for loc in locations
     ]
     if owner:
+        rows.append(
+            [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{owner}")]
+        )
         rows.append([InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{owner}")])
     else:
         rows.append(
@@ -166,7 +193,8 @@ def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardM
         [
             InlineKeyboardButton(text="📍 Локации", callback_data=f"usr:locs:{target}"),
             InlineKeyboardButton(text="⚙️ Оповещения", callback_data=f"usr:sets:{target}"),
-        ]
+        ],
+        [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{target}")],
     ]
     assignable = [
         role for role in roles.assignable_roles(actor_role)
@@ -209,6 +237,21 @@ def users_page(
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def geocode_choices(results: list[dict[str, str]], target: str) -> InlineKeyboardMarkup:
+    """Варианты найденных адресов: выбор администратором."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{index + 1}. {item['name'][:45]}",
+                callback_data=f"usr:pickloc:{target}:{index}",
+            )
+        ]
+        for index, item in enumerate(results)
+    ]
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"usr:card:{target}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

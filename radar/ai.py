@@ -30,6 +30,7 @@ import json
 import logging
 import re
 from collections import OrderedDict
+from dataclasses import replace
 from typing import Any, Sequence
 
 from google import genai
@@ -418,6 +419,7 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
 Верни JSON-массив, по одному объекту на каждое сообщение, в том же порядке:
 [{{"index": 1,
    "relevant": true,
+   "all_clear": false,
    "categories": ["jkh"],
    "severity": "critical" | "warning" | "info",
    "scope": "region" | "city" | "district" | "street",
@@ -435,7 +437,11 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
 5. Названия улиц пиши полностью, как в тексте («улица имени Чапаева В.И.» → «улица Чапаева»).
 6. Незаполненные поля возвращай пустой строкой или пустым списком, поля не пропускай.
 7. summary — по-русски, без эмодзи и разметки.
-8. Количество объектов в массиве должно совпадать с количеством сообщений."""
+8. all_clear=true, если сообщение отменяет ранее объявленную опасность: «отбой»,
+   «опасность снята», «режим беспилотной опасности отменён», «угроза миновала»,
+   «обстановка спокойная». Категорию при этом указывай ту же, что у самой угрозы
+   (например, отбой БПЛА → categories=["bpla"], all_clear=true, severity="info").
+9. Количество объектов в массиве должно совпадать с количеством сообщений."""
 
 _cache: "OrderedDict[str, Analysis]" = OrderedDict()
 _CACHE_LIMIT = 800
@@ -472,30 +478,41 @@ def _parse_array(raw: str) -> list[dict[str, Any]]:
     raise ValueError(f"JSON не найден: {cleaned[:200]}")
 
 
-def _fallback(text: str, source: str) -> Analysis:
-    analysis = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
+def _fallback(text: str, source: str, link: str = "") -> Analysis:
+    analysis = heuristic_analysis(
+        text, source=source, default_city=config.DEFAULT_CITY, link=link
+    )
     if not analysis.city and config.DEFAULT_CITY:
         analysis.city = config.DEFAULT_CITY
     return analysis
 
 
-async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
-    """Разбирает список пар (текст, источник), тратя минимум запросов к модели."""
+async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
+    """Разбирает список кортежей (текст, источник[, ссылка]).
+
+    Ссылка не участвует в анализе, а только переносится в результат:
+    кэш строится по тексту, поэтому одна и та же новость из двух лент
+    разбирается один раз.
+    """
     results: list[Analysis | None] = [None] * len(items)
     todo: list[int] = []
 
-    for index, (text, source) in enumerate(items):
+    for index, item in enumerate(items):
+        text, source = item[0], item[1]
+        link = item[2] if len(item) > 2 else ""
         key = _cache_key(text)
         cached = _cache.get(key)
         if cached is not None:
             _cache.move_to_end(key)
             _counters["cached"] += 1
-            results[index] = cached
+            results[index] = replace(cached, link=link or cached.link)
             continue
 
         if config.AI_PREFILTER:
             # Дешёвая проверка: если ключевых слов нет вовсе, модель не нужна.
-            probe = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
+            probe = heuristic_analysis(
+                text, source=source, default_city=config.DEFAULT_CITY, link=link
+            )
             if not probe.relevant:
                 _counters["prefiltered"] += 1
                 results[index] = _remember(text, probe)
@@ -503,7 +520,7 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
 
         if not ENABLED:
             _counters["heuristic"] += 1
-            results[index] = _remember(text, _fallback(text, source))
+            results[index] = _remember(text, _fallback(text, source, link))
             continue
 
         todo.append(index)
@@ -530,13 +547,13 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
             log.info("Квота исчерпана — оставшиеся %d сообщений по эвристике", len(chunk))
             for index in chunk:
                 _counters["heuristic"] += 1
-                results[index] = _remember(items[index][0], _fallback(*items[index]))
+                results[index] = _remember(items[index][0], _fallback(*items[index][:3]))
             continue
         except (AIError, ValueError, json.JSONDecodeError) as exc:
             log.warning("Пакетный разбор не удался (%s) — эвристика", exc)
             for index in chunk:
                 _counters["heuristic"] += 1
-                results[index] = _remember(items[index][0], _fallback(*items[index]))
+                results[index] = _remember(items[index][0], _fallback(*items[index][:3]))
             continue
 
         by_position: dict[int, dict[str, Any]] = {}
@@ -549,12 +566,13 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
 
         for position, index in enumerate(chunk):
             payload = by_position.get(position)
-            text, source = items[index]
+            text, source = items[index][0], items[index][1]
+            link = items[index][2] if len(items[index]) > 2 else ""
             if payload is None:
                 _counters["heuristic"] += 1
-                results[index] = _remember(text, _fallback(text, source))
+                results[index] = _remember(text, _fallback(text, source, link))
                 continue
-            analysis = Analysis.from_payload(payload, source=source, raw=text)
+            analysis = Analysis.from_payload(payload, source=source, raw=text, link=link)
             if not analysis.city and config.DEFAULT_CITY:
                 analysis.city = config.DEFAULT_CITY
             _counters["ai"] += 1
@@ -563,9 +581,9 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
     return [item if item is not None else Analysis(relevant=False) for item in results]
 
 
-async def analyze(text: str, source: str) -> Analysis:
+async def analyze(text: str, source: str, link: str = "") -> Analysis:
     """Разбор одного сообщения (обёртка над пакетным)."""
-    return (await analyze_batch([(text, source)]))[0]
+    return (await analyze_batch([(text, source, link)]))[0]
 
 
 def cache_size() -> int:

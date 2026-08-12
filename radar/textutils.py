@@ -30,6 +30,15 @@ def esc(text: Any) -> str:
     return html.escape(str(text), quote=False)
 
 
+def esc_attr(value: Any) -> str:
+    """Экранирует значение HTML-атрибута.
+
+    Отличается от esc() тем, что экранирует кавычки: незакрытая кавычка
+    в URL разрывает атрибут href, и Telegram отвергает всё сообщение.
+    """
+    return html.escape(str(value), quote=True)
+
+
 def md_to_html(text: str) -> str:
     """Переводит Markdown-ответ модели в безопасный Telegram-HTML."""
     stash: list[str] = []

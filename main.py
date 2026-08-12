@@ -19,6 +19,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 
 CHANGELOG = (
     f"🚀 <b>Система «Радар» v{config.VERSION}</b>\n\n"
+    "✅ <b>Отбой опасности</b> приходит отдельным сообщением с другим сигналом, "
+    "а не как новая тревога.\n"
+    "📍 <b>Администрация может добавлять локации</b> пользователям — по адресу "
+    "текстом или геопозицией.\n"
+    "🔗 <b>Новости из лент СМИ</b> снабжаются ссылкой на источник.\n"
+    "🌍 <b>Новые города</b>: Москва, Санкт-Петербург, Казань, Самара.\n"
+    "☰ <b>Кнопки «Меню» и «HydraVPN»</b> закреплены под полем ввода.\n\n"
+    "<i>Из прошлых версий:</i>\n"
     "<b>Полностью переработанная версия:</b>\n"
     "🛸 <b>Военные угрозы</b> (БПЛА, ракетная опасность) определяются на весь город "
     "и приходят одним сообщением со списком совпавших локаций.\n"
@@ -55,6 +63,23 @@ async def announce() -> None:
             await asyncio.sleep(0.2)
 
 
+async def setup_commands() -> None:
+    """Список команд в синей кнопке меню Telegram."""
+    from aiogram.types import BotCommand
+
+    commands = [
+        BotCommand(command="menu", description="Главное меню"),
+        BotCommand(command="vpn", description="HydraVPN — второй проект"),
+        BotCommand(command="help", description="Справка"),
+        BotCommand(command="id", description="Мой ID и роль"),
+        BotCommand(command="cancel", description="Отменить ввод"),
+    ]
+    try:
+        await bot.set_my_commands(commands)
+    except Exception:  # noqa: BLE001
+        log.warning("Не удалось установить меню команд", exc_info=True)
+
+
 async def main() -> None:
     await storage.load()
 
@@ -76,6 +101,8 @@ async def main() -> None:
             "Модели: ассистент «%s», анализ «%s»",
             ai.current_model(ai.ASSISTANT), ai.current_model(ai.ANALYSIS),
         )
+
+    await setup_commands()
 
     background = asyncio.create_task(monitor.run(), name="monitor")
     asyncio.create_task(announce(), name="announce")

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Система «Радар» v3.3.0 — автономный установщик.
+# Система «Радар» v3.3.5 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -15,7 +15,7 @@
 
 set -Eeuo pipefail
 
-VERSION="3.3.0"
+VERSION="3.3.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -153,6 +153,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 
 CHANGELOG = (
     f"🚀 <b>Система «Радар» v{config.VERSION}</b>\n\n"
+    "✅ <b>Отбой опасности</b> приходит отдельным сообщением с другим сигналом, "
+    "а не как новая тревога.\n"
+    "📍 <b>Администрация может добавлять локации</b> пользователям — по адресу "
+    "текстом или геопозицией.\n"
+    "🔗 <b>Новости из лент СМИ</b> снабжаются ссылкой на источник.\n"
+    "🌍 <b>Новые города</b>: Москва, Санкт-Петербург, Казань, Самара.\n"
+    "☰ <b>Кнопки «Меню» и «HydraVPN»</b> закреплены под полем ввода.\n\n"
+    "<i>Из прошлых версий:</i>\n"
     "<b>Полностью переработанная версия:</b>\n"
     "🛸 <b>Военные угрозы</b> (БПЛА, ракетная опасность) определяются на весь город "
     "и приходят одним сообщением со списком совпавших локаций.\n"
@@ -189,6 +197,23 @@ async def announce() -> None:
             await asyncio.sleep(0.2)
 
 
+async def setup_commands() -> None:
+    """Список команд в синей кнопке меню Telegram."""
+    from aiogram.types import BotCommand
+
+    commands = [
+        BotCommand(command="menu", description="Главное меню"),
+        BotCommand(command="vpn", description="HydraVPN — второй проект"),
+        BotCommand(command="help", description="Справка"),
+        BotCommand(command="id", description="Мой ID и роль"),
+        BotCommand(command="cancel", description="Отменить ввод"),
+    ]
+    try:
+        await bot.set_my_commands(commands)
+    except Exception:  # noqa: BLE001
+        log.warning("Не удалось установить меню команд", exc_info=True)
+
+
 async def main() -> None:
     await storage.load()
 
@@ -210,6 +235,8 @@ async def main() -> None:
             "Модели: ассистент «%s», анализ «%s»",
             ai.current_model(ai.ASSISTANT), ai.current_model(ai.ANALYSIS),
         )
+
+    await setup_commands()
 
     background = asyncio.create_task(monitor.run(), name="monitor")
     asyncio.create_task(announce(), name="announce")
@@ -237,7 +264,7 @@ printf "  %s\n" "radar/__init__.py"
 cat > "radar/__init__.py" <<'RADAR_FILE_04'
 """Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя."""
 
-__version__ = "3.3.0"
+__version__ = "3.3.5"
 __all__ = ["__version__"]
 RADAR_FILE_04
 printf "  %s\n" "radar/config.py"
@@ -309,12 +336,16 @@ EXTRA_RSS: list[str] = [u for u in (os.getenv("EXTRA_RSS") or "").split(",") if 
 
 # --- партнёрский блок (кнопка в меню) ---
 PROMO_ENABLED: bool = (os.getenv("PROMO_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
-PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🛡 HydraVPN — обход блокировок").strip()
+PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🐙 HydraVPN").strip()
 PROMO_URL: str = (os.getenv("PROMO_URL") or "https://t.me/+WWJFBZVhxBs4ZmNi").strip()
 PROMO_TEXT: str = (
     os.getenv("PROMO_TEXT")
-    or "🛡 <b>HydraVPN</b> — собственный VPN-сервис команды «Радар».\n"
-       "Мультипротокольный клиент, свои серверы, без логов.\n"
+    or "🐙 <b>HydraVPN</b> — второй проект команды «Радар».\n\n"
+       "Мультипротокольный VPN-клиент для Android: WireGuard, AmneziaWG, SSTP. "
+       "Свои серверы, шифрование базы, раздельное туннелирование по приложениям "
+       "и доменам.\n\n"
+       "Пригодится, когда включают «белые списки»: мессенджеры и соцсети "
+       "перестают открываться на мобильной сети.\n\n"
        "Подробности и доступ — в канале проекта."
 ).strip()
 # Показывать промо внутри оповещений об угрозах (по умолчанию выключено)
@@ -325,17 +356,9 @@ USER_AGENT: str = (
     os.getenv("USER_AGENT") or f"RadarBot/{VERSION} (+https://github.com/Chistovik92/radar)"
 ).strip()
 
-# Каналы по умолчанию: службы ЖКХ, МЧС, администрации, городские СМИ.
-DEFAULT_CHANNELS: list[str] = [
-    "saratov_24",
-    "mchs_saratov",
-    "saratovmeriya",
-    "saratovzhkh",
-    "saratovvodokanal",
-    "tplus_saratov",
-]
-
-DEFAULT_RSS: list[str] = []
+# Города, чьи наборы источников подключаются при первом запуске.
+# Доступны: saratov, moscow, spb, kazan, samara (см. radar/presets.py).
+SOURCE_CITIES: list[str] = _list("SOURCE_CITIES")
 
 AI_ENABLED: bool = bool(GEMINI_API_KEY)
 
@@ -401,6 +424,15 @@ _TAG = re.compile(r"<[^>]+>")
 def esc(text: Any) -> str:
     """Экранирует текст для Telegram-HTML."""
     return html.escape(str(text), quote=False)
+
+
+def esc_attr(value: Any) -> str:
+    """Экранирует значение HTML-атрибута.
+
+    Отличается от esc() тем, что экранирует кавычки: незакрытая кавычка
+    в URL разрывает атрибут href, и Telegram отвергает всё сообщение.
+    """
+    return html.escape(str(value), quote=True)
 
 
 def md_to_html(text: str) -> str:
@@ -864,6 +896,7 @@ from .textutils import (
     cluster_locations,
     district_matches,
     esc,
+    esc_attr,
     house_in_range,
     normalize_city,
     same_city,
@@ -892,6 +925,12 @@ SEVERITY_ICONS = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
 # молча. Поэтому предупреждение выдаётся не по новости, а автоматически:
 # объявлена угроза БПЛА или ракетная опасность → значит связь, скорее всего,
 # уже ограничена.
+ALL_CLEAR_NOTICE = (
+    "📶 <b>Мобильный интернет</b>\n"
+    "«Белые списки» могут быть отключены в ближайшее время — связь обычно "
+    "восстанавливают не сразу после отбоя, а в течение нескольких часов."
+)
+
 WHITELIST_NOTICE = (
     "📵 <b>Мобильный интернет</b>\n"
     "При угрозе с воздуха операторы включают «белые списки»: работают только "
@@ -916,10 +955,14 @@ class Analysis:
     summary: str = ""
     source: str = ""
     raw: str = ""
+    link: str = ""            # ссылка на новость (для RSS)
+    all_clear: bool = False   # отбой ранее объявленной опасности
     engine: str = "ai"  # ai | heuristic
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any], *, source: str, raw: str) -> "Analysis":
+    def from_payload(
+        cls, payload: dict[str, Any], *, source: str, raw: str, link: str = ""
+    ) -> "Analysis":
         streets: list[dict[str, Any]] = []
         for item in payload.get("streets") or []:
             if isinstance(item, str):
@@ -947,6 +990,8 @@ class Analysis:
             summary=str(payload.get("summary") or "").strip(),
             source=source,
             raw=raw,
+            link=link,
+            all_clear=bool(payload.get("all_clear")),
         )
 
     @property
@@ -998,6 +1043,15 @@ _HEURISTICS: list[tuple[str, re.Pattern]] = [
         r"|перебо\w* (?:со )?связ|ограничен\w* связи", re.I)),
 ]
 
+ALL_CLEAR_RE = re.compile(
+    r"отбо[йя]\b|снят\w*\s+(?:режим\w*\s+)?(?:беспилотн\w*|ракетн\w*|воздушн\w*|опасн\w*)|"
+    r"опасност\w*\s+снят|угроза\s+снят|тревога\s+отмен|"
+    r"режим\w*\s+беспилотн\w*\s+опасност\w*\s+отмен|"
+    r"отмен\w*\s+(?:режим\w*\s+)?(?:беспилотн\w*|ракетн\w*|воздушн\w*)|"
+    r"обстановка\s+спокойн|угроз\w*\s+миновал",
+    re.I,
+)
+
 _STREET_TYPE_RE = (
     r"(?:ул(?:ица|\.)?|пр(?:оспект|-т|\.)?|пер(?:еулок|\.)?|б(?:ульвар|-р)|"
     r"ш(?:оссе|\.)?|пл(?:ощадь|\.)?|проезд|наб(?:ережная|\.)?|тракт|мкр(?:орайон)?)"
@@ -1013,11 +1067,15 @@ _DISTRICT = re.compile(r"([А-ЯЁ][а-яё\-]+)\s+район", re.U)
 _CITY = re.compile(r"(?:в|город[еа]?|г\.)\s+([А-ЯЁ][а-яё\-]+)", re.U)
 
 
-def heuristic_analysis(text: str, *, source: str = "", default_city: str = "") -> Analysis:
+def heuristic_analysis(
+    text: str, *, source: str = "", default_city: str = "", link: str = ""
+) -> Analysis:
     """Резервный разбор без ИИ: ключевые слова + извлечение улиц и домов."""
     categories = [key for key, pattern in _HEURISTICS if pattern.search(text)]
     if not categories:
-        return Analysis(relevant=False, source=source, raw=text, engine="heuristic")
+        return Analysis(
+            relevant=False, source=source, raw=text, link=link, engine="heuristic"
+        )
 
     streets: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1044,10 +1102,15 @@ def heuristic_analysis(text: str, *, source: str = "", default_city: str = "") -
     else:
         scope = "city"
 
-    severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
+    all_clear = bool(ALL_CLEAR_RE.search(text))
+    if all_clear:
+        severity = "info"
+    else:
+        severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
     summary = re.sub(r"\s+", " ", text).strip()
     return Analysis(
         relevant=True,
+        all_clear=all_clear,
         categories=categories,
         severity=severity,
         scope=scope,
@@ -1057,6 +1120,7 @@ def heuristic_analysis(text: str, *, source: str = "", default_city: str = "") -
         summary=summary[:400],
         source=source,
         raw=text,
+        link=link,
         engine="heuristic",
     )
 
@@ -1136,12 +1200,22 @@ def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "")
     return f"📍 <b>Совпавшие локации:</b> {names}{suffix}"
 
 
-def _event_line(analysis: Analysis) -> str:
-    icon = SEVERITY_ICONS.get(analysis.severity, "🔵")
+def _source_label(analysis: Analysis) -> str:
     label = analysis.source or "источник"
-    source = esc(label) if ("." in label or "/" in label) else f"@{esc(label)}"
+    name = esc(label) if ("." in label or "/" in label) else f"@{esc(label)}"
+    # У новости из RSS есть прямая ссылка — делаем заголовок кликабельным.
+    if analysis.link:
+        return f'<a href="{esc_attr(analysis.link)}">{name}</a>'
+    return name
+
+
+def _event_line(analysis: Analysis) -> str:
+    icon = "✅" if analysis.all_clear else SEVERITY_ICONS.get(analysis.severity, "🔵")
     mark = "" if analysis.engine == "ai" else " <i>(без ИИ)</i>"
-    return f"{icon} <b>{source}</b>{mark}\n{esc(analysis.text())}"
+    line = f"{icon} <b>{_source_label(analysis)}</b>{mark}\n{esc(analysis.text())}"
+    if analysis.link:
+        line += f'\n🔗 <a href="{esc_attr(analysis.link)}">Читать источник</a>'
+    return line
 
 
 def build_city_alert(
@@ -1163,6 +1237,27 @@ def build_city_alert(
     if whitelist_notice:
         lines.append("")
         lines.append(WHITELIST_NOTICE)
+    return "\n".join(lines)
+
+
+def build_all_clear(
+    city: str,
+    locations: Sequence[dict[str, Any]],
+    events: Sequence[Analysis],
+    whitelist_notice: bool = False,
+) -> str:
+    """Отбой опасности: спокойный тон, другой сигнал, без слова «ОПАСНОСТЬ»."""
+    titles = {analysis.title() for analysis in events}
+    lines = [
+        f"✅ <b>ОТБОЙ — {esc(city or 'город')}</b>",
+        f"<b>{esc(' / '.join(sorted(titles)))}</b> — опасность снята",
+        format_locations_header(locations, "весь город"),
+        "",
+    ]
+    lines.extend(_event_line(analysis) for analysis in events)
+    if whitelist_notice:
+        lines.append("")
+        lines.append(ALL_CLEAR_NOTICE)
     return "\n".join(lines)
 
 
@@ -1236,7 +1331,12 @@ def plan_alerts(
 
         if analysis.is_city_wide:
             key, label = _city_of(analysis, matched, default_city)
-            bucket = city_buckets.setdefault(key, {"city": label, "locs": {}, "events": []})
+            # Отбой не должен смешиваться с действующей тревогой в одном сообщении.
+            bucket_key = f"{key}:clear" if analysis.all_clear else key
+            bucket = city_buckets.setdefault(
+                bucket_key,
+                {"city": label, "locs": {}, "events": [], "all_clear": analysis.all_clear},
+            )
             bucket["events"].append(analysis)
             for loc in matched:
                 bucket["locs"][loc.get("id") or loc.get("name")] = loc
@@ -1257,17 +1357,16 @@ def plan_alerts(
     messages: list[tuple[str, str]] = []
     for bucket in city_buckets.values():
         military = any("bpla" in analysis.categories for analysis in bucket["events"])
-        messages.append(
-            (
-                "city",
-                build_city_alert(
-                    bucket["city"],
-                    list(bucket["locs"].values()),
-                    bucket["events"],
-                    whitelist_notice=military and warn_about_whitelist,
-                ),
+        notice = military and warn_about_whitelist
+        locs = list(bucket["locs"].values())
+        if bucket["all_clear"]:
+            messages.append(
+                ("clear", build_all_clear(bucket["city"], locs, bucket["events"], notice))
             )
-        )
+        else:
+            messages.append(
+                ("city", build_city_alert(bucket["city"], locs, bucket["events"], notice))
+            )
     for bucket in cluster_buckets.values():
         messages.append(
             (
@@ -1279,8 +1378,183 @@ def plan_alerts(
         )
     return messages
 RADAR_FILE_09
+printf "  %s\n" "radar/presets.py"
+cat > "radar/presets.py" <<'RADAR_FILE_10'
+"""Наборы источников по городам.
+
+Списки — стартовые, не исчерпывающие: каналы переименовываются, закрываются
+и мигрируют на другие площадки. Актуальность проверяется командой
+`python3 tools/check_sources.py`, которая опрашивает каждый источник
+и показывает дату последней публикации.
+
+Важное наблюдение (август 2026): часть государственных ведомств переносит
+оперативные сводки в MAX, оставляя в Telegram только ссылки. Публичного
+API у MAX нет, поэтому такие источники деградируют до заголовков —
+следите за отчётом проверки и заменяйте их городскими СМИ.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class CityPreset:
+    key: str
+    title: str
+    region: str
+    channels: list[str] = field(default_factory=list)
+    rss: list[str] = field(default_factory=list)
+    note: str = ""
+
+
+# Федеральные источники: полезны всем городам.
+FEDERAL = CityPreset(
+    key="federal",
+    title="Федеральные",
+    region="Россия",
+    channels=[
+        "mchs_official",   # МЧС России
+    ],
+)
+
+SARATOV = CityPreset(
+    key="saratov",
+    title="Саратов",
+    region="Саратовская область",
+    channels=[
+        # службы
+        "saratovvodokanal", "saratovzhkh", "tplus_saratov", "komgkhsar64",
+        "m_u_p_saratovvodostok", "gjisar64", "minstroysaratov",
+        # власть
+        "saratovmer", "saratovmeriya", "adm_saratov", "sarobl", "busargin_r",
+        "rada_saratov", "PavelSurkov_Saratov",
+        # районные администрации
+        "kir_admin", "len_admin", "admlenin", "okt_admin", "october_admin",
+        "frunz_admin", "gagarin_admin", "volzhsky_admin", "zavadm_saratov",
+        # МЧС и происшествия
+        "mchs_saratov", "chp_saratov", "mysaratov_radar", "saratov_24",
+    ],
+    rss=[
+        "https://www.sarbc.ru/rss",
+        "https://www.vzsar.ru/rss",
+        "https://nversia.ru/rss",
+        "https://sarnovosti.ru/rss",
+        "https://saratov.gov.ru/rss",
+        "https://saratov24.tv/rss",
+        "https://gtrk-saratov.ru/feed",
+    ],
+    note="Лента fn-volga.ru удалена: издание «Свободные новости» закрылось, "
+         "сайт заблокирован.",
+)
+
+MOSCOW = CityPreset(
+    key="moscow",
+    title="Москва",
+    region="Москва и область",
+    channels=[
+        "mchsmsk",        # МЧС Москвы
+        "vodamoskvy",     # Вода Москвы / Мосводоканал
+        "DtOperativno",   # Дептранс, оперативно
+        "mos_sobyanin",   # мэр Москвы
+        "mosgorzdrav",    # оперативные сообщения депздрава
+    ],
+    rss=[
+        "https://www.mos.ru/rss/",
+        "https://www.mskagency.ru/rss",
+    ],
+)
+
+SPB = CityPreset(
+    key="spb",
+    title="Санкт-Петербург",
+    region="Санкт-Петербург и Ленобласть",
+    channels=[
+        "VDKSPB",           # Водоканал Санкт-Петербурга
+        "mchspetersburg",   # МЧС Санкт-Петербурга
+        "mchs_spb",         # Уведомления МЧС СПб (экстренная информация РСЧС)
+        "gov_spb",          # правительство города
+        "spb_gorod",        # городские новости
+    ],
+    rss=[
+        "https://www.fontanka.ru/fontanka.rss",
+        "https://www.dp.ru/exportnews.xml",
+    ],
+    note="МЧС Петербурга с весны 2026 публикует полные сводки в MAX, "
+         "в Telegram остаются преимущественно ссылки.",
+)
+
+KAZAN = CityPreset(
+    key="kazan",
+    title="Казань",
+    region="Татарстан",
+    channels=[
+        "vodokanalkzn",    # Казанский Водоканал — публикует адреса отключений
+        "kzn_official",    # мэрия Казани
+        "tatarstansos",    # происшествия в РТ
+        "mchs_tatarstan",  # МЧС Татарстана
+        "kznonline",       # городской паблик
+    ],
+    rss=[
+        "https://www.business-gazeta.ru/rss",
+        "https://inkazan.ru/rss",
+    ],
+    note="Казанский Водоканал даёт самые подробные адресные списки отключений.",
+)
+
+SAMARA = CityPreset(
+    key="samara",
+    title="Самара",
+    region="Самарская область",
+    channels=[
+        "mchs_samara",     # МЧС Самарской области
+        "SamarOblast",     # правительство области
+        "chp_samara",      # происшествия, публикует отбои
+        "samara_gov",      # администрация Самары
+        "rks_samara",      # РКС-Самара, водоснабжение
+    ],
+    rss=[
+        "https://63.ru/rss/",
+        "https://volga.news/rss",
+    ],
+)
+
+ALL: list[CityPreset] = [FEDERAL, SARATOV, MOSCOW, SPB, KAZAN, SAMARA]
+BY_KEY = {preset.key: preset for preset in ALL}
+
+
+def for_city(name: str) -> CityPreset | None:
+    """Подбор пресета по названию города (в том числе из DEFAULT_CITY)."""
+    needle = (name or "").strip().lower()
+    if not needle:
+        return None
+    for preset in ALL:
+        if preset.key == needle or preset.title.lower() == needle:
+            return preset
+        if needle in preset.title.lower() or preset.title.lower() in needle:
+            return preset
+    return None
+
+
+def channels_for(cities: list[str]) -> list[str]:
+    result: list[str] = list(FEDERAL.channels)
+    for name in cities:
+        preset = for_city(name)
+        if preset and preset.key != "federal":
+            result.extend(preset.channels)
+    return list(dict.fromkeys(result))
+
+
+def rss_for(cities: list[str]) -> list[str]:
+    result: list[str] = list(FEDERAL.rss)
+    for name in cities:
+        preset = for_city(name)
+        if preset and preset.key != "federal":
+            result.extend(preset.rss)
+    return list(dict.fromkeys(result))
+RADAR_FILE_10
 printf "  %s\n" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_10'
+cat > "radar/storage.py" <<'RADAR_FILE_11'
 """JSON-хранилище с атомарной записью, блокировкой и миграцией с версий 2.x."""
 
 from __future__ import annotations
@@ -1296,6 +1570,7 @@ from typing import Any
 import aiofiles
 
 from . import config
+from . import presets
 from .matching import CATEGORY_TITLES
 from .roles import SUPERADMIN, USER
 
@@ -1404,10 +1679,12 @@ def migrate(data: dict[str, Any]) -> dict[str, Any]:
     else:
         data["users"][superadmin]["role"] = SUPERADMIN
 
-    for channel in config.DEFAULT_CHANNELS + config.EXTRA_CHANNELS:
+    # Стартовый набор: федеральные источники плюс пресеты городов из SOURCE_CITIES.
+    cities = config.SOURCE_CITIES or ([config.DEFAULT_CITY] if config.DEFAULT_CITY else [])
+    for channel in presets.channels_for(cities) + config.EXTRA_CHANNELS:
         if channel and channel not in data["channels"]:
             data["channels"].append(channel)
-    for feed in config.DEFAULT_RSS + config.EXTRA_RSS:
+    for feed in presets.rss_for(cities) + config.EXTRA_RSS:
         if feed and feed not in data["rss"]:
             data["rss"].append(feed)
 
@@ -1516,9 +1793,9 @@ def pending() -> list[str]:
 
 def meta() -> dict[str, Any]:
     return DB.setdefault("meta", {})
-RADAR_FILE_10
+RADAR_FILE_11
 printf "  %s\n" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_11'
+cat > "radar/exporting.py" <<'RADAR_FILE_12'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -1719,9 +1996,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_11
+RADAR_FILE_12
 printf "  %s\n" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_12'
+cat > "radar/ai.py" <<'RADAR_FILE_13'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -1754,6 +2031,7 @@ import json
 import logging
 import re
 from collections import OrderedDict
+from dataclasses import replace
 from typing import Any, Sequence
 
 from google import genai
@@ -2142,6 +2420,7 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
 Верни JSON-массив, по одному объекту на каждое сообщение, в том же порядке:
 [{{"index": 1,
    "relevant": true,
+   "all_clear": false,
    "categories": ["jkh"],
    "severity": "critical" | "warning" | "info",
    "scope": "region" | "city" | "district" | "street",
@@ -2159,7 +2438,11 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
 5. Названия улиц пиши полностью, как в тексте («улица имени Чапаева В.И.» → «улица Чапаева»).
 6. Незаполненные поля возвращай пустой строкой или пустым списком, поля не пропускай.
 7. summary — по-русски, без эмодзи и разметки.
-8. Количество объектов в массиве должно совпадать с количеством сообщений."""
+8. all_clear=true, если сообщение отменяет ранее объявленную опасность: «отбой»,
+   «опасность снята», «режим беспилотной опасности отменён», «угроза миновала»,
+   «обстановка спокойная». Категорию при этом указывай ту же, что у самой угрозы
+   (например, отбой БПЛА → categories=["bpla"], all_clear=true, severity="info").
+9. Количество объектов в массиве должно совпадать с количеством сообщений."""
 
 _cache: "OrderedDict[str, Analysis]" = OrderedDict()
 _CACHE_LIMIT = 800
@@ -2196,30 +2479,41 @@ def _parse_array(raw: str) -> list[dict[str, Any]]:
     raise ValueError(f"JSON не найден: {cleaned[:200]}")
 
 
-def _fallback(text: str, source: str) -> Analysis:
-    analysis = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
+def _fallback(text: str, source: str, link: str = "") -> Analysis:
+    analysis = heuristic_analysis(
+        text, source=source, default_city=config.DEFAULT_CITY, link=link
+    )
     if not analysis.city and config.DEFAULT_CITY:
         analysis.city = config.DEFAULT_CITY
     return analysis
 
 
-async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
-    """Разбирает список пар (текст, источник), тратя минимум запросов к модели."""
+async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
+    """Разбирает список кортежей (текст, источник[, ссылка]).
+
+    Ссылка не участвует в анализе, а только переносится в результат:
+    кэш строится по тексту, поэтому одна и та же новость из двух лент
+    разбирается один раз.
+    """
     results: list[Analysis | None] = [None] * len(items)
     todo: list[int] = []
 
-    for index, (text, source) in enumerate(items):
+    for index, item in enumerate(items):
+        text, source = item[0], item[1]
+        link = item[2] if len(item) > 2 else ""
         key = _cache_key(text)
         cached = _cache.get(key)
         if cached is not None:
             _cache.move_to_end(key)
             _counters["cached"] += 1
-            results[index] = cached
+            results[index] = replace(cached, link=link or cached.link)
             continue
 
         if config.AI_PREFILTER:
             # Дешёвая проверка: если ключевых слов нет вовсе, модель не нужна.
-            probe = heuristic_analysis(text, source=source, default_city=config.DEFAULT_CITY)
+            probe = heuristic_analysis(
+                text, source=source, default_city=config.DEFAULT_CITY, link=link
+            )
             if not probe.relevant:
                 _counters["prefiltered"] += 1
                 results[index] = _remember(text, probe)
@@ -2227,7 +2521,7 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
 
         if not ENABLED:
             _counters["heuristic"] += 1
-            results[index] = _remember(text, _fallback(text, source))
+            results[index] = _remember(text, _fallback(text, source, link))
             continue
 
         todo.append(index)
@@ -2254,13 +2548,13 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
             log.info("Квота исчерпана — оставшиеся %d сообщений по эвристике", len(chunk))
             for index in chunk:
                 _counters["heuristic"] += 1
-                results[index] = _remember(items[index][0], _fallback(*items[index]))
+                results[index] = _remember(items[index][0], _fallback(*items[index][:3]))
             continue
         except (AIError, ValueError, json.JSONDecodeError) as exc:
             log.warning("Пакетный разбор не удался (%s) — эвристика", exc)
             for index in chunk:
                 _counters["heuristic"] += 1
-                results[index] = _remember(items[index][0], _fallback(*items[index]))
+                results[index] = _remember(items[index][0], _fallback(*items[index][:3]))
             continue
 
         by_position: dict[int, dict[str, Any]] = {}
@@ -2273,12 +2567,13 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
 
         for position, index in enumerate(chunk):
             payload = by_position.get(position)
-            text, source = items[index]
+            text, source = items[index][0], items[index][1]
+            link = items[index][2] if len(items[index]) > 2 else ""
             if payload is None:
                 _counters["heuristic"] += 1
-                results[index] = _remember(text, _fallback(text, source))
+                results[index] = _remember(text, _fallback(text, source, link))
                 continue
-            analysis = Analysis.from_payload(payload, source=source, raw=text)
+            analysis = Analysis.from_payload(payload, source=source, raw=text, link=link)
             if not analysis.city and config.DEFAULT_CITY:
                 analysis.city = config.DEFAULT_CITY
             _counters["ai"] += 1
@@ -2287,9 +2582,9 @@ async def analyze_batch(items: Sequence[tuple[str, str]]) -> list[Analysis]:
     return [item if item is not None else Analysis(relevant=False) for item in results]
 
 
-async def analyze(text: str, source: str) -> Analysis:
+async def analyze(text: str, source: str, link: str = "") -> Analysis:
     """Разбор одного сообщения (обёртка над пакетным)."""
-    return (await analyze_batch([(text, source)]))[0]
+    return (await analyze_batch([(text, source, link)]))[0]
 
 
 def cache_size() -> int:
@@ -2333,9 +2628,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_12
+RADAR_FILE_13
 printf "  %s\n" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_13'
+cat > "radar/geocode.py" <<'RADAR_FILE_14'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 from __future__ import annotations
@@ -2440,9 +2735,91 @@ def _fallback(lat: float, lon: float) -> dict[str, str]:
         "district": "",
         "region": "",
     }
-RADAR_FILE_13
+
+
+_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+
+
+async def forward(
+    session: aiohttp.ClientSession, query: str, city_hint: str = ""
+) -> list[dict[str, str]]:
+    """Прямое геокодирование: по строке адреса вернуть варианты с координатами.
+
+    Нужно администрации, чтобы добавлять локации пользователям без геопозиции.
+    """
+    text = (query or "").strip()
+    if len(text) < 3:
+        return []
+    if city_hint and city_hint.lower() not in text.lower():
+        text = f"{text}, {city_hint}"
+
+    await _throttle()
+    params = {
+        "q": text,
+        "format": "jsonv2",
+        "addressdetails": "1",
+        "accept-language": "ru",
+        "limit": "5",
+        "countrycodes": "ru",
+    }
+    try:
+        async with session.get(
+            _SEARCH_URL, params=params, headers={"User-Agent": config.USER_AGENT}
+        ) as response:
+            if response.status != 200:
+                log.warning("Nominatim search вернул %s", response.status)
+                return []
+            payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Поиск адреса не удался: %s", exc)
+        return []
+
+    results: list[dict[str, str]] = []
+    for item in payload if isinstance(payload, list) else []:
+        try:
+            lat = float(item.get("lat"))
+            lon = float(item.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        address = item.get("address") or {}
+        street = (
+            address.get("road")
+            or address.get("pedestrian")
+            or address.get("residential")
+            or ""
+        )
+        house = address.get("house_number") or ""
+        city = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or ""
+        )
+        label = ", ".join(part for part in (street, house) if part)
+        if not label:
+            label = str(item.get("name") or "").strip()
+        if not label:
+            continue
+        if city and city not in label:
+            label = f"{label} ({city})"
+        results.append(
+            {
+                "name": label,
+                "display": str(item.get("display_name") or label),
+                "lat": f"{lat}",
+                "lon": f"{lon}",
+                "street": street,
+                "house": house,
+                "city": city,
+                "district": address.get("city_district") or address.get("suburb") or "",
+                "region": address.get("state") or "",
+            }
+        )
+    return results
+RADAR_FILE_14
 printf "  %s\n" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_14'
+cat > "radar/weather.py" <<'RADAR_FILE_15'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -2769,9 +3146,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_14
+RADAR_FILE_15
 printf "  %s\n" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_15'
+cat > "radar/sources.py" <<'RADAR_FILE_16'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 from __future__ import annotations
@@ -2802,6 +3179,7 @@ class Item:
     source: str
     text: str
     kind: str = "tg"  # tg | rss
+    link: str = ""    # прямая ссылка на публикацию
 
     @property
     def key(self) -> str:
@@ -2888,8 +3266,27 @@ async def fetch_rss(session: aiohttp.ClientSession, url: str, limit: int) -> lis
         body_text = _child_text(entry, "description") or _child_text(entry, "summary")
         text = clean(f"{title}\n{body_text}")
         if len(text) >= 20:
-            items.append(Item(source=label, text=text, kind="rss"))
+            items.append(Item(source=label, text=text, kind="rss", link=_entry_link(entry)))
     return items
+
+
+def _entry_link(entry: ET.Element) -> str:
+    """Ссылка на публикацию: RSS кладёт её в текст, Atom — в атрибут href."""
+    node = entry.find("link")
+    if node is not None:
+        if node.text and node.text.strip():
+            return node.text.strip()
+        href = node.get("href")
+        if href:
+            return href.strip()
+    for candidate in entry.findall("{http://www.w3.org/2005/Atom}link"):
+        rel = candidate.get("rel") or "alternate"
+        if rel == "alternate" and candidate.get("href"):
+            return candidate.get("href").strip()
+    guid = entry.find("guid")
+    if guid is not None and guid.text and guid.text.strip().startswith("http"):
+        return guid.text.strip()
+    return ""
 
 
 def _child_text(entry: ET.Element, tag: str) -> str:
@@ -2927,9 +3324,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_15
+RADAR_FILE_16
 printf "  %s\n" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_16'
+cat > "radar/tg.py" <<'RADAR_FILE_17'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 from __future__ import annotations
@@ -3021,16 +3418,21 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_16
+RADAR_FILE_17
 printf "  %s\n" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_17'
+cat > "radar/keyboards.py" <<'RADAR_FILE_18'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 from __future__ import annotations
 
 from typing import Any, Sequence
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 from . import config, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
@@ -3070,6 +3472,25 @@ def promo_row() -> list[InlineKeyboardButton]:
 def promo_only() -> InlineKeyboardMarkup | None:
     row = promo_row()
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
+
+
+# Подписи закреплённых кнопок. Reply-кнопки не умеют открывать ссылки напрямую,
+# поэтому «HydraVPN» присылает сообщение с обычной inline-кнопкой-ссылкой.
+BTN_MENU = "☰ Меню"
+BTN_PROMO = "🐙 HydraVPN"
+
+
+def persistent_keyboard() -> ReplyKeyboardMarkup | None:
+    """Две кнопки, закреплённые под полем ввода после запуска бота."""
+    row = [KeyboardButton(text=BTN_MENU)]
+    if config.PROMO_ENABLED and config.PROMO_URL:
+        row.append(KeyboardButton(text=BTN_PROMO))
+    return ReplyKeyboardMarkup(
+        keyboard=[row],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Отправьте геопозицию или задайте вопрос",
+    )
 
 
 def weather_label(user: dict[str, Any]) -> str:
@@ -3147,6 +3568,9 @@ def locations_menu(locations: Sequence[dict[str, Any]], owner: str = "") -> Inli
         for loc in locations
     ]
     if owner:
+        rows.append(
+            [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{owner}")]
+        )
         rows.append([InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{owner}")])
     else:
         rows.append(
@@ -3192,7 +3616,8 @@ def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardM
         [
             InlineKeyboardButton(text="📍 Локации", callback_data=f"usr:locs:{target}"),
             InlineKeyboardButton(text="⚙️ Оповещения", callback_data=f"usr:sets:{target}"),
-        ]
+        ],
+        [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{target}")],
     ]
     assignable = [
         role for role in roles.assignable_roles(actor_role)
@@ -3238,6 +3663,21 @@ def users_page(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def geocode_choices(results: list[dict[str, str]], target: str) -> InlineKeyboardMarkup:
+    """Варианты найденных адресов: выбор администратором."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{index + 1}. {item['name'][:45]}",
+                callback_data=f"usr:pickloc:{target}:{index}",
+            )
+        ]
+        for index, item in enumerate(results)
+    ]
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"usr:card:{target}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def confirm(action: str, argument: str, back: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -3259,9 +3699,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_17
+RADAR_FILE_18
 printf "  %s\n" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_18'
+cat > "radar/states.py" <<'RADAR_FILE_19'
 """Состояния FSM."""
 
 from __future__ import annotations
@@ -3276,9 +3716,10 @@ class Form(StatesGroup):
     weather_time = State()
     weather_interval = State()
     manual_address = State()
-RADAR_FILE_18
+    admin_add_location = State()   # ввод адреса для чужого пользователя
+RADAR_FILE_19
 printf "  %s\n" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_19'
+cat > "radar/middlewares.py" <<'RADAR_FILE_20'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 from __future__ import annotations
@@ -3343,9 +3784,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_19
+RADAR_FILE_20
 printf "  %s\n" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_20'
+cat > "radar/monitor.py" <<'RADAR_FILE_21'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 from __future__ import annotations
@@ -3497,7 +3938,9 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     analyses: list[Analysis] = []
     if items:
         try:
-            parsed = await ai.analyze_batch([(item.text, item.source) for item in items])
+            parsed = await ai.analyze_batch(
+                [(item.text, item.source, item.link) for item in items]
+            )
         except Exception:  # noqa: BLE001
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []
@@ -3544,9 +3987,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s\n" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_21'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_22'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 from __future__ import annotations
@@ -3567,9 +4010,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s\n" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_22'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_23'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 from __future__ import annotations
@@ -3580,7 +4023,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
 from .. import ai, config, keyboards, monitor, roles, storage
 from ..textutils import esc
@@ -3605,6 +4048,14 @@ def greeting(role: str) -> str:
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
+    # Закреплённые кнопки ставятся отдельным сообщением: Telegram не позволяет
+    # приложить reply-клавиатуру и inline-меню к одному и тому же сообщению.
+    keyboard = keyboards.persistent_keyboard()
+    if keyboard is not None:
+        await message.answer(
+            "Кнопки <b>Меню</b> и <b>HydraVPN</b> закреплены под полем ввода.",
+            reply_markup=keyboard,
+        )
     await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
 
 
@@ -3612,6 +4063,28 @@ async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
 async def cmd_menu(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
     await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+
+
+@router.message(F.text == keyboards.BTN_MENU)
+async def button_menu(message: Message, state: FSMContext, role: str) -> None:
+    await state.clear()
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+
+
+@router.message(F.text == keyboards.BTN_PROMO)
+async def button_promo(message: Message) -> None:
+    if not config.PROMO_ENABLED or not config.PROMO_URL:
+        return
+    await message.answer(
+        config.PROMO_TEXT,
+        reply_markup=keyboards.promo_only(),
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
+
+
+@router.message(Command("vpn"))
+async def cmd_vpn(message: Message) -> None:
+    await button_promo(message)
 
 
 @router.message(Command("cancel"))
@@ -3640,6 +4113,7 @@ async def cmd_help(message: Message, role: str) -> None:
         "",
         "<b>Команды</b>",
         "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод",
+        "/vpn — о проекте HydraVPN",
     ]
     if roles.can_use_assistant(role):
         lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")
@@ -3813,9 +4287,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s\n" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_23'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_24'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 from __future__ import annotations
@@ -3824,6 +4298,7 @@ from typing import Any
 
 import aiohttp
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
 
 from .. import config, geocode, keyboards, roles, storage, weather
@@ -3867,7 +4342,9 @@ def locations_text(user: dict[str, Any], owner_label: str = "") -> str:
     return f"{head}\n{body}{tail if not owner_label else ''}"
 
 
-@router.message(F.location)
+# StateFilter(None) обязателен: иначе этот обработчик перехватит геопозицию,
+# отправленную администратором при добавлении локации другому пользователю.
+@router.message(StateFilter(None), F.location)
 async def add_location(message: Message, user: dict[str, Any]) -> None:
     lat = message.location.latitude
     lon = message.location.longitude
@@ -3971,9 +4448,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s\n" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_24'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_25'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 from __future__ import annotations
@@ -4111,9 +4588,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
     await message.answer(
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s\n" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_25'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_26'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 from __future__ import annotations
@@ -4390,17 +4867,20 @@ async def import_sources(message: Message, role: str) -> None:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s\n" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_26'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_27'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 from __future__ import annotations
 
+import aiohttp
 from aiogram import F, Router
-from aiogram.types import CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message
 
-from .. import keyboards, roles, storage
+from .. import config, geocode, keyboards, roles, storage
+from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, bot, safe_edit, send_html
 from .locations import locations_text
@@ -4593,9 +5073,167 @@ async def invite(call: CallbackQuery, role: str) -> None:
         "<i>Перешедший по ней получает роль «Пользователь».</i>",
         back_kb("menu:admin", "◀️ Назад"),
     )
-RADAR_FILE_26
+
+
+# --------------------------------------------------------------------------
+#  Добавление локации пользователю силами администрации
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("usr:addloc:"))
+async def ask_location(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    target = call.data.split(":")[2]
+    user = storage.get_user(target)
+    if user is None:
+        await call.answer("Пользователь не найден.", show_alert=True)
+        return
+    if not roles.can_edit_user(role, user.get("role")):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    await call.answer()
+    await state.set_state(Form.admin_add_location)
+    await state.update_data(target_id=target)
+    hint = f" Город по умолчанию — {esc(config.DEFAULT_CITY)}." if config.DEFAULT_CITY else ""
+    await safe_edit(
+        call,
+        f"➕ <b>Локация для</b> <code>{target}</code>\n\n"
+        f"Пришлите адрес текстом, например <code>улица Чапаева, 12</code>.{hint}\n"
+        "Можно также переслать или отправить геопозицию — она будет добавлена "
+        "этому пользователю.\n\n<i>/cancel — отмена.</i>",
+        back_kb(f"usr:card:{target}", "Отмена"),
+    )
+
+
+def _session() -> aiohttp.ClientSession:
+    return aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=25),
+        headers={"User-Agent": config.USER_AGENT},
+    )
+
+
+async def _attach(target: str, info: dict[str, str], lat: float, lon: float) -> dict:
+    location = storage.new_location(
+        info.get("name") or f"{lat:.5f}, {lon:.5f}", lat, lon,
+        street=info.get("street", ""), house=info.get("house", ""),
+        city=info.get("city", ""), district=info.get("district", ""),
+        region=info.get("region", ""),
+    )
+    storage.get_user(target)["locs"].append(location)
+    await storage.save()
+    return location
+
+
+async def _report(message: Message, target: str, location: dict) -> None:
+    details = ", ".join(
+        part for part in (location["district"], location["city"], location["region"]) if part
+    )
+    text = (
+        f"✅ Локация <b>{esc(location['name'])}</b> добавлена пользователю "
+        f"<code>{target}</code>."
+    )
+    if details:
+        text += f"\n<i>{esc(details)}</i>"
+    if not location["street"]:
+        text += "\n⚠️ <i>Улица не определена — адресные оповещения ЖКХ могут быть неточными.</i>"
+    await message.answer(text, reply_markup=back_kb(f"usr:card:{target}", "◀️ К пользователю"))
+    await send_html(
+        target,
+        f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
+        "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
+    )
+
+
+@router.message(Form.admin_add_location, F.location)
+async def add_by_geo(message: Message, state: FSMContext, role: str) -> None:
+    data = await state.get_data()
+    target = data.get("target_id", "")
+    user = storage.get_user(target)
+    if user is None or not roles.can_edit_user(role, user.get("role")):
+        await state.clear()
+        await message.answer("❌ Пользователь не найден или недостаточно прав.")
+        return
+
+    lat, lon = message.location.latitude, message.location.longitude
+    async with _session() as session:
+        info = await geocode.reverse(session, lat, lon)
+    await state.clear()
+    await _report(message, target, await _attach(target, info, lat, lon))
+
+
+@router.message(Form.admin_add_location, F.text)
+async def add_by_address(message: Message, state: FSMContext, role: str) -> None:
+    query = (message.text or "").strip()
+    if query.startswith("/"):
+        return
+
+    data = await state.get_data()
+    target = data.get("target_id", "")
+    user = storage.get_user(target)
+    if user is None or not roles.can_edit_user(role, user.get("role")):
+        await state.clear()
+        await message.answer("❌ Пользователь не найден или недостаточно прав.")
+        return
+
+    async with _session() as session:
+        found = await geocode.forward(session, query, config.DEFAULT_CITY)
+
+    if not found:
+        await message.answer(
+            "❌ Адрес не найден. Уточните формулировку — например, "
+            "<code>Саратов, улица Чапаева, 12</code>. /cancel — отмена."
+        )
+        return
+
+    if len(found) == 1:
+        await state.clear()
+        item = found[0]
+        location = await _attach(target, item, float(item["lat"]), float(item["lon"]))
+        await _report(message, target, location)
+        return
+
+    await state.update_data(candidates=found)
+    lines = [f"🔎 <b>Найдено вариантов: {len(found)}</b>", ""]
+    lines += [
+        f"{index + 1}. {esc(item['display'][:120])}" for index, item in enumerate(found)
+    ]
+    lines.append("")
+    lines.append("<i>Выберите нужный.</i>")
+    await message.answer("\n".join(lines), reply_markup=keyboards.geocode_choices(found, target))
+
+
+@router.callback_query(F.data.startswith("usr:pickloc:"))
+async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    parts = call.data.split(":")
+    target, index = parts[2], int(parts[3])
+    user = storage.get_user(target)
+    if user is None or not roles.can_edit_user(role, user.get("role")):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    candidates = (await state.get_data()).get("candidates") or []
+    if index >= len(candidates):
+        await call.answer("Список устарел, начните заново.", show_alert=True)
+        await state.clear()
+        return
+
+    item = candidates[index]
+    await state.clear()
+    await call.answer("Добавляю…")
+    location = await _attach(target, item, float(item["lat"]), float(item["lon"]))
+    await safe_edit(
+        call,
+        f"✅ Локация <b>{esc(location['name'])}</b> добавлена пользователю "
+        f"<code>{target}</code>.",
+        keyboards.user_card(target, user.get("role", "user"), role),
+    )
+    await send_html(
+        target,
+        f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
+        "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
+    )
+RADAR_FILE_27
 printf "  %s\n" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_27'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_28'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -4735,7 +5373,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_27
+RADAR_FILE_28
 ok "Файлы записаны"
 
 # --- 3. Настройки ---------------------------------------------------------
@@ -4772,8 +5410,11 @@ if [ "$RECREATE_ENV" = true ]; then
     ask "  Ключ Google Gemini (Enter — без ИИ): " IN_GEMINI '^.{20,}$' no
     ask "  Часовой пояс [Europe/Saratov]: " IN_TZ '^[A-Za-z]+/[A-Za-z_+-]+$' no
     ask "  Город по умолчанию [Саратов]: " IN_CITY '.+' no
+    echo "  Наборы источников: saratov, moscow, spb, kazan, samara (через запятую)"
+    ask "  Какие подключить [saratov]: " IN_PRESET '^[a-z, ]+$' no
     : "${IN_TZ:=Europe/Saratov}"
     : "${IN_CITY:=Саратов}"
+    : "${IN_PRESET:=saratov}"
 
     umask 077
     cat > .env <<ENVEOF
@@ -4793,6 +5434,7 @@ AI_PREFILTER=1
 AI_SEARCH=1
 TZ=${IN_TZ}
 DEFAULT_CITY=${IN_CITY}
+SOURCE_CITIES=${IN_PRESET}
 POLL_INTERVAL=180
 MSG_PER_SOURCE=5
 CLUSTER_RADIUS_M=1000
@@ -4801,7 +5443,7 @@ EXTRA_CHANNELS=
 EXTRA_RSS=
 LOG_LEVEL=INFO
 PROMO_ENABLED=1
-PROMO_TITLE=🛡 HydraVPN — обход блокировок
+PROMO_TITLE=🐙 HydraVPN
 PROMO_URL=https://t.me/+WWJFBZVhxBs4ZmNi
 PROMO_IN_ALERTS=0
 ENVEOF

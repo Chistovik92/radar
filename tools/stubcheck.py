@@ -107,13 +107,15 @@ def install() -> None:
         TelegramForbiddenError=type("TelegramForbiddenError", (Exception,), {}),
         TelegramRetryAfter=type("TelegramRetryAfter", (Exception,), {}),
     )
-    module("aiogram.filters", Command=Any, CommandStart=Any)
+    module("aiogram.filters", Command=Any, CommandStart=Any, StateFilter=Any)
     module("aiogram.fsm.context", FSMContext=Any)
     module("aiogram.fsm.state", State=Any, StatesGroup=object)
     module("aiogram.fsm.storage.memory", MemoryStorage=Any)
     module(
         "aiogram.types",
         CallbackQuery=Any, InlineKeyboardButton=Any, InlineKeyboardMarkup=Any,
+        KeyboardButton=Any, ReplyKeyboardMarkup=Any, BufferedInputFile=Any,
+        LinkPreviewOptions=Any,
         Message=Any, TelegramObject=Any,
     )
     aiogram.types = sys.modules["aiogram.types"]
@@ -123,7 +125,7 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
+        "radar.presets", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",

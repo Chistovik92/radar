@@ -28,6 +28,7 @@ class Item:
     source: str
     text: str
     kind: str = "tg"  # tg | rss
+    link: str = ""    # прямая ссылка на публикацию
 
     @property
     def key(self) -> str:
@@ -114,8 +115,27 @@ async def fetch_rss(session: aiohttp.ClientSession, url: str, limit: int) -> lis
         body_text = _child_text(entry, "description") or _child_text(entry, "summary")
         text = clean(f"{title}\n{body_text}")
         if len(text) >= 20:
-            items.append(Item(source=label, text=text, kind="rss"))
+            items.append(Item(source=label, text=text, kind="rss", link=_entry_link(entry)))
     return items
+
+
+def _entry_link(entry: ET.Element) -> str:
+    """Ссылка на публикацию: RSS кладёт её в текст, Atom — в атрибут href."""
+    node = entry.find("link")
+    if node is not None:
+        if node.text and node.text.strip():
+            return node.text.strip()
+        href = node.get("href")
+        if href:
+            return href.strip()
+    for candidate in entry.findall("{http://www.w3.org/2005/Atom}link"):
+        rel = candidate.get("rel") or "alternate"
+        if rel == "alternate" and candidate.get("href"):
+            return candidate.get("href").strip()
+    guid = entry.find("guid")
+    if guid is not None and guid.text and guid.text.strip().startswith("http"):
+        return guid.text.strip()
+    return ""
 
 
 def _child_text(entry: ET.Element, tag: str) -> str:
