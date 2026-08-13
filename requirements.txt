@@ -4,3 +4,8 @@ beautifulsoup4>=4.12
 google-genai>=1.0
 aiofiles>=23.2
 python-dotenv>=1.0
+
+# База данных
+SQLAlchemy[asyncio]>=2.0,<3
+asyncpg>=0.29
+alembic>=1.13

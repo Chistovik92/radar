@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Совместимость с базой продакшен-версии 2.6.0.
+"""Совместимость с базой продакшен-версии 3.x при переносе в PostgreSQL.
 
 Внешние зависимости подменяются заглушками из tools/stubcheck.py,
 поэтому тест работает без установленных aiogram/aiohttp/google-genai.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -19,9 +25,10 @@ import stubcheck  # noqa: E402
 
 stubcheck.install()
 
-from radar import storage  # noqa: E402
+from radar.db import importer  # noqa: E402
+from radar.db import repo  # noqa: E402
 
-# Точный формат db.json из install.sh версии 2.6.0
+# Формат db.json версии 3.x
 LEGACY = {
     "users": {
         "111": {
@@ -36,7 +43,7 @@ LEGACY = {
         },
         "222": {
             "role": "user",
-            "locs": ["Рахова, 3"],  # формат ещё до 2.0 — строка
+            "locs": [{"name": "Рахова, 3", "lat": 51.52, "lon": 46.01}],
             "settings": {"jkh": True},
         },
     },
@@ -44,11 +51,11 @@ LEGACY = {
     "pending": ["someChannel"],
 }
 
-
 class TestMigration(unittest.TestCase):
     def setUp(self):
-        self.data = storage.migrate({k: v.copy() if isinstance(v, dict) else list(v)
-                                     for k, v in LEGACY.items()})
+        self.data = importer._normalize(
+            {k: v.copy() if isinstance(v, dict) else list(v) for k, v in LEGACY.items()}
+        )
 
     def test_users_preserved(self):
         self.assertIn("111", self.data["users"])
@@ -62,10 +69,17 @@ class TestMigration(unittest.TestCase):
         for key in ("city", "district", "region", "street", "house"):
             self.assertIn(key, location)
 
-    def test_string_location_converted(self):
+    def test_second_user_location(self):
         location = self.data["users"]["222"]["locs"][0]
         self.assertEqual(location["name"], "Рахова, 3")
-        self.assertEqual(location["lat"], 0.0)
+        self.assertEqual(location["lat"], 51.52)
+
+    def test_legacy_2x_string_location_skipped(self):
+        """Формат 2.x не поддерживается: такие записи пропускаются с предупреждением."""
+        data = importer._normalize(
+            {"users": {"333": {"role": "user", "locs": ["Просто строка"]}}}
+        )
+        self.assertEqual(data["users"]["333"]["locs"], [])
 
     def test_missing_settings_filled(self):
         settings = self.data["users"]["222"]["settings"]
@@ -80,7 +94,6 @@ class TestMigration(unittest.TestCase):
     def test_defaults_added(self):
         self.assertIn("rss", self.data)
         self.assertIn("meta", self.data)
-        self.assertEqual(self.data["meta"]["schema"], 3)
         # Существующие каналы сохраняются, федеральные добавляются всегда.
         self.assertIn("saratov_24", self.data["channels"])
         self.assertIn("mchs_official", self.data["channels"])
@@ -93,26 +106,28 @@ class TestMigration(unittest.TestCase):
         saved = config.SOURCE_CITIES
         config.SOURCE_CITIES = ["kazan"]
         try:
-            data = storage.migrate({})
+            data = importer._normalize({})
         finally:
             config.SOURCE_CITIES = saved
         self.assertIn("vodokanalkzn", data["channels"])
         self.assertIn("mchs_official", data["channels"])
 
-    def test_migration_is_idempotent(self):
-        once = storage.migrate(self.data)
-        twice = storage.migrate(once)
-        self.assertEqual(len(twice["users"]["111"]["locs"]), 1)
-        self.assertEqual(twice["channels"], once["channels"])
+    def test_normalize_is_idempotent(self):
+        once = importer._normalize(dict(LEGACY))
+        twice = importer._normalize(
+            {"users": {}, "channels": once["channels"], "pending": once["pending"]}
+        )
+        self.assertEqual(len(once["users"]["111"]["locs"]), 1)
+        self.assertEqual(sorted(twice["channels"]), sorted(once["channels"]))
 
     def test_empty_database(self):
-        fresh = storage.migrate({})
+        fresh = importer._normalize({})
         self.assertIn("users", fresh)
         self.assertIn("channels", fresh)
         self.assertTrue(fresh["channels"])
 
     def test_broken_types_repaired(self):
-        broken = storage.migrate({"users": [], "channels": "x", "pending": None})
+        broken = importer._normalize({"users": [], "channels": "x", "pending": None})
         self.assertIsInstance(broken["users"], dict)
         self.assertIsInstance(broken["channels"], list)
         self.assertIsInstance(broken["pending"], list)

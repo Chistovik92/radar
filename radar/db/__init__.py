@@ -1,4 +1,4 @@
-"""Слой базы данных: модели, подключение, репозиторий."""
+"""Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
 # Система «Радар» — мониторинг городских угроз и аварий ЖКХ
@@ -8,10 +8,15 @@
 
 from __future__ import annotations
 
-from .engine import dispose, engine, session, session_factory, wait_ready
-from .models import Base, Delivery, Event, Location, Meta, Source, User
+from .base import (
+    Button,
+    EventKind,
+    InboundEvent,
+    Keyboard,
+    OutboundMessage,
+    Transport,
+)
 
 __all__ = [
-    "Base", "Delivery", "Event", "Location", "Meta", "Source", "User",
-    "dispose", "engine", "session", "session_factory", "wait_ready",
+    "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
 ]

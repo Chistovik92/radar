@@ -1,5 +1,11 @@
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import aiohttp
@@ -16,7 +22,6 @@ from .locations import locations_text
 router = Router(name="users")
 
 PAGE_SIZE = 8
-
 
 def _page(page: int) -> tuple[list[tuple[str, str, int]], int]:
     records = sorted(
@@ -176,8 +181,7 @@ async def confirm_delete(call: CallbackQuery, role: str) -> None:
     if not roles.can_delete_user(role, user.get("role")):
         await call.answer("Недостаточно прав.", show_alert=True)
         return
-    storage.users().pop(target, None)
-    await storage.save()
+    await storage.drop_user(target)
     await call.answer("Пользователь удалён")
     items, pages = _page(0)
     await safe_edit(

@@ -7,6 +7,12 @@
     python3 tools/stubcheck.py
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import os
@@ -19,7 +25,7 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("BOT_TOKEN", "123456:stub")
 os.environ.setdefault("SUPERADMIN_ID", "1")
 os.environ.setdefault("GEMINI_API_KEY", "")
-
+os.environ.setdefault("DB_PASSWORD", "stub")
 
 class Any:
     """Универсальная заглушка: любой атрибут, вызов, оператор и контекст."""
@@ -88,6 +94,25 @@ class Dispatcher(Router):
 
 def install() -> None:
     module("dotenv", load_dotenv=lambda *a, **k: None)
+
+    # SQLAlchemy: заглушки достаточно, чтобы модели импортировались.
+    module(
+        "sqlalchemy", BigInteger=Any, Boolean=Any, DateTime=Any, Float=Any,
+        ForeignKey=Any, Index=Any, Integer=Any, String=Any, Text=Any,
+        UniqueConstraint=Any, delete=Any(), func=Any(), select=Any(), text=Any(),
+        pool=Any(),
+    )
+    module("sqlalchemy.dialects", postgresql=Any())
+    module("sqlalchemy.dialects.postgresql", JSONB=Any, insert=Any())
+    module(
+        "sqlalchemy.orm",
+        DeclarativeBase=object, Mapped=Any, mapped_column=Any(), relationship=Any(),
+    )
+    module(
+        "sqlalchemy.ext.asyncio",
+        AsyncEngine=Any, AsyncSession=Any, async_sessionmaker=Any,
+        create_async_engine=Any(), async_engine_from_config=Any(),
+    )
     module("aiofiles", open=Any())
 
     module("aiohttp", ClientSession=Any, ClientTimeout=Any)
@@ -125,11 +150,12 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.presets", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
+        "radar.identity", "radar.features", "radar.presets", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",
-        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.assistant",
+        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.assistant",
+        "radar.platforms", "radar.platforms.base",
         "main",
     ]
     failures = 0

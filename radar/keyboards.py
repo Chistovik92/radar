@@ -1,5 +1,11 @@
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 from typing import Any, Sequence
@@ -13,7 +19,6 @@ from aiogram.types import (
 
 from . import config, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
-
 
 def main_menu(role: str | None) -> InlineKeyboardMarkup:
     rows = [
@@ -32,6 +37,8 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="🛡 Модерация", callback_data="menu:mod")])
     if roles.is_admin(role):
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
+    if roles.is_superadmin(role):
+        rows.append([InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list")])
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
     promo = promo_row()
     if promo:
@@ -52,9 +59,9 @@ def promo_only() -> InlineKeyboardMarkup | None:
 
 
 # Подписи закреплённых кнопок. Reply-кнопки не умеют открывать ссылки напрямую,
-# поэтому «HydraVPN» присылает сообщение с обычной inline-кнопкой-ссылкой.
+# поэтому «HydraSite» присылает сообщение с обычной inline-кнопкой-ссылкой.
 BTN_MENU = "☰ Меню"
-BTN_PROMO = "🐙 HydraVPN"
+BTN_PROMO = "🐙 HydraSite"
 
 
 def persistent_keyboard() -> ReplyKeyboardMarkup | None:

@@ -1,5 +1,11 @@
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -15,7 +21,6 @@ from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
 router = Router(name="common")
-
 
 def greeting(role: str) -> str:
     lines = [f"🎛 <b>Система «Радар» v{config.VERSION}</b>", f"Ваша роль: {roles.title(role)}"]
@@ -38,7 +43,7 @@ async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
     keyboard = keyboards.persistent_keyboard()
     if keyboard is not None:
         await message.answer(
-            "Кнопки <b>Меню</b> и <b>HydraVPN</b> закреплены под полем ввода.",
+            "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
             reply_markup=keyboard,
         )
     await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
@@ -67,8 +72,8 @@ async def button_promo(message: Message) -> None:
     )
 
 
-@router.message(Command("vpn"))
-async def cmd_vpn(message: Message) -> None:
+@router.message(Command("partner", "vpn"))
+async def cmd_partner(message: Message) -> None:
     await button_promo(message)
 
 
@@ -98,7 +103,7 @@ async def cmd_help(message: Message, role: str) -> None:
         "",
         "<b>Команды</b>",
         "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод",
-        "/vpn — о проекте HydraVPN",
+        "/partner — партнёрский проект",
     ]
     if roles.can_use_assistant(role):
         lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")

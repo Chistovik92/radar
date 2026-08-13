@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Точка входа системы «Радар»."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import asyncio
@@ -19,13 +25,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 
 CHANGELOG = (
     f"🚀 <b>Система «Радар» v{config.VERSION}</b>\n\n"
+    "🗄 <b>PostgreSQL вместо файла.</b> Данные перенесены автоматически.\n"
+    "🕘 <b>История событий</b> — теперь видно, что приходило по каждому адресу.\n"
+    "⚙️ <b>Управление возможностями</b> прямо в боте: /features у суперадминистратора. "
+    "Функции включаются и выключаются без обновления версии.\n"
+    "🔌 <b>Готовность к мессенджеру MAX</b> — единое ядро для двух платформ.\n"
+    "🐙 Проект HydraVPN переименован в <b>HydraSite</b>, команда /partner.\n\n"
+    "<i>Из прошлых версий:</i>\n"
     "✅ <b>Отбой опасности</b> приходит отдельным сообщением с другим сигналом, "
     "а не как новая тревога.\n"
     "📍 <b>Администрация может добавлять локации</b> пользователям — по адресу "
     "текстом или геопозицией.\n"
     "🔗 <b>Новости из лент СМИ</b> снабжаются ссылкой на источник.\n"
     "🌍 <b>Новые города</b>: Москва, Санкт-Петербург, Казань, Самара.\n"
-    "☰ <b>Кнопки «Меню» и «HydraVPN»</b> закреплены под полем ввода.\n\n"
+    "☰ <b>Кнопки «Меню» и «HydraSite»</b> закреплены под полем ввода.\n\n"
     "<i>Из прошлых версий:</i>\n"
     "<b>Полностью переработанная версия:</b>\n"
     "🛸 <b>Военные угрозы</b> (БПЛА, ракетная опасность) определяются на весь город "
@@ -49,14 +62,12 @@ CHANGELOG = (
     "автоматически вместе с оповещением о БПЛА или ракетной опасности."
 )
 
-
 async def announce() -> None:
     """Рассылает changelog один раз на версию, а не при каждом рестарте."""
-    meta = storage.meta()
-    if meta.get("announced_version") == config.VERSION:
+    marker = await storage.meta_get("announced_version") or {}
+    if marker.get("value") == config.VERSION:
         return
-    meta["announced_version"] = config.VERSION
-    await storage.save()
+    await storage.meta_set("announced_version", {"value": config.VERSION})
     for uid, user in list(storage.users().items()):
         if roles.is_moderator(user.get("role")):
             await send_html(uid, CHANGELOG)
@@ -69,7 +80,7 @@ async def setup_commands() -> None:
 
     commands = [
         BotCommand(command="menu", description="Главное меню"),
-        BotCommand(command="vpn", description="HydraVPN — второй проект"),
+        BotCommand(command="partner", description="Партнёрский проект"),
         BotCommand(command="help", description="Справка"),
         BotCommand(command="id", description="Мой ID и роль"),
         BotCommand(command="cancel", description="Отменить ввод"),
@@ -80,8 +91,36 @@ async def setup_commands() -> None:
         log.warning("Не удалось установить меню команд", exc_info=True)
 
 
-async def main() -> None:
+def upgrade_schema() -> None:
+    """Накатывает миграции Alembic. Выполняется синхронно до старта бота."""
+    from alembic import command
+    from alembic.config import Config
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    cfg = Config(os.path.join(root, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(root, "migrations"))
+    command.upgrade(cfg, "head")
+
+
+async def prepare_database() -> None:
+    """Готовит базу: ждёт готовности, накатывает схему, переносит старые данные."""
+    await db_engine.wait_ready()
+    await asyncio.to_thread(upgrade_schema)
+    log.info("Схема базы актуальна")
+    if await importer.is_empty():
+        log.info("База пуста — переношу данные прежней версии")
+        await importer.run()
     await storage.load()
+    features.apply(await repo.load_features())
+    active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
+    log.info("Возможностей включено: %d из %d", active, len(features.FLAGS))
+    removed = await repo.purge_old_events()
+    if removed:
+        log.info("Удалено устаревших событий: %d", removed)
+
+
+async def main() -> None:
+    await prepare_database()
 
     dp.message.outer_middleware(AccessMiddleware())
     dp.callback_query.outer_middleware(AccessMiddleware())
@@ -117,6 +156,7 @@ async def main() -> None:
         except asyncio.CancelledError:
             pass
         await bot.session.close()
+        await db_engine.dispose()
         log.info("Остановлено")
 
 

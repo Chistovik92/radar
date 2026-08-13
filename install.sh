@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 #
-# Система «Радар» v3.3.5 — автономный установщик.
+# Система «Радар» v4.0.0 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -15,19 +22,19 @@
 
 set -Eeuo pipefail
 
-VERSION="3.3.5"
+VERSION="4.0.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
 RECREATE_ENV=false
-NO_CACHE=""
+NO_CACHE_FLAG=""
 SHOW_LOGS=false
 UNINSTALL=false
 
 for arg in "$@"; do
     case "$arg" in
         --recreate-env) RECREATE_ENV=true ;;
-        --no-cache)     NO_CACHE="--no-cache" ;;
+        --no-cache)     NO_CACHE_FLAG="--no-cache" ;;
         --logs)         SHOW_LOGS=true ;;
         --uninstall)    UNINSTALL=true ;;
         -v|--version)   echo "radar $VERSION"; exit 0 ;;
@@ -50,9 +57,10 @@ command -v docker >/dev/null 2>&1 || die "Docker не установлен: http
 docker info >/dev/null 2>&1 || die "Docker-демон недоступен. Запустите его или добавьте пользователя в группу docker."
 
 if [ "$UNINSTALL" = true ]; then
-    info "Удаляю контейнер и образ (данные в $APP_DIR/data сохраняются)"
-    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    info "Удаляю контейнеры и образ (данные в $APP_DIR/data сохраняются)"
+    (cd "$APP_DIR" 2>/dev/null && docker compose down --remove-orphans) >/dev/null 2>&1 || true
+    docker stop "$CONTAINER_NAME" radar_db >/dev/null 2>&1 || true
+    docker rm "$CONTAINER_NAME" radar_db >/dev/null 2>&1 || true
     docker rmi "$IMAGE_NAME" >/dev/null 2>&1 || true
     ok "Готово."
     exit 0
@@ -74,7 +82,7 @@ fi
 
 # --- 2. Файлы проекта -----------------------------------------------------
 info "Разворачиваю файлы проекта"
-mkdir -p "radar" "radar/handlers"
+mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
 printf "  %s\n" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -83,6 +91,11 @@ beautifulsoup4>=4.12
 google-genai>=1.0
 aiofiles>=23.2
 python-dotenv>=1.0
+
+# База данных
+SQLAlchemy[asyncio]>=2.0,<3
+asyncpg>=0.29
+alembic>=1.13
 RADAR_FILE_00
 printf "  %s\n" "Dockerfile"
 cat > "Dockerfile" <<'RADAR_FILE_01'
@@ -105,16 +118,117 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py ./
+COPY main.py alembic.ini ./
 COPY radar ./radar
+COPY migrations ./migrations
 
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app
 USER radar
 
 CMD ["python", "-u", "main.py"]
 RADAR_FILE_01
+printf "  %s\n" "docker-compose.yml"
+cat > "docker-compose.yml" <<'RADAR_FILE_02'
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: radar_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-radar}
+      POSTGRES_USER: ${DB_USER:-radar}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD обязателен}
+      # Слабое железо: русская локаль и лишние воркеры не нужны
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    command: >
+      postgres
+      -c shared_buffers=64MB
+      -c effective_cache_size=192MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=25
+      -c max_parallel_workers=0
+      -c max_parallel_workers_per_gather=0
+      -c wal_compression=on
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-radar} -d ${DB_NAME:-radar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  radar:
+    build:
+      context: .
+      args:
+        TZ: ${TZ:-Europe/Saratov}
+    image: radar_image
+    container_name: radar_container
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+RADAR_FILE_02
+printf "  %s\n" "alembic.ini"
+cat > "alembic.ini" <<'RADAR_FILE_03'
+[alembic]
+script_location = migrations
+prepend_sys_path = .
+version_path_separator = os
+
+[loggers]
+keys = root,sqlalchemy,alembic
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARNING
+handlers = console
+qualname =
+
+[logger_sqlalchemy]
+level = WARNING
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+datefmt = %H:%M:%S
+RADAR_FILE_03
 printf "  %s\n" ".dockerignore"
-cat > ".dockerignore" <<'RADAR_FILE_02'
+cat > ".dockerignore" <<'RADAR_FILE_04'
 .git
 .github
 .env
@@ -129,11 +243,17 @@ __pycache__
 
 # стенд сравнения провайдеров не нужен в образе
 bench
-RADAR_FILE_02
+RADAR_FILE_04
 printf "  %s\n" "main.py"
-cat > "main.py" <<'RADAR_FILE_03'
+cat > "main.py" <<'RADAR_FILE_05'
 #!/usr/bin/env python3
 """Точка входа системы «Радар»."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -153,13 +273,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 
 CHANGELOG = (
     f"🚀 <b>Система «Радар» v{config.VERSION}</b>\n\n"
+    "🗄 <b>PostgreSQL вместо файла.</b> Данные перенесены автоматически.\n"
+    "🕘 <b>История событий</b> — теперь видно, что приходило по каждому адресу.\n"
+    "⚙️ <b>Управление возможностями</b> прямо в боте: /features у суперадминистратора. "
+    "Функции включаются и выключаются без обновления версии.\n"
+    "🔌 <b>Готовность к мессенджеру MAX</b> — единое ядро для двух платформ.\n"
+    "🐙 Проект HydraVPN переименован в <b>HydraSite</b>, команда /partner.\n\n"
+    "<i>Из прошлых версий:</i>\n"
     "✅ <b>Отбой опасности</b> приходит отдельным сообщением с другим сигналом, "
     "а не как новая тревога.\n"
     "📍 <b>Администрация может добавлять локации</b> пользователям — по адресу "
     "текстом или геопозицией.\n"
     "🔗 <b>Новости из лент СМИ</b> снабжаются ссылкой на источник.\n"
     "🌍 <b>Новые города</b>: Москва, Санкт-Петербург, Казань, Самара.\n"
-    "☰ <b>Кнопки «Меню» и «HydraVPN»</b> закреплены под полем ввода.\n\n"
+    "☰ <b>Кнопки «Меню» и «HydraSite»</b> закреплены под полем ввода.\n\n"
     "<i>Из прошлых версий:</i>\n"
     "<b>Полностью переработанная версия:</b>\n"
     "🛸 <b>Военные угрозы</b> (БПЛА, ракетная опасность) определяются на весь город "
@@ -183,14 +310,12 @@ CHANGELOG = (
     "автоматически вместе с оповещением о БПЛА или ракетной опасности."
 )
 
-
 async def announce() -> None:
     """Рассылает changelog один раз на версию, а не при каждом рестарте."""
-    meta = storage.meta()
-    if meta.get("announced_version") == config.VERSION:
+    marker = await storage.meta_get("announced_version") or {}
+    if marker.get("value") == config.VERSION:
         return
-    meta["announced_version"] = config.VERSION
-    await storage.save()
+    await storage.meta_set("announced_version", {"value": config.VERSION})
     for uid, user in list(storage.users().items()):
         if roles.is_moderator(user.get("role")):
             await send_html(uid, CHANGELOG)
@@ -203,7 +328,7 @@ async def setup_commands() -> None:
 
     commands = [
         BotCommand(command="menu", description="Главное меню"),
-        BotCommand(command="vpn", description="HydraVPN — второй проект"),
+        BotCommand(command="partner", description="Партнёрский проект"),
         BotCommand(command="help", description="Справка"),
         BotCommand(command="id", description="Мой ID и роль"),
         BotCommand(command="cancel", description="Отменить ввод"),
@@ -214,8 +339,36 @@ async def setup_commands() -> None:
         log.warning("Не удалось установить меню команд", exc_info=True)
 
 
-async def main() -> None:
+def upgrade_schema() -> None:
+    """Накатывает миграции Alembic. Выполняется синхронно до старта бота."""
+    from alembic import command
+    from alembic.config import Config
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    cfg = Config(os.path.join(root, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(root, "migrations"))
+    command.upgrade(cfg, "head")
+
+
+async def prepare_database() -> None:
+    """Готовит базу: ждёт готовности, накатывает схему, переносит старые данные."""
+    await db_engine.wait_ready()
+    await asyncio.to_thread(upgrade_schema)
+    log.info("Схема базы актуальна")
+    if await importer.is_empty():
+        log.info("База пуста — переношу данные прежней версии")
+        await importer.run()
     await storage.load()
+    features.apply(await repo.load_features())
+    active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
+    log.info("Возможностей включено: %d из %d", active, len(features.FLAGS))
+    removed = await repo.purge_old_events()
+    if removed:
+        log.info("Удалено устаревших событий: %d", removed)
+
+
+async def main() -> None:
+    await prepare_database()
 
     dp.message.outer_middleware(AccessMiddleware())
     dp.callback_query.outer_middleware(AccessMiddleware())
@@ -251,6 +404,7 @@ async def main() -> None:
         except asyncio.CancelledError:
             pass
         await bot.session.close()
+        await db_engine.dispose()
         log.info("Остановлено")
 
 
@@ -259,17 +413,39 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-RADAR_FILE_03
+RADAR_FILE_05
 printf "  %s\n" "radar/__init__.py"
-cat > "radar/__init__.py" <<'RADAR_FILE_04'
-"""Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя."""
+cat > "radar/__init__.py" <<'RADAR_FILE_06'
+"""Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя.
 
-__version__ = "3.3.5"
-__all__ = ["__version__"]
-RADAR_FILE_04
+Автор: SecretHero · https://github.com/Chistovik92/radar
+Лицензия: GPL-3.0
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+__version__ = "4.0.0"
+__author__ = "SecretHero"
+__license__ = "GPL-3.0"
+__url__ = "https://github.com/Chistovik92/radar"
+
+SIGNATURE = f"Система «Радар» v{__version__} · автор {__author__} · {__url__}"
+
+__all__ = ["__version__", "__author__", "__license__", "__url__", "SIGNATURE"]
+RADAR_FILE_06
 printf "  %s\n" "radar/config.py"
-cat > "radar/config.py" <<'RADAR_FILE_05'
+cat > "radar/config.py" <<'RADAR_FILE_07'
 """Конфигурация приложения: читается из переменных окружения (.env)."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -282,7 +458,6 @@ from dotenv import load_dotenv
 from . import __version__
 
 load_dotenv()
-
 
 def _int(name: str, default: int) -> int:
     raw = (os.getenv(name) or "").strip()
@@ -326,6 +501,35 @@ AI_PREFILTER: bool = (os.getenv("AI_PREFILTER") or "1").strip().lower() not in (
 AI_SEARCH: bool = (os.getenv("AI_SEARCH") or "1").strip().lower() not in ("0", "false", "no")
 
 DATA_FILE: str = (os.getenv("DATA_FILE") or "data/db.json").strip()
+
+# --- PostgreSQL ---
+DB_HOST: str = (os.getenv("DB_HOST") or "postgres").strip()
+DB_PORT: int = _int("DB_PORT", 5432)
+DB_NAME: str = (os.getenv("DB_NAME") or "radar").strip()
+DB_USER: str = (os.getenv("DB_USER") or "radar").strip()
+DB_PASSWORD: str = (os.getenv("DB_PASSWORD") or "").strip()
+DATABASE_URL: str = (os.getenv("DATABASE_URL") or "").strip()
+DB_POOL_SIZE: int = max(1, _int("DB_POOL_SIZE", 5))
+DB_MAX_OVERFLOW: int = max(0, _int("DB_MAX_OVERFLOW", 5))
+DB_ECHO: bool = (os.getenv("DB_ECHO") or "0").strip().lower() in ("1", "true", "yes")
+# Сколько дней хранить историю событий; 0 — бессрочно.
+EVENT_RETENTION_DAYS: int = max(0, _int("EVENT_RETENTION_DAYS", 180))
+
+
+def database_url(async_driver: bool = True) -> str:
+    """Строка подключения. DATABASE_URL имеет приоритет над отдельными полями."""
+    from urllib.parse import quote_plus
+
+    driver = "postgresql+asyncpg" if async_driver else "postgresql+psycopg2"
+    if DATABASE_URL:
+        url = DATABASE_URL
+        # Приводим к нужному драйверу, чтобы одна переменная годилась и Alembic.
+        for prefix in ("postgresql+asyncpg://", "postgresql+psycopg2://", "postgresql://", "postgres://"):
+            if url.startswith(prefix):
+                return driver + "://" + url[len(prefix):]
+        return url
+    password = f":{quote_plus(DB_PASSWORD)}" if DB_PASSWORD else ""
+    return f"{driver}://{DB_USER}{password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 POLL_INTERVAL: int = max(60, _int("POLL_INTERVAL", 180))
 MSG_PER_SOURCE: int = max(1, _int("MSG_PER_SOURCE", 5))
 CLUSTER_RADIUS_M: int = max(0, _int("CLUSTER_RADIUS_M", 1000))
@@ -336,20 +540,29 @@ EXTRA_RSS: list[str] = [u for u in (os.getenv("EXTRA_RSS") or "").split(",") if 
 
 # --- партнёрский блок (кнопка в меню) ---
 PROMO_ENABLED: bool = (os.getenv("PROMO_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
-PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🐙 HydraVPN").strip()
+PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🐙 HydraSite").strip()
 PROMO_URL: str = (os.getenv("PROMO_URL") or "https://t.me/+WWJFBZVhxBs4ZmNi").strip()
 PROMO_TEXT: str = (
     os.getenv("PROMO_TEXT")
-    or "🐙 <b>HydraVPN</b> — второй проект команды «Радар».\n\n"
-       "Мультипротокольный VPN-клиент для Android: WireGuard, AmneziaWG, SSTP. "
-       "Свои серверы, шифрование базы, раздельное туннелирование по приложениям "
-       "и доменам.\n\n"
-       "Пригодится, когда включают «белые списки»: мессенджеры и соцсети "
-       "перестают открываться на мобильной сети.\n\n"
+    or "🐙 <b>HydraSite</b> — второй проект команды «Радар».\n\n"
        "Подробности и доступ — в канале проекта."
 ).strip()
 # Показывать промо внутри оповещений об угрозах (по умолчанию выключено)
 PROMO_IN_ALERTS: bool = (os.getenv("PROMO_IN_ALERTS") or "0").strip().lower() in ("1", "true", "yes")
+
+# --- выход в интернет через внешний узел (версия 4.1) ---
+# Локальный SOCKS5, который поднимает соседний контейнер sing-box.
+EGRESS_PROXY: str = (os.getenv("EGRESS_PROXY") or "").strip()
+# Ключ шифрования подписок и ключей серверов в базе.
+SECRET_KEY: str = (os.getenv("SECRET_KEY") or "").strip()
+
+# --- мессенджер MAX (включается в 4.2) ---
+MAX_BOT_TOKEN: str = (os.getenv("MAX_BOT_TOKEN") or "").strip()
+# В документации встречаются оба домена; оставлено настраиваемым.
+MAX_API_URL: str = (os.getenv("MAX_API_URL") or "https://platform-api2.max.ru").strip()
+MAX_MODE: str = (os.getenv("MAX_MODE") or "polling").strip().lower()  # polling | webhook
+MAX_WEBHOOK_URL: str = (os.getenv("MAX_WEBHOOK_URL") or "").strip()
+MAX_WEBHOOK_PORT: int = _int("MAX_WEBHOOK_PORT", 8081)
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 USER_AGENT: str = (
@@ -379,6 +592,8 @@ def validate() -> None:
     problems = []
     if not BOT_TOKEN:
         problems.append("BOT_TOKEN не задан")
+    if not DATABASE_URL and not DB_PASSWORD:
+        problems.append("DB_PASSWORD не задан (или задайте DATABASE_URL целиком)")
     if not SUPERADMIN_ID:
         problems.append("SUPERADMIN_ID не задан или равен 0")
     if problems:
@@ -391,14 +606,20 @@ def validate() -> None:
             "GEMINI_API_KEY не задан: ИИ-ассистент отключён, "
             "анализ новостей переключён на эвристический режим."
         )
-RADAR_FILE_05
+RADAR_FILE_07
 printf "  %s\n" "radar/textutils.py"
-cat > "radar/textutils.py" <<'RADAR_FILE_06'
+cat > "radar/textutils.py" <<'RADAR_FILE_08'
 """Чистые утилиты: разметка, нормализация адресов, геометрия, кластеризация.
 
 Модуль намеренно не импортирует внешние пакеты — его можно тестировать
 без установленного aiogram/aiohttp/google-genai.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -419,7 +640,6 @@ _BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
 _ITALIC = re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])")
 _HEADER = re.compile(r"(?m)^\s{0,3}#{1,6}\s*(.+)$")
 _TAG = re.compile(r"<[^>]+>")
-
 
 def esc(text: Any) -> str:
     """Экранирует текст для Telegram-HTML."""
@@ -649,9 +869,9 @@ def cluster_center(cluster: Sequence[dict[str, Any]]) -> tuple[float, float]:
         sum(p[0] for p in points) / len(points),
         sum(p[1] for p in points) / len(points),
     )
-RADAR_FILE_06
+RADAR_FILE_08
 printf "  %s\n" "radar/roles.py"
-cat > "radar/roles.py" <<'RADAR_FILE_07'
+cat > "radar/roles.py" <<'RADAR_FILE_09'
 """Роли и права доступа.
 
 Иерархия: superadmin (3) > admin (2) > moderator (1) > user (0).
@@ -664,6 +884,12 @@ cat > "radar/roles.py" <<'RADAR_FILE_07'
   и не удаляет.
 * Пользователь управляет только собой.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -681,7 +907,6 @@ TITLES = {
     ADMIN: "👑 Администратор",
     SUPERADMIN: "⭐️ Суперадминистратор",
 }
-
 
 def level(role: str | None) -> int:
     return LEVEL.get(role or USER, 0)
@@ -756,9 +981,9 @@ def can_moderate_sources(actor_role: str | None) -> bool:
 
 def can_use_assistant(actor_role: str | None) -> bool:
     return is_moderator(actor_role)
-RADAR_FILE_07
+RADAR_FILE_09
 printf "  %s\n" "radar/ratelimit.py"
-cat > "radar/ratelimit.py" <<'RADAR_FILE_08'
+cat > "radar/ratelimit.py" <<'RADAR_FILE_10'
 """Учёт квот Gemini: запросы в минуту, запросы в сутки, резерв под ассистента.
 
 Бесплатный тариф Gemini ограничен по RPM и RPD (для 2.5-flash — порядка
@@ -766,6 +991,12 @@ cat > "radar/ratelimit.py" <<'RADAR_FILE_08'
 дорогу живому диалогу с ассистентом. Дневной счётчик сбрасывается в полночь
 по тихоокеанскому времени — так, как это делает Google.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -780,7 +1011,6 @@ log = logging.getLogger("radar.ratelimit")
 # Тихоокеанское время: UTC-8 зимой, UTC-7 летом. Для суточной границы
 # достаточно приблизительного смещения.
 _PACIFIC_OFFSET = timedelta(hours=-8)
-
 
 def pacific_day() -> str:
     return (datetime.now(timezone.utc) + _PACIFIC_OFFSET).strftime("%Y-%m-%d")
@@ -878,13 +1108,19 @@ class RateLimiter:
             "limit_minute": self.rpm,
             "paused": self.paused,
         }
-RADAR_FILE_08
+RADAR_FILE_10
 printf "  %s\n" "radar/matching.py"
-cat > "radar/matching.py" <<'RADAR_FILE_09'
+cat > "radar/matching.py" <<'RADAR_FILE_11'
 """Модель разобранной новости, правила сопоставления с локациями и сборка сообщений.
 
 Только стандартная библиотека — модуль полностью покрывается тестами офлайн.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -938,7 +1174,6 @@ WHITELIST_NOTICE = (
     "Домашний проводной интернет и Wi-Fi обычно продолжают работать. "
     "Для срочной связи — звонки и SMS."
 )
-
 
 @dataclass
 class Analysis:
@@ -1377,9 +1612,252 @@ def plan_alerts(
             )
         )
     return messages
-RADAR_FILE_09
+RADAR_FILE_11
+printf "  %s\n" "radar/identity.py"
+cat > "radar/identity.py" <<'RADAR_FILE_12'
+"""Идентификация пользователя независимо от мессенджера.
+
+Ключ рабочего набора в памяти — строка вида `telegram:123456` или `max:987`.
+Для Telegram допускается краткая форма без префикса: так обработчики версий
+3.x, передающие `str(message.from_user.id)`, продолжают работать без правок.
+
+Единая точка разбора нужна затем, чтобы в 4.2 добавление MAX не потребовало
+трогать логику ролей, локаций и оповещений — она оперирует ключом, а не
+конкретным мессенджером.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+TELEGRAM = "telegram"
+MAX = "max"
+PLATFORMS = (TELEGRAM, MAX)
+
+DEFAULT_PLATFORM = TELEGRAM
+
+TITLES = {TELEGRAM: "Telegram", MAX: "MAX"}
+
+
+@dataclass(frozen=True)
+class Identity:
+    platform: str
+    external_id: str
+
+    @property
+    def key(self) -> str:
+        """Ключ рабочего набора. Telegram — без префикса, ради совместимости."""
+        if self.platform == TELEGRAM:
+            return self.external_id
+        return f"{self.platform}:{self.external_id}"
+
+    @property
+    def title(self) -> str:
+        return TITLES.get(self.platform, self.platform)
+
+    def __str__(self) -> str:  # удобно в логах
+        return self.key
+
+
+def parse(key: str | int) -> Identity:
+    """Разбирает ключ рабочего набора в пару платформа/идентификатор."""
+    text = str(key).strip()
+    if ":" in text:
+        platform, _, external = text.partition(":")
+        platform = platform.strip().lower()
+        if platform in PLATFORMS:
+            return Identity(platform, external.strip())
+    return Identity(TELEGRAM, text)
+
+
+def make(platform: str, external_id: str | int) -> Identity:
+    platform = (platform or DEFAULT_PLATFORM).strip().lower()
+    if platform not in PLATFORMS:
+        platform = DEFAULT_PLATFORM
+    return Identity(platform, str(external_id).strip())
+
+
+def key_of(platform: str, external_id: str | int) -> str:
+    return make(platform, external_id).key
+
+
+def is_telegram(key: str | int) -> bool:
+    return parse(key).platform == TELEGRAM
+RADAR_FILE_12
+printf "  %s\n" "radar/features.py"
+cat > "radar/features.py" <<'RADAR_FILE_13'
+"""Переключатели возможностей.
+
+Каждая заметная функция объявлена флагом. Значение по умолчанию задаётся здесь,
+переопределение хранится в базе, поэтому суперадминистратор включает и выключает
+функции прямо в боте — без обновления версии и без перезапуска контейнера.
+
+Так решается задача постепенного выката: новая возможность приезжает с версией
+выключенной, включается на живой системе, а при проблемах гасится одной кнопкой.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+
+log = logging.getLogger("radar.features")
+
+
+@dataclass(frozen=True)
+class Flag:
+    key: str
+    title: str
+    description: str
+    default: bool = True
+    group: str = "Общее"
+    since: str = ""
+    locked: bool = False   # нельзя выключить: ядро системы
+    aliases: tuple[str, ...] = field(default_factory=tuple)
+
+
+FLAGS: tuple[Flag, ...] = (
+    # --- ядро ---
+    Flag("alerts", "Оповещения об угрозах", "Рассылка событий по локациям.",
+         group="Ядро", since="3.0", locked=True),
+    Flag("weather", "Погода", "Сводки погоды по группам локаций.", group="Ядро", since="3.0"),
+    Flag("ai_analysis", "ИИ-разбор новостей",
+         "Классификация сообщений моделью. Выключение переводит систему "
+         "на эвристику по ключевым словам.", group="Ядро", since="3.0"),
+    Flag("ai_assistant", "ИИ-ассистент", "Диалог с моделью для модераторов и выше.",
+         group="Ядро", since="3.0"),
+
+    # --- источники ---
+    Flag("source_telegram", "Источники Telegram", "Чтение публичных каналов t.me.",
+         group="Источники", since="3.0"),
+    Flag("source_rss", "Источники RSS", "Ленты СМИ и официальных сайтов.",
+         group="Источники", since="3.0"),
+    Flag("source_vk", "Источники ВКонтакте", "Стены открытых сообществ через VK API.",
+         group="Источники", since="4.1", default=False),
+
+    # --- подача ---
+    Flag("all_clear", "Отбой опасности", "Отдельное сообщение при снятии угрозы.",
+         group="Подача", since="3.3.5"),
+    Flag("whitelist_notice", "Примечание о «белых списках»",
+         "Пояснение об ограничениях мобильного интернета.", group="Подача", since="3.3"),
+    Flag("weather_image", "Погода картинкой",
+         "Отрисованная сводка вместо текста. Требует Pillow.",
+         group="Подача", since="4.1", default=False),
+    Flag("quiet_hours", "Тихие часы", "Задержка несрочных оповещений ночью.",
+         group="Подача", since="4.1", default=False),
+    Flag("antispam", "Антиспам оповещений",
+         "Не повторять одно событие для той же локации.", group="Подача", since="4.1"),
+
+    # --- данные ---
+    Flag("history", "История событий", "Журнал того, что приходило по адресу.",
+         group="Данные", since="4.0"),
+    Flag("source_export", "Выгрузка источников", "Скачивание и загрузка списка файлом.",
+         group="Данные", since="3.3"),
+
+    # --- инфраструктура ---
+    Flag("egress_proxy", "Выход в сеть через внешний узел",
+         "Исходящий трафик бота идёт через SOCKS5 от sing-box. "
+         "Настраивается только суперадминистратором.",
+         group="Инфраструктура", since="4.1", default=False),
+    Flag("maintenance", "Режим обслуживания",
+         "Бот отвечает «идут работы», фоновый цикл остановлен.",
+         group="Инфраструктура", since="4.5", default=False),
+
+    # --- платформы ---
+    Flag("platform_max", "Мессенджер MAX", "Работа бота в MAX параллельно с Telegram.",
+         group="Платформы", since="4.2", default=False),
+
+    # --- партнёрские проекты ---
+    Flag("partners", "Партнёрские проекты", "Раздел меню со списком проектов автора.",
+         group="Партнёры", since="4.4", default=False,
+         aliases=("promo",)),
+    Flag("promo_button", "Кнопка партнёра", "Закреплённая кнопка проекта в меню.",
+         group="Партнёры", since="3.3"),
+    Flag("promo_codes", "Промокоды", "Персональные коды для партнёрских проектов.",
+         group="Партнёры", since="4.4", default=False),
+
+    # --- администрирование ---
+    Flag("web_panel", "Веб-панель", "Панель администратора в браузере.",
+         group="Администрирование", since="4.3", default=False),
+    Flag("web_terminal", "Терминал в панели",
+         "Консоль сервера в веб-панели. Повышенный риск: включайте осознанно.",
+         group="Администрирование", since="4.4", default=False),
+)
+
+BY_KEY: dict[str, Flag] = {flag.key: flag for flag in FLAGS}
+GROUPS: tuple[str, ...] = tuple(dict.fromkeys(flag.group for flag in FLAGS))
+
+# Переопределения из базы. Заполняется при старте, меняется командой в боте.
+_overrides: dict[str, bool] = {}
+
+
+def resolve(key: str) -> Flag | None:
+    flag = BY_KEY.get(key)
+    if flag is not None:
+        return flag
+    for candidate in FLAGS:
+        if key in candidate.aliases:
+            return candidate
+    return None
+
+
+def enabled(key: str) -> bool:
+    """Включена ли возможность. Неизвестный ключ считается выключенным."""
+    flag = resolve(key)
+    if flag is None:
+        log.warning("Запрошен неизвестный флаг «%s»", key)
+        return False
+    if flag.locked:
+        return True
+    return _overrides.get(flag.key, flag.default)
+
+
+def snapshot() -> dict[str, bool]:
+    return {flag.key: enabled(flag.key) for flag in FLAGS}
+
+
+def overrides() -> dict[str, bool]:
+    return dict(_overrides)
+
+
+def apply(values: dict[str, bool]) -> None:
+    """Загружает переопределения из базы."""
+    _overrides.clear()
+    for key, value in (values or {}).items():
+        flag = resolve(key)
+        if flag is not None and not flag.locked:
+            _overrides[flag.key] = bool(value)
+
+
+def set_local(key: str, value: bool) -> Flag | None:
+    """Меняет флаг в памяти. Запись в базу — на стороне вызывающего."""
+    flag = resolve(key)
+    if flag is None or flag.locked:
+        return None
+    _overrides[flag.key] = bool(value)
+    return flag
+
+
+def by_group() -> dict[str, list[Flag]]:
+    grouped: dict[str, list[Flag]] = {group: [] for group in GROUPS}
+    for flag in FLAGS:
+        grouped[flag.group].append(flag)
+    return grouped
+RADAR_FILE_13
 printf "  %s\n" "radar/presets.py"
-cat > "radar/presets.py" <<'RADAR_FILE_10'
+cat > "radar/presets.py" <<'RADAR_FILE_14'
 """Наборы источников по городам.
 
 Списки — стартовые, не исчерпывающие: каналы переименовываются, закрываются
@@ -1393,10 +1871,15 @@ API у MAX нет, поэтому такие источники деградир
 следите за отчётом проверки и заменяйте их городскими СМИ.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
 
 @dataclass
 class CityPreset:
@@ -1552,36 +2035,395 @@ def rss_for(cities: list[str]) -> list[str]:
         if preset and preset.key != "federal":
             result.extend(preset.rss)
     return list(dict.fromkeys(result))
-RADAR_FILE_10
-printf "  %s\n" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_11'
-"""JSON-хранилище с атомарной записью, блокировкой и миграцией с версий 2.x."""
+RADAR_FILE_14
+printf "  %s\n" "radar/db/__init__.py"
+cat > "radar/db/__init__.py" <<'RADAR_FILE_15'
+"""Слой базы данных: модели, подключение, репозиторий."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from .engine import dispose, engine, session, session_factory, wait_ready
+from .models import Base, Delivery, Event, Location, Meta, Source, User
+
+__all__ = [
+    "Base", "Delivery", "Event", "Location", "Meta", "Source", "User",
+    "dispose", "engine", "session", "session_factory", "wait_ready",
+]
+RADAR_FILE_15
+printf "  %s\n" "radar/db/models.py"
+cat > "radar/db/models.py" <<'RADAR_FILE_16'
+"""Схема базы данных.
+
+Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
+чтобы миграция была однозначной, но добавляет то, чего в файле быть не могло —
+историю событий и доставок, а также журнал источников.
+
+Идентификатор пользователя — это Telegram ID, поэтому первичный ключ задаётся
+явно и не генерируется базой.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Base(DeclarativeBase):
+    """Базовый класс моделей."""
+
+    type_annotation_map = {dict[str, Any]: JSONB, list[str]: JSONB}
+
+
+class User(Base):
+    """Пользователь любой платформы.
+
+    Ключ суррогатный, а не Telegram ID: с версии 4.2 бот работает сразу
+    в двух мессенджерах, и один и тот же числовой идентификатор может
+    принадлежать разным людям в Telegram и MAX. Пара (platform, external_id)
+    уникальна и служит естественным ключом.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(16), default="telegram", index=True)
+    external_id: Mapped[str] = mapped_column(String(64), index=True)
+    role: Mapped[str] = mapped_column(String(16), default="user", index=True)
+    username: Mapped[str] = mapped_column(String(64), default="")
+    settings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+    weather_mode: Mapped[str] = mapped_column(String(16), default="interval")
+    weather_interval: Mapped[int] = mapped_column(Integer, default=0)
+    weather_time: Mapped[str] = mapped_column(String(8), default="08:00")
+    weather_format: Mapped[str] = mapped_column(String(8), default="text")  # text | image
+    last_weather: Mapped[int] = mapped_column(BigInteger, default=0)
+    last_fixed_date: Mapped[str] = mapped_column(String(16), default="")
+
+    # Задел под 4.1: тихие часы и антиспам.
+    quiet_from: Mapped[str] = mapped_column(String(8), default="")
+    quiet_to: Mapped[str] = mapped_column(String(8), default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    locations: Mapped[list["Location"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("platform", "external_id", name="uq_user_identity"),
+    )
+
+
+class Location(Base):
+    __tablename__ = "locations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(16), index=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+
+    name: Mapped[str] = mapped_column(String(200))
+    lat: Mapped[float] = mapped_column(Float, default=0.0)
+    lon: Mapped[float] = mapped_column(Float, default=0.0)
+    street: Mapped[str] = mapped_column(String(160), default="")
+    house: Mapped[str] = mapped_column(String(32), default="")
+    city: Mapped[str] = mapped_column(String(120), default="", index=True)
+    district: Mapped[str] = mapped_column(String(120), default="")
+    region: Mapped[str] = mapped_column(String(120), default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    added_by: Mapped[int] = mapped_column(BigInteger, default=0)  # кто добавил, 0 — сам
+
+    user: Mapped[User] = relationship(back_populates="locations")
+
+    __table_args__ = (UniqueConstraint("user_id", "public_id", name="uq_location_public"),)
+
+
+class Source(Base):
+    __tablename__ = "sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(8), default="tg")  # tg | rss | vk
+    ref: Mapped[str] = mapped_column(String(300))
+    title: Mapped[str] = mapped_column(String(200), default="")
+    city: Mapped[str] = mapped_column(String(120), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    pending: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    added_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (UniqueConstraint("kind", "ref", name="uq_source_ref"),)
+
+
+class Event(Base):
+    """Разобранное сообщение источника. Основа истории по адресу."""
+
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    digest: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+
+    source: Mapped[str] = mapped_column(String(200), default="")
+    kind: Mapped[str] = mapped_column(String(8), default="tg")
+    link: Mapped[str] = mapped_column(Text, default="")
+
+    categories: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    severity: Mapped[str] = mapped_column(String(16), default="info")
+    scope: Mapped[str] = mapped_column(String(16), default="city")
+    all_clear: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    city: Mapped[str] = mapped_column(String(120), default="", index=True)
+    region: Mapped[str] = mapped_column(String(120), default="")
+    districts: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    streets: Mapped[dict[str, Any]] = mapped_column(JSONB, default=list)
+
+    summary: Mapped[str] = mapped_column(Text, default="")
+    raw: Mapped[str] = mapped_column(Text, default="")
+    engine: Mapped[str] = mapped_column(String(16), default="ai")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+    __table_args__ = (Index("ix_events_city_created", "city", "created_at"),)
+
+
+class Delivery(Base):
+    """Кому и по какой локации событие было отправлено.
+
+    Нужна для истории «что приходило по этому адресу» и для антиспама:
+    повторную отправку того же события той же локации легко отсечь.
+    """
+
+    __tablename__ = "deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("events.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    location_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("locations.id", ondelete="SET NULL"), default=None
+    )
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    delivered: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "user_id", "location_id", name="uq_delivery"),
+    )
+
+
+class Feature(Base):
+    """Переключатели возможностей, доступные суперадминистратору в боте.
+
+    Значение по умолчанию задаётся в коде, а запись в этой таблице его
+    переопределяет — так функцию можно включить или выключить без обновления
+    версии и без перезапуска контейнера.
+    """
+
+    __tablename__ = "features"
+
+    key: Mapped[str] = mapped_column(String(48), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    changed_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class Meta(Base):
+    """Служебные пары ключ-значение: версия анонса, флаги миграций."""
+
+    __tablename__ = "meta"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+RADAR_FILE_16
+printf "  %s\n" "radar/db/engine.py"
+cat > "radar/db/engine.py" <<'RADAR_FILE_17'
+"""Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
-import time
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+
+from .. import config
+
+log = logging.getLogger("radar.db")
+
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def engine() -> AsyncEngine:
+    global _engine, _session_factory
+    if _engine is None:
+        _engine = create_async_engine(
+            config.database_url(),
+            echo=config.DB_ECHO,
+            pool_size=config.DB_POOL_SIZE,
+            max_overflow=config.DB_MAX_OVERFLOW,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+        )
+        _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+    return _engine
+
+
+def session_factory() -> async_sessionmaker[AsyncSession]:
+    engine()
+    assert _session_factory is not None
+    return _session_factory
+
+
+@asynccontextmanager
+async def session() -> AsyncIterator[AsyncSession]:
+    """Сессия с автоматическим commit и откатом при ошибке."""
+    factory = session_factory()
+    async with factory() as active:
+        try:
+            yield active
+            await active.commit()
+        except Exception:
+            await active.rollback()
+            raise
+
+
+async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
+    """Ждёт, пока PostgreSQL примет подключение.
+
+    На слабом железе контейнер базы поднимается дольше бота, поэтому
+    без ожидания первый запуск падал бы на ровном месте.
+    """
+    from sqlalchemy import text
+
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            async with engine().connect() as connection:
+                await connection.execute(text("SELECT 1"))
+            if attempt > 1:
+                log.info("База ответила с попытки %d", attempt)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if attempt == 1:
+                log.info("Жду готовности PostgreSQL…")
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"PostgreSQL недоступен: {last}")
+
+
+async def dispose() -> None:
+    global _engine, _session_factory
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _session_factory = None
+RADAR_FILE_17
+printf "  %s\n" "radar/db/repo.py"
+cat > "radar/db/repo.py" <<'RADAR_FILE_18'
+"""Репозиторий: чтение и запись данных в PostgreSQL.
+
+Стратегия
+---------
+Пользователи и локации при старте загружаются в память и остаются рабочим
+набором — обработчики продолжают обращаться к обычным словарям, как в 3.x,
+а изменения пишутся сквозь в базу. Это оставляет диффы прежних модулей
+минимальными и держит отклик интерфейса мгновенным.
+
+Ограничение честное: подход рассчитан на тысячи пользователей, не на сотни
+тысяч. Когда объём вырастет, `save_user` уже пишет точечно, и переход
+на выборку по запросу сведётся к замене чтений из кэша на запросы к базе.
+
+События и доставки в память не грузятся никогда: они только пишутся
+и читаются точечными запросами.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import hashlib
+import logging
 import uuid
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Sequence
 
-import aiofiles
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 
-from . import config
-from . import presets
-from .matching import CATEGORY_TITLES
-from .roles import SUPERADMIN, USER
+from .. import config
+from ..matching import CATEGORY_TITLES
+from ..roles import SUPERADMIN, USER
+from .engine import session
+from ..identity import parse as parse_identity
+from .models import Delivery, Event, Feature, Location, Meta, Source, User
 
-log = logging.getLogger("radar.storage")
-
-DB: dict[str, Any] = {}
-_lock = asyncio.Lock()
+log = logging.getLogger("radar.repo")
 
 
 # --------------------------------------------------------------------------
-#  Значения по умолчанию
+#  Значения по умолчанию (совместимы с 3.x)
 # --------------------------------------------------------------------------
 
 def default_settings() -> dict[str, bool]:
@@ -1597,14 +2439,17 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         "weather_mode": "interval",
         "weather_interval": 0,
         "weather_time": "08:00",
+        "weather_format": "text",
         "last_weather": 0,
         "last_fixed_date": "",
-        "created": int(time.time()),
+        "quiet_from": "",
+        "quiet_to": "",
+        "created": int(datetime.now(timezone.utc).timestamp()),
     }
 
 
 def new_location(name: str, lat: float, lon: float, **extra: Any) -> dict[str, Any]:
-    loc = {
+    location = {
         "id": uuid.uuid4().hex[:8],
         "name": name,
         "lat": float(lat),
@@ -1614,82 +2459,1060 @@ def new_location(name: str, lat: float, lon: float, **extra: Any) -> dict[str, A
         "region": "",
         "street": "",
         "house": "",
+        "added_by": 0,
     }
-    loc.update({k: v for k, v in extra.items() if v is not None})
-    return loc
+    location.update({key: value for key, value in extra.items() if value is not None})
+    return location
 
 
 # --------------------------------------------------------------------------
-#  Миграция
+#  Преобразование модель ↔ словарь
 # --------------------------------------------------------------------------
 
-def migrate(data: dict[str, Any]) -> dict[str, Any]:
-    """Приводит базу любой версии 2.x к структуре 3.x без потери данных."""
-    data.setdefault("users", {})
-    data.setdefault("channels", [])
-    data.setdefault("rss", [])
-    data.setdefault("pending", [])
-    data.setdefault("meta", {})
+def location_to_dict(row: Location) -> dict[str, Any]:
+    return {
+        "id": row.public_id,
+        "name": row.name,
+        "lat": row.lat,
+        "lon": row.lon,
+        "street": row.street,
+        "house": row.house,
+        "city": row.city,
+        "district": row.district,
+        "region": row.region,
+        "added_by": row.added_by,
+    }
 
-    if not isinstance(data["users"], dict):
-        data["users"] = {}
-    if not isinstance(data["channels"], list):
-        data["channels"] = []
-    if not isinstance(data["rss"], list):
-        data["rss"] = []
-    if not isinstance(data["pending"], list):
-        data["pending"] = []
 
-    for uid, udata in list(data["users"].items()):
-        if not isinstance(udata, dict):
-            data["users"][uid] = default_user()
+def user_to_dict(row: User) -> dict[str, Any]:
+    settings = dict(row.settings or {})
+    for key in CATEGORY_TITLES:
+        settings.setdefault(key, True)
+    return {
+        "role": row.role,
+        "username": row.username or "",
+        "locs": [location_to_dict(item) for item in row.locations],
+        "settings": settings,
+        "weather_mode": row.weather_mode,
+        "weather_interval": row.weather_interval,
+        "weather_time": row.weather_time,
+        "weather_format": row.weather_format,
+        "last_weather": row.last_weather,
+        "last_fixed_date": row.last_fixed_date,
+        "quiet_from": row.quiet_from,
+        "quiet_to": row.quiet_to,
+        "created": int(row.created_at.timestamp()) if row.created_at else 0,
+    }
+
+
+# --------------------------------------------------------------------------
+#  Пользователи
+# --------------------------------------------------------------------------
+
+async def load_users() -> dict[str, dict[str, Any]]:
+    from ..identity import make as make_identity
+
+    async with session() as active:
+        rows = (await active.scalars(select(User))).all()
+        return {
+            make_identity(row.platform, row.external_id).key: user_to_dict(row)
+            for row in rows
+        }
+
+
+async def _find_user(active, key: str | int) -> User | None:
+    identity = parse_identity(key)
+    return await active.scalar(
+        select(User).where(
+            User.platform == identity.platform,
+            User.external_id == identity.external_id,
+        )
+    )
+
+
+async def save_user(uid: str | int, data: dict[str, Any]) -> None:
+    """Сохраняет пользователя целиком вместе с локациями."""
+    identity = parse_identity(uid)
+    async with session() as active:
+        row = await _find_user(active, uid)
+        if row is None:
+            row = User(platform=identity.platform, external_id=identity.external_id)
+            active.add(row)
+
+        row.role = data.get("role", USER)
+        row.username = (data.get("username") or "")[:64]
+        row.settings = dict(data.get("settings") or default_settings())
+        row.weather_mode = data.get("weather_mode", "interval")
+        row.weather_interval = int(data.get("weather_interval") or 0)
+        row.weather_time = data.get("weather_time", "08:00")
+        row.weather_format = data.get("weather_format", "text")
+        row.last_weather = int(data.get("last_weather") or 0)
+        row.last_fixed_date = data.get("last_fixed_date", "")
+        row.quiet_from = data.get("quiet_from", "")
+        row.quiet_to = data.get("quiet_to", "")
+        row.seen_at = datetime.now(timezone.utc)
+
+        await active.flush()
+        user_id = row.id
+
+        existing = {item.public_id: item for item in row.locations}
+        wanted = {item["id"]: item for item in (data.get("locs") or [])}
+
+        for public_id, item in wanted.items():
+            target = existing.get(public_id)
+            if target is None:
+                target = Location(public_id=public_id, user_id=user_id)
+                active.add(target)
+            target.name = str(item.get("name") or "")[:200]
+            target.lat = float(item.get("lat") or 0.0)
+            target.lon = float(item.get("lon") or 0.0)
+            target.street = str(item.get("street") or "")[:160]
+            target.house = str(item.get("house") or "")[:32]
+            target.city = str(item.get("city") or "")[:120]
+            target.district = str(item.get("district") or "")[:120]
+            target.region = str(item.get("region") or "")[:120]
+            target.added_by = int(item.get("added_by") or 0)
+
+        for public_id, target in existing.items():
+            if public_id not in wanted:
+                await active.delete(target)
+
+
+async def delete_user(uid: str | int) -> None:
+    async with session() as active:
+        row = await _find_user(active, uid)
+        if row is not None:
+            await active.delete(row)
+
+
+async def internal_id(uid: str | int) -> int | None:
+    """Суррогатный идентификатор пользователя — нужен для связей."""
+    async with session() as active:
+        row = await _find_user(active, uid)
+        return int(row.id) if row is not None else None
+
+
+async def save_users(users: dict[str, dict[str, Any]]) -> None:
+    for uid, data in users.items():
+        await save_user(uid, data)
+
+
+# --------------------------------------------------------------------------
+#  Источники
+# --------------------------------------------------------------------------
+
+async def load_sources() -> tuple[list[str], list[str], list[str], list[str]]:
+    """Возвращает (telegram, rss, vk, очередь модерации)."""
+    async with session() as active:
+        rows = (await active.scalars(select(Source))).all()
+    channels = [row.ref for row in rows if row.kind == "tg" and row.enabled and not row.pending]
+    feeds = [row.ref for row in rows if row.kind == "rss" and row.enabled and not row.pending]
+    vk = [row.ref for row in rows if row.kind == "vk" and row.enabled and not row.pending]
+    pending = [row.ref for row in rows if row.pending]
+    return channels, feeds, vk, pending
+
+
+async def upsert_source(
+    kind: str, ref: str, *, pending: bool = False, added_by: int = 0, city: str = ""
+) -> None:
+    async with session() as active:
+        statement = (
+            insert(Source)
+            .values(kind=kind, ref=ref, pending=pending, added_by=added_by, city=city)
+            .on_conflict_do_update(
+                index_elements=[Source.kind, Source.ref],
+                set_={"pending": pending, "enabled": True},
+            )
+        )
+        await active.execute(statement)
+
+
+async def remove_source(kind: str, ref: str) -> None:
+    async with session() as active:
+        await active.execute(delete(Source).where(Source.kind == kind, Source.ref == ref))
+
+
+async def sync_sources(
+    channels: Sequence[str], feeds: Sequence[str], vk: Sequence[str], pending: Sequence[str]
+) -> None:
+    """Приводит таблицу источников в соответствие со списками в памяти."""
+    async with session() as active:
+        rows = (await active.scalars(select(Source))).all()
+        current = {(row.kind, row.ref): row for row in rows}
+
+        wanted: dict[tuple[str, str], bool] = {}
+        for ref in channels:
+            wanted[("tg", ref)] = False
+        for ref in feeds:
+            wanted[("rss", ref)] = False
+        for ref in vk:
+            wanted[("vk", ref)] = False
+        for ref in pending:
+            wanted.setdefault(("tg", ref), True)
+
+        for key, is_pending in wanted.items():
+            row = current.get(key)
+            if row is None:
+                active.add(Source(kind=key[0], ref=key[1], pending=is_pending))
+            else:
+                row.pending = is_pending
+                row.enabled = True
+
+        for key, row in current.items():
+            if key not in wanted:
+                await active.delete(row)
+
+
+async def mark_source(kind: str, ref: str, *, error: str = "") -> None:
+    """Отмечает результат опроса источника — для отчёта о мёртвых каналах."""
+    async with session() as active:
+        row = await active.scalar(
+            select(Source).where(Source.kind == kind, Source.ref == ref)
+        )
+        if row is None:
+            return
+        if error:
+            row.fail_count += 1
+            row.last_error = error[:300]
+        else:
+            row.fail_count = 0
+            row.last_error = ""
+            row.last_seen = datetime.now(timezone.utc)
+
+
+async def broken_sources(threshold: int = 5) -> list[Source]:
+    async with session() as active:
+        return list(
+            (await active.scalars(
+                select(Source).where(Source.fail_count >= threshold)
+            )).all()
+        )
+
+
+# --------------------------------------------------------------------------
+#  События и доставки
+# --------------------------------------------------------------------------
+
+def event_digest(source: str, raw: str) -> str:
+    return hashlib.sha1(f"{source}\n{raw}".encode("utf-8")).hexdigest()
+
+
+async def store_event(analysis: Any) -> int | None:
+    """Сохраняет разобранное событие, возвращает его id.
+
+    Повторное сохранение того же текста не создаёт дубликат: сработает
+    уникальный индекс по digest и вернётся существующая запись.
+    """
+    if not getattr(analysis, "relevant", False):
+        return None
+
+    digest = event_digest(analysis.source, analysis.raw or analysis.summary)
+    async with session() as active:
+        existing = await active.scalar(select(Event.id).where(Event.digest == digest))
+        if existing:
+            return int(existing)
+        row = Event(
+            digest=digest,
+            source=(analysis.source or "")[:200],
+            kind="rss" if analysis.link else "tg",
+            link=analysis.link or "",
+            categories=list(analysis.categories),
+            severity=analysis.severity,
+            scope=analysis.scope,
+            all_clear=bool(analysis.all_clear),
+            city=(analysis.city or "")[:120],
+            region=(analysis.region or "")[:120],
+            districts=list(analysis.districts),
+            streets=list(analysis.streets),
+            summary=analysis.summary or "",
+            raw=(analysis.raw or "")[:8000],
+            engine=analysis.engine,
+        )
+        active.add(row)
+        await active.flush()
+        return int(row.id)
+
+
+async def record_delivery(
+    event_id: int, user_id: int | str, location_public_id: str | None
+) -> bool:
+    """Отмечает доставку. False — событие этой локации уже отправляли."""
+    async with session() as active:
+        row = await _find_user(active, user_id)
+        if row is None:
+            return False
+        location_id = None
+        if location_public_id:
+            location_id = await active.scalar(
+                select(Location.id).where(
+                    Location.user_id == row.id,
+                    Location.public_id == location_public_id,
+                )
+            )
+        statement = (
+            insert(Delivery)
+            .values(
+                event_id=event_id,
+                user_id=row.id,
+                location_id=location_id,
+                sent_at=datetime.now(timezone.utc),
+            )
+            .on_conflict_do_nothing(
+                index_elements=[Delivery.event_id, Delivery.user_id, Delivery.location_id]
+            )
+            .returning(Delivery.id)
+        )
+        return (await active.scalar(statement)) is not None
+
+
+async def was_delivered(event_id: int, user_id: int | str, location_public_id: str | None) -> bool:
+    async with session() as active:
+        row = await _find_user(active, user_id)
+        if row is None:
+            return False
+        location_id = None
+        if location_public_id:
+            location_id = await active.scalar(
+                select(Location.id).where(
+                    Location.user_id == row.id,
+                    Location.public_id == location_public_id,
+                )
+            )
+        found = await active.scalar(
+            select(Delivery.id).where(
+                Delivery.event_id == event_id,
+                Delivery.user_id == row.id,
+                Delivery.location_id == location_id,
+            )
+        )
+        return found is not None
+
+
+async def history(
+    user_id: int | str,
+    location_public_id: str | None = None,
+    *,
+    days: int = 30,
+    limit: int = 20,
+    categories: Iterable[str] | None = None,
+) -> list[Event]:
+    """История событий, приходивших пользователю (опционально по одной локации)."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    async with session() as active:
+        row = await _find_user(active, user_id)
+        if row is None:
+            return []
+        query = (
+            select(Event)
+            .join(Delivery, Delivery.event_id == Event.id)
+            .where(Delivery.user_id == row.id, Delivery.sent_at >= since)
+            .order_by(Event.created_at.desc())
+            .limit(limit)
+        )
+        if location_public_id:
+            location_id = await active.scalar(
+                select(Location.id).where(
+                    Location.user_id == row.id,
+                    Location.public_id == location_public_id,
+                )
+            )
+            query = query.where(Delivery.location_id == location_id)
+        rows = (await active.scalars(query)).all()
+
+    wanted = set(categories or [])
+    if wanted:
+        rows = [row for row in rows if wanted & set(row.categories or [])]
+    return list(rows)
+
+
+async def event_stats(days: int = 30) -> dict[str, int]:
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    async with session() as active:
+        events = await active.scalar(
+            select(func.count(Event.id)).where(Event.created_at >= since)
+        )
+        deliveries = await active.scalar(
+            select(func.count(Delivery.id)).where(Delivery.sent_at >= since)
+        )
+    return {"events": int(events or 0), "deliveries": int(deliveries or 0)}
+
+
+async def purge_old_events(days: int | None = None) -> int:
+    """Чистка истории. Возвращает число удалённых событий."""
+    keep = config.EVENT_RETENTION_DAYS if days is None else days
+    if keep <= 0:
+        return 0
+    edge = datetime.now(timezone.utc) - timedelta(days=keep)
+    async with session() as active:
+        result = await active.execute(delete(Event).where(Event.created_at < edge))
+        return int(result.rowcount or 0)
+
+
+# --------------------------------------------------------------------------
+#  Служебные значения
+# --------------------------------------------------------------------------
+
+async def get_meta(key: str, default: Any = None) -> Any:
+    async with session() as active:
+        row = await active.get(Meta, key)
+        return row.value if row is not None else default
+
+
+async def set_meta(key: str, value: Any) -> None:
+    async with session() as active:
+        statement = (
+            insert(Meta)
+            .values(key=key, value=value)
+            .on_conflict_do_update(index_elements=[Meta.key], set_={"value": value})
+        )
+        await active.execute(statement)
+
+
+# --------------------------------------------------------------------------
+#  Переключатели возможностей
+# --------------------------------------------------------------------------
+
+async def load_features() -> dict[str, bool]:
+    async with session() as active:
+        rows = (await active.scalars(select(Feature))).all()
+        return {row.key: bool(row.enabled) for row in rows}
+
+
+async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) -> None:
+    identity = parse_identity(changed_by) if changed_by else None
+    actor = 0
+    if identity is not None and identity.external_id.isdigit():
+        actor = int(identity.external_id)
+    async with session() as active:
+        statement = (
+            insert(Feature)
+            .values(key=key, enabled=enabled_value, changed_by=actor)
+            .on_conflict_do_update(
+                index_elements=[Feature.key],
+                set_={"enabled": enabled_value, "changed_by": actor},
+            )
+        )
+        await active.execute(statement)
+RADAR_FILE_18
+printf "  %s\n" "radar/db/importer.py"
+cat > "radar/db/importer.py" <<'RADAR_FILE_19'
+"""Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
+
+Запускается автоматически при первом старте 4.x, если база пуста, а файл
+`data/db.json` на месте. Исходный файл не удаляется, а переименовывается
+в `db.json.migrated` — путь назад остаётся.
+
+Поддерживается только формат 3.x. Базы версий 2.x напрямую не читаются:
+сначала обновитесь до 3.3.5, дайте боту один раз запуститься — он приведёт
+файл к текущему виду, — и только потом переходите на 4.x. Промежуточный
+шаг занимает минуту и избавляет импортёр от ветвлений, которые невозможно
+проверить на живых данных.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Any
+
+from .. import config, presets
+from ..matching import CATEGORY_TITLES
+from ..roles import SUPERADMIN, USER
+from . import repo
+
+log = logging.getLogger("radar.import")
+
+MARKER = "json_import"
+
+
+def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
+    """Приводит структуру версии 3.x к виду репозитория."""
+    users: dict[str, dict[str, Any]] = {}
+    for uid, item in (raw.get("users") or {}).items():
+        if not isinstance(item, dict):
             continue
-        base = default_user(udata.get("role", USER))
-        for key, value in base.items():
-            udata.setdefault(key, value)
-        if not isinstance(udata.get("settings"), dict):
-            udata["settings"] = default_settings()
-        for key in CATEGORY_TITLES:
-            udata["settings"].setdefault(key, True)
+        record = repo.default_user(item.get("role", USER), item.get("username", ""))
+        for key in (
+            "weather_mode", "weather_interval", "weather_time",
+            "last_weather", "last_fixed_date", "weather_format",
+        ):
+            if item.get(key) is not None:
+                record[key] = item[key]
 
-        locs: list[dict[str, Any]] = []
-        for loc in udata.get("locs") or []:
-            if isinstance(loc, str):  # формат ещё до 2.0
-                locs.append(new_location(loc, 0.0, 0.0))
+        settings = item.get("settings")
+        if isinstance(settings, dict):
+            record["settings"] = {
+                key: bool(settings.get(key, True)) for key in CATEGORY_TITLES
+            }
+
+        locations: list[dict[str, Any]] = []
+        for entry in item.get("locs") or []:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                # Строки вместо объектов — формат 2.x, он больше не поддерживается.
+                if isinstance(entry, str):
+                    log.warning(
+                        "Локация «%s» в формате 2.x пропущена: обновитесь сначала до 3.3.5",
+                        entry[:60],
+                    )
                 continue
-            if not isinstance(loc, dict) or not loc.get("name"):
-                continue
-            item = new_location(
-                str(loc["name"]),
-                float(loc.get("lat") or 0.0),
-                float(loc.get("lon") or 0.0),
+            location = repo.new_location(
+                str(entry["name"]),
+                float(entry.get("lat") or 0.0),
+                float(entry.get("lon") or 0.0),
             )
             for key in ("city", "district", "region", "street", "house"):
-                if loc.get(key):
-                    item[key] = str(loc[key])
-            if loc.get("id"):
-                item["id"] = str(loc["id"])
-            locs.append(item)
-        udata["locs"] = locs
+                if entry.get(key):
+                    location[key] = str(entry[key])
+            if entry.get("id"):
+                location["id"] = str(entry["id"])[:16]
+            locations.append(location)
+        record["locs"] = locations
+        users[str(uid)] = record
 
     superadmin = str(config.SUPERADMIN_ID)
-    if superadmin not in data["users"]:
-        data["users"][superadmin] = default_user(SUPERADMIN)
-        data["users"][superadmin]["weather_interval"] = 60
+    if superadmin not in users:
+        users[superadmin] = repo.default_user(SUPERADMIN)
+        users[superadmin]["weather_interval"] = 60
     else:
-        data["users"][superadmin]["role"] = SUPERADMIN
+        users[superadmin]["role"] = SUPERADMIN
 
-    # Стартовый набор: федеральные источники плюс пресеты городов из SOURCE_CITIES.
+    channels = [str(item) for item in (raw.get("channels") or []) if item]
+    feeds = [str(item) for item in (raw.get("rss") or []) if item]
+    vk = [str(item) for item in (raw.get("vk") or []) if item]
+    pending = [str(item) for item in (raw.get("pending") or []) if item]
+
     cities = config.SOURCE_CITIES or ([config.DEFAULT_CITY] if config.DEFAULT_CITY else [])
-    for channel in presets.channels_for(cities) + config.EXTRA_CHANNELS:
-        if channel and channel not in data["channels"]:
-            data["channels"].append(channel)
-    for feed in presets.rss_for(cities) + config.EXTRA_RSS:
-        if feed and feed not in data["rss"]:
-            data["rss"].append(feed)
+    for name in presets.channels_for(cities):
+        if name not in channels:
+            channels.append(name)
+    for url in presets.rss_for(cities):
+        if url not in feeds:
+            feeds.append(url)
 
-    data["meta"]["schema"] = 3
-    return data
+    return {
+        "users": users,
+        "channels": channels,
+        "rss": feeds,
+        "vk": vk,
+        "pending": pending,
+        "meta": raw.get("meta") or {},
+    }
+
+
+async def is_empty() -> bool:
+    users = await repo.load_users()
+    return not users
+
+
+async def run(path: str | None = None) -> dict[str, int]:
+    """Переносит JSON в базу. Возвращает счётчики перенесённого."""
+    source = path or config.DATA_FILE
+    raw: dict[str, Any] = {}
+
+    if os.path.exists(source):
+        try:
+            with open(source, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            raw = loaded if isinstance(loaded, dict) else {}
+            log.info("Найден файл прежней версии: %s", source)
+        except (OSError, json.JSONDecodeError) as exc:
+            log.error("Файл %s не прочитан (%s) — начинаю с пустой базы", source, exc)
+            raw = {}
+    else:
+        log.info("Файла %s нет — создаю базу с нуля", source)
+
+    data = _normalize(raw)
+
+    await repo.save_users(data["users"])
+    await repo.sync_sources(data["channels"], data["rss"], data["vk"], data["pending"])
+
+    for key, value in (data["meta"] or {}).items():
+        await repo.set_meta(str(key), value if isinstance(value, (dict, list)) else {"value": value})
+
+    counters = {
+        "users": len(data["users"]),
+        "locations": sum(len(item["locs"]) for item in data["users"].values()),
+        "channels": len(data["channels"]),
+        "rss": len(data["rss"]),
+        "pending": len(data["pending"]),
+    }
+    await repo.set_meta(MARKER, {"done": True, **counters})
+
+    if os.path.exists(source):
+        backup = f"{source}.migrated"
+        try:
+            os.replace(source, backup)
+            log.info("Исходный файл сохранён как %s", backup)
+        except OSError as exc:
+            log.warning("Не удалось переименовать %s: %s", source, exc)
+
+    log.info(
+        "Перенос завершён: пользователей %d, локаций %d, каналов %d, лент %d",
+        counters["users"], counters["locations"], counters["channels"], counters["rss"],
+    )
+    return counters
+RADAR_FILE_19
+printf "  %s\n" "migrations/env.py"
+cat > "migrations/env.py" <<'RADAR_FILE_20'
+"""Окружение Alembic: берёт строку подключения из конфигурации проекта."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from logging.config import fileConfig
+
+from alembic import context
+from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy import pool
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from radar import config as app_config  # noqa: E402
+from radar.db.models import Base  # noqa: E402
+
+alembic_config = context.config
+if alembic_config.config_file_name is not None:
+    fileConfig(alembic_config.config_file_name)
+
+alembic_config.set_main_option("sqlalchemy.url", app_config.database_url())
+target_metadata = Base.metadata
+
+
+def run_offline() -> None:
+    context.configure(
+        url=app_config.database_url(),
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run(connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_online_async() -> None:
+    engine = async_engine_from_config(
+        alembic_config.get_section(alembic_config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    async with engine.connect() as connection:
+        await connection.run_sync(do_run)
+    await engine.dispose()
+
+
+if context.is_offline_mode():
+    run_offline()
+else:
+    asyncio.run(run_online_async())
+RADAR_FILE_20
+printf "  %s\n" "migrations/script.py.mako"
+cat > "migrations/script.py.mako" <<'RADAR_FILE_21'
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+"""
+from __future__ import annotations
+
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+revision = ${repr(up_revision)}
+down_revision = ${repr(down_revision)}
+branch_labels = ${repr(branch_labels)}
+depends_on = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    ${downgrades if downgrades else "pass"}
+RADAR_FILE_21
+printf "  %s\n" "migrations/versions/0001_initial.py"
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_22'
+"""Начальная схема версии 4.0
+
+Revision ID: 0001_initial
+Revises:
+Create Date: 2026-08-12
+"""
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects import postgresql
+
+revision = "0001_initial"
+down_revision = None
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "users",
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("platform", sa.String(length=16), nullable=False, server_default="telegram"),
+        sa.Column("external_id", sa.String(length=64), nullable=False),
+        sa.Column("role", sa.String(length=16), nullable=False, server_default="user"),
+        sa.Column("username", sa.String(length=64), nullable=False, server_default=""),
+        sa.Column("settings", postgresql.JSONB(), nullable=False, server_default="{}"),
+        sa.Column("weather_mode", sa.String(length=16), nullable=False, server_default="interval"),
+        sa.Column("weather_interval", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("weather_time", sa.String(length=8), nullable=False, server_default="08:00"),
+        sa.Column("weather_format", sa.String(length=8), nullable=False, server_default="text"),
+        sa.Column("last_weather", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("last_fixed_date", sa.String(length=16), nullable=False, server_default=""),
+        sa.Column("quiet_from", sa.String(length=8), nullable=False, server_default=""),
+        sa.Column("quiet_to", sa.String(length=8), nullable=False, server_default=""),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("seen_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("blocked", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("platform", "external_id", name="uq_user_identity"),
+    )
+    op.create_index("ix_users_role", "users", ["role"])
+    op.create_index("ix_users_platform", "users", ["platform"])
+    op.create_index("ix_users_external_id", "users", ["external_id"])
+
+    op.create_table(
+        "locations",
+        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("public_id", sa.String(length=16), nullable=False),
+        sa.Column("user_id", sa.BigInteger(), nullable=False),
+        sa.Column("name", sa.String(length=200), nullable=False),
+        sa.Column("lat", sa.Float(), nullable=False, server_default="0"),
+        sa.Column("lon", sa.Float(), nullable=False, server_default="0"),
+        sa.Column("street", sa.String(length=160), nullable=False, server_default=""),
+        sa.Column("house", sa.String(length=32), nullable=False, server_default=""),
+        sa.Column("city", sa.String(length=120), nullable=False, server_default=""),
+        sa.Column("district", sa.String(length=120), nullable=False, server_default=""),
+        sa.Column("region", sa.String(length=120), nullable=False, server_default=""),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("added_by", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("user_id", "public_id", name="uq_location_public"),
+    )
+    op.create_index("ix_locations_user_id", "locations", ["user_id"])
+    op.create_index("ix_locations_public_id", "locations", ["public_id"])
+    op.create_index("ix_locations_city", "locations", ["city"])
+
+    op.create_table(
+        "sources",
+        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("kind", sa.String(length=8), nullable=False, server_default="tg"),
+        sa.Column("ref", sa.String(length=300), nullable=False),
+        sa.Column("title", sa.String(length=200), nullable=False, server_default=""),
+        sa.Column("city", sa.String(length=120), nullable=False, server_default=""),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("pending", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("added_by", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("last_seen", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("last_error", sa.String(length=300), nullable=False, server_default=""),
+        sa.Column("fail_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("kind", "ref", name="uq_source_ref"),
+    )
+    op.create_index("ix_sources_pending", "sources", ["pending"])
+
+    op.create_table(
+        "events",
+        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("digest", sa.String(length=40), nullable=False),
+        sa.Column("source", sa.String(length=200), nullable=False, server_default=""),
+        sa.Column("kind", sa.String(length=8), nullable=False, server_default="tg"),
+        sa.Column("link", sa.Text(), nullable=False, server_default=""),
+        sa.Column("categories", postgresql.JSONB(), nullable=False, server_default="[]"),
+        sa.Column("severity", sa.String(length=16), nullable=False, server_default="info"),
+        sa.Column("scope", sa.String(length=16), nullable=False, server_default="city"),
+        sa.Column("all_clear", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("city", sa.String(length=120), nullable=False, server_default=""),
+        sa.Column("region", sa.String(length=120), nullable=False, server_default=""),
+        sa.Column("districts", postgresql.JSONB(), nullable=False, server_default="[]"),
+        sa.Column("streets", postgresql.JSONB(), nullable=False, server_default="[]"),
+        sa.Column("summary", sa.Text(), nullable=False, server_default=""),
+        sa.Column("raw", sa.Text(), nullable=False, server_default=""),
+        sa.Column("engine", sa.String(length=16), nullable=False, server_default="ai"),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("digest"),
+    )
+    op.create_index("ix_events_created_at", "events", ["created_at"])
+    op.create_index("ix_events_city", "events", ["city"])
+    op.create_index("ix_events_city_created", "events", ["city", "created_at"])
+
+    op.create_table(
+        "deliveries",
+        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+        sa.Column("event_id", sa.Integer(), nullable=False),
+        sa.Column("user_id", sa.BigInteger(), nullable=False),
+        sa.Column("location_id", sa.Integer(), nullable=True),
+        sa.Column("sent_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("delivered", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["location_id"], ["locations.id"], ondelete="SET NULL"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("event_id", "user_id", "location_id", name="uq_delivery"),
+    )
+    op.create_index("ix_deliveries_event_id", "deliveries", ["event_id"])
+    op.create_index("ix_deliveries_user_id", "deliveries", ["user_id"])
+    op.create_index("ix_deliveries_sent_at", "deliveries", ["sent_at"])
+
+    op.create_table(
+        "features",
+        sa.Column("key", sa.String(length=48), nullable=False),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("changed_by", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("changed_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.PrimaryKeyConstraint("key"),
+    )
+
+    op.create_table(
+        "meta",
+        sa.Column("key", sa.String(length=64), nullable=False),
+        sa.Column("value", postgresql.JSONB(), nullable=False, server_default="{}"),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.PrimaryKeyConstraint("key"),
+    )
+
+
+def downgrade() -> None:
+    op.drop_table("meta")
+    op.drop_table("features")
+    op.drop_table("deliveries")
+    op.drop_table("events")
+    op.drop_table("sources")
+    op.drop_table("locations")
+    op.drop_table("users")
+RADAR_FILE_22
+printf "  %s\n" "radar/platforms/__init__.py"
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_23'
+"""Адаптеры мессенджеров: единый формат событий поверх разных API."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from .base import (
+    Button,
+    EventKind,
+    InboundEvent,
+    Keyboard,
+    OutboundMessage,
+    Transport,
+)
+
+__all__ = [
+    "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
+]
+RADAR_FILE_23
+printf "  %s\n" "radar/platforms/base.py"
+cat > "radar/platforms/base.py" <<'RADAR_FILE_24'
+"""Единый формат событий и ответов, общий для всех мессенджеров.
+
+Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
+не должно знать, откуда пришло сообщение. Адаптер каждой платформы приводит
+входящее событие к `InboundEvent`, а исходящий ответ `OutboundMessage`
+переводит в вызовы своего API.
+
+Соответствие понятий, из-за которого абстракция и нужна:
+
+| Понятие          | Telegram (aiogram)      | MAX Bot API              |
+|------------------|-------------------------|--------------------------|
+| Чат              | message.chat.id (int)   | chat_id (str/int)        |
+| Текст            | message.text            | message.text             |
+| Кнопки           | InlineKeyboardMarkup    | массив массивов keyboard |
+| Данные кнопки    | callback_data           | payload                  |
+| Событие          | Update                  | update с полем type      |
+| Разметка         | HTML / MarkdownV2       | ограниченная, см. адаптер|
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Protocol, Sequence
+
+from ..identity import Identity
+
+
+class EventKind(str, Enum):
+    MESSAGE = "message"      # обычное текстовое сообщение
+    COMMAND = "command"      # сообщение, начинающееся со слэша
+    CALLBACK = "callback"    # нажатие кнопки
+    LOCATION = "location"    # геопозиция
+    DOCUMENT = "document"    # присланный файл
+    JOINED = "joined"        # бот добавлен в чат
+    OTHER = "other"
+
+
+@dataclass
+class InboundEvent:
+    """Входящее событие в платформенно-независимом виде."""
+
+    platform: str
+    identity: Identity
+    chat_id: str
+    kind: EventKind = EventKind.OTHER
+    text: str = ""
+    command: str = ""
+    args: str = ""
+    payload: str = ""                 # данные нажатой кнопки
+    latitude: float | None = None
+    longitude: float | None = None
+    document_name: str = ""
+    document_size: int = 0
+    username: str = ""
+    message_id: str = ""
+    raw: Any = None                   # исходный объект платформы
+
+    @property
+    def key(self) -> str:
+        return self.identity.key
+
+
+@dataclass
+class Button:
+    """Кнопка, не привязанная к платформе."""
+
+    text: str
+    payload: str = ""     # для callback-кнопок
+    url: str = ""         # для кнопок-ссылок
+
+    @property
+    def is_link(self) -> bool:
+        return bool(self.url)
+
+
+Keyboard = Sequence[Sequence[Button]]
+
+
+@dataclass
+class OutboundMessage:
+    """Ответ бота в платформенно-независимом виде."""
+
+    text: str = ""
+    keyboard: Keyboard = field(default_factory=list)
+    persistent: Keyboard = field(default_factory=list)  # закреплённые кнопки
+    image: bytes | None = None
+    image_name: str = "image.png"
+    document: bytes | None = None
+    document_name: str = "file.bin"
+    edit: bool = False                # заменить предыдущее сообщение
+    disable_preview: bool = True
+    silent: bool = False              # без звука: тихие часы
+
+
+class Transport(Protocol):
+    """Контракт адаптера мессенджера.
+
+    Реализации: `telegram.TelegramTransport` (4.0) и `max.MaxTransport` (4.2).
+    Новый мессенджер добавляется реализацией этого протокола — ядро не меняется.
+    """
+
+    name: str
+
+    async def start(self) -> None:
+        """Подключиться и начать получать события."""
+
+    async def stop(self) -> None:
+        """Корректно завершить работу."""
+
+    async def send(self, chat_id: str, message: OutboundMessage) -> bool:
+        """Отправить сообщение. False — доставить не удалось."""
+
+    async def set_commands(self, commands: Sequence[tuple[str, str]]) -> None:
+        """Установить список команд в интерфейсе мессенджера."""
+
+    def render(self, text: str) -> str:
+        """Привести общую HTML-разметку к возможностям платформы."""
+RADAR_FILE_24
+printf "  %s\n" "radar/storage.py"
+cat > "radar/storage.py" <<'RADAR_FILE_25'
+"""Рабочий набор данных: словари в памяти поверх PostgreSQL.
+
+Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
+функций сохранены намеренно, чтобы переход на базу не потребовал правки
+интерфейсных модулей. Изменения пишутся сквозь: `save()` отправляет в базу
+только тех пользователей, кто действительно менялся.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Any
+
+from .db import repo
+from .roles import USER
+
+log = logging.getLogger("radar.storage")
+
+DB: dict[str, Any] = {"users": {}, "channels": [], "rss": [], "vk": [], "pending": [], "meta": {}}
+
+_lock = asyncio.Lock()
+# Снимки состояния: позволяют сохранять только реально изменившихся
+# пользователей, не требуя от обработчиков помечать изменения вручную.
+_snapshots: dict[str, str] = {}
+_sources_snapshot: str = ""
+
+
+def _fingerprint(data: Any) -> str:
+    return json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+
+# Прежние имена сохранены: на них ссылаются обработчики и тесты.
+default_settings = repo.default_settings
+default_user = repo.default_user
+new_location = repo.new_location
 
 
 # --------------------------------------------------------------------------
@@ -1697,56 +3520,76 @@ def migrate(data: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 async def load() -> None:
-    global DB
-    directory = os.path.dirname(config.DATA_FILE)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
+    """Читает всё содержимое базы в память."""
+    global _sources_snapshot
+    users = await repo.load_users()
+    channels, feeds, vk, pending = await repo.load_sources()
 
-    raw: dict[str, Any] = {}
-    if os.path.exists(config.DATA_FILE):
-        try:
-            async with aiofiles.open(config.DATA_FILE, "r", encoding="utf-8") as fh:
-                parsed = json.loads(await fh.read())
-            raw = parsed if isinstance(parsed, dict) else {}
-        except (OSError, json.JSONDecodeError) as exc:
-            backup = f"{config.DATA_FILE}.broken.{int(time.time())}"
-            log.error("База повреждена (%s). Копия: %s", exc, backup)
-            try:
-                os.replace(config.DATA_FILE, backup)
-            except OSError:
-                pass
+    DB["users"] = users
+    DB["channels"] = channels
+    DB["rss"] = feeds
+    DB["vk"] = vk
+    DB["pending"] = pending
+    DB["meta"] = {}
+    _snapshots.clear()
+    _snapshots.update({uid: _fingerprint(data) for uid, data in users.items()})
+    _sources_snapshot = _fingerprint([channels, feeds, vk, pending])
 
-    DB = migrate(raw)
-    await save()
     log.info(
-        "База загружена: пользователей=%d, каналов=%d, RSS=%d",
-        len(DB["users"]), len(DB["channels"]), len(DB["rss"]),
+        "Загружено: пользователей %d, каналов %d, лент %d, VK %d",
+        len(users), len(channels), len(feeds), len(vk),
     )
 
 
-async def save() -> None:
+async def save(uid: str | int | None = None) -> None:
+    """Пишет в базу то, что изменилось с прошлого сохранения.
+
+    Без аргумента проверяет всех пользователей и списки источников;
+    с аргументом — только указанного пользователя. Сравнение идёт
+    по снимку в памяти, поэтому обработчикам не нужно ничего помечать.
+    """
+    global _sources_snapshot
     async with _lock:
-        payload = json.dumps(DB, ensure_ascii=False, indent=2)
-        tmp = f"{config.DATA_FILE}.tmp"
-        async with aiofiles.open(tmp, "w", encoding="utf-8") as fh:
-            await fh.write(payload)
-        os.replace(tmp, config.DATA_FILE)
+        if uid is not None:
+            key = str(uid)
+            data = DB["users"].get(key)
+            if data is not None:
+                mark = _fingerprint(data)
+                if _snapshots.get(key) != mark:
+                    await repo.save_user(key, data)
+                    _snapshots[key] = mark
+            return
+
+        for user_id, data in list(DB["users"].items()):
+            mark = _fingerprint(data)
+            if _snapshots.get(user_id) != mark:
+                await repo.save_user(user_id, data)
+                _snapshots[user_id] = mark
+
+        for stale in set(_snapshots) - set(DB["users"]):
+            _snapshots.pop(stale, None)
+
+        sources = [DB["channels"], DB["rss"], DB.get("vk", []), DB["pending"]]
+        mark = _fingerprint(sources)
+        if mark != _sources_snapshot:
+            await repo.sync_sources(*sources)
+            _sources_snapshot = mark
 
 
 # --------------------------------------------------------------------------
-#  Доступ к данным
+#  Доступ к данным (сигнатуры из 3.x)
 # --------------------------------------------------------------------------
 
 def users() -> dict[str, Any]:
-    return DB.setdefault("users", {})
+    return DB["users"]
 
 
 def get_user(uid: int | str) -> dict[str, Any] | None:
-    return users().get(str(uid))
+    return DB["users"].get(str(uid))
 
 
 def exists(uid: int | str) -> bool:
-    return str(uid) in users()
+    return str(uid) in DB["users"]
 
 
 def role_of(uid: int | str) -> str | None:
@@ -1755,8 +3598,8 @@ def role_of(uid: int | str) -> str | None:
 
 
 def register(uid: int | str, username: str = "") -> dict[str, Any]:
-    user = default_user(USER, username)
-    users()[str(uid)] = user
+    user = repo.default_user(USER, username)
+    DB["users"][str(uid)] = user
     return user
 
 
@@ -1764,9 +3607,9 @@ def find_location(uid: int | str, loc_id: str) -> dict[str, Any] | None:
     user = get_user(uid)
     if not user:
         return None
-    for loc in user["locs"]:
-        if loc.get("id") == loc_id:
-            return loc
+    for location in user["locs"]:
+        if location.get("id") == loc_id:
+            return location
     return None
 
 
@@ -1775,27 +3618,46 @@ def remove_location(uid: int | str, loc_id: str) -> bool:
     if not user:
         return False
     before = len(user["locs"])
-    user["locs"] = [loc for loc in user["locs"] if loc.get("id") != loc_id]
+    user["locs"] = [item for item in user["locs"] if item.get("id") != loc_id]
     return len(user["locs"]) != before
 
 
+async def drop_user(uid: int | str) -> None:
+    """Полное удаление пользователя вместе с локациями."""
+    DB["users"].pop(str(uid), None)
+    _snapshots.pop(str(uid), None)
+    await repo.delete_user(uid)
+
+
 def channels() -> list[str]:
-    return DB.setdefault("channels", [])
+    return DB["channels"]
 
 
 def rss_feeds() -> list[str]:
-    return DB.setdefault("rss", [])
+    return DB["rss"]
+
+
+def vk_groups() -> list[str]:
+    return DB.setdefault("vk", [])
 
 
 def pending() -> list[str]:
-    return DB.setdefault("pending", [])
+    return DB["pending"]
 
 
 def meta() -> dict[str, Any]:
-    return DB.setdefault("meta", {})
-RADAR_FILE_11
+    return DB["meta"]
+
+
+async def meta_get(key: str, default: Any = None) -> Any:
+    return await repo.get_meta(key, default)
+
+
+async def meta_set(key: str, value: Any) -> None:
+    await repo.set_meta(key, value)
+RADAR_FILE_25
 printf "  %s\n" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_12'
+cat > "radar/exporting.py" <<'RADAR_FILE_26'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -1808,6 +3670,12 @@ cat > "radar/exporting.py" <<'RADAR_FILE_12'
 * Принимаются также «сырые» варианты: массив строк, файл `db.json` целиком
   или список каналов текстом — так можно перенести настройки из версий 2.x.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -1823,7 +3691,6 @@ SCHEMA = 1
 CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 URL_RE = re.compile(r"^https?://", re.I)
 TELEGRAM_RE = re.compile(r"^(https?://)?(www\.)?(t\.me|telegram\.me)/", re.I)
-
 
 def is_feed_url(value: str) -> bool:
     """Ссылка на ленту, а не на Telegram-канал."""
@@ -1996,9 +3863,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_12
+RADAR_FILE_26
 printf "  %s\n" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_13'
+cat > "radar/ai.py" <<'RADAR_FILE_27'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -2022,6 +3889,12 @@ Google выводит модели из обращения быстрее объ
   3. кэш результатов по хэшу текста — повтор не оплачивается;
   4. учёт RPM/RPD с резервом суточных запросов под живой диалог.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -2088,7 +3961,6 @@ _CANDIDATES: dict[str, list[str]] = {
         "gemini-2.5-flash",
     ],
 }
-
 
 def _dedup(names: Sequence[str]) -> list[str]:
     seen: set[str] = set()
@@ -2628,10 +4500,16 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_13
+RADAR_FILE_27
 printf "  %s\n" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_14'
+cat > "radar/geocode.py" <<'RADAR_FILE_28'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -2649,7 +4527,6 @@ log = logging.getLogger("radar.geocode")
 _URL = "https://nominatim.openstreetmap.org/reverse"
 _gate = asyncio.Lock()
 _last_call = 0.0
-
 
 async def _throttle() -> None:
     global _last_call
@@ -2817,9 +4694,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_14
+RADAR_FILE_28
 printf "  %s\n" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_15'
+cat > "radar/weather.py" <<'RADAR_FILE_29'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -2830,6 +4707,12 @@ cat > "radar/weather.py" <<'RADAR_FILE_15'
 с колонкой осадков и столбиком температуры, затем прогноз по дням.
 Почасовая часть выводится моноширинным блоком — иначе колонки разъезжаются.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -2877,7 +4760,6 @@ CODES: dict[int, tuple[str, str, str]] = {
 
 SPARK = "▁▂▃▄▅▆▇█"
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
-
 
 def describe(code: int | None, day: bool = True) -> tuple[str, str]:
     name, icon_day, icon_night = CODES.get(int(code) if code is not None else -1,
@@ -3146,10 +5028,16 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_15
+RADAR_FILE_29
 printf "  %s\n" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_16'
+cat > "radar/sources.py" <<'RADAR_FILE_30'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -3170,7 +5058,6 @@ log = logging.getLogger("radar.sources")
 
 _TAGS = re.compile(r"<[^>]+>")
 _SPACES = re.compile(r"[ \t\u00a0]+")
-
 
 @dataclass(frozen=True)
 class Item:
@@ -3324,10 +5211,16 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_16
+RADAR_FILE_30
 printf "  %s\n" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_17'
+cat > "radar/tg.py" <<'RADAR_FILE_31'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -3355,7 +5248,6 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher(storage=MemoryStorage())
-
 
 def back_kb(target: str = "menu:main", title: str = "🏠 В главное меню") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -3418,10 +5310,16 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_17
+RADAR_FILE_31
 printf "  %s\n" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_18'
+cat > "radar/keyboards.py" <<'RADAR_FILE_32'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -3436,7 +5334,6 @@ from aiogram.types import (
 
 from . import config, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
-
 
 def main_menu(role: str | None) -> InlineKeyboardMarkup:
     rows = [
@@ -3455,6 +5352,8 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="🛡 Модерация", callback_data="menu:mod")])
     if roles.is_admin(role):
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
+    if roles.is_superadmin(role):
+        rows.append([InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list")])
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
     promo = promo_row()
     if promo:
@@ -3475,9 +5374,9 @@ def promo_only() -> InlineKeyboardMarkup | None:
 
 
 # Подписи закреплённых кнопок. Reply-кнопки не умеют открывать ссылки напрямую,
-# поэтому «HydraVPN» присылает сообщение с обычной inline-кнопкой-ссылкой.
+# поэтому «HydraSite» присылает сообщение с обычной inline-кнопкой-ссылкой.
 BTN_MENU = "☰ Меню"
-BTN_PROMO = "🐙 HydraVPN"
+BTN_PROMO = "🐙 HydraSite"
 
 
 def persistent_keyboard() -> ReplyKeyboardMarkup | None:
@@ -3699,15 +5598,20 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_18
+RADAR_FILE_32
 printf "  %s\n" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_19'
+cat > "radar/states.py" <<'RADAR_FILE_33'
 """Состояния FSM."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from aiogram.fsm.state import State, StatesGroup
-
 
 class Form(StatesGroup):
     suggest_source = State()
@@ -3717,10 +5621,16 @@ class Form(StatesGroup):
     weather_interval = State()
     manual_address = State()
     admin_add_location = State()   # ввод адреса для чужого пользователя
-RADAR_FILE_19
+RADAR_FILE_33
 printf "  %s\n" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_20'
+cat > "radar/middlewares.py" <<'RADAR_FILE_34'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -3735,7 +5645,6 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 from . import storage
 
 log = logging.getLogger("radar.access")
-
 
 class AccessMiddleware(BaseMiddleware):
     """Пропускает только зарегистрированных; по /start join регистрирует нового."""
@@ -3784,10 +5693,16 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_20
+RADAR_FILE_34
 printf "  %s\n" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_21'
+cat > "radar/monitor.py" <<'RADAR_FILE_35'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -3808,7 +5723,6 @@ log = logging.getLogger("radar.monitor")
 
 seen = sources.SeenStore()
 _stats = {"cycles": 0, "items": 0, "alerts": 0, "last_cycle": 0}
-
 
 def stats() -> dict[str, Any]:
     return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())
@@ -3987,17 +5901,22 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_21
+RADAR_FILE_35
 printf "  %s\n" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_22'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_36'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from . import assistant, common, locations, settings, sources, users
-
+from . import assistant, common, features, locations, settings, sources, users
 
 def setup(dp: Dispatcher) -> None:
     dp.include_router(common.router)
@@ -4005,15 +5924,22 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings.router)
     dp.include_router(sources.router)
     dp.include_router(users.router)
+    dp.include_router(features.router)
     # Ассистент перехватывает любой оставшийся текст — только в самом конце.
     dp.include_router(assistant.router)
 
 
 __all__ = ["setup"]
-RADAR_FILE_22
+RADAR_FILE_36
 printf "  %s\n" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_23'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_37'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -4030,7 +5956,6 @@ from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
 router = Router(name="common")
-
 
 def greeting(role: str) -> str:
     lines = [f"🎛 <b>Система «Радар» v{config.VERSION}</b>", f"Ваша роль: {roles.title(role)}"]
@@ -4053,7 +5978,7 @@ async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
     keyboard = keyboards.persistent_keyboard()
     if keyboard is not None:
         await message.answer(
-            "Кнопки <b>Меню</b> и <b>HydraVPN</b> закреплены под полем ввода.",
+            "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
             reply_markup=keyboard,
         )
     await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
@@ -4082,8 +6007,8 @@ async def button_promo(message: Message) -> None:
     )
 
 
-@router.message(Command("vpn"))
-async def cmd_vpn(message: Message) -> None:
+@router.message(Command("partner", "vpn"))
+async def cmd_partner(message: Message) -> None:
     await button_promo(message)
 
 
@@ -4113,7 +6038,7 @@ async def cmd_help(message: Message, role: str) -> None:
         "",
         "<b>Команды</b>",
         "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод",
-        "/vpn — о проекте HydraVPN",
+        "/partner — партнёрский проект",
     ]
     if roles.can_use_assistant(role):
         lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")
@@ -4287,10 +6212,16 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_23
+RADAR_FILE_37
 printf "  %s\n" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_24'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_38'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -4307,7 +6238,6 @@ from ..textutils import cluster_center, cluster_locations, esc, haversine_m
 from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="locations")
-
 
 def _session() -> aiohttp.ClientSession:
     return aiohttp.ClientSession(
@@ -4448,10 +6378,16 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_24
+RADAR_FILE_38
 printf "  %s\n" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_25'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_39'
 """Настройки: категории оповещений и режим отправки погоды."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -4469,7 +6405,6 @@ from ..states import Form
 from ..tg import back_kb, safe_edit
 
 router = Router(name="settings")
-
 
 @router.callback_query(F.data.startswith("set:toggle:"))
 async def toggle_category(call: CallbackQuery, user: dict[str, Any], role: str) -> None:
@@ -4588,10 +6523,16 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
     await message.answer(
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
-RADAR_FILE_25
+RADAR_FILE_39
 printf "  %s\n" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_26'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_40'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -4609,7 +6550,6 @@ from ..tg import back_kb, safe_edit
 router = Router(name="sources")
 
 CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
-
 
 def normalize_channel(raw: str) -> str:
     value = raw.strip()
@@ -4867,10 +6807,16 @@ async def import_sources(message: Message, role: str) -> None:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_26
+RADAR_FILE_40
 printf "  %s\n" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_27'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_41'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -4888,7 +6834,6 @@ from .locations import locations_text
 router = Router(name="users")
 
 PAGE_SIZE = 8
-
 
 def _page(page: int) -> tuple[list[tuple[str, str, int]], int]:
     records = sorted(
@@ -5048,8 +6993,7 @@ async def confirm_delete(call: CallbackQuery, role: str) -> None:
     if not roles.can_delete_user(role, user.get("role")):
         await call.answer("Недостаточно прав.", show_alert=True)
         return
-    storage.users().pop(target, None)
-    await storage.save()
+    await storage.drop_user(target)
     await call.answer("Пользователь удалён")
     items, pages = _page(0)
     await safe_edit(
@@ -5231,13 +7175,149 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_27
+RADAR_FILE_41
+printf "  %s\n" "radar/handlers/features.py"
+cat > "radar/handlers/features.py" <<'RADAR_FILE_42'
+"""Управление возможностями системы. Доступно только суперадминистратору.
+
+Флаги переключаются на живой системе: изменение сразу попадает в память
+и в базу, перезапуск контейнера не нужен.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from .. import features, roles
+from ..db import repo
+from ..textutils import esc
+from ..tg import back_kb, safe_edit
+
+router = Router(name="features")
+
+
+def _menu(group: str | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if group is None:
+        for name in features.GROUPS:
+            items = features.by_group()[name]
+            active = sum(1 for flag in items if features.enabled(flag.key))
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"{name} — {active}/{len(items)}",
+                    callback_data=f"feat:group:{name}",
+                )
+            ])
+        rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    for flag in features.by_group().get(group, []):
+        if flag.locked:
+            mark = "🔒"
+        else:
+            mark = "✅" if features.enabled(flag.key) else "❌"
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{mark} {flag.title}",
+                callback_data=f"feat:toggle:{flag.key}:{group}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ К разделам", callback_data="feat:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _group_text(group: str) -> str:
+    lines = [f"⚙️ <b>{esc(group)}</b>", ""]
+    for flag in features.by_group().get(group, []):
+        state = "🔒 всегда включено" if flag.locked else (
+            "✅ включено" if features.enabled(flag.key) else "❌ выключено"
+        )
+        since = f" <i>(с {flag.since})</i>" if flag.since else ""
+        lines.append(f"<b>{esc(flag.title)}</b>{since} — {state}")
+        lines.append(f"<i>{esc(flag.description)}</i>")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+@router.message(Command("features"))
+async def cmd_features(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Управление возможностями доступно суперадминистратору.")
+        return
+    active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
+    await message.answer(
+        f"⚙️ <b>Возможности системы</b>\nВключено {active} из {len(features.FLAGS)}.\n\n"
+        "<i>Изменения применяются сразу, перезапуск не нужен.</i>",
+        reply_markup=_menu(),
+    )
+
+
+@router.callback_query(F.data == "feat:list")
+async def show_groups(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await call.answer()
+    active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
+    await safe_edit(
+        call,
+        f"⚙️ <b>Возможности системы</b>\nВключено {active} из {len(features.FLAGS)}.",
+        _menu(),
+    )
+
+
+@router.callback_query(F.data.startswith("feat:group:"))
+async def show_group(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    group = call.data.split(":", 2)[2]
+    await call.answer()
+    await safe_edit(call, _group_text(group), _menu(group))
+
+
+@router.callback_query(F.data.startswith("feat:toggle:"))
+async def toggle(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    parts = call.data.split(":")
+    key, group = parts[2], parts[3]
+
+    flag = features.resolve(key)
+    if flag is None:
+        await call.answer("Неизвестная возможность.", show_alert=True)
+        return
+    if flag.locked:
+        await call.answer("Это ядро системы, выключить нельзя.", show_alert=True)
+        return
+
+    value = not features.enabled(flag.key)
+    features.set_local(flag.key, value)
+    await repo.set_feature(flag.key, value, call.from_user.id)
+    await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
+    await safe_edit(call, _group_text(group), _menu(group))
+RADAR_FILE_42
 printf "  %s\n" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_28'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_43'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
 """
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
 
 from __future__ import annotations
 
@@ -5260,7 +7340,6 @@ router = Router(name="assistant")
 
 MAX_HISTORY = 8
 _history: dict[str, deque] = {}
-
 
 def history_of(uid: str) -> deque:
     if uid not in _history:
@@ -5373,7 +7452,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_28
+RADAR_FILE_43
 ok "Файлы записаны"
 
 # --- 3. Настройки ---------------------------------------------------------
@@ -5408,6 +7487,11 @@ if [ "$RECREATE_ENV" = true ]; then
     ask "  Токен Telegram-бота (@BotFather): " IN_TOKEN '^[0-9]{6,}:[A-Za-z0-9_-]{30,}$' yes
     ask "  Ваш Telegram ID (@userinfobot): " IN_ADMIN '^[0-9]{5,}$' yes
     ask "  Ключ Google Gemini (Enter — без ИИ): " IN_GEMINI '^.{20,}$' no
+    ask "  Пароль базы данных (Enter — сгенерировать): " IN_DBPASS '^.{8,}$' no
+    if [ -z "${IN_DBPASS:-}" ]; then
+        IN_DBPASS="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)"
+        echo "  Сгенерирован пароль базы: $IN_DBPASS"
+    fi
     ask "  Часовой пояс [Europe/Saratov]: " IN_TZ '^[A-Za-z]+/[A-Za-z_+-]+$' no
     ask "  Город по умолчанию [Саратов]: " IN_CITY '.+' no
     echo "  Наборы источников: saratov, moscow, spb, kazan, samara (через запятую)"
@@ -5421,6 +7505,17 @@ if [ "$RECREATE_ENV" = true ]; then
 BOT_TOKEN=${IN_TOKEN}
 SUPERADMIN_ID=${IN_ADMIN}
 GEMINI_API_KEY=${IN_GEMINI:-}
+DB_PASSWORD=${IN_DBPASS}
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=radar
+DB_USER=radar
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=5
+EVENT_RETENTION_DAYS=180
+MAX_BOT_TOKEN=
+MAX_API_URL=https://platform-api2.max.ru
+MAX_MODE=polling
 GEMINI_MODEL=gemini-3.6-flash
 GEMINI_MODEL_ANALYSIS=gemini-3.5-flash-lite
 AI_CONCURRENCY=2
@@ -5443,7 +7538,7 @@ EXTRA_CHANNELS=
 EXTRA_RSS=
 LOG_LEVEL=INFO
 PROMO_ENABLED=1
-PROMO_TITLE=🐙 HydraVPN
+PROMO_TITLE=🐙 HydraSite
 PROMO_URL=https://t.me/+WWJFBZVhxBs4ZmNi
 PROMO_IN_ALERTS=0
 ENVEOF
@@ -5457,38 +7552,54 @@ TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
 
 # --- 4. Сборка и запуск ---------------------------------------------------
-info "Останавливаю прежний контейнер"
+COMPOSE="docker compose"
+if ! docker compose version >/dev/null 2>&1; then
+    if command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE="docker-compose"
+    else
+        die "Нужен Docker Compose: https://docs.docker.com/compose/install/"
+    fi
+fi
+
+TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
+: "${TZ_VALUE:=Europe/Saratov}"
+
+info "Останавливаю прежние контейнеры"
+$COMPOSE down --remove-orphans >/dev/null 2>&1 || true
+# Наследие версий 3.x: одиночный контейнер без compose
 docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-info "Сборка образа $IMAGE_NAME (часовой пояс $TZ_VALUE)"
-docker build $NO_CACHE --build-arg "TZ=$TZ_VALUE" -t "$IMAGE_NAME" . \
-    || die "Сборка образа не удалась"
+mkdir -p "$APP_DIR/data/postgres"
+chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
 
-info "Запуск контейнера $CONTAINER_NAME"
-docker run -d \
-    --name "$CONTAINER_NAME" \
-    --env-file "$APP_DIR/.env" \
-    --restart unless-stopped \
-    --log-opt max-size=10m --log-opt max-file=3 \
-    -v "$APP_DIR/data:/app/data" \
-    "$IMAGE_NAME" >/dev/null || die "Не удалось запустить контейнер"
+info "Сборка и запуск (бот + PostgreSQL)"
+$COMPOSE up -d --build $NO_CACHE_FLAG || die "Не удалось поднять контейнеры"
 
-sleep 5
+info "Жду готовности базы и первого запуска"
+for _ in $(seq 1 60); do
+    state="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)"
+    [ "$state" = "true" ] && break
+    sleep 2
+done
+
 if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" != "true" ]; then
-    warn "Контейнер остановился. Последние строки лога:"
-    docker logs --tail 40 "$CONTAINER_NAME" || true
+    warn "Бот не запустился. Последние строки лога:"
+    docker logs --tail 60 "$CONTAINER_NAME" 2>/dev/null || true
+    warn "Лог базы данных:"
+    docker logs --tail 20 radar_db 2>/dev/null || true
     exit 1
 fi
 
 trap - ERR
 ok "Система «Радар» v${VERSION} запущена."
 echo
-echo "  Логи:        docker logs -f $CONTAINER_NAME"
-echo "  Перезапуск:  docker restart $CONTAINER_NAME"
-echo "  Остановка:   docker stop $CONTAINER_NAME"
-echo "  Данные:      $APP_DIR/data/db.json"
-echo "  Обновление:  bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)"
+echo "  Логи бота:   docker logs -f $CONTAINER_NAME"
+echo "  Логи базы:   docker logs -f radar_db"
+echo "  Перезапуск:  cd $APP_DIR && $COMPOSE restart"
+echo "  Остановка:   cd $APP_DIR && $COMPOSE down"
+echo "  Резервная копия базы:"
+echo "    docker exec radar_db pg_dump -U radar radar | gzip > radar-\$(date +%F).sql.gz"
 echo
 echo "  Откройте бота в Telegram и отправьте /start, затем пришлите геопозицию."
 echo

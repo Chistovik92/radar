@@ -1,5 +1,11 @@
 """Конфигурация приложения: читается из переменных окружения (.env)."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import logging
@@ -11,7 +17,6 @@ from dotenv import load_dotenv
 from . import __version__
 
 load_dotenv()
-
 
 def _int(name: str, default: int) -> int:
     raw = (os.getenv(name) or "").strip()
@@ -55,6 +60,35 @@ AI_PREFILTER: bool = (os.getenv("AI_PREFILTER") or "1").strip().lower() not in (
 AI_SEARCH: bool = (os.getenv("AI_SEARCH") or "1").strip().lower() not in ("0", "false", "no")
 
 DATA_FILE: str = (os.getenv("DATA_FILE") or "data/db.json").strip()
+
+# --- PostgreSQL ---
+DB_HOST: str = (os.getenv("DB_HOST") or "postgres").strip()
+DB_PORT: int = _int("DB_PORT", 5432)
+DB_NAME: str = (os.getenv("DB_NAME") or "radar").strip()
+DB_USER: str = (os.getenv("DB_USER") or "radar").strip()
+DB_PASSWORD: str = (os.getenv("DB_PASSWORD") or "").strip()
+DATABASE_URL: str = (os.getenv("DATABASE_URL") or "").strip()
+DB_POOL_SIZE: int = max(1, _int("DB_POOL_SIZE", 5))
+DB_MAX_OVERFLOW: int = max(0, _int("DB_MAX_OVERFLOW", 5))
+DB_ECHO: bool = (os.getenv("DB_ECHO") or "0").strip().lower() in ("1", "true", "yes")
+# Сколько дней хранить историю событий; 0 — бессрочно.
+EVENT_RETENTION_DAYS: int = max(0, _int("EVENT_RETENTION_DAYS", 180))
+
+
+def database_url(async_driver: bool = True) -> str:
+    """Строка подключения. DATABASE_URL имеет приоритет над отдельными полями."""
+    from urllib.parse import quote_plus
+
+    driver = "postgresql+asyncpg" if async_driver else "postgresql+psycopg2"
+    if DATABASE_URL:
+        url = DATABASE_URL
+        # Приводим к нужному драйверу, чтобы одна переменная годилась и Alembic.
+        for prefix in ("postgresql+asyncpg://", "postgresql+psycopg2://", "postgresql://", "postgres://"):
+            if url.startswith(prefix):
+                return driver + "://" + url[len(prefix):]
+        return url
+    password = f":{quote_plus(DB_PASSWORD)}" if DB_PASSWORD else ""
+    return f"{driver}://{DB_USER}{password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 POLL_INTERVAL: int = max(60, _int("POLL_INTERVAL", 180))
 MSG_PER_SOURCE: int = max(1, _int("MSG_PER_SOURCE", 5))
 CLUSTER_RADIUS_M: int = max(0, _int("CLUSTER_RADIUS_M", 1000))
@@ -65,20 +99,29 @@ EXTRA_RSS: list[str] = [u for u in (os.getenv("EXTRA_RSS") or "").split(",") if 
 
 # --- партнёрский блок (кнопка в меню) ---
 PROMO_ENABLED: bool = (os.getenv("PROMO_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
-PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🐙 HydraVPN").strip()
+PROMO_TITLE: str = (os.getenv("PROMO_TITLE") or "🐙 HydraSite").strip()
 PROMO_URL: str = (os.getenv("PROMO_URL") or "https://t.me/+WWJFBZVhxBs4ZmNi").strip()
 PROMO_TEXT: str = (
     os.getenv("PROMO_TEXT")
-    or "🐙 <b>HydraVPN</b> — второй проект команды «Радар».\n\n"
-       "Мультипротокольный VPN-клиент для Android: WireGuard, AmneziaWG, SSTP. "
-       "Свои серверы, шифрование базы, раздельное туннелирование по приложениям "
-       "и доменам.\n\n"
-       "Пригодится, когда включают «белые списки»: мессенджеры и соцсети "
-       "перестают открываться на мобильной сети.\n\n"
+    or "🐙 <b>HydraSite</b> — второй проект команды «Радар».\n\n"
        "Подробности и доступ — в канале проекта."
 ).strip()
 # Показывать промо внутри оповещений об угрозах (по умолчанию выключено)
 PROMO_IN_ALERTS: bool = (os.getenv("PROMO_IN_ALERTS") or "0").strip().lower() in ("1", "true", "yes")
+
+# --- выход в интернет через внешний узел (версия 4.1) ---
+# Локальный SOCKS5, который поднимает соседний контейнер sing-box.
+EGRESS_PROXY: str = (os.getenv("EGRESS_PROXY") or "").strip()
+# Ключ шифрования подписок и ключей серверов в базе.
+SECRET_KEY: str = (os.getenv("SECRET_KEY") or "").strip()
+
+# --- мессенджер MAX (включается в 4.2) ---
+MAX_BOT_TOKEN: str = (os.getenv("MAX_BOT_TOKEN") or "").strip()
+# В документации встречаются оба домена; оставлено настраиваемым.
+MAX_API_URL: str = (os.getenv("MAX_API_URL") or "https://platform-api2.max.ru").strip()
+MAX_MODE: str = (os.getenv("MAX_MODE") or "polling").strip().lower()  # polling | webhook
+MAX_WEBHOOK_URL: str = (os.getenv("MAX_WEBHOOK_URL") or "").strip()
+MAX_WEBHOOK_PORT: int = _int("MAX_WEBHOOK_PORT", 8081)
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 USER_AGENT: str = (
@@ -108,6 +151,8 @@ def validate() -> None:
     problems = []
     if not BOT_TOKEN:
         problems.append("BOT_TOKEN не задан")
+    if not DATABASE_URL and not DB_PASSWORD:
+        problems.append("DB_PASSWORD не задан (или задайте DATABASE_URL целиком)")
     if not SUPERADMIN_ID:
         problems.append("SUPERADMIN_ID не задан или равен 0")
     if problems:

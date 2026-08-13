@@ -1,4 +1,4 @@
-# Система «Радар» v3.3.5
+# Система «Радар» v4.0.0
 
 Telegram-бот, который следит за городскими угрозами и авариями ЖКХ по вашим адресам.
 Сообщения публичных каналов служб ЖКХ, МЧС, администраций города, района и области,
@@ -23,9 +23,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/insta
 
 ```bash
 git clone https://github.com/Chistovik92/radar.git && cd radar
-cp .env.example .env && nano .env
+cp .env.example .env && nano .env      # обязательно задайте DB_PASSWORD
 docker compose up -d --build
 ```
+
+Поднимаются два контейнера: `radar_container` (бот) и `radar_db` (PostgreSQL 16
+с настройками под слабое железо). Схема накатывается миграциями Alembic при
+старте, данные версий 2.x и 3.x из `data/db.json` переносятся автоматически.
 
 ## Логика оповещений
 
@@ -158,8 +162,8 @@ Google выводит модели из обращения быстрее объ
 ## Команды
 
 `/start`, `/menu` — меню - `/id` — ваш ID и роль - `/cancel` — сбросить ввод -
-`/help` — справка - `/vpn` — о проекте HydraVPN - `/ai`, `/aireset` — ассистент (модератор+) - `/quota` — расход квоты (модератор+) -
-`/stats`, `/models` — статистика и модели (админ+)
+`/help` — справка - `/vpn` — о проекте HydraSite - `/ai`, `/aireset` — ассистент (модератор+) - `/quota` — расход квоты (модератор+) -
+`/stats`, `/models` — статистика и модели (админ+) - `/features` — возможности (суперадмин)
 
 ## Настройки (.env)
 
@@ -184,9 +188,13 @@ Google выводит модели из обращения быстрее объ
 | `CLUSTER_RADIUS_M` | `1000` | радиус объединения локаций, м |
 | `MAX_LOCATIONS` | `0` | лимит локаций, 0 — без ограничения |
 | `EXTRA_CHANNELS`, `EXTRA_RSS` | — | дополнительные источники через запятую |
+| `DB_PASSWORD` | — | пароль PostgreSQL (обязательно) |
+| `DATABASE_URL` | — | строка подключения целиком, вместо отдельных полей |
+| `EVENT_RETENTION_DAYS` | `180` | сколько дней хранить историю; 0 — бессрочно |
+| `MAX_BOT_TOKEN` | — | токен бота MAX (версия 4.2) |
 | `LOG_LEVEL` | `INFO` | уровень логов |
 | `PROMO_ENABLED` | `1` | партнёрская кнопка в главном меню |
-| `PROMO_TITLE`, `PROMO_URL`, `PROMO_TEXT` | HydraVPN | что показывать в кнопке и разделе «О системе» |
+| `PROMO_TITLE`, `PROMO_URL`, `PROMO_TEXT` | HydraSite | что показывать в кнопке и разделе «О системе» |
 | `PROMO_IN_ALERTS` | `0` | показывать промо внутри оповещений (не рекомендуется) |
 
 ## Структура
@@ -199,7 +207,12 @@ radar/roles.py              роли и права
 radar/ratelimit.py          учёт квот Gemini: RPM, RPD, резерв, пауза после 429
 radar/matching.py           разбор события, сопоставление с локациями, сборка сообщений
 radar/presets.py            наборы источников по городам
-radar/storage.py            JSON-БД: атомарная запись, миграции
+radar/storage.py            рабочий набор в памяти поверх базы
+radar/identity.py           платформо-независимая идентификация пользователя
+radar/features.py           переключатели возможностей
+radar/db/                   модели, подключение, репозиторий, импорт из JSON
+radar/platforms/            абстракция мессенджеров (Telegram, MAX)
+migrations/                 миграции Alembic
 radar/exporting.py          выгрузка и загрузка источников, совместимость форматов
 radar/ai.py                 Google Gemini: запросы, кэш анализов, ассистент
 radar/sources.py            Telegram-каналы и RSS
@@ -208,7 +221,7 @@ radar/weather.py            Open-Meteo
 radar/monitor.py            фоновый цикл и рассылка
 radar/keyboards.py          клавиатуры
 radar/handlers/             обработчики: меню, локации, настройки, источники, пользователи, ассистент
-tests/                      офлайн-тесты (140 шт., без сети и внешних пакетов)
+tests/                      офлайн-тесты (164 шт., без сети и внешних пакетов)
 tools/build_installer.py    сборка install.sh из исходников
 tools/stubcheck.py          импорт всех модулей с заглушками зависимостей
 tools/lint_names.py         статическая сверка имён между модулями
@@ -224,7 +237,7 @@ python3 tools/build_installer.py
 ## Проверка
 
 ```bash
-python3 -m unittest discover -s tests -v   # 140 тестов
+python3 -m unittest discover -s tests -v   # 164 теста
 python3 tools/stubcheck.py                 # импорт всех модулей
 python3 tools/lint_names.py                # сверка имён
 bash -n install.sh                         # синтаксис установщика
@@ -255,7 +268,7 @@ bash -n install.sh                         # синтаксис установщ
 ## Монетизация
 
 Планы и варианты собраны в [docs/MONETIZATION.md](docs/MONETIZATION.md):
-партнёрство с HydraVPN, freemium через Telegram Stars, локальные партнёры,
+партнёрство с HydraSite, freemium через Telegram Stars, локальные партнёры,
 B2B для управляющих компаний и сетей с распределёнными точками.
 
 ## Лицензия

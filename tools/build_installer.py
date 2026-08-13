@@ -7,6 +7,12 @@
 не требует git и разворачивает проект одной командой.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import os
@@ -22,6 +28,8 @@ OUTPUT = ROOT / "install.sh"
 MANIFEST = [
     "requirements.txt",
     "Dockerfile",
+    "docker-compose.yml",
+    "alembic.ini",
     ".dockerignore",
     "main.py",
     "radar/__init__.py",
@@ -30,7 +38,19 @@ MANIFEST = [
     "radar/roles.py",
     "radar/ratelimit.py",
     "radar/matching.py",
+    "radar/identity.py",
+    "radar/features.py",
     "radar/presets.py",
+    "radar/db/__init__.py",
+    "radar/db/models.py",
+    "radar/db/engine.py",
+    "radar/db/repo.py",
+    "radar/db/importer.py",
+    "migrations/env.py",
+    "migrations/script.py.mako",
+    "migrations/versions/0001_initial.py",
+    "radar/platforms/__init__.py",
+    "radar/platforms/base.py",
     "radar/storage.py",
     "radar/exporting.py",
     "radar/ai.py",
@@ -48,9 +68,9 @@ MANIFEST = [
     "radar/handlers/settings.py",
     "radar/handlers/sources.py",
     "radar/handlers/users.py",
+    "radar/handlers/features.py",
     "radar/handlers/assistant.py",
 ]
-
 
 def version() -> str:
     source = (ROOT / "radar" / "__init__.py").read_text("utf-8")
