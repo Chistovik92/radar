@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.1 — автономный установщик.
+# Система «Радар» v4.0.2 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -15,14 +15,16 @@
 #   --recreate-env   заново запросить токены и настройки
 #   --no-cache       пересобрать образ без кэша Docker
 #   --logs           показать логи после запуска
-#   --uninstall      остановить и удалить контейнер и образ (данные сохраняются)
+#   --reinstall      принудительная полная переустановка (данные сохраняются)
+#   --skip-updates   не обновлять пакеты системы
+#   --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
 #
 # Файл собирается автоматически: python3 tools/build_installer.py
 # Правьте исходники проекта, а не install.sh.
 
 set -Eeuo pipefail
 
-VERSION="4.0.1"
+VERSION="4.0.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -30,60 +32,320 @@ RECREATE_ENV=false
 NO_CACHE_FLAG=""
 SHOW_LOGS=false
 UNINSTALL=false
+FORCE_REINSTALL=false
+SKIP_UPDATES=false
+LOG_FILE=""
+START_TS=$(date +%s)
+
+ORIGINAL_ARGS="$*"
 
 for arg in "$@"; do
     case "$arg" in
         --recreate-env) RECREATE_ENV=true ;;
         --no-cache)     NO_CACHE_FLAG="--no-cache" ;;
         --logs)         SHOW_LOGS=true ;;
+        --reinstall)    FORCE_REINSTALL=true; NO_CACHE_FLAG="--no-cache" ;;
+        --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
         -v|--version)   echo "radar $VERSION"; exit 0 ;;
-        -h|--help)      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Неизвестный флаг: $arg" >&2; exit 1 ;;
     esac
 done
 
-info() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m[OK]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m[ERR]\033[0m %s\n' "$*" >&2; exit 1; }
-trap 'die "Установка прервана (строка $LINENO)"' ERR
+# --------------------------------------------------------------------------
+#  Логирование и оформление
+# --------------------------------------------------------------------------
 
-echo "==========================================================="
-echo "        СИСТЕМА «РАДАР» v${VERSION} — установка"
-echo "==========================================================="
+COLS=$( (tput cols 2>/dev/null || echo 72) )
+[ "$COLS" -gt 78 ] && COLS=78
+[ "$COLS" -lt 48 ] && COLS=48
 
-command -v docker >/dev/null 2>&1 || die "Docker не установлен: https://docs.docker.com/engine/install/"
-docker info >/dev/null 2>&1 || die "Docker-демон недоступен. Запустите его или добавьте пользователя в группу docker."
-
-if [ "$UNINSTALL" = true ]; then
-    info "Удаляю контейнеры и образ (данные в $APP_DIR/data сохраняются)"
-    (cd "$APP_DIR" 2>/dev/null && docker compose down --remove-orphans) >/dev/null 2>&1 || true
-    docker stop "$CONTAINER_NAME" radar_db >/dev/null 2>&1 || true
-    docker rm "$CONTAINER_NAME" radar_db >/dev/null 2>&1 || true
-    docker rmi "$IMAGE_NAME" >/dev/null 2>&1 || true
-    ok "Готово."
-    exit 0
+if [ -t 1 ]; then
+    C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+    C_CYAN=$'\033[1;36m'; C_GREEN=$'\033[1;32m'
+    C_YELLOW=$'\033[1;33m'; C_RED=$'\033[1;31m'; C_BLUE=$'\033[1;34m'
+else
+    C_RESET=""; C_DIM=""; C_BOLD=""; C_CYAN=""; C_GREEN=""
+    C_YELLOW=""; C_RED=""; C_BLUE=""
 fi
 
-[ -e /dev/tty ] || die "Нет интерактивного терминала для ввода настроек."
+STEP_CURRENT=0
+STEP_TOTAL=8
 
-# --- 1. Каталог -----------------------------------------------------------
-info "Каталог установки: $APP_DIR"
+# Лог пишется целиком, включая то, что на экран не попадает.
+log_raw() {
+    [ -n "$LOG_FILE" ] && printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+    return 0
+}
+
+line()  { printf "%s%s%s\n" "$C_DIM" "$(printf '─%.0s' $(seq 1 "$COLS"))" "$C_RESET"; }
+step()  {
+    STEP_CURRENT=$((STEP_CURRENT + 1))
+    printf "\n%s[%d/%d]%s %s%s%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
+        "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+    log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* ==="
+}
+info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
+ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; log_raw "OK    $*"; }
+warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; log_raw "WARN  $*"; }
+fail() { printf "  %s✗%s %s\n" "$C_RED" "$C_RESET" "$*"; log_raw "FAIL  $*"; }
+die()  {
+    printf "\n%s✗ %s%s\n" "$C_RED" "$*" "$C_RESET" >&2
+    log_raw "ERROR $*"
+    [ -n "$LOG_FILE" ] && printf "  Полный лог: %s\n" "$LOG_FILE" >&2
+    exit 1
+}
+run()  {  # выполнить команду, весь вывод — только в лог
+    log_raw "CMD   $*"
+    if [ -n "$LOG_FILE" ]; then
+        "$@" >> "$LOG_FILE" 2>&1
+    else
+        "$@" >/dev/null 2>&1
+    fi
+}
+
+trap 'die "Установка прервана (строка $LINENO)"' ERR
+
+# Оформление намеренно без центрирования и рамок: ширина кириллицы
+# в printf считается в байтах, а локаль в контейнере может быть не UTF-8 —
+# любая «красивая» рамка на таком сочетании гарантированно съезжает.
+banner() {
+    printf "\n%s%s%s\n" "$C_CYAN" "$(printf '━%.0s' $(seq 1 "$COLS"))" "$C_RESET"
+    printf "  %sСИСТЕМА «РАДАР»%s  %sv%s%s\n" "$C_BOLD" "$C_RESET" "$C_DIM" "$VERSION" "$C_RESET"
+    printf "  %sмониторинг городских угроз и аварий ЖКХ%s\n" "$C_DIM" "$C_RESET"
+    printf "  %sавтор SecretHero · github.com/Chistovik92/radar%s\n" "$C_DIM" "$C_RESET"
+    printf "%s%s%s\n" "$C_CYAN" "$(printf '━%.0s' $(seq 1 "$COLS"))" "$C_RESET"
+}
+
+banner
+
+# --------------------------------------------------------------------------
+#  Шаг 1. Каталог и лог
+# --------------------------------------------------------------------------
+
+step "Подготовка каталога и журнала установки"
+
 mkdir -p "$APP_DIR/data"
 cd "$APP_DIR"
 chmod 700 "$APP_DIR" 2>/dev/null || true
-chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
+
+LOG_FILE="$APP_DIR/installer_log.txt"
+# Лог накапливается между запусками, но не растёт бесконечно.
+if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.old"
+fi
+{
+    printf '\n%s\n' "============================================================"
+    printf 'Запуск установщика «Радар» v%s\n' "$VERSION"
+    printf 'Дата: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf 'Хост: %s · %s\n' "$(hostname 2>/dev/null || echo неизвестно)" "$(uname -srm)"
+    printf 'Каталог: %s\n' "$APP_DIR"
+    printf 'Аргументы: %s\n' "${ORIGINAL_ARGS:-нет}"
+    printf '%s\n' "============================================================"
+} >> "$LOG_FILE"
+
+ok "Каталог: $APP_DIR"
+ok "Журнал установки: $LOG_FILE"
+
+# --------------------------------------------------------------------------
+#  Шаг 2. Проверка окружения
+# --------------------------------------------------------------------------
+
+step "Проверка компонентов системы"
+
+check_ok=true
+
+# --- операционная система ---
+OS_NAME="$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)"
+info "Система: $OS_NAME"
+info "Архитектура: $(uname -m)"
+
+# --- оперативная память ---
+MEM_MB=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+if [ "$MEM_MB" -gt 0 ]; then
+    if [ "$MEM_MB" -lt 900 ]; then
+        warn "Оперативной памяти ${MEM_MB} МБ — для бота с PostgreSQL это мало"
+        warn "Рекомендуется от 2 ГБ; при нехватке добавьте файл подкачки"
+    else
+        ok "Оперативная память: ${MEM_MB} МБ"
+    fi
+fi
+
+# --- свободное место ---
+DISK_MB=$(df -Pm "$APP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -n "$DISK_MB" ]; then
+    if [ "$DISK_MB" -lt 2048 ]; then
+        warn "Свободно ${DISK_MB} МБ — образы и база могут не поместиться"
+    else
+        ok "Свободно на диске: ${DISK_MB} МБ"
+    fi
+fi
+
+# --- Docker ---
+if command -v docker >/dev/null 2>&1; then
+    DOCKER_VER="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo неизвестна)"
+    if docker info >/dev/null 2>&1; then
+        ok "Docker $DOCKER_VER"
+    else
+        fail "Docker установлен, но демон не отвечает"
+        check_ok=false
+    fi
+else
+    fail "Docker не установлен"
+    check_ok=false
+fi
+
+# --- Docker Compose ---
+COMPOSE=""
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE="docker compose"
+    ok "Docker Compose $(docker compose version --short 2>/dev/null || echo v2)"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE="docker-compose"
+    warn "Найден устаревший docker-compose v1 — рекомендуется перейти на Compose v2"
+else
+    fail "Docker Compose не найден"
+    check_ok=false
+fi
+
+# --- вспомогательные утилиты ---
+for tool in curl tar gzip; do
+    if command -v "$tool" >/dev/null 2>&1; then
+        ok "$tool"
+    else
+        warn "$tool не найден — часть операций может не работать"
+    fi
+done
+
+# --- время ---
+if command -v timedatectl >/dev/null 2>&1; then
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
+        ok "Время синхронизировано"
+    else
+        warn "Время не синхронизировано — оповещения по расписанию будут смещаться"
+    fi
+fi
+
+# --- доступ в интернет ---
+if command -v curl >/dev/null 2>&1; then
+    if curl -fsS --max-time 12 -o /dev/null https://api.telegram.org 2>/dev/null; then
+        ok "Telegram API доступен"
+    else
+        warn "Telegram API недоступен — проверьте сеть или настройте выход через прокси"
+    fi
+fi
+
+if [ "$check_ok" != true ]; then
+    echo
+    printf "  Установите недостающее и повторите запуск:\n"
+    printf "    curl -fsSL https://get.docker.com | sh\n"
+    die "Не хватает обязательных компонентов"
+fi
+
+# --------------------------------------------------------------------------
+#  Шаг 3. Обновление системы
+# --------------------------------------------------------------------------
+
+step "Обновление компонентов системы"
+
+if [ "$SKIP_UPDATES" = true ]; then
+    info "Пропущено по ключу --skip-updates"
+elif [ "$(id -u)" != "0" ]; then
+    info "Нет прав root — обновление системы пропущено"
+elif command -v apt-get >/dev/null 2>&1; then
+    info "Проверяю обновления пакетов (может занять пару минут)"
+    if run apt-get update; then
+        UPGRADABLE=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst' || echo 0)
+        if [ "$UPGRADABLE" -gt 0 ]; then
+            info "Доступно обновлений: $UPGRADABLE — устанавливаю"
+            if DEBIAN_FRONTEND=noninteractive run apt-get -y -o Dpkg::Options::=--force-confold upgrade; then
+                ok "Пакеты системы обновлены"
+            else
+                warn "Обновление завершилось с ошибкой, продолжаю (подробности в логе)"
+            fi
+        else
+            ok "Все пакеты актуальны"
+        fi
+    else
+        warn "Список пакетов обновить не удалось, продолжаю"
+    fi
+else
+    info "Менеджер пакетов apt не найден — обновление пропущено"
+fi
+
+info "Обновляю базовые образы Docker"
+run docker pull python:3.11-slim || warn "Не удалось обновить образ python:3.11-slim"
+run docker pull postgres:16-alpine || warn "Не удалось обновить образ postgres:16-alpine"
+ok "Базовые образы проверены"
+
+# --------------------------------------------------------------------------
+#  Шаг 4. Диагностика существующей установки
+# --------------------------------------------------------------------------
+
+step "Проверка предыдущей установки"
+
+MODE="новая установка"
+HEALTHY=false
 
 if [ -f "$APP_DIR/bot.py" ] && [ ! -d "$APP_DIR/radar" ]; then
-    warn "Обнаружена установка версии 2.x — переношу bot.py в bot.py.bak-2x"
+    warn "Обнаружена версия 2.x — переношу bot.py в bot.py.bak-2x"
     mv -f "$APP_DIR/bot.py" "$APP_DIR/bot.py.bak-2x"
 fi
 
-# --- 2. Файлы проекта -----------------------------------------------------
-info "Разворачиваю файлы проекта"
+if [ -f "$APP_DIR/.env" ] || [ -d "$APP_DIR/radar" ]; then
+    MODE="обновление"
+    info "Найдена предыдущая установка"
+
+    if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+        STATE="$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo нет)"
+        RESTARTS="$(docker inspect -f '{{.RestartCount}}' "$CONTAINER_NAME" 2>/dev/null || echo 0)"
+        info "Контейнер бота: $STATE, перезапусков: $RESTARTS"
+        if [ "$STATE" = "running" ] && [ "$RESTARTS" -lt 5 ]; then
+            HEALTHY=true
+            ok "Текущая установка работоспособна"
+        else
+            warn "Бот нестабилен — будет переустановлен полностью"
+            log_raw "--- последние строки лога бота ---"
+            docker logs --tail 40 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
+            FORCE_REINSTALL=true
+        fi
+    else
+        info "Контейнер бота не найден"
+    fi
+
+    if [ -f "$APP_DIR/data/db.json" ]; then
+        info "Найдена база версии 3.x — данные будут перенесены в PostgreSQL"
+    fi
+else
+    info "Предыдущих установок не найдено"
+fi
+
+if [ "$FORCE_REINSTALL" = true ]; then
+    MODE="полная переустановка"
+    warn "Режим: полная переустановка. Данные в data/ сохраняются"
+    NO_CACHE_FLAG="--no-cache"
+    info "Останавливаю и удаляю контейнеры"
+    (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+    run docker rm -f "$CONTAINER_NAME" || true
+    run docker rmi -f "$IMAGE_NAME" || true
+    # Каталоги проекта пересоздаются, данные не трогаем
+    rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+fi
+
+ok "Режим: $MODE"
+
+# --------------------------------------------------------------------------
+#  Шаг 5. Файлы проекта
+# --------------------------------------------------------------------------
+
+step "Развёртывание файлов проекта"
+
+chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
+
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
-printf "  %s\n" "requirements.txt"
+FILE_COUNT=44
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
 aiohttp>=3.9,<4
@@ -97,7 +359,7 @@ SQLAlchemy[asyncio]>=2.0,<3
 asyncpg>=0.29
 alembic>=1.13
 RADAR_FILE_00
-printf "  %s\n" "Dockerfile"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "Dockerfile"
 cat > "Dockerfile" <<'RADAR_FILE_01'
 FROM python:3.11-slim
 
@@ -127,7 +389,7 @@ USER radar
 
 CMD ["python", "-u", "main.py"]
 RADAR_FILE_01
-printf "  %s\n" "docker-compose.yml"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "docker-compose.yml"
 cat > "docker-compose.yml" <<'RADAR_FILE_02'
 services:
   postgres:
@@ -186,7 +448,7 @@ services:
         max-size: "10m"
         max-file: "3"
 RADAR_FILE_02
-printf "  %s\n" "alembic.ini"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "alembic.ini"
 cat > "alembic.ini" <<'RADAR_FILE_03'
 [alembic]
 script_location = migrations
@@ -227,7 +489,7 @@ formatter = generic
 format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
 RADAR_FILE_03
-printf "  %s\n" ".dockerignore"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" ".dockerignore"
 cat > ".dockerignore" <<'RADAR_FILE_04'
 .git
 .github
@@ -244,7 +506,7 @@ __pycache__
 # стенд сравнения провайдеров не нужен в образе
 bench
 RADAR_FILE_04
-printf "  %s\n" "main.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "main.py"
 cat > "main.py" <<'RADAR_FILE_05'
 #!/usr/bin/env python3
 """Точка входа системы «Радар»."""
@@ -425,7 +687,7 @@ if __name__ == "__main__":
         )
         raise SystemExit(1)
 RADAR_FILE_05
-printf "  %s\n" "radar/__init__.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__init__.py"
 cat > "radar/__init__.py" <<'RADAR_FILE_06'
 """Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя.
 
@@ -439,7 +701,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.1"
+__version__ = "4.0.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -448,7 +710,7 @@ SIGNATURE = f"Система «Радар» v{__version__} · автор {__auth
 
 __all__ = ["__version__", "__author__", "__license__", "__url__", "SIGNATURE"]
 RADAR_FILE_06
-printf "  %s\n" "radar/config.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/config.py"
 cat > "radar/config.py" <<'RADAR_FILE_07'
 """Конфигурация приложения: читается из переменных окружения (.env)."""
 
@@ -626,7 +888,7 @@ def validate() -> None:
             "анализ новостей переключён на эвристический режим."
         )
 RADAR_FILE_07
-printf "  %s\n" "radar/textutils.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/textutils.py"
 cat > "radar/textutils.py" <<'RADAR_FILE_08'
 """Чистые утилиты: разметка, нормализация адресов, геометрия, кластеризация.
 
@@ -889,7 +1151,7 @@ def cluster_center(cluster: Sequence[dict[str, Any]]) -> tuple[float, float]:
         sum(p[1] for p in points) / len(points),
     )
 RADAR_FILE_08
-printf "  %s\n" "radar/roles.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/roles.py"
 cat > "radar/roles.py" <<'RADAR_FILE_09'
 """Роли и права доступа.
 
@@ -1001,7 +1263,7 @@ def can_moderate_sources(actor_role: str | None) -> bool:
 def can_use_assistant(actor_role: str | None) -> bool:
     return is_moderator(actor_role)
 RADAR_FILE_09
-printf "  %s\n" "radar/ratelimit.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ratelimit.py"
 cat > "radar/ratelimit.py" <<'RADAR_FILE_10'
 """Учёт квот Gemini: запросы в минуту, запросы в сутки, резерв под ассистента.
 
@@ -1128,7 +1390,7 @@ class RateLimiter:
             "paused": self.paused,
         }
 RADAR_FILE_10
-printf "  %s\n" "radar/matching.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/matching.py"
 cat > "radar/matching.py" <<'RADAR_FILE_11'
 """Модель разобранной новости, правила сопоставления с локациями и сборка сообщений.
 
@@ -1632,7 +1894,7 @@ def plan_alerts(
         )
     return messages
 RADAR_FILE_11
-printf "  %s\n" "radar/identity.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/identity.py"
 cat > "radar/identity.py" <<'RADAR_FILE_12'
 """Идентификация пользователя независимо от мессенджера.
 
@@ -1709,7 +1971,7 @@ def key_of(platform: str, external_id: str | int) -> str:
 def is_telegram(key: str | int) -> bool:
     return parse(key).platform == TELEGRAM
 RADAR_FILE_12
-printf "  %s\n" "radar/features.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/features.py"
 cat > "radar/features.py" <<'RADAR_FILE_13'
 """Переключатели возможностей.
 
@@ -1875,7 +2137,7 @@ def by_group() -> dict[str, list[Flag]]:
         grouped[flag.group].append(flag)
     return grouped
 RADAR_FILE_13
-printf "  %s\n" "radar/presets.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/presets.py"
 cat > "radar/presets.py" <<'RADAR_FILE_14'
 """Наборы источников по городам.
 
@@ -2055,7 +2317,7 @@ def rss_for(cities: list[str]) -> list[str]:
             result.extend(preset.rss)
     return list(dict.fromkeys(result))
 RADAR_FILE_14
-printf "  %s\n" "radar/db/__init__.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
 cat > "radar/db/__init__.py" <<'RADAR_FILE_15'
 """Слой базы данных: модели, подключение, репозиторий."""
 
@@ -2067,15 +2329,18 @@ cat > "radar/db/__init__.py" <<'RADAR_FILE_15'
 
 from __future__ import annotations
 
-from .engine import dispose, engine, session, session_factory, wait_ready
-from .models import Base, Delivery, Event, Location, Meta, Source, User
+from .engine import dispose, get_engine, session, session_factory, wait_ready
+from .models import Base, Delivery, Event, Feature, Location, Meta, Source, User
 
+# Внимание: здесь нельзя экспортировать имена `engine`, `models`, `repo`,
+# `importer` — они совпадают с именами подмодулей пакета и затенили бы их
+# при `from radar.db import engine`.
 __all__ = [
-    "Base", "Delivery", "Event", "Location", "Meta", "Source", "User",
-    "dispose", "engine", "session", "session_factory", "wait_ready",
+    "Base", "Delivery", "Event", "Feature", "Location", "Meta", "Source", "User",
+    "dispose", "get_engine", "session", "session_factory", "wait_ready",
 ]
 RADAR_FILE_15
-printf "  %s\n" "radar/db/models.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
 cat > "radar/db/models.py" <<'RADAR_FILE_16'
 """Схема базы данных.
 
@@ -2303,9 +2568,16 @@ class Meta(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 RADAR_FILE_16
-printf "  %s\n" "radar/db/engine.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
 cat > "radar/db/engine.py" <<'RADAR_FILE_17'
-"""Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы."""
+"""Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
+
+Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
+занято самим модулем `radar.db.engine`, и экспорт одноимённой функции
+из `radar/db/__init__.py` затенял бы модуль. Тогда `from radar.db import
+engine` возвращал бы функцию, а обращение к `engine.wait_ready()` падало бы
+с AttributeError уже в рантайме.
+"""
 
 # --------------------------------------------------------------------------
 # Система «Радар» — мониторинг городских угроз и аварий ЖКХ
@@ -2330,7 +2602,7 @@ _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def engine() -> AsyncEngine:
+def get_engine() -> AsyncEngine:
     global _engine, _session_factory
     if _engine is None:
         _engine = create_async_engine(
@@ -2346,7 +2618,7 @@ def engine() -> AsyncEngine:
 
 
 def session_factory() -> async_sessionmaker[AsyncSession]:
-    engine()
+    get_engine()
     assert _session_factory is not None
     return _session_factory
 
@@ -2375,7 +2647,7 @@ async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            async with engine().connect() as connection:
+            async with get_engine().connect() as connection:
                 await connection.execute(text("SELECT 1"))
             if attempt > 1:
                 log.info("База ответила с попытки %d", attempt)
@@ -2395,7 +2667,7 @@ async def dispose() -> None:
         _engine = None
         _session_factory = None
 RADAR_FILE_17
-printf "  %s\n" "radar/db/repo.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
 cat > "radar/db/repo.py" <<'RADAR_FILE_18'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
@@ -2913,7 +3185,7 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         )
         await active.execute(statement)
 RADAR_FILE_18
-printf "  %s\n" "radar/db/importer.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
 cat > "radar/db/importer.py" <<'RADAR_FILE_19'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
@@ -3078,7 +3350,7 @@ async def run(path: str | None = None) -> dict[str, int]:
     )
     return counters
 RADAR_FILE_19
-printf "  %s\n" "migrations/env.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
 cat > "migrations/env.py" <<'RADAR_FILE_20'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
@@ -3140,7 +3412,7 @@ if context.is_offline_mode():
 else:
     asyncio.run(run_online_async())
 RADAR_FILE_20
-printf "  %s\n" "migrations/script.py.mako"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
 cat > "migrations/script.py.mako" <<'RADAR_FILE_21'
 """${message}
 
@@ -3167,7 +3439,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
 RADAR_FILE_21
-printf "  %s\n" "migrations/versions/0001_initial.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
 cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_22'
 """Начальная схема версии 4.0
 
@@ -3336,7 +3608,7 @@ def downgrade() -> None:
     op.drop_table("locations")
     op.drop_table("users")
 RADAR_FILE_22
-printf "  %s\n" "radar/platforms/__init__.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
 cat > "radar/platforms/__init__.py" <<'RADAR_FILE_23'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
@@ -3361,7 +3633,7 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
 ]
 RADAR_FILE_23
-printf "  %s\n" "radar/platforms/base.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
 cat > "radar/platforms/base.py" <<'RADAR_FILE_24'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
@@ -3488,7 +3760,7 @@ class Transport(Protocol):
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
 RADAR_FILE_24
-printf "  %s\n" "radar/storage.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
 cat > "radar/storage.py" <<'RADAR_FILE_25'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
@@ -3675,7 +3947,7 @@ async def meta_get(key: str, default: Any = None) -> Any:
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
 RADAR_FILE_25
-printf "  %s\n" "radar/exporting.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
 cat > "radar/exporting.py" <<'RADAR_FILE_26'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
@@ -3883,7 +4155,7 @@ def merge(
 
     return added_channels, added_rss
 RADAR_FILE_26
-printf "  %s\n" "radar/ai.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
 cat > "radar/ai.py" <<'RADAR_FILE_27'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
@@ -4520,7 +4792,7 @@ async def assistant(history: list[types.Content], question: str) -> str:
         search=True,
     )
 RADAR_FILE_27
-printf "  %s\n" "radar/geocode.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
 cat > "radar/geocode.py" <<'RADAR_FILE_28'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
@@ -4714,7 +4986,7 @@ async def forward(
         )
     return results
 RADAR_FILE_28
-printf "  %s\n" "radar/weather.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
 cat > "radar/weather.py" <<'RADAR_FILE_29'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
@@ -5048,7 +5320,7 @@ async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> st
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
 RADAR_FILE_29
-printf "  %s\n" "radar/sources.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
 cat > "radar/sources.py" <<'RADAR_FILE_30'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
@@ -5231,7 +5503,7 @@ async def collect(
 
     return fresh
 RADAR_FILE_30
-printf "  %s\n" "radar/tg.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
 cat > "radar/tg.py" <<'RADAR_FILE_31'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
@@ -5330,7 +5602,7 @@ async def safe_edit(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
 RADAR_FILE_31
-printf "  %s\n" "radar/keyboards.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
 cat > "radar/keyboards.py" <<'RADAR_FILE_32'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
@@ -5618,7 +5890,7 @@ def queue_item() -> InlineKeyboardMarkup:
         ]
     )
 RADAR_FILE_32
-printf "  %s\n" "radar/states.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
 cat > "radar/states.py" <<'RADAR_FILE_33'
 """Состояния FSM."""
 
@@ -5641,7 +5913,7 @@ class Form(StatesGroup):
     manual_address = State()
     admin_add_location = State()   # ввод адреса для чужого пользователя
 RADAR_FILE_33
-printf "  %s\n" "radar/middlewares.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
 cat > "radar/middlewares.py" <<'RADAR_FILE_34'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
@@ -5713,7 +5985,7 @@ class AccessMiddleware(BaseMiddleware):
         data["role"] = record.get("role", "user")
         return await handler(event, data)
 RADAR_FILE_34
-printf "  %s\n" "radar/monitor.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
 cat > "radar/monitor.py" <<'RADAR_FILE_35'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
@@ -5921,7 +6193,7 @@ async def run() -> None:
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
 RADAR_FILE_35
-printf "  %s\n" "radar/handlers/__init__.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
 cat > "radar/handlers/__init__.py" <<'RADAR_FILE_36'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
@@ -5950,7 +6222,7 @@ def setup(dp: Dispatcher) -> None:
 
 __all__ = ["setup"]
 RADAR_FILE_36
-printf "  %s\n" "radar/handlers/common.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
 cat > "radar/handlers/common.py" <<'RADAR_FILE_37'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
@@ -6232,7 +6504,7 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
 RADAR_FILE_37
-printf "  %s\n" "radar/handlers/locations.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
 cat > "radar/handlers/locations.py" <<'RADAR_FILE_38'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
@@ -6398,7 +6670,7 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
             )
 RADAR_FILE_38
-printf "  %s\n" "radar/handlers/settings.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
 cat > "radar/handlers/settings.py" <<'RADAR_FILE_39'
 """Настройки: категории оповещений и режим отправки погоды."""
 
@@ -6543,7 +6815,7 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
 RADAR_FILE_39
-printf "  %s\n" "radar/handlers/sources.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
 cat > "radar/handlers/sources.py" <<'RADAR_FILE_40'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
@@ -6827,7 +7099,7 @@ async def import_sources(message: Message, role: str) -> None:
 
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
 RADAR_FILE_40
-printf "  %s\n" "radar/handlers/users.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
 cat > "radar/handlers/users.py" <<'RADAR_FILE_41'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
@@ -7195,7 +7467,7 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
 RADAR_FILE_41
-printf "  %s\n" "radar/handlers/features.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
 cat > "radar/handlers/features.py" <<'RADAR_FILE_42'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
@@ -7325,7 +7597,7 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
 RADAR_FILE_42
-printf "  %s\n" "radar/handlers/assistant.py"
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
 cat > "radar/handlers/assistant.py" <<'RADAR_FILE_43'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
@@ -7472,9 +7744,14 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
 
     await run(message, text)
 RADAR_FILE_43
-ok "Файлы записаны"
+ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
-# --- 3. Настройки ---------------------------------------------------------
+# --------------------------------------------------------------------------
+#  Шаг 6. Настройки
+# --------------------------------------------------------------------------
+
+step "Настройка параметров"
+
 ask() { # ask <подсказка> <переменная> <regexp> <обязательно yes|no>
     local prompt="$1" varname="$2" pattern="$3" required="$4" value=""
     while true; do
@@ -7491,7 +7768,8 @@ ask() { # ask <подсказка> <переменная> <regexp> <обязат
 }
 
 if [ -f .env ] && [ "$RECREATE_ENV" = false ]; then
-    read -r -p "Файл .env найден. Использовать текущие настройки? (Y/n): " reply < /dev/tty || true
+    info "Файл .env уже существует"
+    read -r -p "  Использовать текущие настройки? (Y/n): " reply < /dev/tty || true
     case "${reply:-y}" in
         [Nn]*) RECREATE_ENV=true ;;
         *) ok "Использую существующий .env" ;;
@@ -7502,7 +7780,7 @@ fi
 
 if [ "$RECREATE_ENV" = true ]; then
     echo
-    echo "Заполните параметры (Ctrl+C — выход):"
+    printf "  %sЗаполните параметры (Ctrl+C — выход)%s\n" "$C_DIM" "$C_RESET"
     ask "  Токен Telegram-бота (@BotFather): " IN_TOKEN '^[0-9]{6,}:[A-Za-z0-9_-]{30,}$' yes
     ask "  Ваш Telegram ID (@userinfobot): " IN_ADMIN '^[0-9]{5,}$' yes
     ask "  Ключ Google Gemini (Enter — без ИИ): " IN_GEMINI '^.{20,}$' no
@@ -7564,65 +7842,126 @@ PROMO_IN_ALERTS=0
 ENVEOF
     umask 022
     chmod 600 .env
-    ok "Файл .env создан"
+    ok "Файл .env создан (права 600)"
     [ -z "${IN_GEMINI:-}" ] && warn "Ключ Gemini не задан: ассистент отключён, анализ пойдёт по ключевым словам."
 fi
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
 
-# --- 4. Сборка и запуск ---------------------------------------------------
-COMPOSE="docker compose"
-if ! docker compose version >/dev/null 2>&1; then
-    if command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE="docker-compose"
-    else
-        die "Нужен Docker Compose: https://docs.docker.com/compose/install/"
-    fi
-fi
+# --------------------------------------------------------------------------
+#  Шаг 7. Сборка и запуск
+# --------------------------------------------------------------------------
+
+step "Сборка образа и запуск контейнеров"
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
+info "Часовой пояс: $TZ_VALUE"
+
+# Пароль с символом $ ломает подстановку переменных в Docker Compose
+if grep -qE '^DB_PASSWORD=.*\$' .env 2>/dev/null; then
+    die "DB_PASSWORD содержит символ \$ — Compose примет его за переменную. Смените пароль в .env"
+fi
 
 info "Останавливаю прежние контейнеры"
-$COMPOSE down --remove-orphans >/dev/null 2>&1 || true
-# Наследие версий 3.x: одиночный контейнер без compose
-docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+run $COMPOSE down --remove-orphans || true
+run docker rm -f "$CONTAINER_NAME" || true   # наследие версий 3.x
 
 mkdir -p "$APP_DIR/data/postgres"
 chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
 
-info "Сборка и запуск (бот + PostgreSQL)"
-$COMPOSE up -d --build $NO_CACHE_FLAG || die "Не удалось поднять контейнеры"
+info "Собираю образ (первый раз это занимает 5–15 минут)"
+if ! run $COMPOSE build $NO_CACHE_FLAG; then
+    die "Сборка образа не удалась. Подробности: $LOG_FILE"
+fi
+ok "Образ собран"
 
-info "Жду готовности базы и первого запуска"
-for _ in $(seq 1 60); do
-    state="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)"
-    [ "$state" = "true" ] && break
+info "Запускаю бота и базу данных"
+run $COMPOSE up -d || die "Не удалось запустить контейнеры"
+
+# --------------------------------------------------------------------------
+#  Шаг 8. Проверка запуска
+# --------------------------------------------------------------------------
+
+step "Проверка работоспособности"
+
+info "Жду готовности PostgreSQL"
+DB_READY=false
+for _ in $(seq 1 45); do
+    if docker exec radar_db pg_isready -U radar >/dev/null 2>&1; then
+        DB_READY=true
+        break
+    fi
+    sleep 2
+done
+if [ "$DB_READY" = true ]; then
+    ok "База данных отвечает"
+else
+    warn "База не ответила за 90 секунд — смотрите: docker logs radar_db"
+fi
+
+info "Жду запуска бота"
+BOT_OK=false
+for _ in $(seq 1 45); do
+    state="$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo нет)"
+    if [ "$state" = "running" ]; then
+        if docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Run polling"; then
+            BOT_OK=true
+            break
+        fi
+    fi
+    if [ "$state" = "exited" ]; then
+        break
+    fi
     sleep 2
 done
 
-if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" != "true" ]; then
-    warn "Бот не запустился. Последние строки лога:"
-    docker logs --tail 60 "$CONTAINER_NAME" 2>/dev/null || true
-    warn "Лог базы данных:"
-    docker logs --tail 20 radar_db 2>/dev/null || true
-    exit 1
+log_raw "--- лог бота после запуска ---"
+docker logs --tail 80 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
+
+if [ "$BOT_OK" != true ]; then
+    fail "Бот не вышел в рабочий режим"
+    echo
+    printf "  %sПоследние строки лога:%s\n" "$C_DIM" "$C_RESET"
+    docker logs --tail 25 "$CONTAINER_NAME" 2>&1 | sed 's/^/    /' || true
+    echo
+    if [ "$FORCE_REINSTALL" != true ]; then
+        printf "  Попробуйте полную переустановку:\n"
+        printf "    bash <(curl -fsSL %s) --reinstall\n" \
+            "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
+    fi
+    die "Запуск не удался. Полный лог: $LOG_FILE"
 fi
 
+ok "Бот вышел в рабочий режим"
+
+# Что удалось разобрать из лога — полезно видеть сразу
+MIGRATED=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -oP 'пользователей \K\d+' | head -1 || true)
+[ -n "$MIGRATED" ] && ok "Перенесено пользователей: $MIGRATED"
+docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Схема базы актуальна" && ok "Схема базы актуальна"
+
 trap - ERR
-ok "Система «Радар» v${VERSION} запущена."
+ELAPSED=$(( $(date +%s) - START_TS ))
 echo
-echo "  Логи бота:   docker logs -f $CONTAINER_NAME"
-echo "  Логи базы:   docker logs -f radar_db"
-echo "  Перезапуск:  cd $APP_DIR && $COMPOSE restart"
-echo "  Остановка:   cd $APP_DIR && $COMPOSE down"
-echo "  Резервная копия базы:"
-echo "    docker exec radar_db pg_dump -U radar radar | gzip > radar-\$(date +%F).sql.gz"
+line
+printf "  %s✓ Система «Радар» v%s запущена%s   %s(%d мин %d с)%s\n" \
+    "$C_GREEN" "$VERSION" "$C_RESET" "$C_DIM" $((ELAPSED / 60)) $((ELAPSED % 60)) "$C_RESET"
+line
 echo
-echo "  Откройте бота в Telegram и отправьте /start, затем пришлите геопозицию."
+printf "  %sДальше:%s\n" "$C_BOLD" "$C_RESET"
+printf "    Откройте бота в Telegram → /start → пришлите геопозицию\n"
 echo
+printf "  %sУправление:%s\n" "$C_BOLD" "$C_RESET"
+printf "    Логи бота     docker logs -f %s\n" "$CONTAINER_NAME"
+printf "    Логи базы     docker logs -f radar_db\n"
+printf "    Перезапуск    cd %s && %s restart\n" "$APP_DIR" "$COMPOSE"
+printf "    Остановка     cd %s && %s down\n" "$APP_DIR" "$COMPOSE"
+printf "    Копия базы    docker exec radar_db pg_dump -U radar radar | gzip > radar-\$(date +%%F).sql.gz\n"
+echo
+printf "  %sЖурнал установки: %s%s\n" "$C_DIM" "$LOG_FILE" "$C_RESET"
+echo
+log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED} с ==="
 
 if [ "$SHOW_LOGS" = true ]; then
     docker logs -f "$CONTAINER_NAME"

@@ -84,6 +84,59 @@ def collect_files() -> list[tuple[str, str]]:
     return files
 
 
+def shadowed_submodules() -> list[str]:
+    """Ищет пакеты, где __init__.py вводит имя, совпадающее с подмодулем.
+
+    Такое затенение ломает `from pkg import submodule`: вернётся не модуль,
+    а то, что положил в пространство имён __init__.py, и обращение
+    к атрибутам модуля упадёт с AttributeError уже в рантайме — ровно так
+    `from radar.db import engine` отдавал функцию вместо модуля.
+    """
+    problems: list[str] = []
+    for dirpath, _dirs, names in os.walk(os.path.join(ROOT, PACKAGE)):
+        if "__init__.py" not in names:
+            continue
+        submodules = {
+            name[:-3] for name in names
+            if name.endswith(".py") and name != "__init__.py"
+        }
+        submodules |= {
+            entry for entry in os.listdir(dirpath)
+            if os.path.isdir(os.path.join(dirpath, entry))
+            and os.path.exists(os.path.join(dirpath, entry, "__init__.py"))
+        }
+        if not submodules:
+            continue
+        init_path = os.path.join(dirpath, "__init__.py")
+        with open(init_path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), filename=init_path)
+        introduced = public_names(tree)
+        # Импорт самого подмодуля именем подмодуля — это не затенение
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    if alias.name in submodules and name == alias.name:
+                        continue
+        package = os.path.relpath(dirpath, ROOT).replace(os.sep, ".")
+        for name in sorted(introduced & submodules):
+            # Разрешено, если это импорт ровно того же подмодуля
+            legal = any(
+                isinstance(node, ast.ImportFrom)
+                and node.level == 1
+                and not node.module
+                and any((alias.asname or alias.name) == name for alias in node.names)
+                for node in ast.walk(tree)
+            )
+            if legal:
+                continue
+            problems.append(
+                f"{package}/__init__.py: имя «{name}» затеняет подмодуль "
+                f"{package}.{name}"
+            )
+    return problems
+
+
 def main() -> int:
     cache: dict[str, set[str]] = {}
 
@@ -141,6 +194,8 @@ def main() -> int:
                         f"{current}:{node.lineno}: {name}.{node.attr} — "
                         f"в модуле {target} такого имени нет"
                     )
+
+    problems.extend(shadowed_submodules())
 
     for problem in sorted(set(problems)):
         print("  ✗", problem)

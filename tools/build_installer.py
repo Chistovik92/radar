@@ -85,6 +85,7 @@ def render_files() -> str:
     lines: list[str] = []
     if directories:
         lines.append("mkdir -p " + " ".join(f'"{d}"' for d in directories))
+    lines.append(f"FILE_COUNT={len(MANIFEST)}")
 
     for index, name in enumerate(MANIFEST):
         path = ROOT / name
@@ -95,7 +96,7 @@ def render_files() -> str:
         for line in body.splitlines():
             if line.strip() == delimiter:
                 sys.exit(f"{name} содержит строку-разделитель {delimiter}")
-        lines.append(f'printf "  %s\\n" "{name}"')
+        lines.append(f'printf "  %s·%s %s\\n" "$C_DIM" "$C_RESET" "{name}"')
         lines.append(f'cat > "{name}" <<\'{delimiter}\'')
         lines.append(body)
         lines.append(delimiter)

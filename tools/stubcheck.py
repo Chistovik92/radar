@@ -146,6 +146,59 @@ def install() -> None:
     aiogram.types = sys.modules["aiogram.types"]
 
 
+def smoke_checks() -> list[str]:
+    """Проверки, которые ловят ошибки уровня рантайма, а не импорта.
+
+    Импорт модуля не выполняет тела функций, поэтому опечатки в обращениях
+    вида `module.attribute` всплывают только в продакшене. Здесь перечислены
+    точки, где такая ошибка уже случалась.
+    """
+    import importlib
+    import types
+
+    problems: list[str] = []
+
+    # 1. `from pkg import submodule` обязан давать модуль, а не функцию.
+    for package, submodule in (
+        ("radar.db", "engine"),
+        ("radar.db", "repo"),
+        ("radar.db", "importer"),
+        ("radar.db", "models"),
+        ("radar.platforms", "base"),
+    ):
+        parent = importlib.import_module(package)
+        value = getattr(parent, submodule, None)
+        if not isinstance(value, types.ModuleType):
+            problems.append(
+                f"{package}.{submodule} — это {type(value).__name__}, а не модуль: "
+                f"имя затенено в {package}/__init__.py"
+            )
+
+    # 2. Имена, к которым обращается main.py при запуске.
+    main_module = importlib.import_module("main")
+    for holder, attribute in (
+        ("db_engine", "wait_ready"),
+        ("db_engine", "dispose"),
+        ("importer", "is_empty"),
+        ("importer", "run"),
+        ("repo", "load_features"),
+        ("repo", "purge_old_events"),
+        ("features", "apply"),
+        ("features", "FLAGS"),
+        ("storage", "load"),
+        ("storage", "meta_get"),
+        ("storage", "meta_set"),
+        ("monitor", "run"),
+    ):
+        target = getattr(main_module, holder, None)
+        if target is None:
+            problems.append(f"main.py: имя «{holder}» не импортировано")
+        elif not hasattr(target, attribute):
+            problems.append(f"main.py: у «{holder}» нет атрибута «{attribute}»")
+
+    return problems
+
+
 def main() -> int:
     install()
     modules = [
@@ -167,7 +220,18 @@ def main() -> int:
             failures += 1
             print(f"  FAIL {name}: {type(exc).__name__}: {exc}")
     print(f"\nИмпортировано модулей: {len(modules) - failures}/{len(modules)}")
-    return 1 if failures else 0
+
+    if failures:
+        return 1
+
+    issues = smoke_checks()
+    for issue in issues:
+        print(f"  ✗ {issue}")
+    if issues:
+        print(f"Проблем на уровне рантайма: {len(issues)}")
+        return 1
+    print("Рантайм-проверки пройдены.")
+    return 0
 
 
 if __name__ == "__main__":
