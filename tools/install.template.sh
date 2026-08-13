@@ -477,6 +477,67 @@ if ! run $COMPOSE build $NO_CACHE_FLAG; then
 fi
 ok "Образ собран"
 
+# PostgreSQL запоминает пароль при инициализации тома. Если .env изменился,
+# а том остался прежним, бот будет молча биться в отказ авторизации.
+if [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
+    info "Проверяю пароль существующей базы"
+    run $COMPOSE up -d postgres || die "Не удалось запустить PostgreSQL"
+
+    for _ in $(seq 1 45); do
+        docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
+        sleep 2
+    done
+
+    ENV_DB_PASS="$(grep -E '^DB_PASSWORD=' .env | cut -d= -f2- || true)"
+    ENV_DB_USER="$(grep -E '^DB_USER=' .env | cut -d= -f2- || echo radar)"
+    ENV_DB_NAME="$(grep -E '^DB_NAME=' .env | cut -d= -f2- || echo radar)"
+    : "${ENV_DB_USER:=radar}"
+    : "${ENV_DB_NAME:=radar}"
+
+    if docker exec -e PGPASSWORD="$ENV_DB_PASS" radar_db \
+        psql -U "$ENV_DB_USER" -d "$ENV_DB_NAME" -c 'SELECT 1' >/dev/null 2>&1; then
+        ok "Пароль базы совпадает"
+    else
+        warn "База не принимает пароль из .env"
+        info "PostgreSQL задаёт пароль только при первой инициализации тома,"
+        info "поэтому правка .env на уже созданную базу ничего не меняет."
+
+        HAS_DATA=false
+        if docker exec radar_db psql -U postgres -d "$ENV_DB_NAME" -tAc \
+            "SELECT count(*) FROM users" 2>/dev/null | grep -qE '^[1-9]'; then
+            HAS_DATA=true
+        fi
+
+        echo
+        if [ "$HAS_DATA" = true ]; then
+            warn "В базе есть данные пользователей — пересоздание их удалит!"
+            printf "  Рекомендуется вернуть прежний пароль в .env, а не пересоздавать базу.\n"
+        elif [ -f "$APP_DIR/data/db.json" ]; then
+            info "Данные версии 3.x лежат в data/db.json — после пересоздания перенесутся заново"
+        else
+            info "Пользовательских данных в базе не найдено"
+        fi
+
+        printf "  %sПересоздать базу с новым паролем?%s (y/N): " "$C_BOLD" "$C_RESET"
+        read -r recreate_db < /dev/tty || recreate_db="n"
+
+        case "${recreate_db:-n}" in
+            [Yy]*)
+                info "Останавливаю контейнеры и пересоздаю том базы"
+                run $COMPOSE down || true
+                BACKUP_DIR="$APP_DIR/data/postgres.bak-$(date +%Y%m%d-%H%M%S)"
+                mv "$APP_DIR/data/postgres" "$BACKUP_DIR"
+                ok "Прежний том сохранён: $BACKUP_DIR"
+                mkdir -p "$APP_DIR/data/postgres"
+                chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
+                ;;
+            *)
+                die "Верните прежний пароль в .env и запустите установщик заново"
+                ;;
+        esac
+    fi
+fi
+
 info "Запускаю бота и базу данных"
 run $COMPOSE up -d || die "Не удалось запустить контейнеры"
 
@@ -522,6 +583,25 @@ docker logs --tail 80 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
 
 if [ "$BOT_OK" != true ]; then
     fail "Бот не вышел в рабочий режим"
+
+    BOT_LOG="$(docker logs --tail 200 "$CONTAINER_NAME" 2>&1 || true)"
+    if printf '%s' "$BOT_LOG" | grep -qi "отклонил подключение\|password authentication failed"; then
+        echo
+        warn "Причина: PostgreSQL не принимает пароль из .env"
+        printf "    Пересоздайте базу и повторите установку:\n"
+        printf "      cd %s && docker compose down\n" "$APP_DIR"
+        printf "      mv data/postgres data/postgres.old\n"
+        printf "      bash <(curl -fsSL %s)\n" \
+            "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
+    elif printf '%s' "$BOT_LOG" | grep -qi "Unauthorized\|token is invalid"; then
+        echo
+        warn "Причина: Telegram отклонил токен бота"
+        printf "    Проверьте BOT_TOKEN в %s/.env\n" "$APP_DIR"
+    elif printf '%s' "$BOT_LOG" | grep -qi "не ответил за"; then
+        echo
+        warn "Причина: PostgreSQL не поднялся вовремя"
+        printf "    Логи базы: docker logs --tail 40 radar_db\n"
+    fi
     echo
     printf "  %sПоследние строки лога:%s\n" "$C_DIM" "$C_RESET"
     docker logs --tail 25 "$CONTAINER_NAME" 2>&1 | sed 's/^/    /' || true

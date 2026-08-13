@@ -167,6 +167,9 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+    except db_engine.AuthenticationError:
+        # Причина уже подробно объяснена в логе — трассировка тут лишний шум.
+        raise SystemExit(1)
     except Exception:  # noqa: BLE001
         # Без этого контейнер уходит в бесконечный цикл рестартов, а причина
         # теряется среди одинаковых трейсбеков.

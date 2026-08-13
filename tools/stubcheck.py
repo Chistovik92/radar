@@ -178,6 +178,7 @@ def smoke_checks() -> list[str]:
     main_module = importlib.import_module("main")
     for holder, attribute in (
         ("db_engine", "wait_ready"),
+        ("db_engine", "AuthenticationError"),
         ("db_engine", "dispose"),
         ("importer", "is_empty"),
         ("importer", "run"),

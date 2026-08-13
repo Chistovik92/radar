@@ -64,11 +64,33 @@ async def session() -> AsyncIterator[AsyncSession]:
             raise
 
 
+class AuthenticationError(RuntimeError):
+    """Пароль не подошёл — ждать бессмысленно, нужно вмешательство."""
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """Отличает «пароль не тот» от «база ещё не поднялась».
+
+    Различие принципиально: во втором случае надо ждать, в первом ожидание
+    бесполезно — PostgreSQL запоминает пароль при первой инициализации тома,
+    и правка .env на уже созданную базу ничего не меняет.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    markers = (
+        "invalidpassword", "password authentication failed",
+        "invalidauthorizationspecification", "role \"", "не пройдена проверка подлинности",
+        "authentication failed", "invalidcatalogname", "does not exist",
+    )
+    return any(marker in text for marker in markers)
+
+
 async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
     """Ждёт, пока PostgreSQL примет подключение.
 
-    На слабом железе контейнер базы поднимается дольше бота, поэтому
-    без ожидания первый запуск падал бы на ровном месте.
+    На слабом железе контейнер базы поднимается дольше бота, поэтому без
+    ожидания первый запуск падал бы на ровном месте. Но причина неудачи
+    печатается в лог: молчаливое ожидание не даёт понять, база не успела
+    подняться или пароль не подошёл.
     """
     from sqlalchemy import text
 
@@ -82,9 +104,31 @@ async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
             return
         except Exception as exc:  # noqa: BLE001
             last = exc
+            reason = f"{type(exc).__name__}: {exc}"
+
+            if _is_auth_error(exc):
+                log.critical("PostgreSQL отклонил подключение: %s", reason)
+                log.critical(
+                    "Пароль в .env не совпадает с тем, который база запомнила "
+                    "при первом запуске. PostgreSQL задаёт пароль только при "
+                    "инициализации тома — правка .env на существующую базу "
+                    "ничего не меняет."
+                )
+                log.critical(
+                    "Решение: либо верните прежний пароль в .env, либо пересоздайте "
+                    "базу — docker compose down && rm -rf data/postgres — "
+                    "и запустите установщик заново. Данные из data/db.json "
+                    "перенесутся повторно."
+                )
+                raise AuthenticationError(reason) from exc
+
             if attempt == 1:
-                log.info("Жду готовности PostgreSQL…")
+                log.info("Жду готовности PostgreSQL… (%s)", reason[:160])
+            elif attempt % 5 == 0:
+                log.info("Попытка %d/%d: %s", attempt, attempts, reason[:160])
             await asyncio.sleep(delay)
+
+    log.critical("PostgreSQL не ответил за %.0f секунд", attempts * delay)
     raise RuntimeError(f"PostgreSQL недоступен: {last}")
 
 

@@ -40,7 +40,9 @@ services:
         TZ: ${TZ:-Europe/Saratov}
     image: radar_image
     container_name: radar_container
-    restart: unless-stopped
+    # on-failure с лимитом вместо unless-stopped: при неверной конфигурации
+    # бесконечный цикл рестартов маскирует причину и греет слабое железо.
+    restart: on-failure:5
     env_file: .env
     environment:
       DB_HOST: postgres

@@ -152,5 +152,35 @@ class TestPlatformAbstraction(unittest.TestCase):
             self.assertTrue(hasattr(Transport, method), method)
 
 
+class TestDatabaseErrors(unittest.TestCase):
+    """Отличие «пароль не тот» от «база ещё не поднялась»."""
+
+    def setUp(self):
+        from radar.db import engine
+
+        self.engine = engine
+
+    def test_auth_errors_detected(self):
+        samples = [
+            'InvalidPasswordError: password authentication failed for user "radar"',
+            "InvalidAuthorizationSpecificationError: role does not exist",
+            "InvalidCatalogNameError: database \"radar\" does not exist",
+        ]
+        for text in samples:
+            self.assertTrue(self.engine._is_auth_error(Exception(text)), text)
+
+    def test_transient_errors_not_auth(self):
+        samples = [
+            "ConnectionRefusedError: [Errno 111] Connect call failed",
+            "OSError: [Errno -2] Name or service not known",
+            "TimeoutError: connection timed out",
+        ]
+        for text in samples:
+            self.assertFalse(self.engine._is_auth_error(Exception(text)), text)
+
+    def test_authentication_error_is_runtime_error(self):
+        self.assertTrue(issubclass(self.engine.AuthenticationError, RuntimeError))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

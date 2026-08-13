@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.2 — автономный установщик.
+# Система «Радар» v4.0.3 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -24,7 +24,7 @@
 
 set -Eeuo pipefail
 
-VERSION="4.0.2"
+VERSION="4.0.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -433,7 +433,9 @@ services:
         TZ: ${TZ:-Europe/Saratov}
     image: radar_image
     container_name: radar_container
-    restart: unless-stopped
+    # on-failure с лимитом вместо unless-stopped: при неверной конфигурации
+    # бесконечный цикл рестартов маскирует причину и греет слабое железо.
+    restart: on-failure:5
     env_file: .env
     environment:
       DB_HOST: postgres
@@ -677,6 +679,9 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+    except db_engine.AuthenticationError:
+        # Причина уже подробно объяснена в логе — трассировка тут лишний шум.
+        raise SystemExit(1)
     except Exception:  # noqa: BLE001
         # Без этого контейнер уходит в бесконечный цикл рестартов, а причина
         # теряется среди одинаковых трейсбеков.
@@ -701,7 +706,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.2"
+__version__ = "4.0.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -2636,11 +2641,33 @@ async def session() -> AsyncIterator[AsyncSession]:
             raise
 
 
+class AuthenticationError(RuntimeError):
+    """Пароль не подошёл — ждать бессмысленно, нужно вмешательство."""
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """Отличает «пароль не тот» от «база ещё не поднялась».
+
+    Различие принципиально: во втором случае надо ждать, в первом ожидание
+    бесполезно — PostgreSQL запоминает пароль при первой инициализации тома,
+    и правка .env на уже созданную базу ничего не меняет.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    markers = (
+        "invalidpassword", "password authentication failed",
+        "invalidauthorizationspecification", "role \"", "не пройдена проверка подлинности",
+        "authentication failed", "invalidcatalogname", "does not exist",
+    )
+    return any(marker in text for marker in markers)
+
+
 async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
     """Ждёт, пока PostgreSQL примет подключение.
 
-    На слабом железе контейнер базы поднимается дольше бота, поэтому
-    без ожидания первый запуск падал бы на ровном месте.
+    На слабом железе контейнер базы поднимается дольше бота, поэтому без
+    ожидания первый запуск падал бы на ровном месте. Но причина неудачи
+    печатается в лог: молчаливое ожидание не даёт понять, база не успела
+    подняться или пароль не подошёл.
     """
     from sqlalchemy import text
 
@@ -2654,9 +2681,31 @@ async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
             return
         except Exception as exc:  # noqa: BLE001
             last = exc
+            reason = f"{type(exc).__name__}: {exc}"
+
+            if _is_auth_error(exc):
+                log.critical("PostgreSQL отклонил подключение: %s", reason)
+                log.critical(
+                    "Пароль в .env не совпадает с тем, который база запомнила "
+                    "при первом запуске. PostgreSQL задаёт пароль только при "
+                    "инициализации тома — правка .env на существующую базу "
+                    "ничего не меняет."
+                )
+                log.critical(
+                    "Решение: либо верните прежний пароль в .env, либо пересоздайте "
+                    "базу — docker compose down && rm -rf data/postgres — "
+                    "и запустите установщик заново. Данные из data/db.json "
+                    "перенесутся повторно."
+                )
+                raise AuthenticationError(reason) from exc
+
             if attempt == 1:
-                log.info("Жду готовности PostgreSQL…")
+                log.info("Жду готовности PostgreSQL… (%s)", reason[:160])
+            elif attempt % 5 == 0:
+                log.info("Попытка %d/%d: %s", attempt, attempts, reason[:160])
             await asyncio.sleep(delay)
+
+    log.critical("PostgreSQL не ответил за %.0f секунд", attempts * delay)
     raise RuntimeError(f"PostgreSQL недоступен: {last}")
 
 
@@ -7877,6 +7926,67 @@ if ! run $COMPOSE build $NO_CACHE_FLAG; then
 fi
 ok "Образ собран"
 
+# PostgreSQL запоминает пароль при инициализации тома. Если .env изменился,
+# а том остался прежним, бот будет молча биться в отказ авторизации.
+if [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
+    info "Проверяю пароль существующей базы"
+    run $COMPOSE up -d postgres || die "Не удалось запустить PostgreSQL"
+
+    for _ in $(seq 1 45); do
+        docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
+        sleep 2
+    done
+
+    ENV_DB_PASS="$(grep -E '^DB_PASSWORD=' .env | cut -d= -f2- || true)"
+    ENV_DB_USER="$(grep -E '^DB_USER=' .env | cut -d= -f2- || echo radar)"
+    ENV_DB_NAME="$(grep -E '^DB_NAME=' .env | cut -d= -f2- || echo radar)"
+    : "${ENV_DB_USER:=radar}"
+    : "${ENV_DB_NAME:=radar}"
+
+    if docker exec -e PGPASSWORD="$ENV_DB_PASS" radar_db \
+        psql -U "$ENV_DB_USER" -d "$ENV_DB_NAME" -c 'SELECT 1' >/dev/null 2>&1; then
+        ok "Пароль базы совпадает"
+    else
+        warn "База не принимает пароль из .env"
+        info "PostgreSQL задаёт пароль только при первой инициализации тома,"
+        info "поэтому правка .env на уже созданную базу ничего не меняет."
+
+        HAS_DATA=false
+        if docker exec radar_db psql -U postgres -d "$ENV_DB_NAME" -tAc \
+            "SELECT count(*) FROM users" 2>/dev/null | grep -qE '^[1-9]'; then
+            HAS_DATA=true
+        fi
+
+        echo
+        if [ "$HAS_DATA" = true ]; then
+            warn "В базе есть данные пользователей — пересоздание их удалит!"
+            printf "  Рекомендуется вернуть прежний пароль в .env, а не пересоздавать базу.\n"
+        elif [ -f "$APP_DIR/data/db.json" ]; then
+            info "Данные версии 3.x лежат в data/db.json — после пересоздания перенесутся заново"
+        else
+            info "Пользовательских данных в базе не найдено"
+        fi
+
+        printf "  %sПересоздать базу с новым паролем?%s (y/N): " "$C_BOLD" "$C_RESET"
+        read -r recreate_db < /dev/tty || recreate_db="n"
+
+        case "${recreate_db:-n}" in
+            [Yy]*)
+                info "Останавливаю контейнеры и пересоздаю том базы"
+                run $COMPOSE down || true
+                BACKUP_DIR="$APP_DIR/data/postgres.bak-$(date +%Y%m%d-%H%M%S)"
+                mv "$APP_DIR/data/postgres" "$BACKUP_DIR"
+                ok "Прежний том сохранён: $BACKUP_DIR"
+                mkdir -p "$APP_DIR/data/postgres"
+                chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
+                ;;
+            *)
+                die "Верните прежний пароль в .env и запустите установщик заново"
+                ;;
+        esac
+    fi
+fi
+
 info "Запускаю бота и базу данных"
 run $COMPOSE up -d || die "Не удалось запустить контейнеры"
 
@@ -7922,6 +8032,25 @@ docker logs --tail 80 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
 
 if [ "$BOT_OK" != true ]; then
     fail "Бот не вышел в рабочий режим"
+
+    BOT_LOG="$(docker logs --tail 200 "$CONTAINER_NAME" 2>&1 || true)"
+    if printf '%s' "$BOT_LOG" | grep -qi "отклонил подключение\|password authentication failed"; then
+        echo
+        warn "Причина: PostgreSQL не принимает пароль из .env"
+        printf "    Пересоздайте базу и повторите установку:\n"
+        printf "      cd %s && docker compose down\n" "$APP_DIR"
+        printf "      mv data/postgres data/postgres.old\n"
+        printf "      bash <(curl -fsSL %s)\n" \
+            "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
+    elif printf '%s' "$BOT_LOG" | grep -qi "Unauthorized\|token is invalid"; then
+        echo
+        warn "Причина: Telegram отклонил токен бота"
+        printf "    Проверьте BOT_TOKEN в %s/.env\n" "$APP_DIR"
+    elif printf '%s' "$BOT_LOG" | grep -qi "не ответил за"; then
+        echo
+        warn "Причина: PostgreSQL не поднялся вовремя"
+        printf "    Логи базы: docker logs --tail 40 radar_db\n"
+    fi
     echo
     printf "  %sПоследние строки лога:%s\n" "$C_DIM" "$C_RESET"
     docker logs --tail 25 "$CONTAINER_NAME" 2>&1 | sed 's/^/    /' || true
