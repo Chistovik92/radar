@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.7 — автономный установщик.
+# Система «Радар» v4.0.8 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -26,7 +26,7 @@
 
 set -Eeuo pipefail
 
-VERSION="4.0.7"
+VERSION="4.0.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -212,6 +212,105 @@ make_backup() {       # make_backup <причина>
     fi
     warn "Резервную копию создать не удалось"
     return 1
+}
+
+# --- выбор базы данных ----------------------------------------------------
+# Спрашивается при любом способе установки: и при обновлении поверх,
+# и при переустановке, и на чистой машине. Прежде выбор молча наследовался
+# из старого .env, где строки DB_BACKEND могло не быть вовсе.
+set_env_value() {     # set_env_value <ключ> <значение>
+    local key="$1" value="$2" file="$APP_DIR/.env"
+    touch "$file"
+    if grep -qE "^${key}=" "$file"; then
+        # Разделитель | — в значениях встречаются слэши (пути, URL)
+        sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$file"
+    fi
+    log_raw "ENV   ${key}=${value}"
+}
+
+get_env_value() {     # get_env_value <ключ>
+    grep -E "^$1=" "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true
+}
+
+choose_database() {
+    local current wanted has_sqlite has_pg
+    current="$(get_env_value DB_BACKEND)"
+    : "${current:=sqlite}"
+
+    has_sqlite=false; has_pg=false
+    [ -f "$APP_DIR/data/radar.db" ] && has_sqlite=true
+    [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ] && has_pg=true
+
+    echo
+    printf "  %sКакую базу данных использовать?%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "    1) SQLite %s(рекомендуется)%s\n" "$C_GREEN" "$C_RESET"
+    printf "       %sфайл data/radar.db рядом с ботом, отдельный контейнер не нужен,%s\n" "$C_DIM" "$C_RESET"
+    printf "       %sни пароля, ни ожидания запуска — подходит для 1–2 ГБ ОЗУ%s\n" "$C_DIM" "$C_RESET"
+    printf "    2) PostgreSQL\n"
+    printf "       %sотдельный контейнер, +300–500 МБ памяти; нужен на машине помощнее%s\n" "$C_DIM" "$C_RESET"
+
+    if [ "$has_sqlite" = true ] || [ "$has_pg" = true ]; then
+        echo
+        [ "$has_sqlite" = true ] && info "Найдена база SQLite ($(du -h "$APP_DIR/data/radar.db" 2>/dev/null | cut -f1))"
+        [ "$has_pg" = true ] && info "Найден том PostgreSQL"
+    fi
+
+    local default_choice=1
+    [ "$current" = "postgres" ] && default_choice=2
+
+    printf "\n  Сейчас выбрано: %s%s%s\n" "$C_BOLD" "$current" "$C_RESET"
+    printf "  Выбор [%d]: " "$default_choice"
+    read -r db_choice < /dev/tty || db_choice="$default_choice"
+    : "${db_choice:=$default_choice}"
+
+    case "$db_choice" in
+        2) wanted="postgres" ;;
+        *) wanted="sqlite" ;;
+    esac
+    log_raw "Выбрана база: $wanted (было $current)"
+
+    # Данные между разными базами сами не переезжают — предупреждаем честно
+    if [ "$wanted" != "$current" ]; then
+        warn "Смена базы: $current → $wanted"
+        if [ -f "$APP_DIR/data/db.json" ]; then
+            info "Данные будут перенесены заново из data/db.json"
+        elif { [ "$current" = "sqlite" ] && [ "$has_sqlite" = true ]; } ||
+             { [ "$current" = "postgres" ] && [ "$has_pg" = true ]; }; then
+            warn "Содержимое прежней базы в новую автоматически не переносится"
+            info "Старая база остаётся на диске — вернуть выбор можно тем же меню"
+            printf "  %sПродолжить смену базы?%s (y/N): " "$C_BOLD" "$C_RESET"
+            read -r confirm_db < /dev/tty || confirm_db="n"
+            case "${confirm_db:-n}" in
+                [Yy]*) : ;;
+                *) wanted="$current"; info "Оставляю прежнюю базу: $current" ;;
+            esac
+        fi
+    fi
+
+    set_env_value DB_BACKEND "$wanted"
+
+    if [ "$wanted" = "postgres" ]; then
+        local pass
+        pass="$(get_env_value DB_PASSWORD)"
+        if [ -z "$pass" ] || printf '%s' "$pass" | grep -q '\$'; then
+            [ -n "$pass" ] && warn "Прежний пароль содержит символ \$ — Compose его исказит"
+            pass="$(head -c 32 /dev/urandom | base64 | tr -d '/+=$' | head -c 24)"
+            set_env_value DB_PASSWORD "$pass"
+            ok "Сгенерирован пароль базы: $pass"
+            info "Запишите его: при пересоздании тома он понадобится"
+        fi
+        set_env_value DB_HOST postgres
+        set_env_value DB_PORT 5432
+        set_env_value DB_NAME radar
+        set_env_value DB_USER radar
+    else
+        set_env_value DB_FILE "data/radar.db"
+    fi
+
+    ok "База данных: $wanted"
+    DB_BACKEND_VALUE="$wanted"
 }
 
 trap 'die "Установка прервана (строка $LINENO)"' ERR
@@ -943,7 +1042,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.7"
+__version__ = "4.0.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -8624,8 +8723,15 @@ ENVEOF
     umask 022
     chmod 600 .env
     ok "Файл .env создан (права 600)"
-    [ -z "${IN_GEMINI:-}" ] && warn "Ключ Gemini не задан: ассистент отключён, анализ пойдёт по ключевым словам."
+    if [ -z "${IN_GEMINI:-}" ]; then
+        warn "Ключ Gemini не задан: ассистент отключён, анализ пойдёт по ключевым словам"
+    fi
 fi
+
+# Базу выбираем всегда: и при новом .env, и при использовании существующего.
+# Раньше выбор молча наследовался из старого файла, где строки DB_BACKEND
+# могло не быть вовсе — пользователь о базе даже не знал.
+choose_database
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
@@ -8733,8 +8839,8 @@ if [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/
     fi
 fi
 
-# Профиль postgres поднимается только если он выбран в .env
-DB_BACKEND_VALUE="$(grep -E '^DB_BACKEND=' .env 2>/dev/null | cut -d= -f2- || echo sqlite)"
+# Профиль postgres поднимается только если выбран PostgreSQL
+: "${DB_BACKEND_VALUE:=$(get_env_value DB_BACKEND)}"
 : "${DB_BACKEND_VALUE:=sqlite}"
 COMPOSE_ARGS=""
 if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
