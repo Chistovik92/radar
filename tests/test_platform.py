@@ -76,7 +76,6 @@ class TestFeatures(unittest.TestCase):
     def test_defaults_respected(self):
         self.assertTrue(features.enabled("alerts"))
         self.assertFalse(features.enabled("platform_max"))
-        self.assertFalse(features.enabled("web_terminal"))
 
     def test_override_applies(self):
         features.apply({"source_vk": True})
@@ -116,7 +115,7 @@ class TestFeatures(unittest.TestCase):
         """Возможности будущих версий не должны включаться сами."""
         for key in ("source_vk", "weather_image", "quiet_hours",
                     "platform_max", "partners", "promo_codes",
-                    "web_panel", "web_terminal", "egress_proxy", "maintenance"):
+                    "web_panel", "egress_proxy", "maintenance"):
             self.assertFalse(features.enabled(key), key)
 
 

@@ -8,7 +8,15 @@
 
 from __future__ import annotations
 
-from .engine import dispose, get_engine, session, session_factory, wait_ready
+from .engine import (
+    create_schema,
+    dispose,
+    get_engine,
+    session,
+    session_factory,
+    stamp_alembic,
+    wait_ready,
+)
 from .models import Base, Delivery, Event, Feature, Location, Meta, Source, User
 
 # Внимание: здесь нельзя экспортировать имена `engine`, `models`, `repo`,
@@ -16,5 +24,6 @@ from .models import Base, Delivery, Event, Feature, Location, Meta, Source, User
 # при `from radar.db import engine`.
 __all__ = [
     "Base", "Delivery", "Event", "Feature", "Location", "Meta", "Source", "User",
-    "dispose", "get_engine", "session", "session_factory", "wait_ready",
+    "create_schema", "dispose", "get_engine", "session", "session_factory",
+    "stamp_alembic", "wait_ready",
 ]

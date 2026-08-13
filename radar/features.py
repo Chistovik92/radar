@@ -97,9 +97,6 @@ FLAGS: tuple[Flag, ...] = (
     # --- администрирование ---
     Flag("web_panel", "Веб-панель", "Панель администратора в браузере.",
          group="Администрирование", since="4.3", default=False),
-    Flag("web_terminal", "Терминал в панели",
-         "Консоль сервера в веб-панели. Повышенный риск: включайте осознанно.",
-         group="Администрирование", since="4.4", default=False),
 )
 
 BY_KEY: dict[str, Flag] = {flag.key: flag for flag in FLAGS}

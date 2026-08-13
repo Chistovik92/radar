@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.4 — автономный установщик.
+# Система «Радар» v4.0.5 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -16,6 +16,8 @@
 #   --no-cache       пересобрать образ без кэша Docker
 #   --logs           показать логи после запуска
 #   --reinstall      принудительная полная переустановка (данные сохраняются)
+#   --reset          полный сброс: копия данных, затем установка с нуля
+#   --backup         только снять резервную копию и выйти
 #   --skip-updates   не обновлять пакеты системы
 #   --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
 #
@@ -24,7 +26,7 @@
 
 set -Eeuo pipefail
 
-VERSION="4.0.4"
+VERSION="4.0.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -33,6 +35,8 @@ NO_CACHE_FLAG=""
 SHOW_LOGS=false
 UNINSTALL=false
 FORCE_REINSTALL=false
+FULL_RESET=false
+BACKUP_ONLY=false
 SKIP_UPDATES=false
 LOG_FILE=""
 START_TS=$(date +%s)
@@ -45,10 +49,12 @@ for arg in "$@"; do
         --no-cache)     NO_CACHE_FLAG="--no-cache" ;;
         --logs)         SHOW_LOGS=true ;;
         --reinstall)    FORCE_REINSTALL=true; NO_CACHE_FLAG="--no-cache" ;;
+        --reset)        FULL_RESET=true; FORCE_REINSTALL=true; NO_CACHE_FLAG="--no-cache" ;;
+        --backup)       BACKUP_ONLY=true ;;
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
         -v|--version)   echo "radar $VERSION"; exit 0 ;;
-        -h|--help)      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Неизвестный флаг: $arg" >&2; exit 1 ;;
     esac
 done
@@ -105,6 +111,100 @@ run()  {  # выполнить команду, весь вывод — толь�
     fi
 }
 
+# --- индикатор выполнения -------------------------------------------------
+# Docker не сообщает точный прогресс, поэтому полоса показывает долю
+# завершённых подзадач — честнее, чем анимация без привязки к делу.
+# Символы полосы намеренно ASCII: `tr` работает побайтово и многобайтную
+# псевдографику превращает в мусор, а локаль в чужой системе непредсказуема.
+repeat() {            # repeat <символ> <сколько>
+    [ "$2" -le 0 ] && return 0
+    printf "%${2}s" "" | tr ' ' "$1"
+    return 0
+}
+
+progress() {          # progress <текущий> <всего> <подпись>
+    local current="$1" total="$2" label="$3"
+    local width=28 filled percent
+    [ "$total" -le 0 ] && total=1
+    percent=$(( current * 100 / total ))
+    [ "$percent" -gt 100 ] && percent=100
+    filled=$(( percent * width / 100 ))
+    printf "\r  %s[%s%s]%s %3d%%  %-34s" \
+        "$C_CYAN" \
+        "$(repeat '#' "$filled")" \
+        "$(repeat '.' $((width - filled)))" \
+        "$C_RESET" "$percent" "$label"
+    # Обязательный return 0: конструкция `[ ... ] && ...` при ложном условии
+    # вернула бы 1, а под `set -e` это мгновенно роняет установку.
+    if [ "$percent" -ge 100 ]; then
+        printf "\n"
+    fi
+    return 0
+}
+
+progress_done() { printf "\r%*s\r" "$((COLS - 1))" ""; return 0; }
+
+# --- резервное копирование ------------------------------------------------
+make_backup() {       # make_backup <причина>
+    local reason="${1:-ручная}"
+    local stamp archive dir
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    dir="$APP_DIR/backups"
+    archive="$dir/radar-backup-$stamp.tar.gz"
+    mkdir -p "$dir"
+
+    local staging="$dir/.staging-$stamp"
+    mkdir -p "$staging"
+
+    info "Собираю резервную копию ($reason)"
+
+    # 1. дамп базы, если она поднята
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^radar_db$'; then
+        local db_user db_name
+        db_user="$(grep -E '^DB_USER=' .env 2>/dev/null | cut -d= -f2- || echo radar)"
+        db_name="$(grep -E '^DB_NAME=' .env 2>/dev/null | cut -d= -f2- || echo radar)"
+        : "${db_user:=radar}"; : "${db_name:=radar}"
+        progress 1 4 "дамп базы данных"
+        if docker exec radar_db pg_dump -U "$db_user" "$db_name" > "$staging/database.sql" 2>>"$LOG_FILE"; then
+            log_raw "Дамп базы: $(wc -c < "$staging/database.sql") байт"
+        else
+            warn "Дамп базы не удался — копия будет без него"
+            rm -f "$staging/database.sql"
+        fi
+    else
+        info "Контейнер базы не запущен — дамп пропущен"
+    fi
+
+    # 2. конфигурация
+    progress 2 4 "настройки"
+    [ -f "$APP_DIR/.env" ] && cp "$APP_DIR/.env" "$staging/env.backup"
+
+    # 3. пользовательские данные вне базы
+    progress 3 4 "файлы данных"
+    if [ -d "$APP_DIR/data" ]; then
+        mkdir -p "$staging/data"
+        find "$APP_DIR/data" -maxdepth 1 -type f -exec cp {} "$staging/data/" \; 2>/dev/null || true
+    fi
+
+    printf 'Система «Радар»\nВерсия: %s\nДата: %s\nПричина: %s\n' \
+        "$VERSION" "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" > "$staging/manifest.txt"
+
+    # 4. упаковка
+    progress 4 4 "упаковка архива"
+    tar -czf "$archive" -C "$staging" . 2>>"$LOG_FILE"
+    rm -rf "$staging"
+
+    if [ -f "$archive" ]; then
+        ok "Копия сохранена: $archive ($(du -h "$archive" | cut -f1))"
+        # Оставляем последние 10 копий
+        ls -1t "$dir"/radar-backup-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f
+        BACKUP_PATH="$archive"
+        return 0
+    fi
+    warn "Резервную копию создать не удалось"
+    return 1
+}
+
 trap 'die "Установка прервана (строка $LINENO)"' ERR
 
 # Оформление намеренно без центрирования и рамок: ширина кириллицы
@@ -148,6 +248,14 @@ fi
 ok "Каталог: $APP_DIR"
 ok "Журнал установки: $LOG_FILE"
 
+if [ "$BACKUP_ONLY" = true ]; then
+    cd "$APP_DIR"
+    make_backup "по запросу" || die "Не удалось создать копию"
+    printf "\n  Восстановление: распакуйте архив и выполните\n"
+    printf "    docker exec -i radar_db psql -U radar radar < database.sql\n\n"
+    exit 0
+fi
+
 # --------------------------------------------------------------------------
 #  Шаг 2. Проверка окружения
 # --------------------------------------------------------------------------
@@ -155,6 +263,7 @@ ok "Журнал установки: $LOG_FILE"
 step "Проверка компонентов системы"
 
 check_ok=true
+
 
 # --- операционная система ---
 OS_NAME="$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)"
@@ -275,8 +384,14 @@ else
 fi
 
 info "Обновляю базовые образы Docker"
-run docker pull python:3.11-slim || warn "Не удалось обновить образ python:3.11-slim"
-run docker pull postgres:16-alpine || warn "Не удалось обновить образ postgres:16-alpine"
+IMG_TOTAL=2
+IMG_DONE=0
+for image in python:3.11-slim postgres:16-alpine; do
+    progress "$IMG_DONE" "$IMG_TOTAL" "$image"
+    run docker pull "$image" || warn "Не удалось обновить $image"
+    IMG_DONE=$((IMG_DONE + 1))
+done
+progress "$IMG_TOTAL" "$IMG_TOTAL" "образы обновлены"
 ok "Базовые образы проверены"
 
 # --------------------------------------------------------------------------
@@ -321,7 +436,31 @@ else
     info "Предыдущих установок не найдено"
 fi
 
-if [ "$FORCE_REINSTALL" = true ]; then
+if [ "$FULL_RESET" = true ]; then
+    MODE="полный сброс"
+    echo
+    warn "Полный сброс удалит базу данных и все настройки бота"
+    info "Перед удалением будет снята резервная копия"
+    printf "  %sПродолжить?%s (введите СБРОС для подтверждения): " "$C_BOLD" "$C_RESET"
+    read -r confirm_reset < /dev/tty || confirm_reset=""
+    if [ "$confirm_reset" != "СБРОС" ] && [ "$confirm_reset" != "sbros" ] && [ "$confirm_reset" != "RESET" ]; then
+        die "Сброс отменён"
+    fi
+
+    make_backup "перед полным сбросом" || warn "Продолжаю без копии"
+
+    info "Останавливаю контейнеры"
+    (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+    run docker rm -f "$CONTAINER_NAME" radar_db || true
+    run docker rmi -f "$IMAGE_NAME" || true
+
+    info "Удаляю базу данных и файлы проекта"
+    rm -rf "$APP_DIR/data/postgres" "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    rm -f "$APP_DIR/data/db.json.migrated" 2>/dev/null || true
+    ok "Сброс выполнен, копия сохранена в $APP_DIR/backups"
+fi
+
+if [ "$FORCE_REINSTALL" = true ] && [ "$FULL_RESET" != true ]; then
     MODE="полная переустановка"
     warn "Режим: полная переустановка. Данные в data/ сохраняются"
     NO_CACHE_FLAG="--no-cache"
@@ -402,18 +541,30 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD обязателен}
       # Слабое железо: русская локаль и лишние воркеры не нужны
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # Настройки под одноплатник с 4 ГБ ОЗУ (RK3318 и подобные).
+    # Для машины с 1–2 ГБ уменьшите shared_buffers и effective_cache_size вдвое.
     command: >
       postgres
-      -c shared_buffers=64MB
-      -c effective_cache_size=192MB
-      -c work_mem=4MB
-      -c maintenance_work_mem=32MB
-      -c max_connections=25
-      -c max_parallel_workers=0
-      -c max_parallel_workers_per_gather=0
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c work_mem=8MB
+      -c maintenance_work_mem=96MB
+      -c max_connections=30
+      -c max_parallel_workers=2
+      -c max_parallel_workers_per_gather=1
+      -c max_worker_processes=4
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=100
       -c wal_compression=on
+      -c checkpoint_completion_target=0.9
+      -c synchronous_commit=off
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
+    shm_size: 128mb
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-radar} -d ${DB_NAME:-radar}"]
       interval: 10s
@@ -605,23 +756,17 @@ async def setup_commands() -> None:
         log.warning("Не удалось установить меню команд", exc_info=True)
 
 
-def upgrade_schema() -> None:
-    """Накатывает миграции Alembic. Выполняется синхронно до старта бота."""
-    from alembic import command
-    from alembic.config import Config
-
-    root = os.path.dirname(os.path.abspath(__file__))
-    cfg = Config(os.path.join(root, "alembic.ini"))
-    cfg.set_main_option("script_location", os.path.join(root, "migrations"))
-    command.upgrade(cfg, "head")
-
-
 async def prepare_database() -> None:
-    """Готовит базу: ждёт готовности, накатывает схему, переносит старые данные."""
+    """Готовит базу: ждёт готовности, создаёт схему, переносит старые данные."""
     await db_engine.wait_ready()
-    log.info("Применяю миграции схемы (на слабом железе это до нескольких минут)")
-    await asyncio.to_thread(upgrade_schema)
-    log.info("Схема базы актуальна")
+
+    log.info("Проверяю схему базы")
+    created, tables = await db_engine.create_schema()
+    await db_engine.stamp_alembic()
+    if created:
+        log.info("Схема базы создана (%d таблиц)", tables)
+    else:
+        log.info("Схема базы актуальна (%d таблиц)", tables)
     if await importer.is_empty():
         log.info("База пуста — переношу данные прежней версии")
         counters = await importer.run()
@@ -711,7 +856,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.4"
+__version__ = "4.0.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -2087,9 +2232,6 @@ FLAGS: tuple[Flag, ...] = (
     # --- администрирование ---
     Flag("web_panel", "Веб-панель", "Панель администратора в браузере.",
          group="Администрирование", since="4.3", default=False),
-    Flag("web_terminal", "Терминал в панели",
-         "Консоль сервера в веб-панели. Повышенный риск: включайте осознанно.",
-         group="Администрирование", since="4.4", default=False),
 )
 
 BY_KEY: dict[str, Flag] = {flag.key: flag for flag in FLAGS}
@@ -2344,7 +2486,15 @@ cat > "radar/db/__init__.py" <<'RADAR_FILE_15'
 
 from __future__ import annotations
 
-from .engine import dispose, get_engine, session, session_factory, wait_ready
+from .engine import (
+    create_schema,
+    dispose,
+    get_engine,
+    session,
+    session_factory,
+    stamp_alembic,
+    wait_ready,
+)
 from .models import Base, Delivery, Event, Feature, Location, Meta, Source, User
 
 # Внимание: здесь нельзя экспортировать имена `engine`, `models`, `repo`,
@@ -2352,7 +2502,8 @@ from .models import Base, Delivery, Event, Feature, Location, Meta, Source, User
 # при `from radar.db import engine`.
 __all__ = [
     "Base", "Delivery", "Event", "Feature", "Location", "Meta", "Source", "User",
-    "dispose", "get_engine", "session", "session_factory", "wait_ready",
+    "create_schema", "dispose", "get_engine", "session", "session_factory",
+    "stamp_alembic", "wait_ready",
 ]
 RADAR_FILE_15
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
@@ -2717,6 +2868,62 @@ async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
 
     log.critical("PostgreSQL не ответил за %.0f секунд", attempts * delay)
     raise RuntimeError(f"PostgreSQL недоступен: {last}")
+
+
+async def create_schema() -> tuple[bool, int]:
+    """Создаёт недостающие таблицы напрямую из моделей.
+
+    Почему не Alembic при старте: его `command.upgrade` синхронный, и запуск
+    из рабочего потока приводил к вложенному `asyncio.run()` поверх уже
+    работающего цикла событий. На ARM это зависало наглухо — контейнер
+    перезапускался по кругу, не оставляя даже трассировки.
+
+    `create_all` идемпотентен: существующие таблицы не трогает. Alembic
+    остаётся для настоящих изменений схемы и запускается отдельной командой,
+    а не на каждом старте.
+
+    Возвращает (создавалось ли что-то, сколько таблиц в базе).
+    """
+    from sqlalchemy import inspect
+
+    from .models import Base
+
+    async with get_engine().begin() as connection:
+        before = await connection.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        await connection.run_sync(Base.metadata.create_all)
+        after = await connection.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+
+    created = sorted(after - before)
+    if created:
+        log.info("Созданы таблицы: %s", ", ".join(created))
+    return bool(created), len(after)
+
+
+async def stamp_alembic(revision: str = "0001_initial") -> None:
+    """Отмечает версию схемы, чтобы будущие миграции знали точку отсчёта."""
+    from sqlalchemy import text
+
+    try:
+        async with get_engine().begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS alembic_version ("
+                    "version_num VARCHAR(32) NOT NULL, "
+                    "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+                )
+            )
+            current = await connection.execute(text("SELECT version_num FROM alembic_version"))
+            if current.first() is None:
+                await connection.execute(
+                    text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
+                    {"rev": revision},
+                )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Не удалось отметить версию схемы: %s", exc)
 
 
 async def dispose() -> None:
@@ -7931,9 +8138,26 @@ mkdir -p "$APP_DIR/data/postgres"
 chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
 
 info "Собираю образ (первый раз это занимает 5–15 минут)"
+(
+    # Полоса ползёт по времени: точного прогресса Docker не сообщает,
+    # поэтому шкала показывает долю от ожидаемых 15 минут.
+    elapsed=0
+    while [ "$elapsed" -lt 900 ]; do
+        progress "$elapsed" 900 "сборка образа"
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+) &
+PROGRESS_PID=$!
 if ! run $COMPOSE build $NO_CACHE_FLAG; then
+    kill "$PROGRESS_PID" 2>/dev/null || true
+    wait "$PROGRESS_PID" 2>/dev/null || true
+    progress_done
     die "Сборка образа не удалась. Подробности: $LOG_FILE"
 fi
+kill "$PROGRESS_PID" 2>/dev/null || true
+wait "$PROGRESS_PID" 2>/dev/null || true
+progress 900 900 "образ готов"
 ok "Образ собран"
 
 # PostgreSQL запоминает пароль при инициализации тома. Если .env изменился,
@@ -8066,12 +8290,16 @@ for tick in $(seq 1 "$WAIT_LIMIT"); do
         break
     fi
 
-    # Каждые две минуты напоминаем, что процесс идёт
-    if [ $((tick % 60)) -eq 0 ]; then
-        info "· всё ещё работаю, прошло $((tick * 2 / 60)) мин"
-    fi
+    # Полоса показывает пройденные этапы, а не абстрактное время
+    STAGES_DONE=0
+    for marker in "База загружена" "Схема базы" "Перенос завершён" "Run polling"; do
+        printf '%s' "$snapshot" | grep -q "$marker" && STAGES_DONE=$((STAGES_DONE + 1))
+    done
+    progress "$STAGES_DONE" 4 "${LAST_STAGE:-запуск}"
+
     sleep 2
 done
+progress_done
 
 log_raw "--- лог бота после запуска ---"
 docker logs --tail 120 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true

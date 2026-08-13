@@ -93,23 +93,17 @@ async def setup_commands() -> None:
         log.warning("Не удалось установить меню команд", exc_info=True)
 
 
-def upgrade_schema() -> None:
-    """Накатывает миграции Alembic. Выполняется синхронно до старта бота."""
-    from alembic import command
-    from alembic.config import Config
-
-    root = os.path.dirname(os.path.abspath(__file__))
-    cfg = Config(os.path.join(root, "alembic.ini"))
-    cfg.set_main_option("script_location", os.path.join(root, "migrations"))
-    command.upgrade(cfg, "head")
-
-
 async def prepare_database() -> None:
-    """Готовит базу: ждёт готовности, накатывает схему, переносит старые данные."""
+    """Готовит базу: ждёт готовности, создаёт схему, переносит старые данные."""
     await db_engine.wait_ready()
-    log.info("Применяю миграции схемы (на слабом железе это до нескольких минут)")
-    await asyncio.to_thread(upgrade_schema)
-    log.info("Схема базы актуальна")
+
+    log.info("Проверяю схему базы")
+    created, tables = await db_engine.create_schema()
+    await db_engine.stamp_alembic()
+    if created:
+        log.info("Схема базы создана (%d таблиц)", tables)
+    else:
+        log.info("Схема базы актуальна (%d таблиц)", tables)
     if await importer.is_empty():
         log.info("База пуста — переношу данные прежней версии")
         counters = await importer.run()

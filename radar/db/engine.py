@@ -132,6 +132,62 @@ async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
     raise RuntimeError(f"PostgreSQL недоступен: {last}")
 
 
+async def create_schema() -> tuple[bool, int]:
+    """Создаёт недостающие таблицы напрямую из моделей.
+
+    Почему не Alembic при старте: его `command.upgrade` синхронный, и запуск
+    из рабочего потока приводил к вложенному `asyncio.run()` поверх уже
+    работающего цикла событий. На ARM это зависало наглухо — контейнер
+    перезапускался по кругу, не оставляя даже трассировки.
+
+    `create_all` идемпотентен: существующие таблицы не трогает. Alembic
+    остаётся для настоящих изменений схемы и запускается отдельной командой,
+    а не на каждом старте.
+
+    Возвращает (создавалось ли что-то, сколько таблиц в базе).
+    """
+    from sqlalchemy import inspect
+
+    from .models import Base
+
+    async with get_engine().begin() as connection:
+        before = await connection.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        await connection.run_sync(Base.metadata.create_all)
+        after = await connection.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+
+    created = sorted(after - before)
+    if created:
+        log.info("Созданы таблицы: %s", ", ".join(created))
+    return bool(created), len(after)
+
+
+async def stamp_alembic(revision: str = "0001_initial") -> None:
+    """Отмечает версию схемы, чтобы будущие миграции знали точку отсчёта."""
+    from sqlalchemy import text
+
+    try:
+        async with get_engine().begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS alembic_version ("
+                    "version_num VARCHAR(32) NOT NULL, "
+                    "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+                )
+            )
+            current = await connection.execute(text("SELECT version_num FROM alembic_version"))
+            if current.first() is None:
+                await connection.execute(
+                    text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
+                    {"rev": revision},
+                )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Не удалось отметить версию схемы: %s", exc)
+
+
 async def dispose() -> None:
     global _engine, _session_factory
     if _engine is not None:

@@ -9,18 +9,30 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD обязателен}
       # Слабое железо: русская локаль и лишние воркеры не нужны
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # Настройки под одноплатник с 4 ГБ ОЗУ (RK3318 и подобные).
+    # Для машины с 1–2 ГБ уменьшите shared_buffers и effective_cache_size вдвое.
     command: >
       postgres
-      -c shared_buffers=64MB
-      -c effective_cache_size=192MB
-      -c work_mem=4MB
-      -c maintenance_work_mem=32MB
-      -c max_connections=25
-      -c max_parallel_workers=0
-      -c max_parallel_workers_per_gather=0
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c work_mem=8MB
+      -c maintenance_work_mem=96MB
+      -c max_connections=30
+      -c max_parallel_workers=2
+      -c max_parallel_workers_per_gather=1
+      -c max_worker_processes=4
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=100
       -c wal_compression=on
+      -c checkpoint_completion_target=0.9
+      -c synchronous_commit=off
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
+    shm_size: 128mb
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-radar} -d ${DB_NAME:-radar}"]
       interval: 10s
