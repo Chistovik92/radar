@@ -37,6 +37,8 @@ UNINSTALL=false
 FORCE_REINSTALL=false
 FULL_RESET=false
 BACKUP_ONLY=false
+CLI_MODE_SET=false      # способ установки задан ключом, спрашивать не нужно
+BACKUP_PATH=""
 SKIP_UPDATES=false
 LOG_FILE=""
 START_TS=$(date +%s)
@@ -48,8 +50,8 @@ for arg in "$@"; do
         --recreate-env) RECREATE_ENV=true ;;
         --no-cache)     NO_CACHE_FLAG="--no-cache" ;;
         --logs)         SHOW_LOGS=true ;;
-        --reinstall)    FORCE_REINSTALL=true; NO_CACHE_FLAG="--no-cache" ;;
-        --reset)        FULL_RESET=true; FORCE_REINSTALL=true; NO_CACHE_FLAG="--no-cache" ;;
+        --reinstall)    FORCE_REINSTALL=true; CLI_MODE_SET=true; NO_CACHE_FLAG="--no-cache" ;;
+        --reset)        FULL_RESET=true; FORCE_REINSTALL=true; CLI_MODE_SET=true; NO_CACHE_FLAG="--no-cache" ;;
         --backup)       BACKUP_ONLY=true ;;
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
@@ -415,6 +417,8 @@ step "Проверка предыдущей установки"
 
 MODE="новая установка"
 HEALTHY=false
+RECOMMENDED=1          # что предложить по умолчанию: 1 поверх, 2 файлы, 3 с нуля
+DIAGNOSIS=""
 
 if [ -f "$APP_DIR/bot.py" ] && [ ! -d "$APP_DIR/radar" ]; then
     warn "Обнаружена версия 2.x — переношу bot.py в bot.py.bak-2x"
@@ -429,106 +433,128 @@ if [ -f "$APP_DIR/.env" ] || [ -d "$APP_DIR/radar" ]; then
         STATE="$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo нет)"
         RESTARTS="$(docker inspect -f '{{.RestartCount}}' "$CONTAINER_NAME" 2>/dev/null || echo 0)"
         info "Контейнер бота: $STATE, перезапусков: $RESTARTS"
+
         if [ "$STATE" = "running" ] && [ "$RESTARTS" -lt 5 ]; then
             HEALTHY=true
             ok "Текущая установка работоспособна"
         else
-            warn "Бот нестабилен — будет переустановлен полностью"
+            HEALTHY=false
+            warn "Бот нестабилен: состояние «$STATE», перезапусков $RESTARTS"
             log_raw "--- последние строки лога бота ---"
-            docker logs --tail 40 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
-            FORCE_REINSTALL=true
+            docker logs --tail 60 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
+
+            # Разбираем причину, чтобы совет был по существу, а не наугад
+            CRASH_LOG="$(docker logs --tail 200 "$CONTAINER_NAME" 2>&1 || true)"
+            if printf '%s' "$CRASH_LOG" | grep -qi "MissingGreenlet\|sqlalchemy.exc"; then
+                DIAGNOSIS="ошибка работы с базой данных"
+                RECOMMENDED=2
+            elif printf '%s' "$CRASH_LOG" | grep -qi "password authentication failed\|отклонил подключение"; then
+                DIAGNOSIS="база не принимает пароль"
+                RECOMMENDED=3
+            elif printf '%s' "$CRASH_LOG" | grep -qi "Unauthorized\|token is invalid"; then
+                DIAGNOSIS="Telegram отклонил токен бота"
+                RECOMMENDED=1
+            elif printf '%s' "$CRASH_LOG" | grep -qi "ModuleNotFoundError\|ImportError"; then
+                DIAGNOSIS="в образе не хватает зависимостей"
+                RECOMMENDED=2
+            else
+                DIAGNOSIS="причина не распознана"
+                RECOMMENDED=2
+            fi
+            warn "Предполагаемая причина: $DIAGNOSIS"
         fi
     else
         info "Контейнер бота не найден"
+        RECOMMENDED=1
     fi
 
     if [ -f "$APP_DIR/data/db.json" ]; then
-        info "Найдена база версии 3.x — данные будут перенесены в PostgreSQL"
+        info "Найдены данные версии 3.x — будут перенесены в базу"
+    fi
+    if [ -f "$APP_DIR/data/radar.db" ]; then
+        info "Найдена база SQLite: $(du -h "$APP_DIR/data/radar.db" 2>/dev/null | cut -f1)"
+    fi
+    if [ -d "$APP_DIR/data/postgres" ]; then
+        info "Найден том PostgreSQL от прежней версии"
     fi
 else
     info "Предыдущих установок не найдено"
 fi
 
+# --- выбор способа установки ---------------------------------------------
+# Решение принимает человек. Диагностика лишь подсказывает, что вероятнее
+# поможет: раньше автоматика молча выбирала переустановку и меню не показывала.
+CHOICE=""
+if [ "$CLI_MODE_SET" = true ]; then
+    info "Способ задан ключом командной строки"
+elif [ "$MODE" = "новая установка" ]; then
+    CHOICE=1
+else
+    echo
+    printf "  %sКак поступить с существующей установкой?%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "    1) Обновить поверх\n"
+    printf "       %sфайлы обновятся, база, настройки и образ сохранятся%s\n" "$C_DIM" "$C_RESET"
+    printf "    2) Переустановить\n"
+    printf "       %sобраз и файлы проекта заново, база и .env сохраняются%s\n" "$C_DIM" "$C_RESET"
+    printf "    3) С чистого листа\n"
+    printf "       %sсначала резервная копия, затем удаление базы и настроек%s\n" "$C_DIM" "$C_RESET"
+    printf "    4) Только резервная копия и выход\n\n"
+
+    if [ "$HEALTHY" != true ] && [ -n "$DIAGNOSIS" ]; then
+        printf "  %sДиагностика: %s → рекомендуется вариант %d%s\n" \
+            "$C_YELLOW" "$DIAGNOSIS" "$RECOMMENDED" "$C_RESET"
+    fi
+
+    printf "  Выбор [%d]: " "$RECOMMENDED"
+    read -r CHOICE < /dev/tty || CHOICE="$RECOMMENDED"
+    : "${CHOICE:=$RECOMMENDED}"
+    log_raw "Выбран способ установки: $CHOICE (рекомендовался $RECOMMENDED)"
+
+    case "$CHOICE" in
+        2) FORCE_REINSTALL=true; NO_CACHE_FLAG="--no-cache" ;;
+        3) FULL_RESET=true; FORCE_REINSTALL=true; NO_CACHE_FLAG="--no-cache" ;;
+        4)
+            make_backup "по запросу" || die "Не удалось создать копию"
+            printf "\n  Установка не выполнялась. Копия: %s\n\n" "${BACKUP_PATH:-$APP_DIR/backups}"
+            exit 0
+            ;;
+        *) info "Обновляю поверх существующей установки" ;;
+    esac
+fi
+
+# --- применение выбранного способа ----------------------------------------
 if [ "$FULL_RESET" = true ]; then
     MODE="полный сброс"
     echo
-    warn "Полный сброс удалит базу данных и все настройки бота"
-    info "Перед удалением будет снята резервная копия"
-    printf "  %sПродолжить?%s (введите СБРОС для подтверждения): " "$C_BOLD" "$C_RESET"
+    warn "Будут удалены база данных и настройки бота"
+    info "Перед удалением снимается резервная копия"
+    printf "  %sПродолжить?%s (введите СБРОС): " "$C_BOLD" "$C_RESET"
     read -r confirm_reset < /dev/tty || confirm_reset=""
-    if [ "$confirm_reset" != "СБРОС" ] && [ "$confirm_reset" != "sbros" ] && [ "$confirm_reset" != "RESET" ]; then
-        die "Сброс отменён"
-    fi
+    case "$confirm_reset" in
+        СБРОС|сброс|RESET|reset) : ;;
+        *) die "Сброс отменён" ;;
+    esac
 
-    make_backup "перед полным сбросом" || warn "Продолжаю без копии"
+    make_backup "перед установкой с чистого листа" || warn "Продолжаю без копии"
 
     info "Останавливаю контейнеры"
     (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
     run docker rm -f "$CONTAINER_NAME" radar_db || true
     run docker rmi -f "$IMAGE_NAME" || true
 
-    info "Удаляю базу данных и файлы проекта"
+    info "Удаляю базу и файлы проекта"
     rm -rf "$APP_DIR/data/postgres" "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
-    rm -f "$APP_DIR/data/db.json.migrated" 2>/dev/null || true
+    rm -f "$APP_DIR/data/radar.db" "$APP_DIR/data/radar.db-wal" \
+          "$APP_DIR/data/radar.db-shm" "$APP_DIR/data/db.json.migrated" 2>/dev/null || true
     ok "Сброс выполнен, копия сохранена в $APP_DIR/backups"
-fi
 
-if [ "$FORCE_REINSTALL" = true ] && [ "$FULL_RESET" != true ]; then
+elif [ "$FORCE_REINSTALL" = true ]; then
     MODE="полная переустановка"
-    warn "Режим: полная переустановка. Данные в data/ сохраняются"
-    NO_CACHE_FLAG="--no-cache"
-    info "Останавливаю и удаляю контейнеры"
+    info "Пересобираю образ и файлы проекта, данные сохраняются"
     (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
     run docker rm -f "$CONTAINER_NAME" || true
     run docker rmi -f "$IMAGE_NAME" || true
-    # Каталоги проекта пересоздаются, данные не трогаем
     rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
-fi
-
-# Если найдена прежняя установка и режим не задан флагом — спрашиваем,
-# как поступить. Так решение принимает человек, а не эвристика.
-if [ "$MODE" = "обновление" ] && [ "$FORCE_REINSTALL" != true ] && [ "$FULL_RESET" != true ]; then
-    echo
-    printf "  %sКак устанавливать?%s\n" "$C_BOLD" "$C_RESET"
-    printf "    1) Обновить поверх — данные и настройки сохраняются %s(по умолчанию)%s\n" "$C_DIM" "$C_RESET"
-    printf "    2) Переустановить — файлы проекта заново, данные сохраняются\n"
-    printf "    3) С чистого листа — копия, затем удаление базы и настроек\n"
-    printf "  Выбор [1]: "
-    read -r install_choice < /dev/tty || install_choice="1"
-
-    case "${install_choice:-1}" in
-        2)
-            FORCE_REINSTALL=true
-            NO_CACHE_FLAG="--no-cache"
-            MODE="полная переустановка"
-            ;;
-        3)
-            FULL_RESET=true
-            FORCE_REINSTALL=true
-            NO_CACHE_FLAG="--no-cache"
-            MODE="полный сброс"
-            ;;
-        *)
-            info "Обновляю поверх существующей установки"
-            ;;
-    esac
-
-    if [ "$FULL_RESET" = true ]; then
-        make_backup "перед установкой с чистого листа" || warn "Продолжаю без копии"
-        info "Останавливаю контейнеры"
-        (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
-        run docker rm -f "$CONTAINER_NAME" radar_db || true
-        run docker rmi -f "$IMAGE_NAME" || true
-        info "Удаляю базу и настройки"
-        rm -rf "$APP_DIR/data/postgres" "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
-        rm -f "$APP_DIR/data/radar.db" "$APP_DIR/data/radar.db-wal" \
-              "$APP_DIR/data/radar.db-shm" 2>/dev/null || true
-        ok "Сброс выполнен"
-    elif [ "$FORCE_REINSTALL" = true ]; then
-        info "Пересоздаю файлы проекта"
-        (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
-        rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
-    fi
 fi
 
 ok "Режим: $MODE"
@@ -666,9 +692,6 @@ info "Останавливаю прежние контейнеры"
 run $COMPOSE down --remove-orphans || true
 run docker rm -f "$CONTAINER_NAME" || true   # наследие версий 3.x
 
-mkdir -p "$APP_DIR/data/postgres"
-chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
-
 info "Собираю образ (первый раз это занимает 5–15 минут)"
 (
     # Полоса ползёт по времени: точного прогресса Docker не сообщает,
@@ -760,6 +783,8 @@ COMPOSE_ARGS=""
 if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
     COMPOSE_ARGS="--profile postgres"
     info "База данных: PostgreSQL (отдельный контейнер)"
+    mkdir -p "$APP_DIR/data/postgres"
+    chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
     run $COMPOSE $COMPOSE_ARGS up -d postgres || die "Не удалось запустить PostgreSQL"
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
