@@ -40,13 +40,14 @@ MANIFEST = [
     "radar/matching.py",
     "radar/identity.py",
     "radar/features.py",
+    "radar/logs.py",
     "radar/presets.py",
     "radar/db/__init__.py",
     "radar/db/models.py",
     "radar/db/engine.py",
     "radar/db/repo.py",
     "radar/db/importer.py",
-    "tools/doctor.py",
+    "radar/doctor.py",
     "migrations/env.py",
     "migrations/script.py.mako",
     "migrations/versions/0001_initial.py",
@@ -70,6 +71,7 @@ MANIFEST = [
     "radar/handlers/sources.py",
     "radar/handlers/users.py",
     "radar/handlers/features.py",
+    "radar/handlers/logs.py",
     "radar/handlers/assistant.py",
 ]
 

@@ -182,5 +182,86 @@ class TestDatabaseErrors(unittest.TestCase):
         self.assertTrue(issubclass(self.engine.AuthenticationError, RuntimeError))
 
 
+class TestLogStore(unittest.TestCase):
+    """Перечисление, архивация и очистка журналов."""
+
+    def setUp(self):
+        import tempfile
+
+        from radar import config, logs
+
+        self.logs = logs
+        self.config = config
+        self.tmp = tempfile.mkdtemp()
+        self.saved_dir = config.LOG_DIR
+        config.LOG_DIR = self.tmp
+
+        for name, content in (
+            ("bot.log", "строка журнала бота\n" * 5),
+            ("bot.log.1", "старый журнал\n"),
+            ("installer_log_20260813-120000.txt", "установка\n"),
+            ("installer_log_20260813-130000.txt", "ещё установка\n"),
+            ("posторонний.txt", "не журнал\n"),
+        ):
+            with open(os.path.join(self.tmp, name), "w", encoding="utf-8") as handle:
+                handle.write(content)
+
+    def tearDown(self):
+        import shutil
+
+        self.config.LOG_DIR = self.saved_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_only_known_files_collected(self):
+        names = {item.name for item in self.logs.collect()}
+        self.assertIn("bot.log", names)
+        self.assertIn("installer_log_20260813-120000.txt", names)
+        self.assertNotIn("posторонний.txt", names)
+
+    def test_classified_by_kind(self):
+        grouped = self.logs.by_kind()
+        self.assertEqual(len(grouped["installer"]), 2)
+        self.assertEqual(len(grouped["bot"]), 2)
+
+    def test_find_rejects_traversal(self):
+        self.assertIsNone(self.logs.find("../../etc/passwd"))
+        self.assertIsNone(self.logs.find(".hidden"))
+        self.assertIsNotNone(self.logs.find("bot.log"))
+
+    def test_tail_returns_last_lines(self):
+        item = self.logs.find("bot.log")
+        self.assertIn("строка журнала бота", self.logs.tail(item, 2))
+
+    def test_archive_contains_manifest(self):
+        import io
+        import tarfile
+
+        payload, filename, count = self.logs.archive()
+        self.assertTrue(filename.startswith("radar-logs-"))
+        self.assertEqual(count, 4)
+        with tarfile.open(fileobj=io.BytesIO(payload)) as bundle:
+            names = bundle.getnames()
+        self.assertIn("manifest.txt", names)
+        self.assertTrue(any("installer/" in name for name in names))
+
+    def test_archive_filtered_by_kind(self):
+        _payload, _name, count = self.logs.archive({"installer"})
+        self.assertEqual(count, 2)
+
+    def test_purge_keeps_current_bot_log(self):
+        removed, _freed = self.logs.purge()
+        self.assertEqual(removed, 3)
+        self.assertIsNotNone(self.logs.find("bot.log"))
+
+    def test_purge_by_kind(self):
+        removed, _freed = self.logs.purge({"installer"})
+        self.assertEqual(removed, 2)
+        self.assertEqual(self.logs.by_kind().get("installer"), None)
+
+    def test_empty_directory_gives_no_archive(self):
+        self.logs.purge(keep_current=False)
+        self.assertIsNone(self.logs.archive())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

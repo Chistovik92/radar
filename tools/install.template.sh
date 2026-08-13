@@ -206,7 +206,7 @@ make_backup() {       # make_backup <причина>
     if [ -f "$archive" ]; then
         ok "Копия сохранена: $archive ($(du -h "$archive" | cut -f1))"
         # Оставляем последние 10 копий
-        ls -1t "$dir"/radar-backup-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f
+        ls -1t "$dir"/radar-backup-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f || true
         BACKUP_PATH="$archive"
         return 0
     fi
@@ -338,11 +338,18 @@ mkdir -p "$APP_DIR/data"
 cd "$APP_DIR"
 chmod 700 "$APP_DIR" 2>/dev/null || true
 
-LOG_FILE="$APP_DIR/installer_log.txt"
-# Лог накапливается между запусками, но не растёт бесконечно.
-if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ]; then
-    mv -f "$LOG_FILE" "$LOG_FILE.old"
-fi
+# Журнал на каждый запуск свой — так видно историю установок, а не только
+# последнюю. Каталог внутри data/, потому что только он смонтирован
+# в контейнер: иначе бот не смог бы отдать журнал установки.
+LOG_DIR="$APP_DIR/data/logs"
+mkdir -p "$LOG_DIR"
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG_FILE="$LOG_DIR/installer_log_${RUN_STAMP}.txt"
+
+# Оставляем последние 10 журналов установки.
+# `|| true` обязателен: без существующих файлов ls возвращает ненулевой код,
+# а под `set -e` это мгновенно обрывает установку.
+ls -1t "$LOG_DIR"/installer_log_*.txt 2>/dev/null | tail -n +11 | xargs -r rm -f || true
 {
     printf '\n%s\n' "============================================================"
     printf 'Запуск установщика «Радар» v%s\n' "$VERSION"
@@ -361,6 +368,7 @@ fi
 
 ok "Каталог: $APP_DIR"
 ok "Журнал установки: $LOG_FILE"
+info "Журналов прошлых установок: $(ls -1 "$LOG_DIR"/installer_log_*.txt 2>/dev/null | wc -l || echo 0)"
 
 if [ "$BACKUP_ONLY" = true ]; then
     cd "$APP_DIR"
@@ -472,41 +480,82 @@ fi
 
 step "Обновление компонентов системы"
 
+# Шкала общая по шагу, плюс отдельная строка на каждый компонент —
+# так видно и общий ход, и чем именно установщик занят сейчас.
+UPD_TOTAL=4
+UPD_DONE=0
+
+upd_step() {          # upd_step <подпись>
+    progress "$UPD_DONE" "$UPD_TOTAL" "$1"
+    return 0
+}
+
+upd_finish() {        # upd_finish <результат>
+    UPD_DONE=$((UPD_DONE + 1))
+    progress "$UPD_DONE" "$UPD_TOTAL" "$1"
+    return 0
+}
+
+# --- 1. список пакетов ---
 if [ "$SKIP_UPDATES" = true ]; then
-    info "Пропущено по ключу --skip-updates"
+    info "Обновление пакетов пропущено (--skip-updates)"
+    UPD_DONE=2
 elif [ "$(id -u)" != "0" ]; then
     info "Нет прав root — обновление системы пропущено"
+    UPD_DONE=2
 elif command -v apt-get >/dev/null 2>&1; then
-    info "Проверяю обновления пакетов (может занять пару минут)"
+    upd_step "список пакетов"
     if run apt-get update; then
-        UPGRADABLE=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst' || echo 0)
-        if [ "$UPGRADABLE" -gt 0 ]; then
-            info "Доступно обновлений: $UPGRADABLE — устанавливаю"
-            if DEBIAN_FRONTEND=noninteractive run apt-get -y -o Dpkg::Options::=--force-confold upgrade; then
-                ok "Пакеты системы обновлены"
-            else
-                warn "Обновление завершилось с ошибкой, продолжаю (подробности в логе)"
-            fi
+        upd_finish "список пакетов обновлён"
+        ok "Список пакетов актуален"
+    else
+        upd_finish "список пакетов пропущен"
+        warn "Список пакетов обновить не удалось, продолжаю"
+    fi
+
+    # --- 2. сами пакеты ---
+    upd_step "проверка обновлений"
+    UPGRADABLE=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst' || echo 0)
+    if [ "$UPGRADABLE" -gt 0 ]; then
+        info "Доступно обновлений: $UPGRADABLE"
+        upd_step "установка пакетов ($UPGRADABLE)"
+        if DEBIAN_FRONTEND=noninteractive run apt-get -y \
+                -o Dpkg::Options::=--force-confold upgrade; then
+            upd_finish "пакеты обновлены"
+            ok "Пакеты системы обновлены: $UPGRADABLE"
         else
-            ok "Все пакеты актуальны"
+            upd_finish "пакеты пропущены"
+            warn "Обновление завершилось с ошибкой, продолжаю (подробности в журнале)"
         fi
     else
-        warn "Список пакетов обновить не удалось, продолжаю"
+        upd_finish "обновлений нет"
+        ok "Все пакеты актуальны"
     fi
 else
     info "Менеджер пакетов apt не найден — обновление пропущено"
+    UPD_DONE=2
 fi
 
-info "Обновляю базовые образы Docker"
-IMG_TOTAL=2
-IMG_DONE=0
+# --- 3 и 4. базовые образы Docker ---
 for image in python:3.11-slim postgres:16-alpine; do
-    progress "$IMG_DONE" "$IMG_TOTAL" "$image"
-    run docker pull "$image" || warn "Не удалось обновить $image"
-    IMG_DONE=$((IMG_DONE + 1))
+    upd_step "образ $image"
+    BEFORE_ID="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo нет)"
+    if run docker pull "$image"; then
+        AFTER_ID="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo нет)"
+        if [ "$BEFORE_ID" = "$AFTER_ID" ] && [ "$BEFORE_ID" != "нет" ]; then
+            upd_finish "$image — актуален"
+            ok "$image: уже последней версии"
+        else
+            upd_finish "$image — обновлён"
+            ok "$image: обновлён"
+        fi
+    else
+        upd_finish "$image — пропущен"
+        warn "$image: обновить не удалось, использую локальный"
+    fi
 done
-progress "$IMG_TOTAL" "$IMG_TOTAL" "образы обновлены"
-ok "Базовые образы проверены"
+
+progress "$UPD_TOTAL" "$UPD_TOTAL" "компоненты проверены"
 
 # --------------------------------------------------------------------------
 #  Шаг 4. Диагностика существующей установки
@@ -669,6 +718,61 @@ chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 @@FILES@@
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
+# Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
+# недоступны: чтобы их читать, ему пришлось бы дать доступ к сокету Docker,
+# а это фактически полный доступ к серверу.
+cat > "$APP_DIR/collect-logs.sh" <<'RADAR_COLLECT_EOF'
+#!/usr/bin/env bash
+# Собирает все журналы системы «Радар» в один архив.
+#   bash collect-logs.sh            # архив в текущем каталоге
+#   bash collect-logs.sh /tmp       # архив в указанном каталоге
+set -Eeuo pipefail
+
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+OUT_DIR="${1:-$APP_DIR}"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+STAGE="$(mktemp -d)"
+ARCHIVE="$OUT_DIR/radar-all-logs-$STAMP.tar.gz"
+
+trap 'rm -rf "$STAGE"' EXIT
+
+echo "Собираю журналы..."
+
+mkdir -p "$STAGE/installer" "$STAGE/bot" "$STAGE/docker"
+cp "$APP_DIR"/data/logs/installer_log_*.txt "$STAGE/installer/" 2>/dev/null || true
+cp "$APP_DIR"/data/logs/bot.log* "$STAGE/bot/" 2>/dev/null || true
+
+for container in radar_container radar_db; do
+    if docker inspect "$container" >/dev/null 2>&1; then
+        docker logs --tail 3000 "$container" > "$STAGE/docker/$container.log" 2>&1 || true
+        docker inspect "$container" > "$STAGE/docker/$container.inspect.json" 2>/dev/null || true
+        echo "  + $container"
+    fi
+done
+
+{
+    echo "Система «Радар»"
+    echo "Собрано: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "Хост: $(hostname) · $(uname -srm)"
+    echo
+    echo "--- контейнеры ---"
+    docker ps -a --filter name=radar --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null || true
+    echo
+    echo "--- ресурсы ---"
+    free -m 2>/dev/null | head -2 || true
+    df -h "$APP_DIR" 2>/dev/null | tail -1 || true
+    echo
+    echo "--- настройки (без секретов) ---"
+    grep -vE 'TOKEN|KEY|PASSWORD|SECRET' "$APP_DIR/.env" 2>/dev/null || true
+} > "$STAGE/summary.txt"
+
+tar -czf "$ARCHIVE" -C "$STAGE" .
+echo "Готово: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+echo "Секреты из .env в архив не попадают."
+RADAR_COLLECT_EOF
+chmod +x "$APP_DIR/collect-logs.sh"
+ok "Сборщик журналов: $APP_DIR/collect-logs.sh"
+
 # --------------------------------------------------------------------------
 #  Шаг 6. Настройки
 # --------------------------------------------------------------------------
@@ -758,6 +862,9 @@ MAX_LOCATIONS=0
 EXTRA_CHANNELS=
 EXTRA_RSS=
 LOG_LEVEL=INFO
+LOG_DIR=data/logs
+LOG_KEEP_DAYS=14
+LOG_MAX_MB=5
 PROMO_ENABLED=1
 PROMO_TITLE=🐙 HydraSite
 PROMO_URL=https://t.me/+WWJFBZVhxBs4ZmNi
@@ -909,7 +1016,7 @@ step "Проверка системы до запуска бота"
 info "Запускаю диагностику внутри контейнера"
 DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
 set +e
-$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python tools/doctor.py \
+$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor \
     > "$DOCTOR_OUT" 2>&1
 DOCTOR_CODE=$?
 set -e
@@ -1036,7 +1143,8 @@ printf "    Логи бота     docker logs -f %s\n" "$CONTAINER_NAME"
 printf "    Логи базы     docker logs -f radar_db\n"
 printf "    Перезапуск    cd %s && %s restart\n" "$APP_DIR" "$COMPOSE"
 printf "    Остановка     cd %s && %s down\n" "$APP_DIR" "$COMPOSE"
-printf "    Копия базы    docker exec radar_db pg_dump -U radar radar | gzip > radar-\$(date +%%F).sql.gz\n"
+printf "    Все журналы   bash %s/collect-logs.sh\n" "$APP_DIR"
+printf "    Журналы в боте  /logs · /logtail · /logclear %s(суперадминистратор)%s\n" "$C_DIM" "$C_RESET"
 echo
 printf "  %sЖурнал установки: %s%s\n" "$C_DIM" "$LOG_FILE" "$C_RESET"
 echo

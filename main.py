@@ -19,7 +19,7 @@ from radar import config
 log = config.setup_logging()
 config.validate()
 
-from radar import ai, features, handlers, monitor, roles, storage  # noqa: E402
+from radar import ai, features, handlers, logs as logstore, monitor, roles, storage  # noqa: E402
 from radar.db import engine as db_engine  # noqa: E402
 from radar.db import importer, repo  # noqa: E402
 from radar.middlewares import AccessMiddleware  # noqa: E402
@@ -115,6 +115,11 @@ async def prepare_database() -> None:
     features.apply(await repo.load_features())
     active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
     log.info("Возможностей включено: %d из %d", active, len(features.FLAGS))
+    logstore.ensure_directory()
+    stale_logs = logstore.purge_old()
+    if stale_logs:
+        log.info("Удалено устаревших журналов: %d", stale_logs)
+
     removed = await repo.purge_old_events()
     if removed:
         log.info("Удалено устаревших событий: %d", removed)

@@ -38,7 +38,10 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if roles.is_admin(role):
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
     if roles.is_superadmin(role):
-        rows.append([InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list")])
+        rows.append([
+            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
+            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
+        ])
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
     promo = promo_row()
     if promo:

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.8 — автономный установщик.
+# Система «Радар» v4.0.8.1 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -26,7 +26,7 @@
 
 set -Eeuo pipefail
 
-VERSION="4.0.8"
+VERSION="4.0.8.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -206,7 +206,7 @@ make_backup() {       # make_backup <причина>
     if [ -f "$archive" ]; then
         ok "Копия сохранена: $archive ($(du -h "$archive" | cut -f1))"
         # Оставляем последние 10 копий
-        ls -1t "$dir"/radar-backup-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f
+        ls -1t "$dir"/radar-backup-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f || true
         BACKUP_PATH="$archive"
         return 0
     fi
@@ -338,11 +338,18 @@ mkdir -p "$APP_DIR/data"
 cd "$APP_DIR"
 chmod 700 "$APP_DIR" 2>/dev/null || true
 
-LOG_FILE="$APP_DIR/installer_log.txt"
-# Лог накапливается между запусками, но не растёт бесконечно.
-if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ]; then
-    mv -f "$LOG_FILE" "$LOG_FILE.old"
-fi
+# Журнал на каждый запуск свой — так видно историю установок, а не только
+# последнюю. Каталог внутри data/, потому что только он смонтирован
+# в контейнер: иначе бот не смог бы отдать журнал установки.
+LOG_DIR="$APP_DIR/data/logs"
+mkdir -p "$LOG_DIR"
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG_FILE="$LOG_DIR/installer_log_${RUN_STAMP}.txt"
+
+# Оставляем последние 10 журналов установки.
+# `|| true` обязателен: без существующих файлов ls возвращает ненулевой код,
+# а под `set -e` это мгновенно обрывает установку.
+ls -1t "$LOG_DIR"/installer_log_*.txt 2>/dev/null | tail -n +11 | xargs -r rm -f || true
 {
     printf '\n%s\n' "============================================================"
     printf 'Запуск установщика «Радар» v%s\n' "$VERSION"
@@ -361,6 +368,7 @@ fi
 
 ok "Каталог: $APP_DIR"
 ok "Журнал установки: $LOG_FILE"
+info "Журналов прошлых установок: $(ls -1 "$LOG_DIR"/installer_log_*.txt 2>/dev/null | wc -l || echo 0)"
 
 if [ "$BACKUP_ONLY" = true ]; then
     cd "$APP_DIR"
@@ -472,41 +480,82 @@ fi
 
 step "Обновление компонентов системы"
 
+# Шкала общая по шагу, плюс отдельная строка на каждый компонент —
+# так видно и общий ход, и чем именно установщик занят сейчас.
+UPD_TOTAL=4
+UPD_DONE=0
+
+upd_step() {          # upd_step <подпись>
+    progress "$UPD_DONE" "$UPD_TOTAL" "$1"
+    return 0
+}
+
+upd_finish() {        # upd_finish <результат>
+    UPD_DONE=$((UPD_DONE + 1))
+    progress "$UPD_DONE" "$UPD_TOTAL" "$1"
+    return 0
+}
+
+# --- 1. список пакетов ---
 if [ "$SKIP_UPDATES" = true ]; then
-    info "Пропущено по ключу --skip-updates"
+    info "Обновление пакетов пропущено (--skip-updates)"
+    UPD_DONE=2
 elif [ "$(id -u)" != "0" ]; then
     info "Нет прав root — обновление системы пропущено"
+    UPD_DONE=2
 elif command -v apt-get >/dev/null 2>&1; then
-    info "Проверяю обновления пакетов (может занять пару минут)"
+    upd_step "список пакетов"
     if run apt-get update; then
-        UPGRADABLE=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst' || echo 0)
-        if [ "$UPGRADABLE" -gt 0 ]; then
-            info "Доступно обновлений: $UPGRADABLE — устанавливаю"
-            if DEBIAN_FRONTEND=noninteractive run apt-get -y -o Dpkg::Options::=--force-confold upgrade; then
-                ok "Пакеты системы обновлены"
-            else
-                warn "Обновление завершилось с ошибкой, продолжаю (подробности в логе)"
-            fi
+        upd_finish "список пакетов обновлён"
+        ok "Список пакетов актуален"
+    else
+        upd_finish "список пакетов пропущен"
+        warn "Список пакетов обновить не удалось, продолжаю"
+    fi
+
+    # --- 2. сами пакеты ---
+    upd_step "проверка обновлений"
+    UPGRADABLE=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst' || echo 0)
+    if [ "$UPGRADABLE" -gt 0 ]; then
+        info "Доступно обновлений: $UPGRADABLE"
+        upd_step "установка пакетов ($UPGRADABLE)"
+        if DEBIAN_FRONTEND=noninteractive run apt-get -y \
+                -o Dpkg::Options::=--force-confold upgrade; then
+            upd_finish "пакеты обновлены"
+            ok "Пакеты системы обновлены: $UPGRADABLE"
         else
-            ok "Все пакеты актуальны"
+            upd_finish "пакеты пропущены"
+            warn "Обновление завершилось с ошибкой, продолжаю (подробности в журнале)"
         fi
     else
-        warn "Список пакетов обновить не удалось, продолжаю"
+        upd_finish "обновлений нет"
+        ok "Все пакеты актуальны"
     fi
 else
     info "Менеджер пакетов apt не найден — обновление пропущено"
+    UPD_DONE=2
 fi
 
-info "Обновляю базовые образы Docker"
-IMG_TOTAL=2
-IMG_DONE=0
+# --- 3 и 4. базовые образы Docker ---
 for image in python:3.11-slim postgres:16-alpine; do
-    progress "$IMG_DONE" "$IMG_TOTAL" "$image"
-    run docker pull "$image" || warn "Не удалось обновить $image"
-    IMG_DONE=$((IMG_DONE + 1))
+    upd_step "образ $image"
+    BEFORE_ID="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo нет)"
+    if run docker pull "$image"; then
+        AFTER_ID="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo нет)"
+        if [ "$BEFORE_ID" = "$AFTER_ID" ] && [ "$BEFORE_ID" != "нет" ]; then
+            upd_finish "$image — актуален"
+            ok "$image: уже последней версии"
+        else
+            upd_finish "$image — обновлён"
+            ok "$image: обновлён"
+        fi
+    else
+        upd_finish "$image — пропущен"
+        warn "$image: обновить не удалось, использую локальный"
+    fi
 done
-progress "$IMG_TOTAL" "$IMG_TOTAL" "образы обновлены"
-ok "Базовые образы проверены"
+
+progress "$UPD_TOTAL" "$UPD_TOTAL" "компоненты проверены"
 
 # --------------------------------------------------------------------------
 #  Шаг 4. Диагностика существующей установки
@@ -666,8 +715,8 @@ step "Развёртывание файлов проекта"
 
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
-mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "tools"
-FILE_COUNT=45
+mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
+FILE_COUNT=47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -705,10 +754,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py alembic.ini ./
+# Диагностика лежит внутри пакета: tools/ исключён из контекста сборки
 COPY radar ./radar
 COPY migrations ./migrations
-# Диагностика запускается внутри контейнера перед стартом бота
-COPY tools/doctor.py ./tools/doctor.py
 
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app
 USER radar
@@ -868,7 +916,7 @@ from radar import config
 log = config.setup_logging()
 config.validate()
 
-from radar import ai, features, handlers, monitor, roles, storage  # noqa: E402
+from radar import ai, features, handlers, logs as logstore, monitor, roles, storage  # noqa: E402
 from radar.db import engine as db_engine  # noqa: E402
 from radar.db import importer, repo  # noqa: E402
 from radar.middlewares import AccessMiddleware  # noqa: E402
@@ -964,6 +1012,11 @@ async def prepare_database() -> None:
     features.apply(await repo.load_features())
     active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
     log.info("Возможностей включено: %d из %d", active, len(features.FLAGS))
+    logstore.ensure_directory()
+    stale_logs = logstore.purge_old()
+    if stale_logs:
+        log.info("Удалено устаревших журналов: %d", stale_logs)
+
     removed = await repo.purge_old_events()
     if removed:
         log.info("Удалено устаревших событий: %d", removed)
@@ -1042,7 +1095,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.8"
+__version__ = "4.0.8.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -1195,6 +1248,11 @@ MAX_WEBHOOK_URL: str = (os.getenv("MAX_WEBHOOK_URL") or "").strip()
 MAX_WEBHOOK_PORT: int = _int("MAX_WEBHOOK_PORT", 8081)
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
+# Каталог журналов. Лежит внутри data/, чтобы его видели и бот, и хост:
+# только так бот может отдавать журналы установки и свои собственные.
+LOG_DIR: str = (os.getenv("LOG_DIR") or "data/logs").strip()
+LOG_KEEP_DAYS: int = max(0, _int("LOG_KEEP_DAYS", 14))
+LOG_MAX_MB: int = max(1, _int("LOG_MAX_MB", 5))
 USER_AGENT: str = (
     os.getenv("USER_AGENT") or f"RadarBot/{VERSION} (+https://github.com/Chistovik92/radar)"
 ).strip()
@@ -1207,10 +1265,32 @@ AI_ENABLED: bool = bool(GEMINI_API_KEY)
 
 
 def setup_logging() -> logging.Logger:
-    logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL, logging.INFO),
-        format="%(asctime)s | %(levelname)-8s | %(name)-16s | %(message)s",
-    )
+    """Логи одновременно в консоль (docker logs) и в файл внутри data/logs."""
+    import logging.handlers
+
+    level = getattr(logging, LOG_LEVEL, logging.INFO)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)-16s | %(message)s")
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        path = os.path.join(LOG_DIR, "bot.log")
+        rotating = logging.handlers.RotatingFileHandler(
+            path, maxBytes=LOG_MAX_MB * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        rotating.setFormatter(fmt)
+        root.addHandler(rotating)
+    except OSError as exc:  # noqa: BLE001
+        root.warning("Журнал в файл недоступен (%s) — пишу только в консоль", exc)
+
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     # Alembic на старте печатает десятки строк о загрузке плагинов —
@@ -2507,8 +2587,237 @@ def by_group() -> dict[str, list[Flag]]:
         grouped[flag.group].append(flag)
     return grouped
 RADAR_FILE_13
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/logs.py"
+cat > "radar/logs.py" <<'RADAR_FILE_14'
+"""Журналы системы: перечисление, выгрузка и очистка.
+
+Все журналы лежат в одном каталоге внутри `data/`, потому что это
+единственный путь, видимый одновременно боту (внутри контейнера)
+и установщику (на хосте). Благодаря этому суперадминистратор может
+забрать журнал установки прямо из бота, не заходя по SSH.
+
+Журналы контейнеров Docker сюда не попадают: чтобы их читать, боту
+пришлось бы дать доступ к сокету Docker, а это фактически полный доступ
+к хосту. Вместо этого установщик кладёт рядом скрипт `collect-logs.sh`,
+который собирает всё в один архив уже на стороне сервера.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import io
+import logging
+import os
+import re
+import tarfile
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import config
+
+log = logging.getLogger("radar.logs")
+
+# Что считаем журналом: имена, которые пишем мы сами и наш установщик.
+PATTERNS = (
+    re.compile(r"^bot\.log(\.\d+)?$"),
+    re.compile(r"^installer_log.*\.txt$"),
+    re.compile(r"^doctor.*\.(txt|json)$"),
+)
+
+
+@dataclass
+class LogFile:
+    path: Path
+    kind: str          # bot | installer | doctor | other
+    size: int
+    modified: float
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+    @property
+    def size_human(self) -> str:
+        value = float(self.size)
+        for unit in ("Б", "КБ", "МБ", "ГБ"):
+            if value < 1024 or unit == "ГБ":
+                return f"{value:.0f} {unit}" if unit == "Б" else f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{value:.1f} ГБ"
+
+    @property
+    def age_human(self) -> str:
+        delta = time.time() - self.modified
+        if delta < 3600:
+            return f"{int(delta // 60)} мин назад"
+        if delta < 86400:
+            return f"{int(delta // 3600)} ч назад"
+        return f"{int(delta // 86400)} дн назад"
+
+
+def _classify(name: str) -> str:
+    if name.startswith("bot.log"):
+        return "bot"
+    if name.startswith("installer"):
+        return "installer"
+    if name.startswith("doctor"):
+        return "doctor"
+    return "other"
+
+
+def directory() -> Path:
+    return Path(config.LOG_DIR)
+
+
+def collect() -> list[LogFile]:
+    """Все журналы, новые сверху."""
+    root = directory()
+    if not root.exists():
+        return []
+    found: list[LogFile] = []
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        if not any(pattern.match(path.name) for pattern in PATTERNS):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        found.append(LogFile(path, _classify(path.name), stat.st_size, stat.st_mtime))
+    return sorted(found, key=lambda item: item.modified, reverse=True)
+
+
+def by_kind() -> dict[str, list[LogFile]]:
+    grouped: dict[str, list[LogFile]] = {}
+    for item in collect():
+        grouped.setdefault(item.kind, []).append(item)
+    return grouped
+
+
+def find(name: str) -> LogFile | None:
+    """Ищет журнал по имени. Имя проверяется, чтобы нельзя было выйти из каталога."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        return None
+    return next((item for item in collect() if item.name == name), None)
+
+
+def tail(item: LogFile, lines: int = 60) -> str:
+    """Последние строки журнала — для быстрого просмотра прямо в чате."""
+    try:
+        with item.path.open("r", encoding="utf-8", errors="replace") as handle:
+            return "".join(handle.readlines()[-lines:])
+    except OSError as exc:
+        return f"Не удалось прочитать: {exc}"
+
+
+def read_bytes(item: LogFile, limit_mb: int = 20) -> bytes | None:
+    limit = limit_mb * 1024 * 1024
+    try:
+        with item.path.open("rb") as handle:
+            if item.size <= limit:
+                return handle.read()
+            # Слишком большой файл отдаём хвостом: начало обычно уже неактуально
+            handle.seek(item.size - limit)
+            return "…[начало файла обрезано]…\n".encode("utf-8") + handle.read()
+    except OSError as exc:
+        log.warning("Журнал %s не прочитан: %s", item.name, exc)
+        return None
+
+
+def archive(kinds: set[str] | None = None) -> tuple[bytes, str, int] | None:
+    """Собирает журналы в tar.gz. Возвращает (данные, имя файла, число файлов)."""
+    items = [item for item in collect() if kinds is None or item.kind in kinds]
+    if not items:
+        return None
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        for item in items:
+            try:
+                bundle.add(item.path, arcname=f"{item.kind}/{item.name}")
+            except OSError as exc:
+                log.warning("Журнал %s не добавлен: %s", item.name, exc)
+
+        summary = (
+            f"Система «Радар» v{config.VERSION}\n"
+            f"Собрано: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S} UTC\n"
+            f"Файлов: {len(items)}\n\n"
+            + "\n".join(f"{item.kind:<10} {item.name:<44} {item.size_human}" for item in items)
+        ).encode("utf-8")
+        info = tarfile.TarInfo("manifest.txt")
+        info.size = len(summary)
+        info.mtime = int(time.time())
+        bundle.addfile(info, io.BytesIO(summary))
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return buffer.getvalue(), f"radar-logs-{config.VERSION}-{stamp}.tar.gz", len(items)
+
+
+def purge(kinds: set[str] | None = None, keep_current: bool = True) -> tuple[int, int]:
+    """Удаляет журналы. Возвращает (сколько удалено, сколько байт освобождено).
+
+    Текущий `bot.log` по умолчанию не трогаем: он открыт на запись, и его
+    удаление оставило бы систему без журнала до перезапуска.
+    """
+    removed = 0
+    freed = 0
+    for item in collect():
+        if kinds is not None and item.kind not in kinds:
+            continue
+        if keep_current and item.name == "bot.log":
+            continue
+        try:
+            size = item.size
+            item.path.unlink()
+            removed += 1
+            freed += size
+        except OSError as exc:
+            log.warning("Не удалось удалить %s: %s", item.name, exc)
+    if removed:
+        log.info("Удалено журналов: %d, освобождено %d КБ", removed, freed // 1024)
+    return removed, freed
+
+
+def purge_old(days: int | None = None) -> int:
+    """Чистка по возрасту — вызывается при старте."""
+    keep = config.LOG_KEEP_DAYS if days is None else days
+    if keep <= 0:
+        return 0
+    edge = time.time() - keep * 86400
+    removed = 0
+    for item in collect():
+        if item.name == "bot.log" or item.modified >= edge:
+            continue
+        try:
+            item.path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info("Удалено журналов старше %d дней: %d", keep, removed)
+    return removed
+
+
+def total_size() -> int:
+    return sum(item.size for item in collect())
+
+
+def ensure_directory() -> None:
+    try:
+        os.makedirs(config.LOG_DIR, exist_ok=True)
+    except OSError as exc:
+        log.warning("Каталог журналов недоступен: %s", exc)
+RADAR_FILE_14
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/presets.py"
-cat > "radar/presets.py" <<'RADAR_FILE_14'
+cat > "radar/presets.py" <<'RADAR_FILE_15'
 """Наборы источников по городам.
 
 Списки — стартовые, не исчерпывающие: каналы переименовываются, закрываются
@@ -2686,9 +2995,9 @@ def rss_for(cities: list[str]) -> list[str]:
         if preset and preset.key != "federal":
             result.extend(preset.rss)
     return list(dict.fromkeys(result))
-RADAR_FILE_14
+RADAR_FILE_15
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_15'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_16'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -2718,9 +3027,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_15
+RADAR_FILE_16
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_16'
+cat > "radar/db/models.py" <<'RADAR_FILE_17'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -2951,9 +3260,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_16
+RADAR_FILE_17
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_17'
+cat > "radar/db/engine.py" <<'RADAR_FILE_18'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -3179,9 +3488,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_17
+RADAR_FILE_18
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_18'
+cat > "radar/db/repo.py" <<'RADAR_FILE_19'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -3704,9 +4013,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_18
+RADAR_FILE_19
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_19'
+cat > "radar/db/importer.py" <<'RADAR_FILE_20'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -3869,9 +4178,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_19
-printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/doctor.py"
-cat > "tools/doctor.py" <<'RADAR_FILE_20'
+RADAR_FILE_20
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
+cat > "radar/doctor.py" <<'RADAR_FILE_21'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -3882,9 +4191,12 @@ cat > "tools/doctor.py" <<'RADAR_FILE_20'
 Смысл в том, чтобы ошибка обнаруживалась один раз и с понятным объяснением,
 а не превращалась в цикл перезапусков контейнера.
 
-    python tools/doctor.py            # полная проверка
-    python tools/doctor.py --quick    # без обращений к сети
-    python tools/doctor.py --json     # машиночитаемый отчёт
+    python -m radar.doctor            # полная проверка
+    python -m radar.doctor --quick    # без обращений к сети
+    python -m radar.doctor --json     # машиночитаемый отчёт
+
+Модуль лежит внутри пакета, а не в tools/, намеренно: tools исключён
+из контекста сборки образа, и попытка скопировать оттуда файл ломала build.
 
 Код возврата: 0 — всё в порядке, 1 — есть ошибки, 2 — только предупреждения.
 """
@@ -3907,7 +4219,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 OK = "ok"
 WARN = "warn"
@@ -4229,9 +4542,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_21'
+cat > "migrations/env.py" <<'RADAR_FILE_22'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -4291,9 +4604,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_22'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_23'
 """${message}
 
 Revision ID: ${up_revision}
@@ -4318,9 +4631,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_23'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_24'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -4487,9 +4800,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_24'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_25'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -4512,9 +4825,9 @@ from .base import (
 __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
 ]
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_25'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_26'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -4639,9 +4952,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_26'
+cat > "radar/storage.py" <<'RADAR_FILE_27'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -4826,9 +5139,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_27'
+cat > "radar/exporting.py" <<'RADAR_FILE_28'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -5034,9 +5347,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_28'
+cat > "radar/ai.py" <<'RADAR_FILE_29'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -5671,9 +5984,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_29'
+cat > "radar/geocode.py" <<'RADAR_FILE_30'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -5865,9 +6178,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_30'
+cat > "radar/weather.py" <<'RADAR_FILE_31'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -6199,9 +6512,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_31'
+cat > "radar/sources.py" <<'RADAR_FILE_32'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -6382,9 +6695,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_32'
+cat > "radar/tg.py" <<'RADAR_FILE_33'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -6481,9 +6794,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_33'
+cat > "radar/keyboards.py" <<'RADAR_FILE_34'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -6524,7 +6837,10 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if roles.is_admin(role):
         rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
     if roles.is_superadmin(role):
-        rows.append([InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list")])
+        rows.append([
+            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
+            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
+        ])
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
     promo = promo_row()
     if promo:
@@ -6769,9 +7085,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_34'
+cat > "radar/states.py" <<'RADAR_FILE_35'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -6792,9 +7108,9 @@ class Form(StatesGroup):
     weather_interval = State()
     manual_address = State()
     admin_add_location = State()   # ввод адреса для чужого пользователя
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_35'
+cat > "radar/middlewares.py" <<'RADAR_FILE_36'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -6864,9 +7180,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_36'
+cat > "radar/monitor.py" <<'RADAR_FILE_37'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -7072,9 +7388,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_37'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_38'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -7087,7 +7403,7 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from . import assistant, common, features, locations, settings, sources, users
+from . import assistant, common, features, locations, logs, settings, sources, users
 
 def setup(dp: Dispatcher) -> None:
     dp.include_router(common.router)
@@ -7096,14 +7412,15 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(sources.router)
     dp.include_router(users.router)
     dp.include_router(features.router)
+    dp.include_router(logs.router)
     # Ассистент перехватывает любой оставшийся текст — только в самом конце.
     dp.include_router(assistant.router)
 
 
 __all__ = ["setup"]
-RADAR_FILE_37
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_38'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_39'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -7216,6 +7533,11 @@ async def cmd_help(message: Message, role: str) -> None:
         lines.append("/quota — расход квоты Gemini")
     if roles.is_admin(role):
         lines.append("/stats — статистика системы - /models — модели Gemini")
+    if roles.is_superadmin(role):
+        lines.append(
+            "/features — возможности системы\n"
+            "/logs — журналы - /logtail — последние строки - /logclear — очистить"
+        )
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
 
@@ -7383,9 +7705,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_39'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_40'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -7549,9 +7871,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_40'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_41'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -7694,9 +8016,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
     await message.answer(
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_41'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_42'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -7978,9 +8300,9 @@ async def import_sources(message: Message, role: str) -> None:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_42'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_43'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -8346,9 +8668,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_43'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_44'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -8476,9 +8798,299 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await repo.set_feature(flag.key, value, call.from_user.id)
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_43
+RADAR_FILE_44
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_45'
+"""Журналы в интерфейсе бота. Доступно только суперадминистратору.
+
+Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
+поэтому выдаются исключительно владельцу системы — ни администраторам,
+ни модераторам.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import logs, roles
+from ..textutils import esc, split_text
+from ..tg import back_kb, safe_edit, send_html
+
+log = logging.getLogger("radar.handlers.logs")
+router = Router(name="logs")
+
+KIND_TITLES = {
+    "bot": "🤖 Журналы бота",
+    "installer": "📦 Журналы установки",
+    "doctor": "🩺 Отчёты диагностики",
+    "other": "📄 Прочее",
+}
+
+
+def _menu() -> InlineKeyboardMarkup:
+    grouped = logs.by_kind()
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for kind, title in KIND_TITLES.items():
+        items = grouped.get(kind)
+        if not items:
+            continue
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{title} ({len(items)})", callback_data=f"log:kind:{kind}"
+            )
+        ])
+
+    if grouped:
+        rows.append([
+            InlineKeyboardButton(text="📥 Скачать всё архивом", callback_data="log:all"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="🧹 Очистить журналы", callback_data="log:purge"),
+        ])
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _overview() -> str:
+    items = logs.collect()
+    if not items:
+        return (
+            "📋 <b>Журналы</b>\n\nПока пусто. Журнал бота появится после запуска, "
+            "журнал установки — после ближайшего обновления."
+        )
+
+    total = logs.total_size()
+    lines = [
+        "📋 <b>Журналы</b>",
+        f"Файлов: <b>{len(items)}</b>, общий объём: <b>{total // 1024} КБ</b>",
+        "",
+    ]
+    for item in items[:12]:
+        lines.append(
+            f"• <code>{esc(item.name)}</code> — {item.size_human}, {item.age_human}"
+        )
+    if len(items) > 12:
+        lines.append(f"…и ещё {len(items) - 12}")
+    return "\n".join(lines)
+
+
+def _files_menu(kind: str) -> InlineKeyboardMarkup:
+    items = logs.by_kind().get(kind, [])
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"📄 {item.name[:38]} ({item.size_human})",
+                callback_data=f"log:get:{item.name}",
+            )
+        ]
+        for item in items[:15]
+    ]
+    rows.append([
+        InlineKeyboardButton(text="📥 Скачать группой", callback_data=f"log:pack:{kind}"),
+        InlineKeyboardButton(text="🧹 Удалить группу", callback_data=f"log:clear:{kind}"),
+    ])
+    rows.append([InlineKeyboardButton(text="◀️ К журналам", callback_data="log:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# --------------------------------------------------------------------------
+#  Команды
+# --------------------------------------------------------------------------
+
+@router.message(Command("logs"))
+async def cmd_logs(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Журналы доступны только суперадминистратору.")
+        return
+    await message.answer(_overview(), reply_markup=_menu())
+
+
+@router.message(Command("logtail"))
+async def cmd_logtail(message: Message, role: str) -> None:
+    """Последние строки журнала бота прямо в чат — без скачивания файла."""
+    if not roles.is_superadmin(role):
+        return
+    items = logs.by_kind().get("bot", [])
+    if not items:
+        await message.answer("Журнал бота ещё не создан.")
+        return
+
+    parts = (message.text or "").split()
+    try:
+        count = min(200, max(10, int(parts[1]))) if len(parts) > 1 else 60
+    except ValueError:
+        count = 60
+
+    text = logs.tail(items[0], count)
+    for chunk in split_text(f"<pre>{esc(text)}</pre>"):
+        await message.answer(chunk)
+
+
+@router.message(Command("logclear"))
+async def cmd_logclear(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        return
+    removed, freed = logs.purge()
+    await message.answer(
+        f"🧹 Удалено файлов: <b>{removed}</b>, освобождено <b>{freed // 1024} КБ</b>.\n"
+        "<i>Текущий журнал бота сохранён — он открыт на запись.</i>"
+    )
+
+
+# --------------------------------------------------------------------------
+#  Меню
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data == "log:list")
+async def show_logs(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, _overview(), _menu())
+
+
+@router.callback_query(F.data.startswith("log:kind:"))
+async def show_kind(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    kind = call.data.split(":")[2]
+    items = logs.by_kind().get(kind, [])
+    await call.answer()
+    lines = [KIND_TITLES.get(kind, kind), ""]
+    lines += [
+        f"• <code>{esc(item.name)}</code> — {item.size_human}, {item.age_human}"
+        for item in items[:15]
+    ] or ["— пусто —"]
+    await safe_edit(call, "\n".join(lines), _files_menu(kind))
+
+
+@router.callback_query(F.data.startswith("log:get:"))
+async def send_one(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    name = call.data.split(":", 2)[2]
+    item = logs.find(name)
+    if item is None:
+        await call.answer("Файл не найден.", show_alert=True)
+        return
+
+    await call.answer("Готовлю файл…")
+    payload = logs.read_bytes(item)
+    if payload is None:
+        await send_html(call.message.chat.id, "❌ Не удалось прочитать файл.")
+        return
+    await call.message.answer_document(
+        BufferedInputFile(payload, filename=item.name),
+        caption=f"📄 <code>{esc(item.name)}</code> — {item.size_human}",
+        reply_markup=back_kb("log:list", "◀️ К журналам"),
+    )
+
+
+@router.callback_query(F.data.startswith("log:pack:"))
+async def send_group(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    kind = call.data.split(":")[2]
+    await _send_archive(call, {kind})
+
+
+@router.callback_query(F.data == "log:all")
+async def send_all(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await _send_archive(call, None)
+
+
+async def _send_archive(call: CallbackQuery, kinds: set[str] | None) -> None:
+    await call.answer("Собираю архив…")
+    result = logs.archive(kinds)
+    if result is None:
+        await send_html(call.message.chat.id, "Журналов для выгрузки нет.")
+        return
+    payload, filename, count = result
+    await call.message.answer_document(
+        BufferedInputFile(payload, filename=filename),
+        caption=(
+            f"📥 <b>Журналы системы</b>\nФайлов: {count}, "
+            f"размер архива: {len(payload) // 1024} КБ\n\n"
+            "<i>Журналы контейнеров Docker сюда не входят — соберите их "
+            "на сервере: <code>bash ~/radar_bot/collect-logs.sh</code></i>"
+        ),
+        reply_markup=back_kb("log:list", "◀️ К журналам"),
+    )
+
+
+@router.callback_query(F.data == "log:purge")
+async def confirm_purge(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Удалить", callback_data="log:purgeok"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="log:list"),
+            ]
+        ]
+    )
+    await safe_edit(
+        call,
+        "🧹 <b>Очистка журналов</b>\n\nБудут удалены все файлы, кроме текущего "
+        "журнала бота — он открыт на запись.\n\nПродолжить?",
+        kb,
+    )
+
+
+@router.callback_query(F.data == "log:purgeok")
+async def do_purge(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    removed, freed = logs.purge()
+    await call.answer(f"Удалено файлов: {removed}")
+    await safe_edit(
+        call,
+        f"🧹 Удалено: <b>{removed}</b>, освобождено <b>{freed // 1024} КБ</b>.\n\n"
+        + _overview(),
+        _menu(),
+    )
+
+
+@router.callback_query(F.data.startswith("log:clear:"))
+async def clear_kind(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    kind = call.data.split(":")[2]
+    removed, freed = logs.purge({kind})
+    await call.answer(f"Удалено файлов: {removed}")
+    await safe_edit(call, _overview(), _menu())
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_44'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_46'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -8623,8 +9235,63 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_44
+RADAR_FILE_46
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
+
+# Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
+# недоступны: чтобы их читать, ему пришлось бы дать доступ к сокету Docker,
+# а это фактически полный доступ к серверу.
+cat > "$APP_DIR/collect-logs.sh" <<'RADAR_COLLECT_EOF'
+#!/usr/bin/env bash
+# Собирает все журналы системы «Радар» в один архив.
+#   bash collect-logs.sh            # архив в текущем каталоге
+#   bash collect-logs.sh /tmp       # архив в указанном каталоге
+set -Eeuo pipefail
+
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+OUT_DIR="${1:-$APP_DIR}"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+STAGE="$(mktemp -d)"
+ARCHIVE="$OUT_DIR/radar-all-logs-$STAMP.tar.gz"
+
+trap 'rm -rf "$STAGE"' EXIT
+
+echo "Собираю журналы..."
+
+mkdir -p "$STAGE/installer" "$STAGE/bot" "$STAGE/docker"
+cp "$APP_DIR"/data/logs/installer_log_*.txt "$STAGE/installer/" 2>/dev/null || true
+cp "$APP_DIR"/data/logs/bot.log* "$STAGE/bot/" 2>/dev/null || true
+
+for container in radar_container radar_db; do
+    if docker inspect "$container" >/dev/null 2>&1; then
+        docker logs --tail 3000 "$container" > "$STAGE/docker/$container.log" 2>&1 || true
+        docker inspect "$container" > "$STAGE/docker/$container.inspect.json" 2>/dev/null || true
+        echo "  + $container"
+    fi
+done
+
+{
+    echo "Система «Радар»"
+    echo "Собрано: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    echo "Хост: $(hostname) · $(uname -srm)"
+    echo
+    echo "--- контейнеры ---"
+    docker ps -a --filter name=radar --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null || true
+    echo
+    echo "--- ресурсы ---"
+    free -m 2>/dev/null | head -2 || true
+    df -h "$APP_DIR" 2>/dev/null | tail -1 || true
+    echo
+    echo "--- настройки (без секретов) ---"
+    grep -vE 'TOKEN|KEY|PASSWORD|SECRET' "$APP_DIR/.env" 2>/dev/null || true
+} > "$STAGE/summary.txt"
+
+tar -czf "$ARCHIVE" -C "$STAGE" .
+echo "Готово: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+echo "Секреты из .env в архив не попадают."
+RADAR_COLLECT_EOF
+chmod +x "$APP_DIR/collect-logs.sh"
+ok "Сборщик журналов: $APP_DIR/collect-logs.sh"
 
 # --------------------------------------------------------------------------
 #  Шаг 6. Настройки
@@ -8715,6 +9382,9 @@ MAX_LOCATIONS=0
 EXTRA_CHANNELS=
 EXTRA_RSS=
 LOG_LEVEL=INFO
+LOG_DIR=data/logs
+LOG_KEEP_DAYS=14
+LOG_MAX_MB=5
 PROMO_ENABLED=1
 PROMO_TITLE=🐙 HydraSite
 PROMO_URL=https://t.me/+WWJFBZVhxBs4ZmNi
@@ -8866,7 +9536,7 @@ step "Проверка системы до запуска бота"
 info "Запускаю диагностику внутри контейнера"
 DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
 set +e
-$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python tools/doctor.py \
+$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor \
     > "$DOCTOR_OUT" 2>&1
 DOCTOR_CODE=$?
 set -e
@@ -8993,7 +9663,8 @@ printf "    Логи бота     docker logs -f %s\n" "$CONTAINER_NAME"
 printf "    Логи базы     docker logs -f radar_db\n"
 printf "    Перезапуск    cd %s && %s restart\n" "$APP_DIR" "$COMPOSE"
 printf "    Остановка     cd %s && %s down\n" "$APP_DIR" "$COMPOSE"
-printf "    Копия базы    docker exec radar_db pg_dump -U radar radar | gzip > radar-\$(date +%%F).sql.gz\n"
+printf "    Все журналы   bash %s/collect-logs.sh\n" "$APP_DIR"
+printf "    Журналы в боте  /logs · /logtail · /logclear %s(суперадминистратор)%s\n" "$C_DIM" "$C_RESET"
 echo
 printf "  %sЖурнал установки: %s%s\n" "$C_DIM" "$LOG_FILE" "$C_RESET"
 echo

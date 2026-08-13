@@ -18,10 +18,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py alembic.ini ./
+# Диагностика лежит внутри пакета: tools/ исключён из контекста сборки
 COPY radar ./radar
 COPY migrations ./migrations
-# Диагностика запускается внутри контейнера перед стартом бота
-COPY tools/doctor.py ./tools/doctor.py
 
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app
 USER radar

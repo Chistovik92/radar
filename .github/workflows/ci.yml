@@ -27,6 +27,9 @@ jobs:
       - name: Неопределённые имена
         run: python tools/lint_undefined.py
 
+      - name: Dockerfile согласован с .dockerignore
+        run: python tools/lint_docker.py
+
       - name: Подпись автора на месте
         run: python tools/stamp_headers.py --check
 

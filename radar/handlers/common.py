@@ -110,6 +110,11 @@ async def cmd_help(message: Message, role: str) -> None:
         lines.append("/quota — расход квоты Gemini")
     if roles.is_admin(role):
         lines.append("/stats — статистика системы - /models — модели Gemini")
+    if roles.is_superadmin(role):
+        lines.append(
+            "/features — возможности системы\n"
+            "/logs — журналы - /logtail — последние строки - /logclear — очистить"
+        )
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
 

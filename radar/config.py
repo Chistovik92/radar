@@ -140,6 +140,11 @@ MAX_WEBHOOK_URL: str = (os.getenv("MAX_WEBHOOK_URL") or "").strip()
 MAX_WEBHOOK_PORT: int = _int("MAX_WEBHOOK_PORT", 8081)
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
+# Каталог журналов. Лежит внутри data/, чтобы его видели и бот, и хост:
+# только так бот может отдавать журналы установки и свои собственные.
+LOG_DIR: str = (os.getenv("LOG_DIR") or "data/logs").strip()
+LOG_KEEP_DAYS: int = max(0, _int("LOG_KEEP_DAYS", 14))
+LOG_MAX_MB: int = max(1, _int("LOG_MAX_MB", 5))
 USER_AGENT: str = (
     os.getenv("USER_AGENT") or f"RadarBot/{VERSION} (+https://github.com/Chistovik92/radar)"
 ).strip()
@@ -152,10 +157,32 @@ AI_ENABLED: bool = bool(GEMINI_API_KEY)
 
 
 def setup_logging() -> logging.Logger:
-    logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL, logging.INFO),
-        format="%(asctime)s | %(levelname)-8s | %(name)-16s | %(message)s",
-    )
+    """Логи одновременно в консоль (docker logs) и в файл внутри data/logs."""
+    import logging.handlers
+
+    level = getattr(logging, LOG_LEVEL, logging.INFO)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)-16s | %(message)s")
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        path = os.path.join(LOG_DIR, "bot.log")
+        rotating = logging.handlers.RotatingFileHandler(
+            path, maxBytes=LOG_MAX_MB * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        rotating.setFormatter(fmt)
+        root.addHandler(rotating)
+    except OSError as exc:  # noqa: BLE001
+        root.warning("Журнал в файл недоступен (%s) — пишу только в консоль", exc)
+
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     # Alembic на старте печатает десятки строк о загрузке плагинов —
