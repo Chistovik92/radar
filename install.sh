@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.3 — автономный установщик.
+# Система «Радар» v4.0.4 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -24,7 +24,7 @@
 
 set -Eeuo pipefail
 
-VERSION="4.0.3"
+VERSION="4.0.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -619,11 +619,16 @@ def upgrade_schema() -> None:
 async def prepare_database() -> None:
     """Готовит базу: ждёт готовности, накатывает схему, переносит старые данные."""
     await db_engine.wait_ready()
+    log.info("Применяю миграции схемы (на слабом железе это до нескольких минут)")
     await asyncio.to_thread(upgrade_schema)
     log.info("Схема базы актуальна")
     if await importer.is_empty():
         log.info("База пуста — переношу данные прежней версии")
-        await importer.run()
+        counters = await importer.run()
+        log.info(
+            "Перенос завершён: пользователей %d, локаций %d",
+            counters.get("users", 0), counters.get("locations", 0),
+        )
     await storage.load()
     features.apply(await repo.load_features())
     active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
@@ -706,7 +711,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.3"
+__version__ = "4.0.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -861,6 +866,11 @@ def setup_logging() -> logging.Logger:
     )
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    # Alembic на старте печатает десятки строк о загрузке плагинов —
+    # в них тонет всё, что действительно важно при диагностике запуска.
+    logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
+    logging.getLogger("alembic.autogenerate").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     return logging.getLogger("radar")
 
 
@@ -8011,57 +8021,60 @@ else
     warn "База не ответила за 90 секунд — смотрите: docker logs radar_db"
 fi
 
-info "Жду запуска бота"
+# Первый запуск включает миграции Alembic, перенос данных и геокодирование —
+# на слабом железе это занимает минуты, а не секунды.
+info "Жду запуска бота (первый запуск — до 10 минут)"
+
 BOT_OK=false
-for _ in $(seq 1 45); do
+BOT_DEAD=false
+LAST_STAGE=""
+WAIT_LIMIT=300      # циклов по 2 секунды
+
+for tick in $(seq 1 "$WAIT_LIMIT"); do
     state="$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo нет)"
-    if [ "$state" = "running" ]; then
-        if docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Run polling"; then
-            BOT_OK=true
-            break
+    snapshot="$(docker logs "$CONTAINER_NAME" 2>&1 || true)"
+
+    # Показываем этапы по мере прохождения, чтобы ожидание не было немым
+    for stage in "База загружена:загрузка данных" \
+                 "Схема базы актуальна:схема базы готова" \
+                 "Перенос завершён:данные перенесены" \
+                 "Адреса дозаполнены:адреса уточнены" \
+                 "Run polling:подключение к Telegram"; do
+        marker="${stage%%:*}"
+        title="${stage#*:}"
+        if printf '%s' "$snapshot" | grep -q "$marker"; then
+            if [ "$LAST_STAGE" != "$title" ]; then
+                LAST_STAGE="$title"
+                info "· $title"
+            fi
         fi
-    fi
-    if [ "$state" = "exited" ]; then
+    done
+
+    if printf '%s' "$snapshot" | grep -q "Run polling"; then
+        BOT_OK=true
         break
+    fi
+
+    if [ "$state" = "exited" ] || [ "$state" = "dead" ]; then
+        BOT_DEAD=true
+        break
+    fi
+
+    # Фатальные причины: ждать дальше бессмысленно
+    if printf '%s' "$snapshot" | grep -qi "отклонил подключение\|Unauthorized\|Ошибка конфигурации"; then
+        BOT_DEAD=true
+        break
+    fi
+
+    # Каждые две минуты напоминаем, что процесс идёт
+    if [ $((tick % 60)) -eq 0 ]; then
+        info "· всё ещё работаю, прошло $((tick * 2 / 60)) мин"
     fi
     sleep 2
 done
 
 log_raw "--- лог бота после запуска ---"
-docker logs --tail 80 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
-
-if [ "$BOT_OK" != true ]; then
-    fail "Бот не вышел в рабочий режим"
-
-    BOT_LOG="$(docker logs --tail 200 "$CONTAINER_NAME" 2>&1 || true)"
-    if printf '%s' "$BOT_LOG" | grep -qi "отклонил подключение\|password authentication failed"; then
-        echo
-        warn "Причина: PostgreSQL не принимает пароль из .env"
-        printf "    Пересоздайте базу и повторите установку:\n"
-        printf "      cd %s && docker compose down\n" "$APP_DIR"
-        printf "      mv data/postgres data/postgres.old\n"
-        printf "      bash <(curl -fsSL %s)\n" \
-            "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
-    elif printf '%s' "$BOT_LOG" | grep -qi "Unauthorized\|token is invalid"; then
-        echo
-        warn "Причина: Telegram отклонил токен бота"
-        printf "    Проверьте BOT_TOKEN в %s/.env\n" "$APP_DIR"
-    elif printf '%s' "$BOT_LOG" | grep -qi "не ответил за"; then
-        echo
-        warn "Причина: PostgreSQL не поднялся вовремя"
-        printf "    Логи базы: docker logs --tail 40 radar_db\n"
-    fi
-    echo
-    printf "  %sПоследние строки лога:%s\n" "$C_DIM" "$C_RESET"
-    docker logs --tail 25 "$CONTAINER_NAME" 2>&1 | sed 's/^/    /' || true
-    echo
-    if [ "$FORCE_REINSTALL" != true ]; then
-        printf "  Попробуйте полную переустановку:\n"
-        printf "    bash <(curl -fsSL %s) --reinstall\n" \
-            "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
-    fi
-    die "Запуск не удался. Полный лог: $LOG_FILE"
-fi
+docker logs --tail 120 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
 
 ok "Бот вышел в рабочий режим"
 

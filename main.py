@@ -107,11 +107,16 @@ def upgrade_schema() -> None:
 async def prepare_database() -> None:
     """Готовит базу: ждёт готовности, накатывает схему, переносит старые данные."""
     await db_engine.wait_ready()
+    log.info("Применяю миграции схемы (на слабом железе это до нескольких минут)")
     await asyncio.to_thread(upgrade_schema)
     log.info("Схема базы актуальна")
     if await importer.is_empty():
         log.info("База пуста — переношу данные прежней версии")
-        await importer.run()
+        counters = await importer.run()
+        log.info(
+            "Перенос завершён: пользователей %d, локаций %d",
+            counters.get("users", 0), counters.get("locations", 0),
+        )
     await storage.load()
     features.apply(await repo.load_features())
     active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))

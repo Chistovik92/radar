@@ -142,6 +142,11 @@ def setup_logging() -> logging.Logger:
     )
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    # Alembic на старте печатает десятки строк о загрузке плагинов —
+    # в них тонет всё, что действительно важно при диагностике запуска.
+    logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
+    logging.getLogger("alembic.autogenerate").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     return logging.getLogger("radar")
 
 
