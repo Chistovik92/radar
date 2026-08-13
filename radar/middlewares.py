@@ -1,5 +1,11 @@
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import logging
@@ -13,7 +19,6 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 from . import storage
 
 log = logging.getLogger("radar.access")
-
 
 class AccessMiddleware(BaseMiddleware):
     """Пропускает только зарегистрированных; по /start join регистрирует нового."""

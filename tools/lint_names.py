@@ -8,6 +8,12 @@
     python3 tools/lint_names.py
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import ast
@@ -16,7 +22,6 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGE = "radar"
-
 
 def public_names(tree: ast.Module) -> set[str]:
     names: set[str] = set()

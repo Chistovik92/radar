@@ -1,4 +1,8 @@
-"""Слой базы данных: модели, подключение, репозиторий."""
+"""Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя.
+
+Автор: SecretHero · https://github.com/Chistovik92/radar
+Лицензия: GPL-3.0
+"""
 
 # --------------------------------------------------------------------------
 # Система «Радар» — мониторинг городских угроз и аварий ЖКХ
@@ -6,12 +10,11 @@
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-from __future__ import annotations
+__version__ = "4.0.1"
+__author__ = "SecretHero"
+__license__ = "GPL-3.0"
+__url__ = "https://github.com/Chistovik92/radar"
 
-from .engine import dispose, engine, session, session_factory, wait_ready
-from .models import Base, Delivery, Event, Location, Meta, Source, User
+SIGNATURE = f"Система «Радар» v{__version__} · автор {__author__} · {__url__}"
 
-__all__ = [
-    "Base", "Delivery", "Event", "Location", "Meta", "Source", "User",
-    "dispose", "engine", "session", "session_factory", "wait_ready",
-]
+__all__ = ["__version__", "__author__", "__license__", "__url__", "SIGNATURE"]

@@ -24,6 +24,9 @@ jobs:
       - name: Сверка перекрёстных имён
         run: python tools/lint_names.py
 
+      - name: Неопределённые имена
+        run: python tools/lint_undefined.py
+
       - name: Подпись автора на месте
         run: python tools/stamp_headers.py --check
 

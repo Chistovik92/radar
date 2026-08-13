@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Выбор модели, автопереключение при 404 и различия поколений Gemini."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +23,6 @@ import stubcheck  # noqa: E402
 stubcheck.install()
 
 from radar import ai  # noqa: E402
-
 
 def run(coro):
     return asyncio.run(coro)

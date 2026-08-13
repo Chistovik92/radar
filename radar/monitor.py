@@ -1,5 +1,11 @@
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +25,6 @@ log = logging.getLogger("radar.monitor")
 
 seen = sources.SeenStore()
 _stats = {"cycles": 0, "items": 0, "alerts": 0, "last_cycle": 0}
-
 
 def stats() -> dict[str, Any]:
     return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())

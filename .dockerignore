@@ -9,3 +9,6 @@ install.sh
 LICENSE
 __pycache__
 *.pyc
+
+# стенд сравнения провайдеров не нужен в образе
+bench

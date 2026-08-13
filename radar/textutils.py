@@ -4,6 +4,12 @@
 без установленного aiogram/aiohttp/google-genai.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import html
@@ -23,7 +29,6 @@ _BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
 _ITALIC = re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])")
 _HEADER = re.compile(r"(?m)^\s{0,3}#{1,6}\s*(.+)$")
 _TAG = re.compile(r"<[^>]+>")
-
 
 def esc(text: Any) -> str:
     """Экранирует текст для Telegram-HTML."""

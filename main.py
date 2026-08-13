@@ -19,7 +19,9 @@ from radar import config
 log = config.setup_logging()
 config.validate()
 
-from radar import ai, handlers, monitor, roles, storage  # noqa: E402
+from radar import ai, features, handlers, monitor, roles, storage  # noqa: E402
+from radar.db import engine as db_engine  # noqa: E402
+from radar.db import importer, repo  # noqa: E402
 from radar.middlewares import AccessMiddleware  # noqa: E402
 from radar.tg import bot, dp, send_html  # noqa: E402
 
@@ -165,3 +167,12 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+    except Exception:  # noqa: BLE001
+        # Без этого контейнер уходит в бесконечный цикл рестартов, а причина
+        # теряется среди одинаковых трейсбеков.
+        log.critical("Критический сбой при запуске", exc_info=True)
+        log.critical(
+            "Проверьте .env (DB_PASSWORD без символа $), доступность базы "
+            "и логи radar_db: docker logs --tail 40 radar_db"
+        )
+        raise SystemExit(1)

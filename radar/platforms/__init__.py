@@ -1,4 +1,4 @@
-"""Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
+"""Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
 # Система «Радар» — мониторинг городских угроз и аварий ЖКХ
@@ -8,19 +8,15 @@
 
 from __future__ import annotations
 
-from aiogram import Dispatcher
+from .base import (
+    Button,
+    EventKind,
+    InboundEvent,
+    Keyboard,
+    OutboundMessage,
+    Transport,
+)
 
-from . import assistant, common, features, locations, settings, sources, users
-
-def setup(dp: Dispatcher) -> None:
-    dp.include_router(common.router)
-    dp.include_router(locations.router)
-    dp.include_router(settings.router)
-    dp.include_router(sources.router)
-    dp.include_router(users.router)
-    dp.include_router(features.router)
-    # Ассистент перехватывает любой оставшийся текст — только в самом конце.
-    dp.include_router(assistant.router)
-
-
-__all__ = ["setup"]
+__all__ = [
+    "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
+]

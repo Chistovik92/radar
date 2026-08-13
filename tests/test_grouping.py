@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Проверка правил группировки оповещений."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import os
@@ -12,7 +18,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from radar.matching import Analysis, plan_alerts  # noqa: E402
 
 ALL_ON = {"jkh": True, "bpla": True, "mchs": True, "whitelist": True}
-
 
 def loc(name, lat, lon, city="Саратов", street="", house=""):
     return {

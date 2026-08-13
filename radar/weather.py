@@ -9,6 +9,12 @@
 Почасовая часть выводится моноширинным блоком — иначе колонки разъезжаются.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import logging
@@ -55,7 +61,6 @@ CODES: dict[int, tuple[str, str, str]] = {
 
 SPARK = "▁▂▃▄▅▆▇█"
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
-
 
 def describe(code: int | None, day: bool = True) -> tuple[str, str]:
     name, icon_day, icon_night = CODES.get(int(code) if code is not None else -1,

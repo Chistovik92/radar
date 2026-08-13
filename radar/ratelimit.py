@@ -6,6 +6,12 @@
 по тихоокеанскому времени — так, как это делает Google.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +25,6 @@ log = logging.getLogger("radar.ratelimit")
 # Тихоокеанское время: UTC-8 зимой, UTC-7 летом. Для суточной границы
 # достаточно приблизительного смещения.
 _PACIFIC_OFFSET = timedelta(hours=-8)
-
 
 def pacific_day() -> str:
     return (datetime.now(timezone.utc) + _PACIFIC_OFFSET).strftime("%Y-%m-%d")

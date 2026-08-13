@@ -4,6 +4,12 @@
 Запуск:  python3 -m unittest discover -s tests -v
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import os
@@ -32,7 +38,6 @@ from radar.textutils import (  # noqa: E402
     split_text,
     street_matches,
 )
-
 
 def loc(name, lat=51.533, lon=46.034, **kw):
     base = {

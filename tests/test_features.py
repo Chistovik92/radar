@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Обмен источниками, оформление погоды и предупреждение о «белых списках»."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import json
@@ -20,7 +26,6 @@ from radar.matching import (  # noqa: E402
 )
 
 ALL_ON = {"jkh": True, "bpla": True, "mchs": True, "whitelist": True}
-
 
 def loc(name, lat=51.533, lon=46.034, city="Саратов"):
     return {"id": name, "name": name, "lat": lat, "lon": lon, "city": city,

@@ -117,9 +117,10 @@ if [ "$RECREATE_ENV" = true ]; then
     ask "  Токен Telegram-бота (@BotFather): " IN_TOKEN '^[0-9]{6,}:[A-Za-z0-9_-]{30,}$' yes
     ask "  Ваш Telegram ID (@userinfobot): " IN_ADMIN '^[0-9]{5,}$' yes
     ask "  Ключ Google Gemini (Enter — без ИИ): " IN_GEMINI '^.{20,}$' no
-    ask "  Пароль базы данных (Enter — сгенерировать): " IN_DBPASS '^.{8,}$' no
+    # Символ $ недопустим: Docker Compose раскроет его как переменную
+    ask "  Пароль базы данных (Enter — сгенерировать): " IN_DBPASS '^[^$]{8,}$' no
     if [ -z "${IN_DBPASS:-}" ]; then
-        IN_DBPASS="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)"
+        IN_DBPASS="$(head -c 32 /dev/urandom | base64 | tr -d '/+=$' | head -c 24)"
         echo "  Сгенерирован пароль базы: $IN_DBPASS"
     fi
     ask "  Часовой пояс [Europe/Saratov]: " IN_TZ '^[A-Za-z]+/[A-Za-z_+-]+$' no

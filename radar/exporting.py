@@ -11,6 +11,12 @@
   или список каналов текстом — так можно перенести настройки из версий 2.x.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import json
@@ -25,7 +31,6 @@ SCHEMA = 1
 CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 URL_RE = re.compile(r"^https?://", re.I)
 TELEGRAM_RE = re.compile(r"^(https?://)?(www\.)?(t\.me|telegram\.me)/", re.I)
-
 
 def is_feed_url(value: str) -> bool:
     """Ссылка на ленту, а не на Telegram-канал."""

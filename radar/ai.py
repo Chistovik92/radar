@@ -22,6 +22,12 @@ Google выводит модели из обращения быстрее объ
   4. учёт RPM/RPD с резервом суточных запросов под живой диалог.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import asyncio
@@ -87,7 +93,6 @@ _CANDIDATES: dict[str, list[str]] = {
         "gemini-2.5-flash",
     ],
 }
-
 
 def _dedup(names: Sequence[str]) -> list[str]:
     seen: set[str] = set()

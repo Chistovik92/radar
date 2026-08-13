@@ -153,6 +153,14 @@ def validate() -> None:
         problems.append("BOT_TOKEN не задан")
     if not DATABASE_URL and not DB_PASSWORD:
         problems.append("DB_PASSWORD не задан (или задайте DATABASE_URL целиком)")
+    elif "$" in DB_PASSWORD:
+        # Docker Compose раскрывает $ в env_file как подстановку переменной,
+        # и до PostgreSQL доедет искажённый пароль.
+        problems.append(
+            "DB_PASSWORD содержит символ $ — Docker Compose трактует его как "
+            "подстановку переменной. Замените пароль на строку без $ "
+            "(например: head -c 24 /dev/urandom | base64 | tr -d '/+=$')"
+        )
     if not SUPERADMIN_ID:
         problems.append("SUPERADMIN_ID не задан или равен 0")
     if problems:

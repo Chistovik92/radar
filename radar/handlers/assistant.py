@@ -3,6 +3,12 @@
 Роутер подключается последним: перехватывает любой необработанный текст.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import logging
@@ -24,7 +30,6 @@ router = Router(name="assistant")
 
 MAX_HISTORY = 8
 _history: dict[str, deque] = {}
-
 
 def history_of(uid: str) -> deque:
     if uid not in _history:

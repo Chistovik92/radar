@@ -1,5 +1,11 @@
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 from typing import Any
@@ -15,7 +21,6 @@ from ..textutils import cluster_center, cluster_locations, esc, haversine_m
 from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="locations")
-
 
 def _session() -> aiohttp.ClientSession:
     return aiohttp.ClientSession(

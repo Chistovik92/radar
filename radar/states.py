@@ -1,9 +1,14 @@
 """Состояния FSM."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 from aiogram.fsm.state import State, StatesGroup
-
 
 class Form(StatesGroup):
     suggest_source = State()

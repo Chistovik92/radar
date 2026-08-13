@@ -1,5 +1,11 @@
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import re
@@ -16,7 +22,6 @@ from ..tg import back_kb, safe_edit
 router = Router(name="sources")
 
 CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
-
 
 def normalize_channel(raw: str) -> str:
     value = raw.strip()

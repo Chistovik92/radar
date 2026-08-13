@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Тесты учёта квот Gemini."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +17,6 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from radar.ratelimit import QuotaExceeded, RateLimiter, pacific_day  # noqa: E402
-
 
 def run(coro):
     return asyncio.run(coro)

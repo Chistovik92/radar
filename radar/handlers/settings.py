@@ -1,5 +1,11 @@
 """Настройки: категории оповещений и режим отправки погоды."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import re
@@ -16,7 +22,6 @@ from ..states import Form
 from ..tg import back_kb, safe_edit
 
 router = Router(name="settings")
-
 
 @router.callback_query(F.data.startswith("set:toggle:"))
 async def toggle_category(call: CallbackQuery, user: dict[str, Any], role: str) -> None:

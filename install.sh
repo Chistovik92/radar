@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.0 — автономный установщик.
+# Система «Радар» v4.0.1 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -22,7 +22,7 @@
 
 set -Eeuo pipefail
 
-VERSION="4.0.0"
+VERSION="4.0.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -267,7 +267,9 @@ from radar import config
 log = config.setup_logging()
 config.validate()
 
-from radar import ai, handlers, monitor, roles, storage  # noqa: E402
+from radar import ai, features, handlers, monitor, roles, storage  # noqa: E402
+from radar.db import engine as db_engine  # noqa: E402
+from radar.db import importer, repo  # noqa: E402
 from radar.middlewares import AccessMiddleware  # noqa: E402
 from radar.tg import bot, dp, send_html  # noqa: E402
 
@@ -413,6 +415,15 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+    except Exception:  # noqa: BLE001
+        # Без этого контейнер уходит в бесконечный цикл рестартов, а причина
+        # теряется среди одинаковых трейсбеков.
+        log.critical("Критический сбой при запуске", exc_info=True)
+        log.critical(
+            "Проверьте .env (DB_PASSWORD без символа $), доступность базы "
+            "и логи radar_db: docker logs --tail 40 radar_db"
+        )
+        raise SystemExit(1)
 RADAR_FILE_05
 printf "  %s\n" "radar/__init__.py"
 cat > "radar/__init__.py" <<'RADAR_FILE_06'
@@ -428,7 +439,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.0"
+__version__ = "4.0.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -594,6 +605,14 @@ def validate() -> None:
         problems.append("BOT_TOKEN не задан")
     if not DATABASE_URL and not DB_PASSWORD:
         problems.append("DB_PASSWORD не задан (или задайте DATABASE_URL целиком)")
+    elif "$" in DB_PASSWORD:
+        # Docker Compose раскрывает $ в env_file как подстановку переменной,
+        # и до PostgreSQL доедет искажённый пароль.
+        problems.append(
+            "DB_PASSWORD содержит символ $ — Docker Compose трактует его как "
+            "подстановку переменной. Замените пароль на строку без $ "
+            "(например: head -c 24 /dev/urandom | base64 | tr -d '/+=$')"
+        )
     if not SUPERADMIN_ID:
         problems.append("SUPERADMIN_ID не задан или равен 0")
     if problems:
@@ -7487,9 +7506,10 @@ if [ "$RECREATE_ENV" = true ]; then
     ask "  Токен Telegram-бота (@BotFather): " IN_TOKEN '^[0-9]{6,}:[A-Za-z0-9_-]{30,}$' yes
     ask "  Ваш Telegram ID (@userinfobot): " IN_ADMIN '^[0-9]{5,}$' yes
     ask "  Ключ Google Gemini (Enter — без ИИ): " IN_GEMINI '^.{20,}$' no
-    ask "  Пароль базы данных (Enter — сгенерировать): " IN_DBPASS '^.{8,}$' no
+    # Символ $ недопустим: Docker Compose раскроет его как переменную
+    ask "  Пароль базы данных (Enter — сгенерировать): " IN_DBPASS '^[^$]{8,}$' no
     if [ -z "${IN_DBPASS:-}" ]; then
-        IN_DBPASS="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)"
+        IN_DBPASS="$(head -c 32 /dev/urandom | base64 | tr -d '/+=$' | head -c 24)"
         echo "  Сгенерирован пароль базы: $IN_DBPASS"
     fi
     ask "  Часовой пояс [Europe/Saratov]: " IN_TZ '^[A-Za-z]+/[A-Za-z_+-]+$' no

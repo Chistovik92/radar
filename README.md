@@ -1,4 +1,4 @@
-# Система «Радар» v4.0.0
+# Система «Радар» v4.0.1
 
 Telegram-бот, который следит за городскими угрозами и авариями ЖКХ по вашим адресам.
 Сообщения публичных каналов служб ЖКХ, МЧС, администраций города, района и области,
@@ -23,7 +23,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/insta
 
 ```bash
 git clone https://github.com/Chistovik92/radar.git && cd radar
-cp .env.example .env && nano .env      # обязательно задайте DB_PASSWORD
+cp .env.example .env && nano .env      # задайте DB_PASSWORD (без символа $)
 docker compose up -d --build
 ```
 
@@ -240,6 +240,7 @@ python3 tools/build_installer.py
 python3 -m unittest discover -s tests -v   # 164 теста
 python3 tools/stubcheck.py                 # импорт всех модулей
 python3 tools/lint_names.py                # сверка имён
+python3 tools/lint_undefined.py            # неопределённые имена
 bash -n install.sh                         # синтаксис установщика
 ```
 

@@ -1,5 +1,11 @@
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import hashlib
@@ -19,7 +25,6 @@ log = logging.getLogger("radar.sources")
 
 _TAGS = re.compile(r"<[^>]+>")
 _SPACES = re.compile(r"[ \t\u00a0]+")
-
 
 @dataclass(frozen=True)
 class Item:

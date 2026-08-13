@@ -15,6 +15,12 @@ RSS — обычным запросом с разбором даты после�
 работать и ничего не сообщает, просто получает меньше новостей.
 """
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import argparse
@@ -45,7 +51,6 @@ from radar import presets  # noqa: E402
 
 USER_AGENT = "RadarSourceChecker/1.0 (+https://github.com/Chistovik92/radar)"
 STALE_DAYS = 14
-
 
 def _age(moment: datetime | None) -> str:
     if moment is None:

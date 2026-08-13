@@ -1,5 +1,11 @@
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +22,6 @@ log = logging.getLogger("radar.geocode")
 _URL = "https://nominatim.openstreetmap.org/reverse"
 _gate = asyncio.Lock()
 _last_call = 0.0
-
 
 async def _throttle() -> None:
     global _last_call
