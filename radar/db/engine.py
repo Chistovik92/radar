@@ -20,6 +20,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from .. import config
@@ -33,14 +34,35 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine, _session_factory
     if _engine is None:
-        _engine = create_async_engine(
-            config.database_url(),
-            echo=config.DB_ECHO,
-            pool_size=config.DB_POOL_SIZE,
-            max_overflow=config.DB_MAX_OVERFLOW,
-            pool_pre_ping=True,
-            pool_recycle=1800,
-        )
+        url = config.database_url()
+        if config.is_sqlite():
+            # У SQLite нет сетевого пула: соединение одно, поэтому pool_size
+            # неприменим. WAL и увеличенный таймаут снимают блокировки при
+            # одновременной записи из фонового цикла и обработчиков.
+            _engine = create_async_engine(
+                url,
+                echo=config.DB_ECHO,
+                connect_args={"timeout": 30},
+            )
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _tune_sqlite(dbapi_connection, _record):  # noqa: ANN001
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA cache_size=-8000")   # 8 МБ, экономно
+                cursor.close()
+        else:
+            _engine = create_async_engine(
+                url,
+                echo=config.DB_ECHO,
+                pool_size=config.DB_POOL_SIZE,
+                max_overflow=config.DB_MAX_OVERFLOW,
+                pool_pre_ping=True,
+                pool_recycle=1800,
+            )
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 
@@ -93,6 +115,13 @@ async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
     подняться или пароль не подошёл.
     """
     from sqlalchemy import text
+
+    if config.is_sqlite():
+        # Файловая база готова сразу: ждать нечего.
+        async with get_engine().connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        log.info("База SQLite готова: %s", config.DB_FILE)
+        return
 
     last: Exception | None = None
     for attempt in range(1, attempts + 1):

@@ -61,7 +61,14 @@ AI_SEARCH: bool = (os.getenv("AI_SEARCH") or "1").strip().lower() not in ("0", "
 
 DATA_FILE: str = (os.getenv("DATA_FILE") or "data/db.json").strip()
 
-# --- PostgreSQL ---
+# --- база данных ---
+# sqlite — по умолчанию: файл рядом с ботом, без отдельного контейнера,
+# без пароля и без ожидания готовности. Проверено как единственный вариант,
+# уверенно работающий на одноплатнике с 1–2 ГБ памяти.
+# postgres — когда бот переезжает на машину помощнее.
+DB_BACKEND: str = (os.getenv("DB_BACKEND") or "sqlite").strip().lower()
+DB_FILE: str = (os.getenv("DB_FILE") or "data/radar.db").strip()
+
 DB_HOST: str = (os.getenv("DB_HOST") or "postgres").strip()
 DB_PORT: int = _int("DB_PORT", 5432)
 DB_NAME: str = (os.getenv("DB_NAME") or "radar").strip()
@@ -75,9 +82,18 @@ DB_ECHO: bool = (os.getenv("DB_ECHO") or "0").strip().lower() in ("1", "true", "
 EVENT_RETENTION_DAYS: int = max(0, _int("EVENT_RETENTION_DAYS", 180))
 
 
+def is_sqlite() -> bool:
+    return DB_BACKEND == "sqlite" and not DATABASE_URL
+
+
 def database_url(async_driver: bool = True) -> str:
     """Строка подключения. DATABASE_URL имеет приоритет над отдельными полями."""
     from urllib.parse import quote_plus
+
+    if is_sqlite():
+        path = os.path.abspath(DB_FILE)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        return f"sqlite+aiosqlite:///{path}" if async_driver else f"sqlite:///{path}"
 
     driver = "postgresql+asyncpg" if async_driver else "postgresql+psycopg2"
     if DATABASE_URL:
@@ -156,9 +172,9 @@ def validate() -> None:
     problems = []
     if not BOT_TOKEN:
         problems.append("BOT_TOKEN не задан")
-    if not DATABASE_URL and not DB_PASSWORD:
+    if not is_sqlite() and not DATABASE_URL and not DB_PASSWORD:
         problems.append("DB_PASSWORD не задан (или задайте DATABASE_URL целиком)")
-    elif "$" in DB_PASSWORD:
+    elif DB_PASSWORD and "$" in DB_PASSWORD:
         # Docker Compose раскрывает $ в env_file как подстановку переменной,
         # и до PostgreSQL доедет искажённый пароль.
         problems.append(

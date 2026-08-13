@@ -30,7 +30,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.dialects.postgresql import insert
 
 from .. import config
 from ..matching import CATEGORY_TITLES
@@ -175,7 +174,13 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         await active.flush()
         user_id = row.id
 
-        existing = {item.public_id: item for item in row.locations}
+        # Локации читаем запросом, а не через row.locations: обращение
+        # к отношению у уже сохранённого объекта запускает ленивую подгрузку,
+        # а она в async-контексте падает с MissingGreenlet.
+        current = (
+            await active.scalars(select(Location).where(Location.user_id == user_id))
+        ).all()
+        existing = {item.public_id: item for item in current}
         wanted = {item["id"]: item for item in (data.get("locs") or [])}
 
         for public_id, item in wanted.items():
@@ -235,16 +240,18 @@ async def load_sources() -> tuple[list[str], list[str], list[str], list[str]]:
 async def upsert_source(
     kind: str, ref: str, *, pending: bool = False, added_by: int = 0, city: str = ""
 ) -> None:
+    # Без диалектного ON CONFLICT: одинаково работает в SQLite и PostgreSQL.
     async with session() as active:
-        statement = (
-            insert(Source)
-            .values(kind=kind, ref=ref, pending=pending, added_by=added_by, city=city)
-            .on_conflict_do_update(
-                index_elements=[Source.kind, Source.ref],
-                set_={"pending": pending, "enabled": True},
-            )
+        row = await active.scalar(
+            select(Source).where(Source.kind == kind, Source.ref == ref)
         )
-        await active.execute(statement)
+        if row is None:
+            active.add(
+                Source(kind=kind, ref=ref, pending=pending, added_by=added_by, city=city)
+            )
+        else:
+            row.pending = pending
+            row.enabled = True
 
 
 async def remove_source(kind: str, ref: str) -> None:
@@ -369,20 +376,24 @@ async def record_delivery(
                     Location.public_id == location_public_id,
                 )
             )
-        statement = (
-            insert(Delivery)
-            .values(
+        existing = await active.scalar(
+            select(Delivery.id).where(
+                Delivery.event_id == event_id,
+                Delivery.user_id == row.id,
+                Delivery.location_id == location_id,
+            )
+        )
+        if existing is not None:
+            return False
+        active.add(
+            Delivery(
                 event_id=event_id,
                 user_id=row.id,
                 location_id=location_id,
                 sent_at=datetime.now(timezone.utc),
             )
-            .on_conflict_do_nothing(
-                index_elements=[Delivery.event_id, Delivery.user_id, Delivery.location_id]
-            )
-            .returning(Delivery.id)
         )
-        return (await active.scalar(statement)) is not None
+        return True
 
 
 async def was_delivered(event_id: int, user_id: int | str, location_public_id: str | None) -> bool:
@@ -480,12 +491,11 @@ async def get_meta(key: str, default: Any = None) -> Any:
 
 async def set_meta(key: str, value: Any) -> None:
     async with session() as active:
-        statement = (
-            insert(Meta)
-            .values(key=key, value=value)
-            .on_conflict_do_update(index_elements=[Meta.key], set_={"value": value})
-        )
-        await active.execute(statement)
+        row = await active.get(Meta, key)
+        if row is None:
+            active.add(Meta(key=key, value=value))
+        else:
+            row.value = value
 
 
 # --------------------------------------------------------------------------
@@ -504,12 +514,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
     if identity is not None and identity.external_id.isdigit():
         actor = int(identity.external_id)
     async with session() as active:
-        statement = (
-            insert(Feature)
-            .values(key=key, enabled=enabled_value, changed_by=actor)
-            .on_conflict_do_update(
-                index_elements=[Feature.key],
-                set_={"enabled": enabled_value, "changed_by": actor},
-            )
-        )
-        await active.execute(statement)
+        row = await active.get(Feature, key)
+        if row is None:
+            active.add(Feature(key=key, enabled=enabled_value, changed_by=actor))
+        else:
+            row.enabled = enabled_value
+            row.changed_by = actor

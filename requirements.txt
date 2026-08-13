@@ -5,7 +5,8 @@ google-genai>=1.0
 aiofiles>=23.2
 python-dotenv>=1.0
 
-# База данных
+# База данных: SQLite по умолчанию, PostgreSQL по желанию
 SQLAlchemy[asyncio]>=2.0,<3
+aiosqlite>=0.20
 asyncpg>=0.29
 alembic>=1.13

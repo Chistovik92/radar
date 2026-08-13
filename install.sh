@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.5 — автономный установщик.
+# Система «Радар» v4.0.6 — автономный установщик.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
@@ -26,7 +26,7 @@
 
 set -Eeuo pipefail
 
-VERSION="4.0.5"
+VERSION="4.0.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -77,7 +77,7 @@ else
 fi
 
 STEP_CURRENT=0
-STEP_TOTAL=8
+STEP_TOTAL=9
 
 # Лог пишется целиком, включая то, что на экран не попадает.
 log_raw() {
@@ -103,12 +103,19 @@ die()  {
     exit 1
 }
 run()  {  # выполнить команду, весь вывод — только в лог
+    local started ended status
+    started=$(date +%s)
     log_raw "CMD   $*"
     if [ -n "$LOG_FILE" ]; then
         "$@" >> "$LOG_FILE" 2>&1
+        status=$?
     else
         "$@" >/dev/null 2>&1
+        status=$?
     fi
+    ended=$(date +%s)
+    log_raw "EXIT  код=$status, время=$((ended - started)) с — $1"
+    return $status
 }
 
 # --- индикатор выполнения -------------------------------------------------
@@ -242,6 +249,12 @@ fi
     printf 'Хост: %s · %s\n' "$(hostname 2>/dev/null || echo неизвестно)" "$(uname -srm)"
     printf 'Каталог: %s\n' "$APP_DIR"
     printf 'Аргументы: %s\n' "${ORIGINAL_ARGS:-нет}"
+    printf 'Пользователь: %s (uid %s)\n' "$(id -un 2>/dev/null || echo ?)" "$(id -u)"
+    printf 'Оболочка: %s\n' "${BASH_VERSION:-неизвестна}"
+    printf 'Локаль: %s\n' "${LANG:-не задана}"
+    printf 'Память: %s\n' "$(awk '/MemTotal|MemAvailable/ {printf "%s=%dМБ ", $1, $2/1024}' /proc/meminfo 2>/dev/null || echo неизвестно)"
+    printf 'Диск: %s\n' "$(df -Ph "$APP_DIR" 2>/dev/null | awk 'NR==2 {print $4" свободно из "$2}' || echo неизвестно)"
+    printf 'Загрузка: %s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo неизвестно)"
     printf '%s\n' "============================================================"
 } >> "$LOG_FILE"
 
@@ -472,6 +485,52 @@ if [ "$FORCE_REINSTALL" = true ] && [ "$FULL_RESET" != true ]; then
     rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
 fi
 
+# Если найдена прежняя установка и режим не задан флагом — спрашиваем,
+# как поступить. Так решение принимает человек, а не эвристика.
+if [ "$MODE" = "обновление" ] && [ "$FORCE_REINSTALL" != true ] && [ "$FULL_RESET" != true ]; then
+    echo
+    printf "  %sКак устанавливать?%s\n" "$C_BOLD" "$C_RESET"
+    printf "    1) Обновить поверх — данные и настройки сохраняются %s(по умолчанию)%s\n" "$C_DIM" "$C_RESET"
+    printf "    2) Переустановить — файлы проекта заново, данные сохраняются\n"
+    printf "    3) С чистого листа — копия, затем удаление базы и настроек\n"
+    printf "  Выбор [1]: "
+    read -r install_choice < /dev/tty || install_choice="1"
+
+    case "${install_choice:-1}" in
+        2)
+            FORCE_REINSTALL=true
+            NO_CACHE_FLAG="--no-cache"
+            MODE="полная переустановка"
+            ;;
+        3)
+            FULL_RESET=true
+            FORCE_REINSTALL=true
+            NO_CACHE_FLAG="--no-cache"
+            MODE="полный сброс"
+            ;;
+        *)
+            info "Обновляю поверх существующей установки"
+            ;;
+    esac
+
+    if [ "$FULL_RESET" = true ]; then
+        make_backup "перед установкой с чистого листа" || warn "Продолжаю без копии"
+        info "Останавливаю контейнеры"
+        (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+        run docker rm -f "$CONTAINER_NAME" radar_db || true
+        run docker rmi -f "$IMAGE_NAME" || true
+        info "Удаляю базу и настройки"
+        rm -rf "$APP_DIR/data/postgres" "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+        rm -f "$APP_DIR/data/radar.db" "$APP_DIR/data/radar.db-wal" \
+              "$APP_DIR/data/radar.db-shm" 2>/dev/null || true
+        ok "Сброс выполнен"
+    elif [ "$FORCE_REINSTALL" = true ]; then
+        info "Пересоздаю файлы проекта"
+        (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+        rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    fi
+fi
+
 ok "Режим: $MODE"
 
 # --------------------------------------------------------------------------
@@ -482,8 +541,8 @@ step "Развёртывание файлов проекта"
 
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
-mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
-FILE_COUNT=44
+mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "tools"
+FILE_COUNT=45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -493,8 +552,9 @@ google-genai>=1.0
 aiofiles>=23.2
 python-dotenv>=1.0
 
-# База данных
+# База данных: SQLite по умолчанию, PostgreSQL по желанию
 SQLAlchemy[asyncio]>=2.0,<3
+aiosqlite>=0.20
 asyncpg>=0.29
 alembic>=1.13
 RADAR_FILE_00
@@ -522,6 +582,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py alembic.ini ./
 COPY radar ./radar
 COPY migrations ./migrations
+# Диагностика запускается внутри контейнера перед стартом бота
+COPY tools/doctor.py ./tools/doctor.py
 
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app
 USER radar
@@ -530,53 +592,12 @@ CMD ["python", "-u", "main.py"]
 RADAR_FILE_01
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "docker-compose.yml"
 cat > "docker-compose.yml" <<'RADAR_FILE_02'
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: radar_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${DB_NAME:-radar}
-      POSTGRES_USER: ${DB_USER:-radar}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD обязателен}
-      # Слабое железо: русская локаль и лишние воркеры не нужны
-      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
-    # Настройки под одноплатник с 4 ГБ ОЗУ (RK3318 и подобные).
-    # Для машины с 1–2 ГБ уменьшите shared_buffers и effective_cache_size вдвое.
-    command: >
-      postgres
-      -c shared_buffers=256MB
-      -c effective_cache_size=1GB
-      -c work_mem=8MB
-      -c maintenance_work_mem=96MB
-      -c max_connections=30
-      -c max_parallel_workers=2
-      -c max_parallel_workers_per_gather=1
-      -c max_worker_processes=4
-      -c random_page_cost=1.1
-      -c effective_io_concurrency=100
-      -c wal_compression=on
-      -c checkpoint_completion_target=0.9
-      -c synchronous_commit=off
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    shm_size: 128mb
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-radar} -d ${DB_NAME:-radar}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+# Сборка рассчитана на одноплатник с 1–2 ГБ памяти.
+# По умолчанию база — SQLite: файл рядом с ботом, отдельный контейнер не нужен.
+# PostgreSQL включается профилем, когда бот переезжает на машину помощнее:
+#   DB_BACKEND=postgres docker compose --profile postgres up -d
 
+services:
   radar:
     build:
       context: .
@@ -584,17 +605,57 @@ services:
         TZ: ${TZ:-Europe/Saratov}
     image: radar_image
     container_name: radar_container
-    # on-failure с лимитом вместо unless-stopped: при неверной конфигурации
-    # бесконечный цикл рестартов маскирует причину и греет слабое железо.
     restart: on-failure:5
     env_file: .env
-    environment:
-      DB_HOST: postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
     volumes:
       - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: ${RADAR_MEM_LIMIT:-512M}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    container_name: radar_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-radar}
+      POSTGRES_USER: ${DB_USER:-radar}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-radar}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # Значения подобраны под 1–2 ГБ ОЗУ. На машине с 4 ГB и больше
+    # можно поднять shared_buffers до 256MB, а effective_cache_size до 1GB.
+    command: >
+      postgres
+      -c shared_buffers=96MB
+      -c effective_cache_size=256MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=20
+      -c max_parallel_workers=0
+      -c max_parallel_workers_per_gather=0
+      -c max_worker_processes=2
+      -c wal_compression=on
+      -c synchronous_commit=off
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    shm_size: 64mb
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-radar} -d ${DB_NAME:-radar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     logging:
       driver: json-file
       options:
@@ -856,7 +917,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.5"
+__version__ = "4.0.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -930,7 +991,14 @@ AI_SEARCH: bool = (os.getenv("AI_SEARCH") or "1").strip().lower() not in ("0", "
 
 DATA_FILE: str = (os.getenv("DATA_FILE") or "data/db.json").strip()
 
-# --- PostgreSQL ---
+# --- база данных ---
+# sqlite — по умолчанию: файл рядом с ботом, без отдельного контейнера,
+# без пароля и без ожидания готовности. Проверено как единственный вариант,
+# уверенно работающий на одноплатнике с 1–2 ГБ памяти.
+# postgres — когда бот переезжает на машину помощнее.
+DB_BACKEND: str = (os.getenv("DB_BACKEND") or "sqlite").strip().lower()
+DB_FILE: str = (os.getenv("DB_FILE") or "data/radar.db").strip()
+
 DB_HOST: str = (os.getenv("DB_HOST") or "postgres").strip()
 DB_PORT: int = _int("DB_PORT", 5432)
 DB_NAME: str = (os.getenv("DB_NAME") or "radar").strip()
@@ -944,9 +1012,18 @@ DB_ECHO: bool = (os.getenv("DB_ECHO") or "0").strip().lower() in ("1", "true", "
 EVENT_RETENTION_DAYS: int = max(0, _int("EVENT_RETENTION_DAYS", 180))
 
 
+def is_sqlite() -> bool:
+    return DB_BACKEND == "sqlite" and not DATABASE_URL
+
+
 def database_url(async_driver: bool = True) -> str:
     """Строка подключения. DATABASE_URL имеет приоритет над отдельными полями."""
     from urllib.parse import quote_plus
+
+    if is_sqlite():
+        path = os.path.abspath(DB_FILE)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        return f"sqlite+aiosqlite:///{path}" if async_driver else f"sqlite:///{path}"
 
     driver = "postgresql+asyncpg" if async_driver else "postgresql+psycopg2"
     if DATABASE_URL:
@@ -1025,9 +1102,9 @@ def validate() -> None:
     problems = []
     if not BOT_TOKEN:
         problems.append("BOT_TOKEN не задан")
-    if not DATABASE_URL and not DB_PASSWORD:
+    if not is_sqlite() and not DATABASE_URL and not DB_PASSWORD:
         problems.append("DB_PASSWORD не задан (или задайте DATABASE_URL целиком)")
-    elif "$" in DB_PASSWORD:
+    elif DB_PASSWORD and "$" in DB_PASSWORD:
         # Docker Compose раскрывает $ в env_file как подстановку переменной,
         # и до PostgreSQL доедет искажённый пароль.
         problems.append(
@@ -2201,6 +2278,17 @@ FLAGS: tuple[Flag, ...] = (
     Flag("antispam", "Антиспам оповещений",
          "Не повторять одно событие для той же локации.", group="Подача", since="4.1"),
 
+    # --- новостные подборки ---
+    Flag("digest", "Новостные подборки",
+         "Утренняя и вечерняя сводка новостей по выбранным тематикам.",
+         group="Новости", since="4.3", default=False),
+    Flag("digest_paid", "Платная подписка на подборки",
+         "Оплата через Telegram Stars. Цены задаёт суперадминистратор.",
+         group="Новости", since="4.3", default=False),
+    Flag("digest_suggestions", "Предложение источников новостей",
+         "Пользователи предлагают каналы и ленты по тематикам.",
+         group="Новости", since="4.3", default=False),
+
     # --- данные ---
     Flag("history", "История событий", "Журнал того, что приходило по адресу.",
          group="Данные", since="4.0"),
@@ -2541,8 +2629,13 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Один и тот же столбец: JSONB в PostgreSQL, обычный JSON в SQLite.
+# Благодаря with_variant модели остаются едиными для обеих баз.
+JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
 def utcnow() -> datetime:
@@ -2552,7 +2645,7 @@ def utcnow() -> datetime:
 class Base(DeclarativeBase):
     """Базовый класс моделей."""
 
-    type_annotation_map = {dict[str, Any]: JSONB, list[str]: JSONB}
+    type_annotation_map = {dict[str, Any]: JSONType, list[str]: JSONType}
 
 
 class User(Base):
@@ -2571,7 +2664,7 @@ class User(Base):
     external_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16), default="user", index=True)
     username: Mapped[str] = mapped_column(String(64), default="")
-    settings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
     weather_mode: Mapped[str] = mapped_column(String(16), default="interval")
     weather_interval: Mapped[int] = mapped_column(Integer, default=0)
@@ -2655,15 +2748,15 @@ class Event(Base):
     kind: Mapped[str] = mapped_column(String(8), default="tg")
     link: Mapped[str] = mapped_column(Text, default="")
 
-    categories: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    categories: Mapped[list[str]] = mapped_column(JSONType, default=list)
     severity: Mapped[str] = mapped_column(String(16), default="info")
     scope: Mapped[str] = mapped_column(String(16), default="city")
     all_clear: Mapped[bool] = mapped_column(Boolean, default=False)
 
     city: Mapped[str] = mapped_column(String(120), default="", index=True)
     region: Mapped[str] = mapped_column(String(120), default="")
-    districts: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    streets: Mapped[dict[str, Any]] = mapped_column(JSONB, default=list)
+    districts: Mapped[list[str]] = mapped_column(JSONType, default=list)
+    streets: Mapped[dict[str, Any]] = mapped_column(JSONType, default=list)
 
     summary: Mapped[str] = mapped_column(Text, default="")
     raw: Mapped[str] = mapped_column(Text, default="")
@@ -2729,7 +2822,7 @@ class Meta(Base):
     __tablename__ = "meta"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    value: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
@@ -2758,6 +2851,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from .. import config
@@ -2771,14 +2865,35 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine, _session_factory
     if _engine is None:
-        _engine = create_async_engine(
-            config.database_url(),
-            echo=config.DB_ECHO,
-            pool_size=config.DB_POOL_SIZE,
-            max_overflow=config.DB_MAX_OVERFLOW,
-            pool_pre_ping=True,
-            pool_recycle=1800,
-        )
+        url = config.database_url()
+        if config.is_sqlite():
+            # У SQLite нет сетевого пула: соединение одно, поэтому pool_size
+            # неприменим. WAL и увеличенный таймаут снимают блокировки при
+            # одновременной записи из фонового цикла и обработчиков.
+            _engine = create_async_engine(
+                url,
+                echo=config.DB_ECHO,
+                connect_args={"timeout": 30},
+            )
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _tune_sqlite(dbapi_connection, _record):  # noqa: ANN001
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA cache_size=-8000")   # 8 МБ, экономно
+                cursor.close()
+        else:
+            _engine = create_async_engine(
+                url,
+                echo=config.DB_ECHO,
+                pool_size=config.DB_POOL_SIZE,
+                max_overflow=config.DB_MAX_OVERFLOW,
+                pool_pre_ping=True,
+                pool_recycle=1800,
+            )
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 
@@ -2831,6 +2946,13 @@ async def wait_ready(attempts: int = 30, delay: float = 2.0) -> None:
     подняться или пароль не подошёл.
     """
     from sqlalchemy import text
+
+    if config.is_sqlite():
+        # Файловая база готова сразу: ждать нечего.
+        async with get_engine().connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        log.info("База SQLite готова: %s", config.DB_FILE)
+        return
 
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -2967,7 +3089,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.dialects.postgresql import insert
 
 from .. import config
 from ..matching import CATEGORY_TITLES
@@ -3112,7 +3233,13 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         await active.flush()
         user_id = row.id
 
-        existing = {item.public_id: item for item in row.locations}
+        # Локации читаем запросом, а не через row.locations: обращение
+        # к отношению у уже сохранённого объекта запускает ленивую подгрузку,
+        # а она в async-контексте падает с MissingGreenlet.
+        current = (
+            await active.scalars(select(Location).where(Location.user_id == user_id))
+        ).all()
+        existing = {item.public_id: item for item in current}
         wanted = {item["id"]: item for item in (data.get("locs") or [])}
 
         for public_id, item in wanted.items():
@@ -3172,16 +3299,18 @@ async def load_sources() -> tuple[list[str], list[str], list[str], list[str]]:
 async def upsert_source(
     kind: str, ref: str, *, pending: bool = False, added_by: int = 0, city: str = ""
 ) -> None:
+    # Без диалектного ON CONFLICT: одинаково работает в SQLite и PostgreSQL.
     async with session() as active:
-        statement = (
-            insert(Source)
-            .values(kind=kind, ref=ref, pending=pending, added_by=added_by, city=city)
-            .on_conflict_do_update(
-                index_elements=[Source.kind, Source.ref],
-                set_={"pending": pending, "enabled": True},
-            )
+        row = await active.scalar(
+            select(Source).where(Source.kind == kind, Source.ref == ref)
         )
-        await active.execute(statement)
+        if row is None:
+            active.add(
+                Source(kind=kind, ref=ref, pending=pending, added_by=added_by, city=city)
+            )
+        else:
+            row.pending = pending
+            row.enabled = True
 
 
 async def remove_source(kind: str, ref: str) -> None:
@@ -3306,20 +3435,24 @@ async def record_delivery(
                     Location.public_id == location_public_id,
                 )
             )
-        statement = (
-            insert(Delivery)
-            .values(
+        existing = await active.scalar(
+            select(Delivery.id).where(
+                Delivery.event_id == event_id,
+                Delivery.user_id == row.id,
+                Delivery.location_id == location_id,
+            )
+        )
+        if existing is not None:
+            return False
+        active.add(
+            Delivery(
                 event_id=event_id,
                 user_id=row.id,
                 location_id=location_id,
                 sent_at=datetime.now(timezone.utc),
             )
-            .on_conflict_do_nothing(
-                index_elements=[Delivery.event_id, Delivery.user_id, Delivery.location_id]
-            )
-            .returning(Delivery.id)
         )
-        return (await active.scalar(statement)) is not None
+        return True
 
 
 async def was_delivered(event_id: int, user_id: int | str, location_public_id: str | None) -> bool:
@@ -3417,12 +3550,11 @@ async def get_meta(key: str, default: Any = None) -> Any:
 
 async def set_meta(key: str, value: Any) -> None:
     async with session() as active:
-        statement = (
-            insert(Meta)
-            .values(key=key, value=value)
-            .on_conflict_do_update(index_elements=[Meta.key], set_={"value": value})
-        )
-        await active.execute(statement)
+        row = await active.get(Meta, key)
+        if row is None:
+            active.add(Meta(key=key, value=value))
+        else:
+            row.value = value
 
 
 # --------------------------------------------------------------------------
@@ -3441,15 +3573,12 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
     if identity is not None and identity.external_id.isdigit():
         actor = int(identity.external_id)
     async with session() as active:
-        statement = (
-            insert(Feature)
-            .values(key=key, enabled=enabled_value, changed_by=actor)
-            .on_conflict_do_update(
-                index_elements=[Feature.key],
-                set_={"enabled": enabled_value, "changed_by": actor},
-            )
-        )
-        await active.execute(statement)
+        row = await active.get(Feature, key)
+        if row is None:
+            active.add(Feature(key=key, enabled=enabled_value, changed_by=actor))
+        else:
+            row.enabled = enabled_value
+            row.changed_by = actor
 RADAR_FILE_18
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
 cat > "radar/db/importer.py" <<'RADAR_FILE_19'
@@ -3616,8 +3745,368 @@ async def run(path: str | None = None) -> dict[str, int]:
     )
     return counters
 RADAR_FILE_19
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/doctor.py"
+cat > "tools/doctor.py" <<'RADAR_FILE_20'
+#!/usr/bin/env python3
+"""Проверка готовности системы до запуска бота.
+
+Запускается внутри контейнера, где установлены все зависимости, и проверяет
+то, что нельзя проверить снаружи: конфигурацию, подключение к базе, создание
+схемы, запись и чтение данных, разбор старого `db.json`, доступность Telegram.
+
+Смысл в том, чтобы ошибка обнаруживалась один раз и с понятным объяснением,
+а не превращалась в цикл перезапусков контейнера.
+
+    python tools/doctor.py            # полная проверка
+    python tools/doctor.py --quick    # без обращений к сети
+    python tools/doctor.py --json     # машиночитаемый отчёт
+
+Код возврата: 0 — всё в порядке, 1 — есть ошибки, 2 — только предупреждения.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import traceback
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+OK = "ok"
+WARN = "warn"
+ERROR = "error"
+
+MARKS = {OK: "✓", WARN: "!", ERROR: "✗"}
+
+
+@dataclass
+class Result:
+    name: str
+    status: str
+    message: str = ""
+    hint: str = ""
+    detail: str = ""
+
+
+@dataclass
+class Report:
+    checks: list[Result] = field(default_factory=list)
+
+    def add(self, name: str, status: str, message: str = "", hint: str = "", detail: str = "") -> None:
+        self.checks.append(Result(name, status, message, hint, detail))
+
+    @property
+    def errors(self) -> list[Result]:
+        return [item for item in self.checks if item.status == ERROR]
+
+    @property
+    def warnings(self) -> list[Result]:
+        return [item for item in self.checks if item.status == WARN]
+
+    def code(self) -> int:
+        if self.errors:
+            return 1
+        return 2 if self.warnings else 0
+
+
+report = Report()
+
+
+# --------------------------------------------------------------------------
+#  Проверки
+# --------------------------------------------------------------------------
+
+def check_imports() -> bool:
+    """Все ли зависимости на месте и импортируются."""
+    modules = {
+        "aiogram": "Telegram-клиент",
+        "aiohttp": "HTTP-клиент",
+        "sqlalchemy": "работа с базой",
+        "bs4": "разбор веб-страниц",
+        "dotenv": "чтение .env",
+    }
+    missing: list[str] = []
+    for name, purpose in modules.items():
+        try:
+            __import__(name)
+        except ImportError as exc:
+            missing.append(f"{name} ({purpose}): {exc}")
+
+    if missing:
+        report.add(
+            "Зависимости", ERROR,
+            f"не установлены: {len(missing)}",
+            "Пересоберите образ: docker compose build --no-cache",
+            "\n".join(missing),
+        )
+        return False
+    report.add("Зависимости", OK, f"проверено модулей: {len(modules)}")
+    return True
+
+
+def check_config() -> bool:
+    """Обязательные параметры и типичные ошибки в них."""
+    try:
+        from radar import config
+    except Exception as exc:  # noqa: BLE001
+        report.add("Конфигурация", ERROR, str(exc),
+                   "Проверьте .env и переменные окружения", traceback.format_exc())
+        return False
+
+    problems: list[str] = []
+    if not config.BOT_TOKEN:
+        problems.append("BOT_TOKEN не задан")
+    elif ":" not in config.BOT_TOKEN:
+        problems.append("BOT_TOKEN не похож на токен (нет двоеточия)")
+    if not config.SUPERADMIN_ID:
+        problems.append("SUPERADMIN_ID не задан или равен нулю")
+
+    if problems:
+        report.add("Конфигурация", ERROR, "; ".join(problems),
+                   "Откройте .env и заполните недостающее")
+        return False
+
+    backend = "SQLite" if config.is_sqlite() else "PostgreSQL"
+    report.add("Конфигурация", OK, f"версия {config.VERSION}, база {backend}")
+
+    if not config.GEMINI_API_KEY:
+        report.add("Ключ Gemini", WARN, "не задан",
+                   "Бот будет работать на эвристическом разборе без ИИ")
+    else:
+        report.add("Ключ Gemini", OK, "задан")
+    return True
+
+
+async def check_database() -> bool:
+    """Подключение, создание схемы и полный цикл записи-чтения."""
+    from radar import config
+    from radar.db import engine as db_engine
+
+    try:
+        await db_engine.wait_ready(attempts=15, delay=2.0)
+    except Exception as exc:  # noqa: BLE001
+        hint = (
+            "Проверьте DB_FILE и права на каталог data/"
+            if config.is_sqlite()
+            else "Проверьте, что контейнер radar_db поднят, и совпадает ли DB_PASSWORD"
+        )
+        report.add("Подключение к базе", ERROR, str(exc)[:200], hint, traceback.format_exc())
+        return False
+    report.add("Подключение к базе", OK, config.database_url().split("@")[-1][:60])
+
+    try:
+        created, tables = await db_engine.create_schema()
+        await db_engine.stamp_alembic()
+    except Exception as exc:  # noqa: BLE001
+        report.add("Схема базы", ERROR, str(exc)[:200],
+                   "Возможна несовместимость версии базы", traceback.format_exc())
+        return False
+    report.add("Схема базы", OK,
+               f"{'создана' if created else 'актуальна'}, таблиц: {tables}")
+
+    # Полный цикл: запись, чтение, удаление. Именно здесь всплывали ошибки
+    # ленивой подгрузки, которых не видно при простом подключении.
+    from radar.db import repo
+
+    probe_id = "doctor:0"
+    try:
+        sample = repo.default_user("user", "doctor")
+        sample["locs"] = [repo.new_location("Проверочная улица, 1", 51.5, 46.0, city="Тест")]
+        await repo.save_user(probe_id, sample)
+
+        loaded = await repo.load_users()
+        if probe_id not in loaded:
+            raise RuntimeError("записанный пользователь не читается обратно")
+        if len(loaded[probe_id]["locs"]) != 1:
+            raise RuntimeError("локация не сохранилась")
+
+        sample["locs"] = []
+        await repo.save_user(probe_id, sample)          # проверка удаления локаций
+        await repo.set_feature("history", True, 0)      # проверка таблицы флагов
+        await repo.set_meta("doctor", {"value": "ok"})  # проверка служебной таблицы
+    except Exception as exc:  # noqa: BLE001
+        report.add("Запись и чтение", ERROR, str(exc)[:200],
+                   "Схема или модели несовместимы с базой", traceback.format_exc())
+        return False
+    finally:
+        try:
+            await repo.delete_user(probe_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+    report.add("Запись и чтение", OK, "полный цикл пройден")
+    return True
+
+
+async def check_import_file() -> None:
+    """Читается ли файл прежней версии, если он есть."""
+    from radar import config
+    from radar.db import importer
+
+    path = config.DATA_FILE
+    if not os.path.exists(path):
+        report.add("Данные прежней версии", OK, "файла нет, начинаем с чистой базы")
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+        data = importer._normalize(raw if isinstance(raw, dict) else {})
+    except Exception as exc:  # noqa: BLE001
+        report.add("Данные прежней версии", ERROR, str(exc)[:200],
+                   f"Файл {path} повреждён; переименуйте его, чтобы начать с нуля",
+                   traceback.format_exc())
+        return
+
+    users = len(data["users"])
+    locations = sum(len(item["locs"]) for item in data["users"].values())
+    report.add("Данные прежней версии", OK,
+               f"готово к переносу: пользователей {users}, локаций {locations}, "
+               f"источников {len(data['channels'])}")
+
+
+async def check_telegram() -> None:
+    """Принимает ли Telegram наш токен."""
+    import aiohttp
+
+    from radar import config
+
+    url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/getMe"
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as http:
+            async with http.get(url) as response:
+                payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        report.add("Telegram", WARN, f"сеть недоступна: {exc}",
+                   "Проверьте подключение или настройте выход через прокси")
+        return
+
+    if payload.get("ok"):
+        name = (payload.get("result") or {}).get("username", "?")
+        report.add("Telegram", OK, f"токен принят, бот @{name}")
+    else:
+        report.add("Telegram", ERROR,
+                   str(payload.get("description", "неизвестная ошибка"))[:160],
+                   "Проверьте BOT_TOKEN в .env — возможно, он отозван")
+
+
+def check_resources() -> None:
+    """Хватит ли памяти и места."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            info = {
+                line.split(":")[0]: int(line.split()[1])
+                for line in handle if ":" in line
+            }
+        total = info.get("MemTotal", 0) // 1024
+        available = info.get("MemAvailable", 0) // 1024
+        if available < 150:
+            report.add("Память", ERROR, f"доступно {available} МБ из {total} МБ",
+                       "Освободите память или добавьте файл подкачки")
+        elif available < 300:
+            report.add("Память", WARN, f"доступно {available} МБ из {total} МБ",
+                       "Работать будет, но без запаса")
+        else:
+            report.add("Память", OK, f"доступно {available} МБ из {total} МБ")
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        stat = os.statvfs("/app/data")
+        free = stat.f_bavail * stat.f_frsize // (1024 * 1024)
+        if free < 200:
+            report.add("Диск", ERROR, f"свободно {free} МБ", "Освободите место")
+        else:
+            report.add("Диск", OK, f"свободно {free} МБ")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --------------------------------------------------------------------------
+#  Запуск
+# --------------------------------------------------------------------------
+
+async def run(quick: bool) -> None:
+    if not check_imports():
+        return
+    check_resources()
+    if not check_config():
+        return
+    if not await check_database():
+        return
+    await check_import_file()
+    if not quick:
+        await check_telegram()
+
+    from radar.db import engine as db_engine
+
+    await db_engine.dispose()
+
+
+def render(as_json: bool) -> None:
+    if as_json:
+        print(json.dumps([asdict(item) for item in report.checks],
+                         ensure_ascii=False, indent=2))
+        return
+
+    print()
+    for item in report.checks:
+        print(f"  {MARKS[item.status]} {item.name}: {item.message}")
+        if item.hint and item.status != OK:
+            print(f"      → {item.hint}")
+
+    print()
+    if report.errors:
+        print(f"  Ошибок: {len(report.errors)}, предупреждений: {len(report.warnings)}")
+        print("\n  Подробности:")
+        for item in report.errors:
+            print(f"\n  ── {item.name} ──")
+            print(f"  {item.message}")
+            if item.detail:
+                tail = item.detail.strip().splitlines()[-6:]
+                for line in tail:
+                    print(f"    {line}")
+    elif report.warnings:
+        print(f"  Всё работает, предупреждений: {len(report.warnings)}")
+    else:
+        print("  Все проверки пройдены")
+    print()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Диагностика системы «Радар»")
+    parser.add_argument("--quick", action="store_true", help="без обращений к сети")
+    parser.add_argument("--json", action="store_true", help="машиночитаемый отчёт")
+    args = parser.parse_args()
+
+    try:
+        asyncio.run(run(args.quick))
+    except Exception as exc:  # noqa: BLE001
+        report.add("Диагностика", ERROR, str(exc)[:200],
+                   "Непредвиденная ошибка проверки", traceback.format_exc())
+
+    render(args.json)
+    return report.code()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+RADAR_FILE_20
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_20'
+cat > "migrations/env.py" <<'RADAR_FILE_21'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -3677,9 +4166,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_21'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_22'
 """${message}
 
 Revision ID: ${up_revision}
@@ -3704,9 +4193,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_22'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_23'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -3873,9 +4362,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_23'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_24'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -3898,9 +4387,9 @@ from .base import (
 __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
 ]
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_24'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_25'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -4025,9 +4514,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_25'
+cat > "radar/storage.py" <<'RADAR_FILE_26'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -4212,9 +4701,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_26'
+cat > "radar/exporting.py" <<'RADAR_FILE_27'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -4420,9 +4909,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_27'
+cat > "radar/ai.py" <<'RADAR_FILE_28'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -5057,9 +5546,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_28'
+cat > "radar/geocode.py" <<'RADAR_FILE_29'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -5251,9 +5740,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_29'
+cat > "radar/weather.py" <<'RADAR_FILE_30'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -5585,9 +6074,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_30'
+cat > "radar/sources.py" <<'RADAR_FILE_31'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -5768,9 +6257,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_31'
+cat > "radar/tg.py" <<'RADAR_FILE_32'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -5867,9 +6356,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_32'
+cat > "radar/keyboards.py" <<'RADAR_FILE_33'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -6155,9 +6644,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_33'
+cat > "radar/states.py" <<'RADAR_FILE_34'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -6178,9 +6667,9 @@ class Form(StatesGroup):
     weather_interval = State()
     manual_address = State()
     admin_add_location = State()   # ввод адреса для чужого пользователя
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_34'
+cat > "radar/middlewares.py" <<'RADAR_FILE_35'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -6250,9 +6739,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_35'
+cat > "radar/monitor.py" <<'RADAR_FILE_36'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -6458,9 +6947,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_36'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_37'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -6487,9 +6976,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_37'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_38'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -6769,9 +7258,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_37
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_38'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_39'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -6935,9 +7424,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_39'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_40'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -7080,9 +7569,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
     await message.answer(
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_40'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_41'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -7364,9 +7853,9 @@ async def import_sources(message: Message, role: str) -> None:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_41'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_42'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -7732,9 +8221,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_42'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_43'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -7862,9 +8351,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await repo.set_feature(flag.key, value, call.from_user.id)
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_43'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_44'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -8009,7 +8498,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_43
+RADAR_FILE_44
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # --------------------------------------------------------------------------
@@ -8221,29 +8710,75 @@ if [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/
     fi
 fi
 
-info "Запускаю бота и базу данных"
-run $COMPOSE up -d || die "Не удалось запустить контейнеры"
-
-# --------------------------------------------------------------------------
-#  Шаг 8. Проверка запуска
-# --------------------------------------------------------------------------
-
-step "Проверка работоспособности"
-
-info "Жду готовности PostgreSQL"
-DB_READY=false
-for _ in $(seq 1 45); do
-    if docker exec radar_db pg_isready -U radar >/dev/null 2>&1; then
-        DB_READY=true
-        break
-    fi
-    sleep 2
-done
-if [ "$DB_READY" = true ]; then
-    ok "База данных отвечает"
+# Профиль postgres поднимается только если он выбран в .env
+DB_BACKEND_VALUE="$(grep -E '^DB_BACKEND=' .env 2>/dev/null | cut -d= -f2- || echo sqlite)"
+: "${DB_BACKEND_VALUE:=sqlite}"
+COMPOSE_ARGS=""
+if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
+    COMPOSE_ARGS="--profile postgres"
+    info "База данных: PostgreSQL (отдельный контейнер)"
+    run $COMPOSE $COMPOSE_ARGS up -d postgres || die "Не удалось запустить PostgreSQL"
+    for _ in $(seq 1 45); do
+        docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
+        sleep 2
+    done
 else
-    warn "База не ответила за 90 секунд — смотрите: docker logs radar_db"
+    info "База данных: SQLite (файл data/radar.db, отдельный контейнер не нужен)"
 fi
+
+# --------------------------------------------------------------------------
+#  Шаг 8. Диагностика до запуска
+# --------------------------------------------------------------------------
+
+step "Проверка системы до запуска бота"
+
+info "Запускаю диагностику внутри контейнера"
+DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
+set +e
+$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python tools/doctor.py \
+    > "$DOCTOR_OUT" 2>&1
+DOCTOR_CODE=$?
+set -e
+
+cat "$DOCTOR_OUT" >> "$LOG_FILE" 2>/dev/null || true
+
+# Показываем результат построчно, сохраняя пометки диагностики
+while IFS= read -r dline; do
+    case "$dline" in
+        *"✓ "*) printf "  %s\n" "$dline" ;;
+        *"! "*) printf "  %s%s%s\n" "$C_YELLOW" "$dline" "$C_RESET" ;;
+        *"✗ "*) printf "  %s%s%s\n" "$C_RED" "$dline" "$C_RESET" ;;
+        *"→ "*) printf "  %s%s%s\n" "$C_DIM" "$dline" "$C_RESET" ;;
+        *) [ -n "$dline" ] && printf "  %s\n" "$dline" ;;
+    esac
+done < "$DOCTOR_OUT"
+
+rm -f "$DOCTOR_OUT"
+
+if [ "$DOCTOR_CODE" -eq 1 ]; then
+    echo
+    fail "Диагностика нашла ошибки — бот не запущен"
+    printf "\n  %sЧто делать:%s\n" "$C_BOLD" "$C_RESET"
+    printf "    1. Исправьте то, что указано выше\n"
+    printf "    2. Запустите установщик снова\n"
+    printf "    3. Если не помогает — установка с чистого листа:\n"
+    printf "       bash <(curl -fsSL %s) --reset\n" \
+        "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
+    printf "\n  Полный отчёт с трассировками: %s\n\n" "$LOG_FILE"
+    exit 1
+elif [ "$DOCTOR_CODE" -eq 2 ]; then
+    warn "Есть предупреждения, но запуск возможен"
+else
+    ok "Диагностика пройдена без замечаний"
+fi
+
+# --------------------------------------------------------------------------
+#  Шаг 9. Запуск
+# --------------------------------------------------------------------------
+
+step "Запуск бота"
+
+run $COMPOSE $COMPOSE_ARGS up -d || die "Не удалось запустить контейнеры"
 
 # Первый запуск включает миграции Alembic, перенос данных и геокодирование —
 # на слабом железе это занимает минуты, а не секунды.

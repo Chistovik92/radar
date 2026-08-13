@@ -77,7 +77,7 @@ else
 fi
 
 STEP_CURRENT=0
-STEP_TOTAL=8
+STEP_TOTAL=9
 
 # Лог пишется целиком, включая то, что на экран не попадает.
 log_raw() {
@@ -103,12 +103,19 @@ die()  {
     exit 1
 }
 run()  {  # выполнить команду, весь вывод — только в лог
+    local started ended status
+    started=$(date +%s)
     log_raw "CMD   $*"
     if [ -n "$LOG_FILE" ]; then
         "$@" >> "$LOG_FILE" 2>&1
+        status=$?
     else
         "$@" >/dev/null 2>&1
+        status=$?
     fi
+    ended=$(date +%s)
+    log_raw "EXIT  код=$status, время=$((ended - started)) с — $1"
+    return $status
 }
 
 # --- индикатор выполнения -------------------------------------------------
@@ -242,6 +249,12 @@ fi
     printf 'Хост: %s · %s\n' "$(hostname 2>/dev/null || echo неизвестно)" "$(uname -srm)"
     printf 'Каталог: %s\n' "$APP_DIR"
     printf 'Аргументы: %s\n' "${ORIGINAL_ARGS:-нет}"
+    printf 'Пользователь: %s (uid %s)\n' "$(id -un 2>/dev/null || echo ?)" "$(id -u)"
+    printf 'Оболочка: %s\n' "${BASH_VERSION:-неизвестна}"
+    printf 'Локаль: %s\n' "${LANG:-не задана}"
+    printf 'Память: %s\n' "$(awk '/MemTotal|MemAvailable/ {printf "%s=%dМБ ", $1, $2/1024}' /proc/meminfo 2>/dev/null || echo неизвестно)"
+    printf 'Диск: %s\n' "$(df -Ph "$APP_DIR" 2>/dev/null | awk 'NR==2 {print $4" свободно из "$2}' || echo неизвестно)"
+    printf 'Загрузка: %s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo неизвестно)"
     printf '%s\n' "============================================================"
 } >> "$LOG_FILE"
 
@@ -472,6 +485,52 @@ if [ "$FORCE_REINSTALL" = true ] && [ "$FULL_RESET" != true ]; then
     rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
 fi
 
+# Если найдена прежняя установка и режим не задан флагом — спрашиваем,
+# как поступить. Так решение принимает человек, а не эвристика.
+if [ "$MODE" = "обновление" ] && [ "$FORCE_REINSTALL" != true ] && [ "$FULL_RESET" != true ]; then
+    echo
+    printf "  %sКак устанавливать?%s\n" "$C_BOLD" "$C_RESET"
+    printf "    1) Обновить поверх — данные и настройки сохраняются %s(по умолчанию)%s\n" "$C_DIM" "$C_RESET"
+    printf "    2) Переустановить — файлы проекта заново, данные сохраняются\n"
+    printf "    3) С чистого листа — копия, затем удаление базы и настроек\n"
+    printf "  Выбор [1]: "
+    read -r install_choice < /dev/tty || install_choice="1"
+
+    case "${install_choice:-1}" in
+        2)
+            FORCE_REINSTALL=true
+            NO_CACHE_FLAG="--no-cache"
+            MODE="полная переустановка"
+            ;;
+        3)
+            FULL_RESET=true
+            FORCE_REINSTALL=true
+            NO_CACHE_FLAG="--no-cache"
+            MODE="полный сброс"
+            ;;
+        *)
+            info "Обновляю поверх существующей установки"
+            ;;
+    esac
+
+    if [ "$FULL_RESET" = true ]; then
+        make_backup "перед установкой с чистого листа" || warn "Продолжаю без копии"
+        info "Останавливаю контейнеры"
+        (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+        run docker rm -f "$CONTAINER_NAME" radar_db || true
+        run docker rmi -f "$IMAGE_NAME" || true
+        info "Удаляю базу и настройки"
+        rm -rf "$APP_DIR/data/postgres" "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+        rm -f "$APP_DIR/data/radar.db" "$APP_DIR/data/radar.db-wal" \
+              "$APP_DIR/data/radar.db-shm" 2>/dev/null || true
+        ok "Сброс выполнен"
+    elif [ "$FORCE_REINSTALL" = true ]; then
+        info "Пересоздаю файлы проекта"
+        (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+        rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    fi
+fi
+
 ok "Режим: $MODE"
 
 # --------------------------------------------------------------------------
@@ -694,29 +753,75 @@ if [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/
     fi
 fi
 
-info "Запускаю бота и базу данных"
-run $COMPOSE up -d || die "Не удалось запустить контейнеры"
-
-# --------------------------------------------------------------------------
-#  Шаг 8. Проверка запуска
-# --------------------------------------------------------------------------
-
-step "Проверка работоспособности"
-
-info "Жду готовности PostgreSQL"
-DB_READY=false
-for _ in $(seq 1 45); do
-    if docker exec radar_db pg_isready -U radar >/dev/null 2>&1; then
-        DB_READY=true
-        break
-    fi
-    sleep 2
-done
-if [ "$DB_READY" = true ]; then
-    ok "База данных отвечает"
+# Профиль postgres поднимается только если он выбран в .env
+DB_BACKEND_VALUE="$(grep -E '^DB_BACKEND=' .env 2>/dev/null | cut -d= -f2- || echo sqlite)"
+: "${DB_BACKEND_VALUE:=sqlite}"
+COMPOSE_ARGS=""
+if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
+    COMPOSE_ARGS="--profile postgres"
+    info "База данных: PostgreSQL (отдельный контейнер)"
+    run $COMPOSE $COMPOSE_ARGS up -d postgres || die "Не удалось запустить PostgreSQL"
+    for _ in $(seq 1 45); do
+        docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
+        sleep 2
+    done
 else
-    warn "База не ответила за 90 секунд — смотрите: docker logs radar_db"
+    info "База данных: SQLite (файл data/radar.db, отдельный контейнер не нужен)"
 fi
+
+# --------------------------------------------------------------------------
+#  Шаг 8. Диагностика до запуска
+# --------------------------------------------------------------------------
+
+step "Проверка системы до запуска бота"
+
+info "Запускаю диагностику внутри контейнера"
+DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
+set +e
+$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python tools/doctor.py \
+    > "$DOCTOR_OUT" 2>&1
+DOCTOR_CODE=$?
+set -e
+
+cat "$DOCTOR_OUT" >> "$LOG_FILE" 2>/dev/null || true
+
+# Показываем результат построчно, сохраняя пометки диагностики
+while IFS= read -r dline; do
+    case "$dline" in
+        *"✓ "*) printf "  %s\n" "$dline" ;;
+        *"! "*) printf "  %s%s%s\n" "$C_YELLOW" "$dline" "$C_RESET" ;;
+        *"✗ "*) printf "  %s%s%s\n" "$C_RED" "$dline" "$C_RESET" ;;
+        *"→ "*) printf "  %s%s%s\n" "$C_DIM" "$dline" "$C_RESET" ;;
+        *) [ -n "$dline" ] && printf "  %s\n" "$dline" ;;
+    esac
+done < "$DOCTOR_OUT"
+
+rm -f "$DOCTOR_OUT"
+
+if [ "$DOCTOR_CODE" -eq 1 ]; then
+    echo
+    fail "Диагностика нашла ошибки — бот не запущен"
+    printf "\n  %sЧто делать:%s\n" "$C_BOLD" "$C_RESET"
+    printf "    1. Исправьте то, что указано выше\n"
+    printf "    2. Запустите установщик снова\n"
+    printf "    3. Если не помогает — установка с чистого листа:\n"
+    printf "       bash <(curl -fsSL %s) --reset\n" \
+        "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
+    printf "\n  Полный отчёт с трассировками: %s\n\n" "$LOG_FILE"
+    exit 1
+elif [ "$DOCTOR_CODE" -eq 2 ]; then
+    warn "Есть предупреждения, но запуск возможен"
+else
+    ok "Диагностика пройдена без замечаний"
+fi
+
+# --------------------------------------------------------------------------
+#  Шаг 9. Запуск
+# --------------------------------------------------------------------------
+
+step "Запуск бота"
+
+run $COMPOSE $COMPOSE_ARGS up -d || die "Не удалось запустить контейнеры"
 
 # Первый запуск включает миграции Alembic, перенос данных и геокодирование —
 # на слабом железе это занимает минуты, а не секунды.

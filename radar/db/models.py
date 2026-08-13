@@ -31,8 +31,13 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Один и тот же столбец: JSONB в PostgreSQL, обычный JSON в SQLite.
+# Благодаря with_variant модели остаются едиными для обеих баз.
+JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
 def utcnow() -> datetime:
@@ -42,7 +47,7 @@ def utcnow() -> datetime:
 class Base(DeclarativeBase):
     """Базовый класс моделей."""
 
-    type_annotation_map = {dict[str, Any]: JSONB, list[str]: JSONB}
+    type_annotation_map = {dict[str, Any]: JSONType, list[str]: JSONType}
 
 
 class User(Base):
@@ -61,7 +66,7 @@ class User(Base):
     external_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16), default="user", index=True)
     username: Mapped[str] = mapped_column(String(64), default="")
-    settings: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
     weather_mode: Mapped[str] = mapped_column(String(16), default="interval")
     weather_interval: Mapped[int] = mapped_column(Integer, default=0)
@@ -145,15 +150,15 @@ class Event(Base):
     kind: Mapped[str] = mapped_column(String(8), default="tg")
     link: Mapped[str] = mapped_column(Text, default="")
 
-    categories: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    categories: Mapped[list[str]] = mapped_column(JSONType, default=list)
     severity: Mapped[str] = mapped_column(String(16), default="info")
     scope: Mapped[str] = mapped_column(String(16), default="city")
     all_clear: Mapped[bool] = mapped_column(Boolean, default=False)
 
     city: Mapped[str] = mapped_column(String(120), default="", index=True)
     region: Mapped[str] = mapped_column(String(120), default="")
-    districts: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    streets: Mapped[dict[str, Any]] = mapped_column(JSONB, default=list)
+    districts: Mapped[list[str]] = mapped_column(JSONType, default=list)
+    streets: Mapped[dict[str, Any]] = mapped_column(JSONType, default=list)
 
     summary: Mapped[str] = mapped_column(Text, default="")
     raw: Mapped[str] = mapped_column(Text, default="")
@@ -219,7 +224,7 @@ class Meta(Base):
     __tablename__ = "meta"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    value: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

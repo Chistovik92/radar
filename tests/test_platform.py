@@ -115,7 +115,8 @@ class TestFeatures(unittest.TestCase):
         """Возможности будущих версий не должны включаться сами."""
         for key in ("source_vk", "weather_image", "quiet_hours",
                     "platform_max", "partners", "promo_codes",
-                    "web_panel", "egress_proxy", "maintenance"):
+                    "web_panel", "egress_proxy", "maintenance",
+                    "digest", "digest_paid", "digest_suggestions"):
             self.assertFalse(features.enabled(key), key)
 
 
