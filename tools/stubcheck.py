@@ -180,6 +180,8 @@ def smoke_checks() -> list[str]:
         ("db_engine", "wait_ready"),
         ("db_engine", "AuthenticationError"),
         ("db_engine", "ensure_schema"),
+        ("db_engine", "missing_columns"),
+        ("db_engine", "add_missing_columns"),
         ("db_engine", "repair_schema"),
         ("db_engine", "check_schema_compatible"),
         ("db_engine", "dispose"),

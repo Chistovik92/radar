@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -194,6 +194,117 @@ async def create_schema() -> tuple[bool, int]:
     return bool(created), len(after)
 
 
+async def missing_columns() -> dict[str, list[str]]:
+    """Столбцы, которые есть в моделях, но отсутствуют в базе.
+
+    `create_all` создаёт только недостающие таблицы и никогда не добавляет
+    столбцы в существующие. Каждое новое поле в модели поэтому оказывалось
+    невидимым для старой базы, и запросы падали с «no such column».
+    """
+    from sqlalchemy import inspect
+
+    from .models import Base
+
+    result: dict[str, list[str]] = {}
+    async with get_engine().connect() as connection:
+        existing_tables = await connection.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        for name, table in Base.metadata.tables.items():
+            if name not in existing_tables:
+                continue
+            actual = await connection.run_sync(
+                lambda sync_conn, table_name=name: {
+                    column["name"] for column in inspect(sync_conn).get_columns(table_name)
+                }
+            )
+            absent = [column.name for column in table.columns if column.name not in actual]
+            if absent:
+                result[name] = absent
+    return result
+
+
+def _default_value(column) -> Any:
+    """Значение по умолчанию из модели, пригодное для UPDATE."""
+    import json as json_module
+
+    default = getattr(column, "default", None)
+    if default is None:
+        return None
+
+    value = getattr(default, "arg", None)
+    if callable(value):
+        try:
+            value = value(None)
+        except TypeError:
+            try:
+                value = value()
+            except Exception:  # noqa: BLE001
+                return None
+
+    if isinstance(value, (list, dict)):
+        return json_module.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (str, int, float)):
+        return value
+    return None
+
+
+async def add_missing_columns() -> int:
+    """Добавляет недостающие столбцы через ALTER TABLE.
+
+    Это безопаснее пересоздания: данные остаются на месте. Ограничение
+    SQLite — добавляемый столбец не может быть NOT NULL без значения
+    по умолчанию, поэтому новые столбцы объявляются допускающими NULL,
+    а значение подставляется приложением при первой записи.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.schema import CreateColumn
+
+    from .models import Base
+
+    absent = await missing_columns()
+    if not absent:
+        return 0
+
+    added = 0
+    async with get_engine().begin() as connection:
+        dialect = connection.dialect
+        for table_name, columns in absent.items():
+            table = Base.metadata.tables[table_name]
+            for column_name in columns:
+                column = table.columns[column_name]
+                spec = CreateColumn(column).compile(dialect=dialect).string
+                # Убираем NOT NULL: у существующих строк значения ещё нет
+                spec = spec.replace(" NOT NULL", "")
+                try:
+                    await connection.execute(
+                        text(f'ALTER TABLE {table_name} ADD COLUMN {spec}')
+                    )
+                    # У существующих строк новый столбец пуст. Заполняем его
+                    # значением по умолчанию из модели, иначе код, ожидающий
+                    # список или число, получит None.
+                    filler = _default_value(column)
+                    if filler is not None:
+                        await connection.execute(
+                            text(
+                                f"UPDATE {table_name} SET {column_name} = :value "
+                                f"WHERE {column_name} IS NULL"
+                            ),
+                            {"value": filler},
+                        )
+                    log.info("Добавлен столбец %s.%s", table_name, column_name)
+                    added += 1
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "Не удалось добавить столбец %s.%s: %s",
+                        table_name, column_name, exc,
+                    )
+                    raise
+    return added
+
+
 async def ensure_schema() -> tuple[bool, int, bool]:
     """Создаёт схему и чинит её, если она осталась от версии с ошибкой.
 
@@ -201,6 +312,18 @@ async def ensure_schema() -> tuple[bool, int, bool]:
     """
     created, tables = await create_schema()
 
+    # Сначала пробуем мягкий путь: дописать новые столбцы, сохранив данные.
+    try:
+        added = await add_missing_columns()
+        if added:
+            log.info("Схема дополнена: новых столбцов %d", added)
+    except Exception:  # noqa: BLE001
+        log.warning("Добавить столбцы не удалось — пересоздам схему", exc_info=True)
+        await repair_schema()
+        _created, tables = await create_schema()
+        return created, tables, True
+
+    # Пересоздание — только когда несовместимы сами типы.
     compatible, reason = await check_schema_compatible()
     if compatible:
         return created, tables, False

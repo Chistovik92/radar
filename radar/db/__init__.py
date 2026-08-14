@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from .engine import (
+    add_missing_columns,
     check_schema_compatible,
     create_schema,
     ensure_schema,

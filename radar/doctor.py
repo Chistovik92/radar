@@ -209,6 +209,22 @@ async def check_database() -> bool:
         report.add("Схема базы", OK,
                    f"{'создана' if created else 'актуальна'}, таблиц: {tables}")
 
+    # Отдельная проверка: все ли поля моделей есть в базе. Раньше добавление
+    # поля в модель ломало запросы на уже созданной базе.
+    try:
+        absent = await db_engine.missing_columns()
+    except Exception as exc:  # noqa: BLE001
+        report.add("Столбцы таблиц", WARN, str(exc)[:160])
+    else:
+        if absent:
+            details = "; ".join(
+                f"{table}: {', '.join(columns)}" for table, columns in absent.items()
+            )
+            report.add("Столбцы таблиц", ERROR, details,
+                       "Схема не дополнена — запросы будут падать")
+        else:
+            report.add("Столбцы таблиц", OK, "все поля моделей на месте")
+
     # Полный цикл: запись, чтение, удаление. Именно здесь всплывали ошибки
     # ленивой подгрузки, которых не видно при простом подключении.
     announce("schema")

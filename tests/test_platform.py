@@ -337,7 +337,8 @@ class TestSchemaGuards(unittest.TestCase):
     def test_ensure_schema_exposed(self):
         from radar.db import engine
 
-        for name in ("ensure_schema", "repair_schema", "check_schema_compatible"):
+        for name in ("ensure_schema", "repair_schema", "check_schema_compatible",
+                     "missing_columns", "add_missing_columns"):
             self.assertTrue(hasattr(engine, name), name)
 
     def test_bigint_variant_declared(self):
