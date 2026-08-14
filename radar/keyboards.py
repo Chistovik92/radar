@@ -17,7 +17,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from . import config, roles
+from . import config, features, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None) -> InlineKeyboardMarkup:
@@ -31,6 +31,8 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📢 Предложить источник", callback_data="src:suggest"),
         ],
     ]
+    if features.enabled("sos"):
+        rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text="🧠 ИИ-ассистент", callback_data="menu:ai")])
     if roles.is_moderator(role):
@@ -122,22 +124,25 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def weather_menu() -> InlineKeyboardMarkup:
+def weather_menu(target: str = "") -> InlineKeyboardMarkup:
+    """Меню режима погоды. target — чужой пользователь (правит администрация)."""
+    suffix = f":{target}" if target else ""
+    back = f"usr:card:{target}" if target else "menu:settings"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Отключить", callback_data="set:wth:0"),
-                InlineKeyboardButton(text="Каждый час", callback_data="set:wth:60"),
+                InlineKeyboardButton(text="Отключить", callback_data=f"set:wth:0{suffix}"),
+                InlineKeyboardButton(text="Каждый час", callback_data=f"set:wth:60{suffix}"),
             ],
             [
-                InlineKeyboardButton(text="Каждые 3 часа", callback_data="set:wth:180"),
-                InlineKeyboardButton(text="Каждые 6 часов", callback_data="set:wth:360"),
+                InlineKeyboardButton(text="Каждые 3 часа", callback_data=f"set:wth:180{suffix}"),
+                InlineKeyboardButton(text="Каждые 6 часов", callback_data=f"set:wth:360{suffix}"),
             ],
             [
-                InlineKeyboardButton(text="⏰ Точное время", callback_data="set:wthtime"),
-                InlineKeyboardButton(text="⏱ Свой интервал", callback_data="set:wthint"),
+                InlineKeyboardButton(text="⏰ Точное время", callback_data=f"set:wthtime{suffix}"),
+                InlineKeyboardButton(text="⏱ Свой интервал", callback_data=f"set:wthint{suffix}"),
             ],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data=back)],
         ]
     )
 
@@ -175,6 +180,7 @@ def moderation_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📥 Очередь источников", callback_data="src:queue")],
             [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
+            [InlineKeyboardButton(text="🔍 Проверить доступность", callback_data="src:check")],
             [InlineKeyboardButton(text="➕ Добавить канал", callback_data="src:add")],
             [InlineKeyboardButton(text="🌐 Добавить RSS СМИ", callback_data="src:addrss")],
             [
@@ -205,6 +211,7 @@ def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardM
             InlineKeyboardButton(text="⚙️ Оповещения", callback_data=f"usr:sets:{target}"),
         ],
         [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{target}")],
+        [InlineKeyboardButton(text="🌤 Погода пользователя", callback_data=f"usr:wth:{target}")],
     ]
     assignable = [
         role for role in roles.assignable_roles(actor_role)

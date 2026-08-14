@@ -194,6 +194,171 @@ async def create_schema() -> tuple[bool, int]:
     return bool(created), len(after)
 
 
+async def ensure_schema() -> tuple[bool, int, bool]:
+    """Создаёт схему и чинит её, если она осталась от версии с ошибкой.
+
+    Возвращает (создавалось ли что-то, число таблиц, была ли починка).
+    """
+    created, tables = await create_schema()
+
+    compatible, reason = await check_schema_compatible()
+    if compatible:
+        return created, tables, False
+
+    log.warning("Обнаружена несовместимая схема: %s", reason)
+    await repair_schema()
+    _created, tables = await create_schema()
+    return created, tables, True
+
+
+async def _sqlite_pk_type(connection, table: str, column: str) -> str:
+    """Объявленный тип столбца в SQLite — из PRAGMA table_info."""
+    from sqlalchemy import text
+
+    result = await connection.execute(text(f"PRAGMA table_info({table})"))
+    for row in result:
+        if row[1] == column:
+            return str(row[2] or "").upper()
+    return ""
+
+
+async def check_schema_compatible() -> tuple[bool, str]:
+    """Совместима ли существующая схема с текущими моделями.
+
+    Нужно потому, что `create_all` только досоздаёт недостающие таблицы
+    и никогда не меняет существующие. База, созданная версией с ошибкой
+    в типе первичного ключа, так и осталась бы нерабочей: таблицы на месте,
+    а вставка падает.
+    """
+    from sqlalchemy import inspect, text
+
+    if not config.is_sqlite():
+        return True, ""
+
+    async with get_engine().connect() as connection:
+        tables = await connection.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        if "users" not in tables:
+            return True, ""
+
+        pk_type = await _sqlite_pk_type(connection, "users", "id")
+        if pk_type and pk_type != "INTEGER":
+            return False, (
+                f"первичный ключ users.id объявлен как {pk_type}; "
+                "SQLite подставляет автоинкремент только для INTEGER"
+            )
+
+        for table, column in (("locations", "user_id"), ("deliveries", "user_id")):
+            if table not in tables:
+                continue
+            column_type = await _sqlite_pk_type(connection, table, column)
+            if column_type and column_type != "INTEGER":
+                return False, f"тип {table}.{column} = {column_type}, ожидается INTEGER"
+
+    return True, ""
+
+
+async def repair_schema() -> dict[str, int]:
+    """Пересоздаёт схему, сохраняя данные.
+
+    Содержимое читается обычными запросами — чтение из «сломанной» схемы
+    работает, падает только вставка, — затем таблицы создаются заново
+    и данные возвращаются на место. История событий не переносится:
+    она восстановима из источников и не стоит усложнения.
+    """
+    from sqlalchemy import select
+
+    from .models import Base, Feature, Location, Meta, Source, User
+
+    users: list[dict] = []
+    locations: list[dict] = []
+    sources: list[dict] = []
+    features: list[dict] = []
+    meta: list[dict] = []
+
+    async with session() as active:
+        for row in (await active.scalars(select(User))).all():
+            users.append({
+                "old_id": row.id,
+                "platform": row.platform, "external_id": row.external_id,
+                "role": row.role, "username": row.username,
+                "settings": row.settings or {},
+                "weather_mode": row.weather_mode, "weather_interval": row.weather_interval,
+                "weather_time": row.weather_time, "weather_format": row.weather_format,
+                "last_weather": row.last_weather, "last_fixed_date": row.last_fixed_date,
+                "quiet_from": row.quiet_from, "quiet_to": row.quiet_to,
+            })
+        for row in (await active.scalars(select(Location))).all():
+            locations.append({
+                "old_user_id": row.user_id,
+                "public_id": row.public_id, "name": row.name,
+                "lat": row.lat, "lon": row.lon, "street": row.street, "house": row.house,
+                "city": row.city, "district": row.district, "region": row.region,
+                "added_by": row.added_by,
+            })
+        for row in (await active.scalars(select(Source))).all():
+            sources.append({
+                "kind": row.kind, "ref": row.ref, "title": row.title, "city": row.city,
+                "enabled": row.enabled, "pending": row.pending, "added_by": row.added_by,
+            })
+        for row in (await active.scalars(select(Feature))).all():
+            features.append({"key": row.key, "enabled": row.enabled,
+                             "changed_by": row.changed_by})
+        for row in (await active.scalars(select(Meta))).all():
+            meta.append({"key": row.key, "value": row.value})
+
+    log.warning(
+        "Схема несовместима — пересоздаю. Сохранено: пользователей %d, "
+        "локаций %d, источников %d",
+        len(users), len(locations), len(sources),
+    )
+
+    async with get_engine().begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+
+    restored_locations = 0
+    async with session() as active:
+        # Старый идентификатор → новый: связь локаций с владельцами
+        # восстанавливается именно по нему, а не по порядку строк.
+        id_map: dict[int, int] = {}
+        for item in users:
+            old_id = item.pop("old_id")
+            row = User(**item)
+            active.add(row)
+            await active.flush()
+            id_map[old_id] = row.id
+
+        for item in locations:
+            old_user = item.pop("old_user_id")
+            new_user = id_map.get(old_user)
+            if new_user is None:
+                log.warning("Локация «%s» пропущена: владелец не найден", item.get("name"))
+                continue
+            active.add(Location(user_id=new_user, **item))
+            restored_locations += 1
+
+        for item in sources:
+            active.add(Source(**item))
+        for item in features:
+            active.add(Feature(**item))
+        for item in meta:
+            active.add(Meta(**item))
+
+    log.info(
+        "Схема пересоздана: пользователей %d, локаций %d, источников %d",
+        len(users), restored_locations, len(sources),
+    )
+    return {
+        "users": len(users),
+        "locations": restored_locations,
+        "sources": len(sources),
+        "features": len(features),
+        "meta": len(meta),
+    }
+
+
 async def stamp_alembic(revision: str = "0001_initial") -> None:
     """Отмечает версию схемы, чтобы будущие миграции знали точку отсчёта."""
     from sqlalchemy import text

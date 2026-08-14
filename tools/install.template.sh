@@ -9,7 +9,12 @@
 #
 # Система «Радар» v@@VERSION@@ — автономный установщик.
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
+#   Надёжный способ — сначала скачать, потом запустить:
+#     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+#     bash radar-install.sh
+#
+#   Короткий способ (годится, если связь стабильная):
+#     bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
 # Флаги:
 #   --recreate-env   заново запросить токены и настройки
@@ -18,11 +23,20 @@
 #   --reinstall      принудительная полная переустановка (данные сохраняются)
 #   --reset          полный сброс: копия данных, затем установка с нуля
 #   --backup         только снять резервную копию и выйти
+#   --rollback       вернуть предыдущую версию из последнего снимка
 #   --skip-updates   не обновлять пакеты системы
 #   --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
 #
 # Файл собирается автоматически: python3 tools/build_installer.py
 # Правьте исходники проекта, а не install.sh.
+
+# Всё тело установщика обёрнуто в функцию и вызывается единственной строкой
+# в самом конце файла. Это защита от обрыва скачивания: при `bash <(curl ...)`
+# скрипт читается потоком, и если связь оборвётся посередине, bash не сможет
+# дочитать определение функции — выдаст синтаксическую ошибку и не выполнит
+# ни одной команды. Без обёртки он выполнял бы всё до места обрыва:
+# именно так установка однажды записала половину файлов проекта.
+radar_installer_main() {
 
 set -Eeuo pipefail
 
@@ -37,6 +51,7 @@ UNINSTALL=false
 FORCE_REINSTALL=false
 FULL_RESET=false
 BACKUP_ONLY=false
+ROLLBACK_ONLY=false
 CLI_MODE_SET=false      # способ установки задан ключом, спрашивать не нужно
 BACKUP_PATH=""
 SKIP_UPDATES=false
@@ -44,6 +59,31 @@ LOG_FILE=""
 START_TS=$(date +%s)
 
 ORIGINAL_ARGS="$*"
+
+# Справка печатается из кода, а не вычитывается из собственного файла:
+# при запуске через `bash <(curl ...)` файл — это поток, и перечитать его нельзя.
+show_help() {
+    cat <<'RADAR_HELP_EOF'
+Система «Радар» — автономный установщик.
+
+Надёжный способ:
+  curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+  bash radar-install.sh
+
+Флаги:
+  --recreate-env   заново запросить токены и настройки
+  --no-cache       пересобрать образ без кэша Docker
+  --logs           показать логи после запуска
+  --reinstall      принудительная полная переустановка (данные сохраняются)
+  --reset          полный сброс: копия данных, затем установка с нуля
+  --backup         только снять резервную копию и выйти
+  --rollback       вернуть предыдущую версию из последнего снимка
+  --skip-updates   не обновлять пакеты системы
+  --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
+  --version        показать версию
+  --help           эта справка
+RADAR_HELP_EOF
+}
 
 for arg in "$@"; do
     case "$arg" in
@@ -53,10 +93,11 @@ for arg in "$@"; do
         --reinstall)    FORCE_REINSTALL=true; CLI_MODE_SET=true; NO_CACHE_FLAG="--no-cache" ;;
         --reset)        FULL_RESET=true; FORCE_REINSTALL=true; CLI_MODE_SET=true; NO_CACHE_FLAG="--no-cache" ;;
         --backup)       BACKUP_ONLY=true ;;
+        --rollback)     ROLLBACK_ONLY=true ;;
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
         -v|--version)   echo "radar $VERSION"; exit 0 ;;
-        -h|--help)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)      show_help; exit 0 ;;
         *) echo "Неизвестный флаг: $arg" >&2; exit 1 ;;
     esac
 done
@@ -88,10 +129,23 @@ log_raw() {
 }
 
 line()  { printf "%s%s%s\n" "$C_DIM" "$(printf '─%.0s' $(seq 1 "$COLS"))" "$C_RESET"; }
+
+# Общая шкала по всей установке: сколько шагов позади.
+overall() {
+    local width=28 filled percent
+    percent=$(( STEP_CURRENT * 100 / STEP_TOTAL ))
+    [ "$percent" -gt 100 ] && percent=100
+    filled=$(( percent * width / 100 ))
+    printf "  %sвсего%s [%s%s] %3d%%\n" "$C_DIM" "$C_RESET" \
+        "$(repeat '=' "$filled")" "$(repeat ' ' $((width - filled)))" "$percent"
+    return 0
+}
+
 step()  {
     STEP_CURRENT=$((STEP_CURRENT + 1))
     printf "\n%s[%d/%d]%s %s%s%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
         "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+    overall
     log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* ==="
 }
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
@@ -105,15 +159,16 @@ die()  {
     exit 1
 }
 run()  {  # выполнить команду, весь вывод — только в лог
-    local started ended status
+    # Код возврата снимается через `|| status=$?`, а не отдельной строкой:
+    # обработчик ERR срабатывает при ненулевом коде даже когда errexit выключен,
+    # и обрывал бы установку до того, как вызывающий проверит результат.
+    local started ended status=0
     started=$(date +%s)
     log_raw "CMD   $*"
     if [ -n "$LOG_FILE" ]; then
-        "$@" >> "$LOG_FILE" 2>&1
-        status=$?
+        "$@" >> "$LOG_FILE" 2>&1 || status=$?
     else
-        "$@" >/dev/null 2>&1
-        status=$?
+        "$@" >/dev/null 2>&1 || status=$?
     fi
     ended=$(date +%s)
     log_raw "EXIT  код=$status, время=$((ended - started)) с — $1"
@@ -121,6 +176,8 @@ run()  {  # выполнить команду, весь вывод — толь�
 }
 
 # --- индикатор выполнения -------------------------------------------------
+# (определения repeat/progress ниже используются в step, поэтому объявлены
+#  до первого вызова — bash разбирает функции при загрузке файла)
 # Docker не сообщает точный прогресс, поэтому полоса показывает долю
 # завершённых подзадач — честнее, чем анимация без привязки к делу.
 # Символы полосы намеренно ASCII: `tr` работает побайтово и многобайтную
@@ -313,6 +370,174 @@ choose_database() {
     DB_BACKEND_VALUE="$wanted"
 }
 
+# --- снимок перед обновлением и откат -------------------------------------
+# Файлы проекта перезаписываются на месте, поэтому перед развёртыванием
+# сохраняем текущую установку целиком. Если новая версия не поднимется,
+# откат возвращает ровно то, что работало до обновления.
+FALLBACK_VERSION="3.3.5"     # последняя версия с файловым хранилищем
+ROLLBACK_SNAPSHOT=""
+PREVIOUS_VERSION=""
+
+installed_version() {
+    local init="$APP_DIR/radar/__init__.py"
+    [ -f "$init" ] || return 0
+    grep -oE '__version__ = "[^"]+"' "$init" 2>/dev/null | head -1 | cut -d'"' -f2 || true
+}
+
+make_snapshot() {
+    [ -d "$APP_DIR/radar" ] || return 0
+
+    PREVIOUS_VERSION="$(installed_version)"
+    : "${PREVIOUS_VERSION:=неизвестна}"
+
+    local dir="$APP_DIR/backups"
+    local stamp archive
+    mkdir -p "$dir"
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    archive="$dir/rollback-${PREVIOUS_VERSION}-${stamp}.tar.gz"
+
+    info "Сохраняю снимок текущей установки (v$PREVIOUS_VERSION)"
+    local items=""
+    for entry in radar migrations main.py requirements.txt Dockerfile \
+                 docker-compose.yml alembic.ini .env; do
+        [ -e "$APP_DIR/$entry" ] && items="$items $entry"
+    done
+    [ -z "$items" ] && return 0
+
+    if tar -czf "$archive" -C "$APP_DIR" $items 2>>"$LOG_FILE"; then
+        ROLLBACK_SNAPSHOT="$archive"
+        printf '%s\n' "$PREVIOUS_VERSION" > "$dir/.last-version"
+        ok "Снимок: $(basename "$archive") ($(du -h "$archive" | cut -f1))"
+        # Оставляем последние 5 снимков
+        ls -1t "$dir"/rollback-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f || true
+    else
+        warn "Снимок создать не удалось — откат будет недоступен"
+    fi
+    return 0
+}
+
+latest_snapshot() {
+    ls -1t "$APP_DIR/backups"/rollback-*.tar.gz 2>/dev/null | head -1 || true
+}
+
+do_rollback() {       # do_rollback [путь к снимку]
+    local archive="${1:-$(latest_snapshot)}"
+    if [ -z "$archive" ] || [ ! -f "$archive" ]; then
+        fail "Снимок предыдущей установки не найден"
+        printf "    Каталог снимков: %s/backups\n" "$APP_DIR"
+        return 1
+    fi
+
+    info "Откатываюсь на снимок: $(basename "$archive")"
+    (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+    run docker rm -f "$CONTAINER_NAME" || true
+
+    rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    if ! tar -xzf "$archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
+        fail "Распаковать снимок не удалось"
+        return 1
+    fi
+    ok "Файлы восстановлены"
+
+    info "Пересобираю образ прежней версии"
+    if ! (cd "$APP_DIR" && run $COMPOSE build); then
+        fail "Сборка прежней версии не удалась"
+        return 1
+    fi
+    if ! (cd "$APP_DIR" && run $COMPOSE up -d); then
+        fail "Запуск прежней версии не удался"
+        return 1
+    fi
+
+    ok "Откат выполнен, восстановлена версия $(installed_version)"
+    return 0
+}
+
+offer_rollback() {    # offer_rollback <причина>
+    local reason="$1" archive
+    archive="$(latest_snapshot)"
+
+    echo
+    printf "  %sЧто можно сделать:%s\n\n" "$C_BOLD" "$C_RESET"
+
+    if [ -n "$archive" ]; then
+        printf "    1) Откатиться на предыдущую версию %s(%s)%s\n" \
+            "$C_DIM" "${PREVIOUS_VERSION:-из снимка}" "$C_RESET"
+        printf "       %sфайлы вернутся из снимка, база не трогается%s\n" "$C_DIM" "$C_RESET"
+    else
+        printf "    1) %s(снимка нет — откат недоступен)%s\n" "$C_DIM" "$C_RESET"
+    fi
+    printf "    2) Поставить проверенную версию %s%s\n" "$FALLBACK_VERSION" ""
+    printf "       %sпоследняя версия на файловом хранилище, без базы данных%s\n" "$C_DIM" "$C_RESET"
+    printf "    3) Ничего не делать — разберусь сам\n\n"
+    printf "  Выбор [3]: "
+
+    local answer=""
+    read -r answer < /dev/tty || answer="3"
+    : "${answer:=3}"
+    log_raw "Действие после сбоя ($reason): $answer"
+
+    case "$answer" in
+        1)
+            if [ -z "$archive" ]; then
+                warn "Снимка нет, откат невозможен"
+                return 1
+            fi
+            do_rollback "$archive" && return 0
+            return 1
+            ;;
+        2)
+            echo
+            info "Ищу установщик версии $FALLBACK_VERSION"
+
+            # Источники по убыванию надёжности: локальный архив, тег, ветка.
+            local local_archive="$APP_DIR/fallback/radar-${FALLBACK_VERSION}.tar.gz"
+            if [ -f "$local_archive" ]; then
+                info "Найден локальный архив: $local_archive"
+                if tar -xzf "$local_archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
+                    ok "Версия $FALLBACK_VERSION распакована"
+                    (cd "$APP_DIR" && run $COMPOSE down) || true
+                    if (cd "$APP_DIR" && run $COMPOSE build) &&
+                       (cd "$APP_DIR" && run $COMPOSE up -d); then
+                        ok "Версия $FALLBACK_VERSION запущена"
+                        return 0
+                    fi
+                    fail "Запустить $FALLBACK_VERSION не удалось"
+                    return 1
+                fi
+                warn "Архив повреждён"
+            fi
+
+            local url="https://raw.githubusercontent.com/Chistovik92/radar/v${FALLBACK_VERSION}/install.sh"
+            printf "  Пробую %s\n" "$url"
+            if curl -fsSLo "$APP_DIR/install-${FALLBACK_VERSION}.sh" "$url" 2>>"$LOG_FILE"; then
+                ok "Установщик $FALLBACK_VERSION скачан"
+                printf "\n  Запустите его:\n    bash %s/install-%s.sh\n\n" \
+                    "$APP_DIR" "$FALLBACK_VERSION"
+                return 1
+            fi
+
+            rm -f "$APP_DIR/install-${FALLBACK_VERSION}.sh"
+            warn "Тег v$FALLBACK_VERSION в репозитории не найден (ответ 404)"
+            echo
+            printf "  %sЧтобы этот вариант заработал, поставьте тег на нужный коммит:%s\n" \
+                "$C_BOLD" "$C_RESET"
+            printf "    git log --oneline | grep -i 3.3.5      %s# найти коммит%s\n" "$C_DIM" "$C_RESET"
+            printf "    git tag v%s <хеш коммита>\n" "$FALLBACK_VERSION"
+            printf "    git push origin v%s\n" "$FALLBACK_VERSION"
+            echo
+            printf "  %sЛибо положите архив вручную:%s\n" "$C_BOLD" "$C_RESET"
+            printf "    %s/fallback/radar-%s.tar.gz\n\n" "$APP_DIR" "$FALLBACK_VERSION"
+            return 1
+            ;;
+        *)
+            printf "\n  Полный журнал: %s\n" "$LOG_FILE"
+            printf "  Откат позже:   bash %s/install.sh --rollback\n\n" "$APP_DIR"
+            return 1
+            ;;
+    esac
+}
+
 trap 'die "Установка прервана (строка $LINENO)"' ERR
 
 # Оформление намеренно без центрирования и рамок: ширина кириллицы
@@ -369,6 +594,19 @@ ls -1t "$LOG_DIR"/installer_log_*.txt 2>/dev/null | tail -n +11 | xargs -r rm -f
 ok "Каталог: $APP_DIR"
 ok "Журнал установки: $LOG_FILE"
 info "Журналов прошлых установок: $(ls -1 "$LOG_DIR"/installer_log_*.txt 2>/dev/null | wc -l || echo 0)"
+
+if [ "$ROLLBACK_ONLY" = true ]; then
+    cd "$APP_DIR"
+    COMPOSE="docker compose"
+    docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
+    step "Откат на предыдущую версию"
+    if do_rollback; then
+        echo
+        printf "  Готово. Логи: docker logs -f %s\n\n" "$CONTAINER_NAME"
+        exit 0
+    fi
+    die "Откат не удался. Журнал: $LOG_FILE"
+fi
 
 if [ "$BACKUP_ONLY" = true ]; then
     cd "$APP_DIR"
@@ -713,6 +951,9 @@ ok "Режим: $MODE"
 
 step "Развёртывание файлов проекта"
 
+# Снимок делается до перезаписи: после неё вернуть прежнюю версию уже нечем
+make_snapshot
+
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 @@FILES@@
@@ -930,7 +1171,11 @@ ok "Образ собран"
 
 # PostgreSQL запоминает пароль при инициализации тома. Если .env изменился,
 # а том остался прежним, бот будет молча биться в отказ авторизации.
-if [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
+# Проверка нужна только когда PostgreSQL действительно выбран: иначе она
+# зря поднимала контейнер базы при работе на SQLite.
+if [ "$(get_env_value DB_BACKEND)" = "postgres" ] &&
+   [ -d "$APP_DIR/data/postgres" ] &&
+   [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
     info "Проверяю пароль существующей базы"
     run $COMPOSE up -d postgres || die "Не удалось запустить PostgreSQL"
 
@@ -1015,11 +1260,37 @@ step "Проверка системы до запуска бота"
 
 info "Запускаю диагностику внутри контейнера"
 DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
-set +e
-$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor \
-    > "$DOCTOR_OUT" 2>&1
-DOCTOR_CODE=$?
-set -e
+# Ловушка bash: обработчик ERR срабатывает при ненулевом коде даже когда
+# errexit выключен через `set +e`. Единственный надёжный способ получить код
+# без обрыва — конструкция `команда || переменная=$?`: она входит в список
+# с ||, а для таких команд ERR не вызывается.
+DOCTOR_CODE=0
+# Читаем вывод построчно: метки ##STAGE дают шкалу и название текущего теста,
+# остальное копится в файл и показывается после завершения.
+: > "$DOCTOR_OUT"
+{
+    $COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor --stream \
+        2>&1 || echo "##CODE $?"
+} | while IFS= read -r dline; do
+        case "$dline" in
+            "##STAGE "*)
+                set -- $dline
+                progress "$2" "$3" "$(printf '%s ' "${@:4}" | sed 's/ $//')"
+                ;;
+            "##CODE "*)
+                printf '%s\n' "${dline#\#\#CODE }" > "$APP_DIR/.doctor-code"
+                ;;
+            *)
+                printf '%s\n' "$dline" >> "$DOCTOR_OUT"
+                ;;
+        esac
+    done
+
+if [ -f "$APP_DIR/.doctor-code" ]; then
+    DOCTOR_CODE="$(cat "$APP_DIR/.doctor-code")"
+    rm -f "$APP_DIR/.doctor-code"
+fi
+progress_done
 
 cat "$DOCTOR_OUT" >> "$LOG_FILE" 2>/dev/null || true
 
@@ -1039,13 +1310,9 @@ rm -f "$DOCTOR_OUT"
 if [ "$DOCTOR_CODE" -eq 1 ]; then
     echo
     fail "Диагностика нашла ошибки — бот не запущен"
-    printf "\n  %sЧто делать:%s\n" "$C_BOLD" "$C_RESET"
-    printf "    1. Исправьте то, что указано выше\n"
-    printf "    2. Запустите установщик снова\n"
-    printf "    3. Если не помогает — установка с чистого листа:\n"
-    printf "       bash <(curl -fsSL %s) --reset\n" \
-        "https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
-    printf "\n  Полный отчёт с трассировками: %s\n\n" "$LOG_FILE"
+    trap - ERR
+    offer_rollback "диагностика не пройдена" || true
+    printf "  Полный отчёт с трассировками: %s\n\n" "$LOG_FILE"
     exit 1
 elif [ "$DOCTOR_CODE" -eq 2 ]; then
     warn "Есть предупреждения, но запуск возможен"
@@ -1153,3 +1420,9 @@ log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED
 if [ "$SHOW_LOGS" = true ]; then
     docker logs -f "$CONTAINER_NAME"
 fi
+
+}   # конец radar_installer_main
+
+# Единственная исполняемая строка файла. Если скачивание оборвалось,
+# до неё дело не дойдёт — bash упадёт на разборе незакрытой функции.
+radar_installer_main "$@"

@@ -179,6 +179,9 @@ def smoke_checks() -> list[str]:
     for holder, attribute in (
         ("db_engine", "wait_ready"),
         ("db_engine", "AuthenticationError"),
+        ("db_engine", "ensure_schema"),
+        ("db_engine", "repair_schema"),
+        ("db_engine", "check_schema_compatible"),
         ("db_engine", "dispose"),
         ("importer", "is_empty"),
         ("importer", "run"),
@@ -204,11 +207,11 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
+        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",
-        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.assistant",
+        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.assistant",
         "radar.platforms", "radar.platforms.base",
         "main",
     ]

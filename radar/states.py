@@ -18,3 +18,7 @@ class Form(StatesGroup):
     weather_interval = State()
     manual_address = State()
     admin_add_location = State()   # ввод адреса для чужого пользователя
+    admin_weather_time = State()   # точное время погоды для чужого пользователя
+    admin_weather_interval = State()
+    sos_contact = State()          # добавление доверенного контакта
+    sos_location = State()         # ожидание геопозиции для сигнала

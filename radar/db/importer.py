@@ -37,7 +37,10 @@ MARKER = "json_import"
 def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
     """Приводит структуру версии 3.x к виду репозитория."""
     users: dict[str, dict[str, Any]] = {}
-    for uid, item in (raw.get("users") or {}).items():
+    raw_users = raw.get("users")
+    if not isinstance(raw_users, dict):
+        raw_users = {}
+    for uid, item in raw_users.items():
         if not isinstance(item, dict):
             continue
         record = repo.default_user(item.get("role", USER), item.get("username", ""))
@@ -55,7 +58,10 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
             }
 
         locations: list[dict[str, Any]] = []
-        for entry in item.get("locs") or []:
+        raw_locs = item.get("locs")
+        if not isinstance(raw_locs, (list, tuple)):
+            raw_locs = []
+        for entry in raw_locs:
             if not isinstance(entry, dict) or not entry.get("name"):
                 # Строки вместо объектов — формат 2.x, он больше не поддерживается.
                 if isinstance(entry, str):
@@ -85,10 +91,16 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
     else:
         users[superadmin]["role"] = SUPERADMIN
 
-    channels = [str(item) for item in (raw.get("channels") or []) if item]
-    feeds = [str(item) for item in (raw.get("rss") or []) if item]
-    vk = [str(item) for item in (raw.get("vk") or []) if item]
-    pending = [str(item) for item in (raw.get("pending") or []) if item]
+    def as_list(value: Any) -> list[str]:
+        """Терпимо читает список: в повреждённом файле там может быть что угодно."""
+        if isinstance(value, (list, tuple, set)):
+            return [str(item) for item in value if item]
+        return []
+
+    channels = as_list(raw.get("channels"))
+    feeds = as_list(raw.get("rss"))
+    vk = as_list(raw.get("vk"))
+    pending = as_list(raw.get("pending"))
 
     cities = config.SOURCE_CITIES or ([config.DEFAULT_CITY] if config.DEFAULT_CITY else [])
     for name in presets.channels_for(cities):
@@ -104,7 +116,7 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
         "rss": feeds,
         "vk": vk,
         "pending": pending,
-        "meta": raw.get("meta") or {},
+        "meta": raw.get("meta") if isinstance(raw.get("meta"), dict) else {},
     }
 
 

@@ -116,7 +116,8 @@ class TestFeatures(unittest.TestCase):
         for key in ("source_vk", "weather_image", "quiet_hours",
                     "platform_max", "partners", "promo_codes",
                     "web_panel", "egress_proxy", "maintenance",
-                    "digest", "digest_paid", "digest_suggestions"):
+                    "digest", "digest_paid", "digest_suggestions",
+                    "source_ok", "sos"):
             self.assertFalse(features.enabled(key), key)
 
 
@@ -261,6 +262,89 @@ class TestLogStore(unittest.TestCase):
     def test_empty_directory_gives_no_archive(self):
         self.logs.purge(keep_current=False)
         self.assertIsNone(self.logs.archive())
+
+
+class TestSourceCheck(unittest.TestCase):
+    """Разбор ответов при проверке источников."""
+
+    def setUp(self):
+        from radar import sourcecheck
+
+        self.sc = sourcecheck
+
+    def test_title_formats(self):
+        tg = self.sc.SourceStatus(kind="tg", ref="saratov_24")
+        rss = self.sc.SourceStatus(kind="rss", ref="https://sarbc.ru/rss")
+        self.assertEqual(tg.title, "@saratov_24")
+        self.assertEqual(rss.title, "sarbc.ru")
+
+    def test_stale_detection(self):
+        from datetime import datetime, timedelta, timezone
+
+        fresh = datetime.now(timezone.utc) - timedelta(days=1)
+        old = datetime.now(timezone.utc) - timedelta(days=self.sc.STALE_DAYS + 5)
+        self.assertFalse(self.sc._is_stale(fresh))
+        self.assertTrue(self.sc._is_stale(old))
+        self.assertFalse(self.sc._is_stale(None))
+
+    def test_age_wording(self):
+        from datetime import datetime, timedelta, timezone
+
+        item = self.sc.SourceStatus(kind="tg", ref="x")
+        self.assertEqual(item.age, "—")
+        item.last_post = datetime.now(timezone.utc) - timedelta(days=1)
+        self.assertEqual(item.age, "вчера")
+        item.last_post = datetime.now(timezone.utc) - timedelta(days=5)
+        self.assertIn("5 дн", item.age)
+
+    def test_date_parsing(self):
+        self.assertIsNotNone(self.sc._parse_date("Wed, 13 Aug 2026 10:00:00 +0300"))
+        self.assertIsNotNone(self.sc._parse_date("2026-08-13T10:00:00Z"))
+        self.assertIsNone(self.sc._parse_date("не дата"))
+        self.assertIsNone(self.sc._parse_date(""))
+
+    def test_report_buckets(self):
+        report = self.sc.CheckReport(statuses=[
+            self.sc.SourceStatus(kind="tg", ref="a", state=self.sc.ALIVE),
+            self.sc.SourceStatus(kind="tg", ref="b", state=self.sc.STALE),
+            self.sc.SourceStatus(kind="rss", ref="https://c.ru/x", state=self.sc.DEAD,
+                                 note="HTTP 404"),
+        ])
+        self.assertEqual(len(report.alive), 1)
+        self.assertEqual(len(report.stale), 1)
+        self.assertEqual(len(report.dead), 1)
+        self.assertEqual(report.total, 3)
+
+    def test_render_lists_problems(self):
+        report = self.sc.CheckReport(statuses=[
+            self.sc.SourceStatus(kind="tg", ref="dead_one", state=self.sc.DEAD,
+                                 note="канал не найден"),
+        ])
+        text = self.sc.render(report)
+        self.assertIn("@dead_one", text)
+        self.assertIn("канал не найден", text)
+
+    def test_render_when_all_good(self):
+        report = self.sc.CheckReport(statuses=[
+            self.sc.SourceStatus(kind="tg", ref="ok", state=self.sc.ALIVE),
+        ])
+        self.assertIn("отвечают", self.sc.render(report))
+
+
+class TestSchemaGuards(unittest.TestCase):
+    """Защита от несовместимой схемы, оставшейся от прежней версии."""
+
+    def test_ensure_schema_exposed(self):
+        from radar.db import engine
+
+        for name in ("ensure_schema", "repair_schema", "check_schema_compatible"):
+            self.assertTrue(hasattr(engine, name), name)
+
+    def test_bigint_variant_declared(self):
+        """Первичный ключ обязан быть INTEGER в SQLite, иначе нет автоинкремента."""
+        from radar.db import models
+
+        self.assertTrue(hasattr(models, "BigIntType"))
 
 
 if __name__ == "__main__":

@@ -39,6 +39,25 @@ class AccessMiddleware(BaseMiddleware):
         uid = str(user.id)
         text = (getattr(event, "text", "") or "").strip()
 
+        # Доверенный контакт SOS открывает бота по ссылке ?start=sos_<код>.
+        # Регистрируем его и отмечаем подтверждённым — иначе Telegram
+        # не позволит боту написать ему первым при тревоге.
+        if text.startswith("/start") and "sos_" in text:
+            from . import sos
+
+            invite = text.split("sos_", 1)[1].split()[0].strip()
+            found = sos.find_by_invite(storage.users(), invite)
+            if found is not None:
+                owner, _contact = found
+                if uid not in storage.users():
+                    storage.register(uid, user.username or "")
+                owner_data = storage.get_user(owner)
+                if owner_data is not None:
+                    sos.confirm_by_invite(owner_data, invite, uid)
+                    await storage.save(owner)
+                await storage.save(uid)
+                log.info("Контакт SOS подтверждён: %s для %s", uid, owner)
+
         if uid not in storage.users() and text.startswith("/start") and "join" in text:
             storage.register(uid, user.username or "")
             await storage.save()

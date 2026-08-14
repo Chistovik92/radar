@@ -10,7 +10,17 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from . import assistant, common, features, locations, logs, settings, sources, users
+from . import (
+    assistant,
+    common,
+    features,
+    locations,
+    logs,
+    settings,
+    sos,
+    sources,
+    users,
+)
 
 def setup(dp: Dispatcher) -> None:
     dp.include_router(common.router)
@@ -20,6 +30,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(users.router)
     dp.include_router(features.router)
     dp.include_router(logs.router)
+    dp.include_router(sos.router)
     # Ассистент перехватывает любой оставшийся текст — только в самом конце.
     dp.include_router(assistant.router)
 

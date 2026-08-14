@@ -16,7 +16,7 @@ from typing import Any
 
 import aiohttp
 
-from . import ai, config, geocode, sources, storage, weather
+from . import ai, config, features, geocode, sos, sources, storage, weather
 from .matching import Analysis, cluster_title, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
@@ -134,6 +134,41 @@ async def dispatch_user(
 #  Цикл
 # --------------------------------------------------------------------------
 
+async def repeat_sos() -> None:
+    """Повторяет активные сигналы SOS, пока отправитель не дал отбой."""
+    if not features.enabled("sos"):
+        return
+
+    for alert in sos.due_alerts():
+        owner = storage.get_user(alert.owner)
+        if owner is None:
+            sos.stop_alert(alert.owner)
+            continue
+
+        alert.repeats += 1
+        alert.last_sent = time.time()
+        text = sos.build_alert(
+            owner.get("username") or f"ID {alert.owner}",
+            "",
+            alert.lat,
+            alert.lon,
+            alert.address,
+            alert.note,
+            repeat=alert.repeats,
+        )
+        for contact in sos.confirmed_contacts(owner):
+            await send_html(contact.key, text)
+        log.info("Повтор сигнала SOS от %s (%d)", alert.owner, alert.repeats)
+
+        if alert.repeats >= sos.MAX_REPEATS:
+            sos.stop_alert(alert.owner)
+            await send_html(
+                alert.owner,
+                "🆘 Повторы сигнала прекращены — достигнут предел. "
+                "Нажмите SOS заново, если помощь всё ещё нужна.",
+            )
+
+
 async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None:
     items = await sources.collect(
         session,
@@ -196,6 +231,7 @@ async def run() -> None:
         while True:
             started = time.monotonic()
             try:
+                await repeat_sos()
                 await cycle(session)
             except asyncio.CancelledError:
                 raise
