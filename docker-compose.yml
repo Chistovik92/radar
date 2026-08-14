@@ -38,8 +38,12 @@ services:
     container_name: radar_bot_api
     restart: unless-stopped
     environment:
-      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?нужен api_id с my.telegram.org}
-      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?нужен api_hash с my.telegram.org}
+      # Пустые значения по умолчанию обязательны: Compose подставляет
+      # переменные во всём файле независимо от профилей, и конструкция
+      # ${VAR:?...} роняла бы обычную сборку, где этот сервис не нужен.
+      # Отсутствие ключей проверяет установщик при включении профиля media.
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_LOCAL: "true"
     command:
       # Кэш сервера растёт быстро: чистим файлы старше 6 часов

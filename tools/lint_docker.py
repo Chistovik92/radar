@@ -72,6 +72,31 @@ def copy_sources() -> list[str]:
     return sources
 
 
+COMPOSE = ROOT / "docker-compose.yml"
+REQUIRED_VAR = re.compile(r"\$\{(\w+):\?")
+
+
+def compose_required_vars() -> list[str]:
+    """Переменные вида ${VAR:?...} в compose-файле.
+
+    Compose подставляет переменные во всём файле сразу, не разбирая профили.
+    Поэтому обязательная переменная в сервисе под профилем роняет и обычную
+    сборку — именно так падала установка 4.2.0, где ключи Bot API Server
+    требовались даже при выключенной загрузке видео.
+    """
+    if not COMPOSE.exists():
+        return []
+
+    text = COMPOSE.read_text("utf-8")
+    found: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        found.extend(REQUIRED_VAR.findall(stripped))
+    return sorted(set(found))
+
+
 def main() -> int:
     if not DOCKERFILE.exists():
         print("Dockerfile не найден — проверять нечего.")
@@ -96,13 +121,22 @@ def main() -> int:
                 f"сборка упадёт с «not found»"
             )
 
+    for name in compose_required_vars():
+        problems.append(
+            f"docker-compose.yml: переменная ${{{name}:?}} обязательна — "
+            f"Compose потребует её даже когда сервис выключен профилем"
+        )
+
     for problem in problems:
         print(f"  ✗ {problem}")
     if problems:
         print(f"\nНайдено несоответствий: {len(problems)}")
         return 1
 
-    print(f"Dockerfile и .dockerignore согласованы ({len(copy_sources())} инструкций COPY).")
+    print(
+        f"Dockerfile и .dockerignore согласованы ({len(copy_sources())} инструкций COPY), "
+        "обязательных переменных в compose нет."
+    )
     return 0
 
 

@@ -1252,6 +1252,23 @@ else
     info "База данных: SQLite (файл data/radar.db, отдельный контейнер не нужен)"
 fi
 
+# Профиль media поднимает собственный Bot API Server: он снимает предел
+# отправки с 50 МБ до 2 ГБ, но требует ключей с my.telegram.org.
+MEDIA_VALUE="$(get_env_value MEDIA_ENABLED)"
+if [ "$MEDIA_VALUE" = "1" ]; then
+    API_ID_VALUE="$(get_env_value TELEGRAM_API_ID)"
+    API_HASH_VALUE="$(get_env_value TELEGRAM_API_HASH)"
+    if [ -n "$API_ID_VALUE" ] && [ -n "$API_HASH_VALUE" ]; then
+        COMPOSE_ARGS="$COMPOSE_ARGS --profile media"
+        info "Загрузка видео: свой Bot API Server (файлы до 2 ГБ)"
+        mkdir -p "$APP_DIR/data/bot-api"
+    else
+        warn "MEDIA_ENABLED=1, но TELEGRAM_API_ID или TELEGRAM_API_HASH не заданы"
+        info "Загрузка видео будет работать с пределом 50 МБ"
+        info "Ключи берутся на my.telegram.org → API development tools"
+    fi
+fi
+
 # --------------------------------------------------------------------------
 #  Шаг 8. Диагностика до запуска
 # --------------------------------------------------------------------------

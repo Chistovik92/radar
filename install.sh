@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.2.0 — автономный установщик.
+# Система «Радар» v4.2.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.2.0"
+VERSION="4.2.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1051,8 +1051,12 @@ services:
     container_name: radar_bot_api
     restart: unless-stopped
     environment:
-      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?нужен api_id с my.telegram.org}
-      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?нужен api_hash с my.telegram.org}
+      # Пустые значения по умолчанию обязательны: Compose подставляет
+      # переменные во всём файле независимо от профилей, и конструкция
+      # ${VAR:?...} роняла бы обычную сборку, где этот сервис не нужен.
+      # Отсутствие ключей проверяет установщик при включении профиля media.
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_LOCAL: "true"
     command:
       # Кэш сервера растёт быстро: чистим файлы старше 6 часов
@@ -1206,7 +1210,7 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
-    ("4.2.0", [
+    ("4.2.1", [
         "🎬 <b>Загрузка видео по ссылке</b> с выбором качества — YouTube, VK, "
         "RuTube, OK, Дзен и другие площадки. Включается флагом media_download.",
         "🔌 <b>Адаптер мессенджера MAX</b> — реализован, но пока не проверен "
@@ -1415,7 +1419,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.2.0"
+__version__ = "4.2.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -12471,6 +12475,23 @@ if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
     done
 else
     info "База данных: SQLite (файл data/radar.db, отдельный контейнер не нужен)"
+fi
+
+# Профиль media поднимает собственный Bot API Server: он снимает предел
+# отправки с 50 МБ до 2 ГБ, но требует ключей с my.telegram.org.
+MEDIA_VALUE="$(get_env_value MEDIA_ENABLED)"
+if [ "$MEDIA_VALUE" = "1" ]; then
+    API_ID_VALUE="$(get_env_value TELEGRAM_API_ID)"
+    API_HASH_VALUE="$(get_env_value TELEGRAM_API_HASH)"
+    if [ -n "$API_ID_VALUE" ] && [ -n "$API_HASH_VALUE" ]; then
+        COMPOSE_ARGS="$COMPOSE_ARGS --profile media"
+        info "Загрузка видео: свой Bot API Server (файлы до 2 ГБ)"
+        mkdir -p "$APP_DIR/data/bot-api"
+    else
+        warn "MEDIA_ENABLED=1, но TELEGRAM_API_ID или TELEGRAM_API_HASH не заданы"
+        info "Загрузка видео будет работать с пределом 50 МБ"
+        info "Ключи берутся на my.telegram.org → API development tools"
+    fi
 fi
 
 # --------------------------------------------------------------------------

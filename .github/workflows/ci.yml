@@ -30,6 +30,12 @@ jobs:
       - name: Dockerfile согласован с .dockerignore
         run: python tools/lint_docker.py
 
+      - name: docker compose разбирается без переменных
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          rm -f .env
+
       - name: Подпись автора на месте
         run: python tools/stamp_headers.py --check
 
