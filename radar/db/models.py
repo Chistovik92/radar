@@ -39,6 +39,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 # Благодаря with_variant модели остаются едиными для обеих баз.
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
+# SQLite подставляет значение автоинкремента только для INTEGER PRIMARY KEY.
+# BIGINT для него — обычный тип без связи с rowid, поэтому вставка падала
+# с «NOT NULL constraint failed: users.id». В PostgreSQL нужен именно
+# BigInteger: телеграмные идентификаторы не помещаются в 32 бита.
+BigIntType = BigInteger().with_variant(Integer, "sqlite")
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -61,7 +67,7 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True, autoincrement=True)
     platform: Mapped[str] = mapped_column(String(16), default="telegram", index=True)
     external_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16), default="user", index=True)
@@ -72,7 +78,7 @@ class User(Base):
     weather_interval: Mapped[int] = mapped_column(Integer, default=0)
     weather_time: Mapped[str] = mapped_column(String(8), default="08:00")
     weather_format: Mapped[str] = mapped_column(String(8), default="text")  # text | image
-    last_weather: Mapped[int] = mapped_column(BigInteger, default=0)
+    last_weather: Mapped[int] = mapped_column(BigIntType, default=0)
     last_fixed_date: Mapped[str] = mapped_column(String(16), default="")
 
     # Задел под 4.1: тихие часы и антиспам.
@@ -98,7 +104,7 @@ class Location(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(16), index=True)
     user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True
+        BigIntType, ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
 
     name: Mapped[str] = mapped_column(String(200))
@@ -111,7 +117,7 @@ class Location(Base):
     region: Mapped[str] = mapped_column(String(120), default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    added_by: Mapped[int] = mapped_column(BigInteger, default=0)  # кто добавил, 0 — сам
+    added_by: Mapped[int] = mapped_column(BigIntType, default=0)  # кто добавил, 0 — сам
 
     user: Mapped[User] = relationship(back_populates="locations")
 
@@ -129,7 +135,7 @@ class Source(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     pending: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
-    added_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    added_by: Mapped[int] = mapped_column(BigIntType, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_error: Mapped[str] = mapped_column(String(300), default="")
@@ -185,7 +191,7 @@ class Delivery(Base):
         Integer, ForeignKey("events.id", ondelete="CASCADE"), index=True
     )
     user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True
+        BigIntType, ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     location_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("locations.id", ondelete="SET NULL"), default=None
@@ -212,7 +218,7 @@ class Feature(Base):
 
     key: Mapped[str] = mapped_column(String(48), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    changed_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    changed_by: Mapped[int] = mapped_column(BigIntType, default=0)
     changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

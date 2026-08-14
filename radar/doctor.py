@@ -11,6 +11,7 @@
     python -m radar.doctor            # полная проверка
     python -m radar.doctor --quick    # без обращений к сети
     python -m radar.doctor --json     # машиночитаемый отчёт
+    python -m radar.doctor --stream   # с метками прогресса для установщика
 
 Модуль лежит внутри пакета, а не в tools/, намеренно: tools исключён
 из контекста сборки образа, и попытка скопировать оттуда файл ломала build.
@@ -78,6 +79,34 @@ class Report:
 
 report = Report()
 
+# Порядок и подписи проверок: установщик показывает по ним шкалу.
+STAGES = (
+    ("imports", "зависимости"),
+    ("resources", "память и диск"),
+    ("config", "конфигурация"),
+    ("database", "подключение к базе"),
+    ("schema", "схема и запись данных"),
+    ("import_file", "данные прежней версии"),
+    ("telegram", "доступ к Telegram"),
+)
+
+STREAM = False
+_stage_index = 0
+
+
+def announce(key: str) -> None:
+    """Сообщает установщику, какая проверка началась.
+
+    Метка машиночитаемая: установщик по ней рисует шкалу, а человек
+    в обычном режиме её не видит.
+    """
+    global _stage_index
+    if not STREAM:
+        return
+    titles = dict(STAGES)
+    _stage_index += 1
+    print(f"##STAGE {_stage_index} {len(STAGES)} {titles.get(key, key)}", flush=True)
+
 
 # --------------------------------------------------------------------------
 #  Проверки
@@ -85,6 +114,7 @@ report = Report()
 
 def check_imports() -> bool:
     """Все ли зависимости на месте и импортируются."""
+    announce("imports")
     modules = {
         "aiogram": "Telegram-клиент",
         "aiohttp": "HTTP-клиент",
@@ -113,6 +143,7 @@ def check_imports() -> bool:
 
 def check_config() -> bool:
     """Обязательные параметры и типичные ошибки в них."""
+    announce("config")
     try:
         from radar import config
     except Exception as exc:  # noqa: BLE001
@@ -146,6 +177,7 @@ def check_config() -> bool:
 
 async def check_database() -> bool:
     """Подключение, создание схемы и полный цикл записи-чтения."""
+    announce("database")
     from radar import config
     from radar.db import engine as db_engine
 
@@ -173,6 +205,7 @@ async def check_database() -> bool:
 
     # Полный цикл: запись, чтение, удаление. Именно здесь всплывали ошибки
     # ленивой подгрузки, которых не видно при простом подключении.
+    announce("schema")
     from radar.db import repo
 
     probe_id = "doctor:0"
@@ -207,6 +240,7 @@ async def check_database() -> bool:
 
 async def check_import_file() -> None:
     """Читается ли файл прежней версии, если он есть."""
+    announce("import_file")
     from radar import config
     from radar.db import importer
 
@@ -234,6 +268,7 @@ async def check_import_file() -> None:
 
 async def check_telegram() -> None:
     """Принимает ли Telegram наш токен."""
+    announce("telegram")
     import aiohttp
 
     from radar import config
@@ -260,6 +295,7 @@ async def check_telegram() -> None:
 
 def check_resources() -> None:
     """Хватит ли памяти и места."""
+    announce("resources")
     try:
         with open("/proc/meminfo", encoding="utf-8") as handle:
             info = {
@@ -345,7 +381,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Диагностика системы «Радар»")
     parser.add_argument("--quick", action="store_true", help="без обращений к сети")
     parser.add_argument("--json", action="store_true", help="машиночитаемый отчёт")
+    parser.add_argument("--stream", action="store_true",
+                        help="печатать метки прогресса для установщика")
     args = parser.parse_args()
+
+    global STREAM
+    STREAM = args.stream
 
     try:
         asyncio.run(run(args.quick))

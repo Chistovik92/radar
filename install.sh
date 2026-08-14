@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.8.3 — автономный установщик.
+# Система «Радар» v4.0.8.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.0.8.3"
+VERSION="4.0.8.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -129,10 +129,23 @@ log_raw() {
 }
 
 line()  { printf "%s%s%s\n" "$C_DIM" "$(printf '─%.0s' $(seq 1 "$COLS"))" "$C_RESET"; }
+
+# Общая шкала по всей установке: сколько шагов позади.
+overall() {
+    local width=28 filled percent
+    percent=$(( STEP_CURRENT * 100 / STEP_TOTAL ))
+    [ "$percent" -gt 100 ] && percent=100
+    filled=$(( percent * width / 100 ))
+    printf "  %sвсего%s [%s%s] %3d%%\n" "$C_DIM" "$C_RESET" \
+        "$(repeat '=' "$filled")" "$(repeat ' ' $((width - filled)))" "$percent"
+    return 0
+}
+
 step()  {
     STEP_CURRENT=$((STEP_CURRENT + 1))
     printf "\n%s[%d/%d]%s %s%s%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
         "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+    overall
     log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* ==="
 }
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
@@ -163,6 +176,8 @@ run()  {  # выполнить команду, весь вывод — толь�
 }
 
 # --- индикатор выполнения -------------------------------------------------
+# (определения repeat/progress ниже используются в step, поэтому объявлены
+#  до первого вызова — bash разбирает функции при загрузке файла)
 # Docker не сообщает точный прогресс, поэтому полоса показывает долю
 # завершённых подзадач — честнее, чем анимация без привязки к делу.
 # Символы полосы намеренно ASCII: `tr` работает побайтово и многобайтную
@@ -473,18 +488,46 @@ offer_rollback() {    # offer_rollback <причина>
             ;;
         2)
             echo
-            info "Устанавливаю версию $FALLBACK_VERSION"
+            info "Ищу установщик версии $FALLBACK_VERSION"
+
+            # Источники по убыванию надёжности: локальный архив, тег, ветка.
+            local local_archive="$APP_DIR/fallback/radar-${FALLBACK_VERSION}.tar.gz"
+            if [ -f "$local_archive" ]; then
+                info "Найден локальный архив: $local_archive"
+                if tar -xzf "$local_archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
+                    ok "Версия $FALLBACK_VERSION распакована"
+                    (cd "$APP_DIR" && run $COMPOSE down) || true
+                    if (cd "$APP_DIR" && run $COMPOSE build) &&
+                       (cd "$APP_DIR" && run $COMPOSE up -d); then
+                        ok "Версия $FALLBACK_VERSION запущена"
+                        return 0
+                    fi
+                    fail "Запустить $FALLBACK_VERSION не удалось"
+                    return 1
+                fi
+                warn "Архив повреждён"
+            fi
+
             local url="https://raw.githubusercontent.com/Chistovik92/radar/v${FALLBACK_VERSION}/install.sh"
-            printf "  Скачиваю %s\n" "$url"
+            printf "  Пробую %s\n" "$url"
             if curl -fsSLo "$APP_DIR/install-${FALLBACK_VERSION}.sh" "$url" 2>>"$LOG_FILE"; then
                 ok "Установщик $FALLBACK_VERSION скачан"
-                printf "\n  Запустите его вручную:\n    bash %s/install-%s.sh\n\n" \
+                printf "\n  Запустите его:\n    bash %s/install-%s.sh\n\n" \
                     "$APP_DIR" "$FALLBACK_VERSION"
-            else
-                warn "Скачать не удалось — возможно, тег v$FALLBACK_VERSION отсутствует в репозитории"
-                printf "\n  Возьмите архив версии %s со страницы релизов:\n" "$FALLBACK_VERSION"
-                printf "    https://github.com/Chistovik92/radar/releases\n\n"
+                return 1
             fi
+
+            rm -f "$APP_DIR/install-${FALLBACK_VERSION}.sh"
+            warn "Тег v$FALLBACK_VERSION в репозитории не найден (ответ 404)"
+            echo
+            printf "  %sЧтобы этот вариант заработал, поставьте тег на нужный коммит:%s\n" \
+                "$C_BOLD" "$C_RESET"
+            printf "    git log --oneline | grep -i 3.3.5      %s# найти коммит%s\n" "$C_DIM" "$C_RESET"
+            printf "    git tag v%s <хеш коммита>\n" "$FALLBACK_VERSION"
+            printf "    git push origin v%s\n" "$FALLBACK_VERSION"
+            echo
+            printf "  %sЛибо положите архив вручную:%s\n" "$C_BOLD" "$C_RESET"
+            printf "    %s/fallback/radar-%s.tar.gz\n\n" "$APP_DIR" "$FALLBACK_VERSION"
             return 1
             ;;
         *)
@@ -1293,7 +1336,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.8.3"
+__version__ = "4.0.8.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3600,6 +3643,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 # Благодаря with_variant модели остаются едиными для обеих баз.
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
+# SQLite подставляет значение автоинкремента только для INTEGER PRIMARY KEY.
+# BIGINT для него — обычный тип без связи с rowid, поэтому вставка падала
+# с «NOT NULL constraint failed: users.id». В PostgreSQL нужен именно
+# BigInteger: телеграмные идентификаторы не помещаются в 32 бита.
+BigIntType = BigInteger().with_variant(Integer, "sqlite")
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -3622,7 +3671,7 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True, autoincrement=True)
     platform: Mapped[str] = mapped_column(String(16), default="telegram", index=True)
     external_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16), default="user", index=True)
@@ -3633,7 +3682,7 @@ class User(Base):
     weather_interval: Mapped[int] = mapped_column(Integer, default=0)
     weather_time: Mapped[str] = mapped_column(String(8), default="08:00")
     weather_format: Mapped[str] = mapped_column(String(8), default="text")  # text | image
-    last_weather: Mapped[int] = mapped_column(BigInteger, default=0)
+    last_weather: Mapped[int] = mapped_column(BigIntType, default=0)
     last_fixed_date: Mapped[str] = mapped_column(String(16), default="")
 
     # Задел под 4.1: тихие часы и антиспам.
@@ -3659,7 +3708,7 @@ class Location(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(16), index=True)
     user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True
+        BigIntType, ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
 
     name: Mapped[str] = mapped_column(String(200))
@@ -3672,7 +3721,7 @@ class Location(Base):
     region: Mapped[str] = mapped_column(String(120), default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    added_by: Mapped[int] = mapped_column(BigInteger, default=0)  # кто добавил, 0 — сам
+    added_by: Mapped[int] = mapped_column(BigIntType, default=0)  # кто добавил, 0 — сам
 
     user: Mapped[User] = relationship(back_populates="locations")
 
@@ -3690,7 +3739,7 @@ class Source(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     pending: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
-    added_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    added_by: Mapped[int] = mapped_column(BigIntType, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_error: Mapped[str] = mapped_column(String(300), default="")
@@ -3746,7 +3795,7 @@ class Delivery(Base):
         Integer, ForeignKey("events.id", ondelete="CASCADE"), index=True
     )
     user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True
+        BigIntType, ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     location_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("locations.id", ondelete="SET NULL"), default=None
@@ -3773,7 +3822,7 @@ class Feature(Base):
 
     key: Mapped[str] = mapped_column(String(48), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    changed_by: Mapped[int] = mapped_column(BigInteger, default=0)
+    changed_by: Mapped[int] = mapped_column(BigIntType, default=0)
     changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
@@ -4723,6 +4772,7 @@ cat > "radar/doctor.py" <<'RADAR_FILE_22'
     python -m radar.doctor            # полная проверка
     python -m radar.doctor --quick    # без обращений к сети
     python -m radar.doctor --json     # машиночитаемый отчёт
+    python -m radar.doctor --stream   # с метками прогресса для установщика
 
 Модуль лежит внутри пакета, а не в tools/, намеренно: tools исключён
 из контекста сборки образа, и попытка скопировать оттуда файл ломала build.
@@ -4790,6 +4840,34 @@ class Report:
 
 report = Report()
 
+# Порядок и подписи проверок: установщик показывает по ним шкалу.
+STAGES = (
+    ("imports", "зависимости"),
+    ("resources", "память и диск"),
+    ("config", "конфигурация"),
+    ("database", "подключение к базе"),
+    ("schema", "схема и запись данных"),
+    ("import_file", "данные прежней версии"),
+    ("telegram", "доступ к Telegram"),
+)
+
+STREAM = False
+_stage_index = 0
+
+
+def announce(key: str) -> None:
+    """Сообщает установщику, какая проверка началась.
+
+    Метка машиночитаемая: установщик по ней рисует шкалу, а человек
+    в обычном режиме её не видит.
+    """
+    global _stage_index
+    if not STREAM:
+        return
+    titles = dict(STAGES)
+    _stage_index += 1
+    print(f"##STAGE {_stage_index} {len(STAGES)} {titles.get(key, key)}", flush=True)
+
 
 # --------------------------------------------------------------------------
 #  Проверки
@@ -4797,6 +4875,7 @@ report = Report()
 
 def check_imports() -> bool:
     """Все ли зависимости на месте и импортируются."""
+    announce("imports")
     modules = {
         "aiogram": "Telegram-клиент",
         "aiohttp": "HTTP-клиент",
@@ -4825,6 +4904,7 @@ def check_imports() -> bool:
 
 def check_config() -> bool:
     """Обязательные параметры и типичные ошибки в них."""
+    announce("config")
     try:
         from radar import config
     except Exception as exc:  # noqa: BLE001
@@ -4858,6 +4938,7 @@ def check_config() -> bool:
 
 async def check_database() -> bool:
     """Подключение, создание схемы и полный цикл записи-чтения."""
+    announce("database")
     from radar import config
     from radar.db import engine as db_engine
 
@@ -4885,6 +4966,7 @@ async def check_database() -> bool:
 
     # Полный цикл: запись, чтение, удаление. Именно здесь всплывали ошибки
     # ленивой подгрузки, которых не видно при простом подключении.
+    announce("schema")
     from radar.db import repo
 
     probe_id = "doctor:0"
@@ -4919,6 +5001,7 @@ async def check_database() -> bool:
 
 async def check_import_file() -> None:
     """Читается ли файл прежней версии, если он есть."""
+    announce("import_file")
     from radar import config
     from radar.db import importer
 
@@ -4946,6 +5029,7 @@ async def check_import_file() -> None:
 
 async def check_telegram() -> None:
     """Принимает ли Telegram наш токен."""
+    announce("telegram")
     import aiohttp
 
     from radar import config
@@ -4972,6 +5056,7 @@ async def check_telegram() -> None:
 
 def check_resources() -> None:
     """Хватит ли памяти и места."""
+    announce("resources")
     try:
         with open("/proc/meminfo", encoding="utf-8") as handle:
             info = {
@@ -5057,7 +5142,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Диагностика системы «Радар»")
     parser.add_argument("--quick", action="store_true", help="без обращений к сети")
     parser.add_argument("--json", action="store_true", help="машиночитаемый отчёт")
+    parser.add_argument("--stream", action="store_true",
+                        help="печатать метки прогресса для установщика")
     args = parser.parse_args()
+
+    global STREAM
+    STREAM = args.stream
 
     try:
         asyncio.run(run(args.quick))
@@ -10227,8 +10317,32 @@ DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
 # без обрыва — конструкция `команда || переменная=$?`: она входит в список
 # с ||, а для таких команд ERR не вызывается.
 DOCTOR_CODE=0
-$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor \
-    > "$DOCTOR_OUT" 2>&1 || DOCTOR_CODE=$?
+# Читаем вывод построчно: метки ##STAGE дают шкалу и название текущего теста,
+# остальное копится в файл и показывается после завершения.
+: > "$DOCTOR_OUT"
+{
+    $COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor --stream \
+        2>&1 || echo "##CODE $?"
+} | while IFS= read -r dline; do
+        case "$dline" in
+            "##STAGE "*)
+                set -- $dline
+                progress "$2" "$3" "$(printf '%s ' "${@:4}" | sed 's/ $//')"
+                ;;
+            "##CODE "*)
+                printf '%s\n' "${dline#\#\#CODE }" > "$APP_DIR/.doctor-code"
+                ;;
+            *)
+                printf '%s\n' "$dline" >> "$DOCTOR_OUT"
+                ;;
+        esac
+    done
+
+if [ -f "$APP_DIR/.doctor-code" ]; then
+    DOCTOR_CODE="$(cat "$APP_DIR/.doctor-code")"
+    rm -f "$APP_DIR/.doctor-code"
+fi
+progress_done
 
 cat "$DOCTOR_OUT" >> "$LOG_FILE" 2>/dev/null || true
 

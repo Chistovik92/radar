@@ -129,10 +129,23 @@ log_raw() {
 }
 
 line()  { printf "%s%s%s\n" "$C_DIM" "$(printf '─%.0s' $(seq 1 "$COLS"))" "$C_RESET"; }
+
+# Общая шкала по всей установке: сколько шагов позади.
+overall() {
+    local width=28 filled percent
+    percent=$(( STEP_CURRENT * 100 / STEP_TOTAL ))
+    [ "$percent" -gt 100 ] && percent=100
+    filled=$(( percent * width / 100 ))
+    printf "  %sвсего%s [%s%s] %3d%%\n" "$C_DIM" "$C_RESET" \
+        "$(repeat '=' "$filled")" "$(repeat ' ' $((width - filled)))" "$percent"
+    return 0
+}
+
 step()  {
     STEP_CURRENT=$((STEP_CURRENT + 1))
     printf "\n%s[%d/%d]%s %s%s%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
         "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+    overall
     log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* ==="
 }
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
@@ -163,6 +176,8 @@ run()  {  # выполнить команду, весь вывод — толь�
 }
 
 # --- индикатор выполнения -------------------------------------------------
+# (определения repeat/progress ниже используются в step, поэтому объявлены
+#  до первого вызова — bash разбирает функции при загрузке файла)
 # Docker не сообщает точный прогресс, поэтому полоса показывает долю
 # завершённых подзадач — честнее, чем анимация без привязки к делу.
 # Символы полосы намеренно ASCII: `tr` работает побайтово и многобайтную
@@ -473,18 +488,46 @@ offer_rollback() {    # offer_rollback <причина>
             ;;
         2)
             echo
-            info "Устанавливаю версию $FALLBACK_VERSION"
+            info "Ищу установщик версии $FALLBACK_VERSION"
+
+            # Источники по убыванию надёжности: локальный архив, тег, ветка.
+            local local_archive="$APP_DIR/fallback/radar-${FALLBACK_VERSION}.tar.gz"
+            if [ -f "$local_archive" ]; then
+                info "Найден локальный архив: $local_archive"
+                if tar -xzf "$local_archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
+                    ok "Версия $FALLBACK_VERSION распакована"
+                    (cd "$APP_DIR" && run $COMPOSE down) || true
+                    if (cd "$APP_DIR" && run $COMPOSE build) &&
+                       (cd "$APP_DIR" && run $COMPOSE up -d); then
+                        ok "Версия $FALLBACK_VERSION запущена"
+                        return 0
+                    fi
+                    fail "Запустить $FALLBACK_VERSION не удалось"
+                    return 1
+                fi
+                warn "Архив повреждён"
+            fi
+
             local url="https://raw.githubusercontent.com/Chistovik92/radar/v${FALLBACK_VERSION}/install.sh"
-            printf "  Скачиваю %s\n" "$url"
+            printf "  Пробую %s\n" "$url"
             if curl -fsSLo "$APP_DIR/install-${FALLBACK_VERSION}.sh" "$url" 2>>"$LOG_FILE"; then
                 ok "Установщик $FALLBACK_VERSION скачан"
-                printf "\n  Запустите его вручную:\n    bash %s/install-%s.sh\n\n" \
+                printf "\n  Запустите его:\n    bash %s/install-%s.sh\n\n" \
                     "$APP_DIR" "$FALLBACK_VERSION"
-            else
-                warn "Скачать не удалось — возможно, тег v$FALLBACK_VERSION отсутствует в репозитории"
-                printf "\n  Возьмите архив версии %s со страницы релизов:\n" "$FALLBACK_VERSION"
-                printf "    https://github.com/Chistovik92/radar/releases\n\n"
+                return 1
             fi
+
+            rm -f "$APP_DIR/install-${FALLBACK_VERSION}.sh"
+            warn "Тег v$FALLBACK_VERSION в репозитории не найден (ответ 404)"
+            echo
+            printf "  %sЧтобы этот вариант заработал, поставьте тег на нужный коммит:%s\n" \
+                "$C_BOLD" "$C_RESET"
+            printf "    git log --oneline | grep -i 3.3.5      %s# найти коммит%s\n" "$C_DIM" "$C_RESET"
+            printf "    git tag v%s <хеш коммита>\n" "$FALLBACK_VERSION"
+            printf "    git push origin v%s\n" "$FALLBACK_VERSION"
+            echo
+            printf "  %sЛибо положите архив вручную:%s\n" "$C_BOLD" "$C_RESET"
+            printf "    %s/fallback/radar-%s.tar.gz\n\n" "$APP_DIR" "$FALLBACK_VERSION"
             return 1
             ;;
         *)
@@ -1222,8 +1265,32 @@ DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
 # без обрыва — конструкция `команда || переменная=$?`: она входит в список
 # с ||, а для таких команд ERR не вызывается.
 DOCTOR_CODE=0
-$COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor \
-    > "$DOCTOR_OUT" 2>&1 || DOCTOR_CODE=$?
+# Читаем вывод построчно: метки ##STAGE дают шкалу и название текущего теста,
+# остальное копится в файл и показывается после завершения.
+: > "$DOCTOR_OUT"
+{
+    $COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python -m radar.doctor --stream \
+        2>&1 || echo "##CODE $?"
+} | while IFS= read -r dline; do
+        case "$dline" in
+            "##STAGE "*)
+                set -- $dline
+                progress "$2" "$3" "$(printf '%s ' "${@:4}" | sed 's/ $//')"
+                ;;
+            "##CODE "*)
+                printf '%s\n' "${dline#\#\#CODE }" > "$APP_DIR/.doctor-code"
+                ;;
+            *)
+                printf '%s\n' "$dline" >> "$DOCTOR_OUT"
+                ;;
+        esac
+    done
+
+if [ -f "$APP_DIR/.doctor-code" ]; then
+    DOCTOR_CODE="$(cat "$APP_DIR/.doctor-code")"
+    rm -f "$APP_DIR/.doctor-code"
+fi
+progress_done
 
 cat "$DOCTOR_OUT" >> "$LOG_FILE" 2>/dev/null || true
 
