@@ -7,9 +7,14 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.8.1 — автономный установщик.
+# Система «Радар» v4.0.8.2 — автономный установщик.
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
+#   Надёжный способ — сначала скачать, потом запустить:
+#     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+#     bash radar-install.sh
+#
+#   Короткий способ (годится, если связь стабильная):
+#     bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
 # Флаги:
 #   --recreate-env   заново запросить токены и настройки
@@ -24,9 +29,17 @@
 # Файл собирается автоматически: python3 tools/build_installer.py
 # Правьте исходники проекта, а не install.sh.
 
+# Всё тело установщика обёрнуто в функцию и вызывается единственной строкой
+# в самом конце файла. Это защита от обрыва скачивания: при `bash <(curl ...)`
+# скрипт читается потоком, и если связь оборвётся посередине, bash не сможет
+# дочитать определение функции — выдаст синтаксическую ошибку и не выполнит
+# ни одной команды. Без обёртки он выполнял бы всё до места обрыва:
+# именно так установка однажды записала половину файлов проекта.
+radar_installer_main() {
+
 set -Eeuo pipefail
 
-VERSION="4.0.8.1"
+VERSION="4.0.8.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -45,6 +58,30 @@ START_TS=$(date +%s)
 
 ORIGINAL_ARGS="$*"
 
+# Справка печатается из кода, а не вычитывается из собственного файла:
+# при запуске через `bash <(curl ...)` файл — это поток, и перечитать его нельзя.
+show_help() {
+    cat <<'RADAR_HELP_EOF'
+Система «Радар» — автономный установщик.
+
+Надёжный способ:
+  curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+  bash radar-install.sh
+
+Флаги:
+  --recreate-env   заново запросить токены и настройки
+  --no-cache       пересобрать образ без кэша Docker
+  --logs           показать логи после запуска
+  --reinstall      принудительная полная переустановка (данные сохраняются)
+  --reset          полный сброс: копия данных, затем установка с нуля
+  --backup         только снять резервную копию и выйти
+  --skip-updates   не обновлять пакеты системы
+  --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
+  --version        показать версию
+  --help           эта справка
+RADAR_HELP_EOF
+}
+
 for arg in "$@"; do
     case "$arg" in
         --recreate-env) RECREATE_ENV=true ;;
@@ -56,7 +93,7 @@ for arg in "$@"; do
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
         -v|--version)   echo "radar $VERSION"; exit 0 ;;
-        -h|--help)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)      show_help; exit 0 ;;
         *) echo "Неизвестный флаг: $arg" >&2; exit 1 ;;
     esac
 done
@@ -716,7 +753,7 @@ step "Развёртывание файлов проекта"
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
-FILE_COUNT=47
+FILE_COUNT=48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1095,7 +1132,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.8.1"
+__version__ = "4.0.8.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -2996,8 +3033,339 @@ def rss_for(cities: list[str]) -> list[str]:
             result.extend(preset.rss)
     return list(dict.fromkeys(result))
 RADAR_FILE_15
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourcecheck.py"
+cat > "radar/sourcecheck.py" <<'RADAR_FILE_16'
+"""Проверка доступности источников: Telegram-каналы, RSS-ленты, сообщества VK.
+
+Списки источников устаревают молча: канал переименовали, издание закрылось,
+ведомство ушло в другой мессенджер. Бот при этом продолжает работать
+и просто получает меньше новостей — без единой строки в журнале.
+
+Модуль используется и ботом (кнопка в панели модератора), и из терминала
+(`python3 tools/check_sources.py`).
+
+Почему проверка устроена сложнее, чем «запросить и посмотреть код ответа»:
+
+* `t.me/s/<канал>` отвечает 200 и для несуществующего канала, и для закрытого —
+  просто без постов. Судить можно только по наличию блоков сообщений.
+* Часть RSS-лент отвечает 403 на запрос без User-Agent.
+* Источник может отвечать 200, а последний пост быть годовой давности —
+  формально жив, практически бесполезен.
+* Запросы идут с паузой: три десятка обращений подряд к одному хосту
+  выглядят как перебор.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
+
+import aiohttp
+from bs4 import BeautifulSoup
+
+from . import config
+
+log = logging.getLogger("radar.sourcecheck")
+
+STALE_DAYS = 14          # после скольких дней молчания считаем источник затихшим
+REQUEST_TIMEOUT = 20
+POLITE_PAUSE = 0.8       # секунд между запросами
+
+ALIVE = "alive"
+STALE = "stale"
+DEAD = "dead"
+
+ICONS = {ALIVE: "✓", STALE: "!", DEAD: "✗"}
+
+
+@dataclass
+class SourceStatus:
+    kind: str                    # tg | rss | vk
+    ref: str
+    state: str = DEAD
+    note: str = ""
+    last_post: datetime | None = None
+    posts: int = 0
+    http_status: int = 0
+
+    @property
+    def icon(self) -> str:
+        return ICONS.get(self.state, "?")
+
+    @property
+    def title(self) -> str:
+        if self.kind == "tg":
+            return f"@{self.ref}"
+        if self.kind == "rss":
+            return urlparse(self.ref).netloc or self.ref
+        return self.ref
+
+    @property
+    def age(self) -> str:
+        if self.last_post is None:
+            return "—"
+        delta = datetime.now(timezone.utc) - self.last_post
+        if delta.days < 0:
+            return "только что"
+        if delta.days == 0:
+            hours = delta.seconds // 3600
+            return f"{hours} ч назад" if hours else "только что"
+        if delta.days == 1:
+            return "вчера"
+        return f"{delta.days} дн назад"
+
+
+@dataclass
+class CheckReport:
+    statuses: list[SourceStatus] = field(default_factory=list)
+    started: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def alive(self) -> list[SourceStatus]:
+        return [item for item in self.statuses if item.state == ALIVE]
+
+    @property
+    def stale(self) -> list[SourceStatus]:
+        return [item for item in self.statuses if item.state == STALE]
+
+    @property
+    def dead(self) -> list[SourceStatus]:
+        return [item for item in self.statuses if item.state == DEAD]
+
+    @property
+    def total(self) -> int:
+        return len(self.statuses)
+
+
+def _headers() -> dict[str, str]:
+    # Без User-Agent часть лент отвечает 403
+    return {"User-Agent": config.USER_AGENT, "Accept-Language": "ru,en;q=0.8"}
+
+
+def _is_stale(moment: datetime | None) -> bool:
+    if moment is None:
+        return False
+    return (datetime.now(timezone.utc) - moment).days > STALE_DAYS
+
+
+def _parse_date(text: str) -> datetime | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        moment = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+# --------------------------------------------------------------------------
+#  Отдельные виды источников
+# --------------------------------------------------------------------------
+
+async def check_channel(session: aiohttp.ClientSession, name: str) -> SourceStatus:
+    status = SourceStatus(kind="tg", ref=name)
+    try:
+        async with session.get(f"https://t.me/s/{name}", allow_redirects=True) as response:
+            status.http_status = response.status
+            if response.status == 404:
+                status.note = "канал не найден"
+                return status
+            if response.status != 200:
+                status.note = f"HTTP {response.status}"
+                return status
+            page = await response.text()
+    except asyncio.TimeoutError:
+        status.note = "таймаут"
+        return status
+    except Exception as exc:  # noqa: BLE001
+        status.note = f"{type(exc).__name__}"
+        return status
+
+    soup = BeautifulSoup(page, "html.parser")
+    posts = soup.find_all("div", class_="tgme_widget_message_text")
+    status.posts = len(posts)
+
+    # Код 200 сам по себе ничего не значит: страница отдаётся и для закрытых
+    # каналов, и для несуществующих — но без блоков сообщений.
+    if not posts:
+        if "tgme_page_context" in page or "Preview channel" in page:
+            status.note = "закрытый канал или нет публичного превью"
+        else:
+            status.note = "публикации не найдены"
+        return status
+
+    times = soup.find_all("time", attrs={"datetime": True})
+    if times:
+        try:
+            status.last_post = datetime.fromisoformat(
+                times[-1]["datetime"].replace("Z", "+00:00")
+            )
+        except (ValueError, KeyError):
+            pass
+
+    tail = " ".join(post.get_text(" ") for post in posts[-5:]).lower()
+    if "max.ru" in tail or "перешли в max" in tail:
+        status.note = "упоминает переход в MAX"
+
+    if _is_stale(status.last_post):
+        status.state = STALE
+        status.note = status.note or "давно не обновлялся"
+    else:
+        status.state = ALIVE
+    return status
+
+
+async def check_feed(session: aiohttp.ClientSession, url: str) -> SourceStatus:
+    status = SourceStatus(kind="rss", ref=url)
+    try:
+        async with session.get(url, allow_redirects=True) as response:
+            status.http_status = response.status
+            if response.status != 200:
+                status.note = f"HTTP {response.status}"
+                return status
+            body = await response.text()
+    except asyncio.TimeoutError:
+        status.note = "таймаут"
+        return status
+    except Exception as exc:  # noqa: BLE001
+        status.note = f"{type(exc).__name__}"
+        return status
+
+    try:
+        root = ET.fromstring(body.strip())
+    except ET.ParseError:
+        status.note = "ответ не является XML"
+        return status
+
+    entries = root.findall(".//item") or root.findall(
+        ".//{http://www.w3.org/2005/Atom}entry"
+    )
+    status.posts = len(entries)
+    if not entries:
+        status.note = "лента пуста"
+        return status
+
+    for tag in ("pubDate", "{http://purl.org/dc/elements/1.1/}date",
+                "{http://www.w3.org/2005/Atom}updated", "updated"):
+        node = entries[0].find(tag)
+        if node is not None and node.text:
+            status.last_post = _parse_date(node.text)
+            break
+
+    if _is_stale(status.last_post):
+        status.state = STALE
+        status.note = "давно не обновлялась"
+    else:
+        status.state = ALIVE
+    return status
+
+
+async def check_vk(session: aiohttp.ClientSession, group: str) -> SourceStatus:
+    """Заглушка до версии 4.1: полноценная проверка появится вместе с VK API."""
+    status = SourceStatus(kind="vk", ref=group)
+    status.note = "проверка появится в 4.1"
+    status.state = ALIVE
+    return status
+
+
+# --------------------------------------------------------------------------
+#  Общий обход
+# --------------------------------------------------------------------------
+
+async def check_all(
+    channels: list[str],
+    feeds: list[str],
+    vk_groups: list[str] | None = None,
+    *,
+    pause: float = POLITE_PAUSE,
+    progress=None,
+) -> CheckReport:
+    """Проверяет все источники по очереди.
+
+    `progress` — необязательная корутина `progress(done, total, current)`:
+    бот показывает через неё ход проверки, чтобы ожидание не было немым.
+    """
+    report = CheckReport()
+    total = len(channels) + len(feeds) + len(vk_groups or [])
+    done = 0
+
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout, headers=_headers()) as session:
+        for name in channels:
+            report.statuses.append(await check_channel(session, name))
+            done += 1
+            if progress:
+                await progress(done, total, f"@{name}")
+            await asyncio.sleep(pause)
+
+        for url in feeds:
+            report.statuses.append(await check_feed(session, url))
+            done += 1
+            if progress:
+                await progress(done, total, urlparse(url).netloc or url)
+            await asyncio.sleep(pause)
+
+        for group in vk_groups or []:
+            report.statuses.append(await check_vk(session, group))
+            done += 1
+            if progress:
+                await progress(done, total, group)
+
+    log.info(
+        "Проверка источников: живых %d, затихших %d, недоступных %d из %d",
+        len(report.alive), len(report.stale), len(report.dead), report.total,
+    )
+    return report
+
+
+def render(report: CheckReport, limit: int = 40) -> str:
+    """HTML-сводка для сообщения в боте."""
+    from .textutils import esc
+
+    lines = [
+        "🔍 <b>Проверка источников</b>",
+        f"Живых: <b>{len(report.alive)}</b> · "
+        f"затихших: <b>{len(report.stale)}</b> · "
+        f"недоступных: <b>{len(report.dead)}</b> из {report.total}",
+    ]
+
+    if report.dead:
+        lines.append("")
+        lines.append("✗ <b>Недоступны</b> — стоит убрать или заменить:")
+        for item in report.dead[:limit]:
+            lines.append(f"• {esc(item.title)} — {esc(item.note)}")
+
+    if report.stale:
+        lines.append("")
+        lines.append(f"! <b>Молчат более {STALE_DAYS} дней:</b>")
+        for item in report.stale[:limit]:
+            lines.append(f"• {esc(item.title)} — {esc(item.age)}")
+
+    if not report.dead and not report.stale:
+        lines.append("")
+        lines.append("Все источники отвечают и обновляются.")
+
+    return "\n".join(lines)
+RADAR_FILE_16
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_16'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_17'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -3027,9 +3395,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_16
+RADAR_FILE_17
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_17'
+cat > "radar/db/models.py" <<'RADAR_FILE_18'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -3260,9 +3628,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_17
+RADAR_FILE_18
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_18'
+cat > "radar/db/engine.py" <<'RADAR_FILE_19'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -3488,9 +3856,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_18
+RADAR_FILE_19
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_19'
+cat > "radar/db/repo.py" <<'RADAR_FILE_20'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -4013,9 +4381,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_19
+RADAR_FILE_20
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_20'
+cat > "radar/db/importer.py" <<'RADAR_FILE_21'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -4178,9 +4546,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_21'
+cat > "radar/doctor.py" <<'RADAR_FILE_22'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -4542,9 +4910,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_22'
+cat > "migrations/env.py" <<'RADAR_FILE_23'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -4604,9 +4972,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_23'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_24'
 """${message}
 
 Revision ID: ${up_revision}
@@ -4631,9 +4999,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_24'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_25'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -4800,9 +5168,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_25'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_26'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -4825,9 +5193,9 @@ from .base import (
 __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
 ]
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_26'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_27'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -4952,9 +5320,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_27'
+cat > "radar/storage.py" <<'RADAR_FILE_28'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -5139,9 +5507,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_28'
+cat > "radar/exporting.py" <<'RADAR_FILE_29'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -5347,9 +5715,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_29'
+cat > "radar/ai.py" <<'RADAR_FILE_30'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -5984,9 +6352,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_30'
+cat > "radar/geocode.py" <<'RADAR_FILE_31'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -6178,9 +6546,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_31'
+cat > "radar/weather.py" <<'RADAR_FILE_32'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -6512,9 +6880,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_32'
+cat > "radar/sources.py" <<'RADAR_FILE_33'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -6695,9 +7063,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_33'
+cat > "radar/tg.py" <<'RADAR_FILE_34'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -6794,9 +7162,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_34'
+cat > "radar/keyboards.py" <<'RADAR_FILE_35'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -6974,6 +7342,7 @@ def moderation_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📥 Очередь источников", callback_data="src:queue")],
             [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
+            [InlineKeyboardButton(text="🔍 Проверить доступность", callback_data="src:check")],
             [InlineKeyboardButton(text="➕ Добавить канал", callback_data="src:add")],
             [InlineKeyboardButton(text="🌐 Добавить RSS СМИ", callback_data="src:addrss")],
             [
@@ -7085,9 +7454,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_35'
+cat > "radar/states.py" <<'RADAR_FILE_36'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -7108,9 +7477,9 @@ class Form(StatesGroup):
     weather_interval = State()
     manual_address = State()
     admin_add_location = State()   # ввод адреса для чужого пользователя
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_36'
+cat > "radar/middlewares.py" <<'RADAR_FILE_37'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -7180,9 +7549,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_37'
+cat > "radar/monitor.py" <<'RADAR_FILE_38'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -7388,9 +7757,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_37
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_38'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_39'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -7418,9 +7787,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_39'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_40'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -7705,9 +8074,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_40'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_41'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -7871,9 +8240,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_41'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_42'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -8016,9 +8385,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
     await message.answer(
         f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
     )
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_42'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_43'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -8032,13 +8401,20 @@ from __future__ import annotations
 import re
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-from .. import config, exporting, keyboards, roles, storage
+from .. import config, exporting, keyboards, roles, sourcecheck, storage
 from ..states import Form
 from ..textutils import esc
-from ..tg import back_kb, safe_edit
+from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="sources")
 
@@ -8300,9 +8676,155 @@ async def import_sources(message: Message, role: str) -> None:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_42
+
+
+# --------------------------------------------------------------------------
+#  Проверка доступности источников
+# --------------------------------------------------------------------------
+
+# Итог последней проверки на пользователя: нужен, чтобы кнопка «убрать
+# недоступные» работала по свежему списку, а не пересканировала всё заново.
+_last_check: dict[str, list[tuple[str, str]]] = {}
+
+
+@router.callback_query(F.data == "src:check")
+async def check_sources(call: CallbackQuery, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    channels = list(storage.channels())
+    feeds = list(storage.rss_feeds())
+    vk_groups = list(storage.vk_groups())
+    total = len(channels) + len(feeds) + len(vk_groups)
+    if not total:
+        await call.answer("Источников нет.", show_alert=True)
+        return
+
+    await call.answer("Начинаю проверку…")
+    estimate = int(total * (sourcecheck.POLITE_PAUSE + 1.2))
+    notice = await call.message.answer(
+        f"🔍 Проверяю источники: <b>{total}</b>\n"
+        f"<i>Займёт примерно {estimate // 60} мин {estimate % 60} с — "
+        f"запросы идут с паузой, чтобы не выглядеть перебором.</i>"
+    )
+
+    last_shown = 0
+
+    async def progress(done: int, count: int, current: str) -> None:
+        # Правим сообщение не чаще, чем раз в 10 источников: Telegram
+        # ограничивает частоту редактирования.
+        nonlocal last_shown
+        if done - last_shown < 10 and done != count:
+            return
+        last_shown = done
+        try:
+            await notice.edit_text(
+                f"🔍 Проверяю источники: <b>{done}/{count}</b>\n"
+                f"<i>сейчас: {esc(current)}</i>"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    report = await sourcecheck.check_all(channels, feeds, vk_groups, progress=progress)
+
+    # Отмечаем результат в базе — по нему потом видно проблемные источники
+    for item in report.statuses:
+        try:
+            await storage_repo_mark(item)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        await notice.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+    text = sourcecheck.render(report)
+    if report.dead:
+        text += "\n\n<i>Удалить недоступные можно кнопкой ниже.</i>"
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"🗑 Убрать недоступные ({len(report.dead)})",
+                    callback_data="src:drop_dead",
+                )],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
+            ]
+        )
+    else:
+        markup = back_kb("menu:mod", "◀️ Назад")
+
+    _last_check[str(call.from_user.id)] = [
+        (item.kind, item.ref) for item in report.dead
+    ]
+    await send_html(call.message.chat.id, text, markup)
+
+
+async def storage_repo_mark(item) -> None:
+    """Отмечает результат проверки в таблице источников."""
+    from ..db import repo
+
+    await repo.mark_source(item.kind, item.ref, error="" if item.state != "dead" else item.note)
+
+
+@router.callback_query(F.data == "src:drop_dead")
+async def drop_dead(call: CallbackQuery, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    dead = _last_check.get(str(call.from_user.id)) or []
+    if not dead:
+        await call.answer("Список устарел — запустите проверку заново.", show_alert=True)
+        return
+
+    removed = 0
+    for kind, ref in dead:
+        if kind == "tg" and ref in storage.channels():
+            storage.channels().remove(ref)
+            removed += 1
+        elif kind == "rss" and ref in storage.rss_feeds():
+            storage.rss_feeds().remove(ref)
+            removed += 1
+        elif kind == "vk" and ref in storage.vk_groups():
+            storage.vk_groups().remove(ref)
+            removed += 1
+
+    await storage.save()
+    _last_check.pop(str(call.from_user.id), None)
+    await call.answer(f"Удалено источников: {removed}")
+    await safe_edit(
+        call,
+        f"🗑 Удалено недоступных источников: <b>{removed}</b>.\n"
+        f"Осталось: каналов {len(storage.channels())}, лент {len(storage.rss_feeds())}.",
+        back_kb("menu:mod", "◀️ Назад"),
+    )
+
+
+@router.message(Command("checksources"))
+async def cmd_check_sources(message: Message, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await message.answer("⛔️ Проверка источников доступна модераторам и выше.")
+        return
+
+    channels = list(storage.channels())
+    feeds = list(storage.rss_feeds())
+    total = len(channels) + len(feeds)
+    if not total:
+        await message.answer("Источников нет.")
+        return
+
+    notice = await message.answer(f"🔍 Проверяю источники: <b>{total}</b>…")
+    report = await sourcecheck.check_all(channels, feeds, list(storage.vk_groups()))
+    try:
+        await notice.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_43'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_44'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -8668,9 +9190,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_43
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_44'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_45'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -8798,9 +9320,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await repo.set_feature(flag.key, value, call.from_user.id)
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_44
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_45'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_46'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -9088,9 +9610,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_45
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_46'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_47'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -9235,7 +9757,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_46
+RADAR_FILE_47
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -9673,3 +10195,9 @@ log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED
 if [ "$SHOW_LOGS" = true ]; then
     docker logs -f "$CONTAINER_NAME"
 fi
+
+}   # конец radar_installer_main
+
+# Единственная исполняемая строка файла. Если скачивание оборвалось,
+# до неё дело не дойдёт — bash упадёт на разборе незакрытой функции.
+radar_installer_main "$@"

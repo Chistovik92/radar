@@ -175,6 +175,7 @@ def moderation_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📥 Очередь источников", callback_data="src:queue")],
             [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
+            [InlineKeyboardButton(text="🔍 Проверить доступность", callback_data="src:check")],
             [InlineKeyboardButton(text="➕ Добавить канал", callback_data="src:add")],
             [InlineKeyboardButton(text="🌐 Добавить RSS СМИ", callback_data="src:addrss")],
             [

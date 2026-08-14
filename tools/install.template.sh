@@ -9,7 +9,12 @@
 #
 # Система «Радар» v@@VERSION@@ — автономный установщик.
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
+#   Надёжный способ — сначала скачать, потом запустить:
+#     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+#     bash radar-install.sh
+#
+#   Короткий способ (годится, если связь стабильная):
+#     bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)
 #
 # Флаги:
 #   --recreate-env   заново запросить токены и настройки
@@ -23,6 +28,14 @@
 #
 # Файл собирается автоматически: python3 tools/build_installer.py
 # Правьте исходники проекта, а не install.sh.
+
+# Всё тело установщика обёрнуто в функцию и вызывается единственной строкой
+# в самом конце файла. Это защита от обрыва скачивания: при `bash <(curl ...)`
+# скрипт читается потоком, и если связь оборвётся посередине, bash не сможет
+# дочитать определение функции — выдаст синтаксическую ошибку и не выполнит
+# ни одной команды. Без обёртки он выполнял бы всё до места обрыва:
+# именно так установка однажды записала половину файлов проекта.
+radar_installer_main() {
 
 set -Eeuo pipefail
 
@@ -45,6 +58,30 @@ START_TS=$(date +%s)
 
 ORIGINAL_ARGS="$*"
 
+# Справка печатается из кода, а не вычитывается из собственного файла:
+# при запуске через `bash <(curl ...)` файл — это поток, и перечитать его нельзя.
+show_help() {
+    cat <<'RADAR_HELP_EOF'
+Система «Радар» — автономный установщик.
+
+Надёжный способ:
+  curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+  bash radar-install.sh
+
+Флаги:
+  --recreate-env   заново запросить токены и настройки
+  --no-cache       пересобрать образ без кэша Docker
+  --logs           показать логи после запуска
+  --reinstall      принудительная полная переустановка (данные сохраняются)
+  --reset          полный сброс: копия данных, затем установка с нуля
+  --backup         только снять резервную копию и выйти
+  --skip-updates   не обновлять пакеты системы
+  --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
+  --version        показать версию
+  --help           эта справка
+RADAR_HELP_EOF
+}
+
 for arg in "$@"; do
     case "$arg" in
         --recreate-env) RECREATE_ENV=true ;;
@@ -56,7 +93,7 @@ for arg in "$@"; do
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
         -v|--version)   echo "radar $VERSION"; exit 0 ;;
-        -h|--help)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)      show_help; exit 0 ;;
         *) echo "Неизвестный флаг: $arg" >&2; exit 1 ;;
     esac
 done
@@ -1153,3 +1190,9 @@ log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED
 if [ "$SHOW_LOGS" = true ]; then
     docker logs -f "$CONTAINER_NAME"
 fi
+
+}   # конец radar_installer_main
+
+# Единственная исполняемая строка файла. Если скачивание оборвалось,
+# до неё дело не дойдёт — bash упадёт на разборе незакрытой функции.
+radar_installer_main "$@"

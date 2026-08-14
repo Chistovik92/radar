@@ -42,6 +42,7 @@ MANIFEST = [
     "radar/features.py",
     "radar/logs.py",
     "radar/presets.py",
+    "radar/sourcecheck.py",
     "radar/db/__init__.py",
     "radar/db/models.py",
     "radar/db/engine.py",

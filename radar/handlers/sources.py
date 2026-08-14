@@ -11,13 +11,20 @@ from __future__ import annotations
 import re
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-from .. import config, exporting, keyboards, roles, storage
+from .. import config, exporting, keyboards, roles, sourcecheck, storage
 from ..states import Form
 from ..textutils import esc
-from ..tg import back_kb, safe_edit
+from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="sources")
 
@@ -279,3 +286,149 @@ async def import_sources(message: Message, role: str) -> None:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
+
+
+# --------------------------------------------------------------------------
+#  Проверка доступности источников
+# --------------------------------------------------------------------------
+
+# Итог последней проверки на пользователя: нужен, чтобы кнопка «убрать
+# недоступные» работала по свежему списку, а не пересканировала всё заново.
+_last_check: dict[str, list[tuple[str, str]]] = {}
+
+
+@router.callback_query(F.data == "src:check")
+async def check_sources(call: CallbackQuery, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    channels = list(storage.channels())
+    feeds = list(storage.rss_feeds())
+    vk_groups = list(storage.vk_groups())
+    total = len(channels) + len(feeds) + len(vk_groups)
+    if not total:
+        await call.answer("Источников нет.", show_alert=True)
+        return
+
+    await call.answer("Начинаю проверку…")
+    estimate = int(total * (sourcecheck.POLITE_PAUSE + 1.2))
+    notice = await call.message.answer(
+        f"🔍 Проверяю источники: <b>{total}</b>\n"
+        f"<i>Займёт примерно {estimate // 60} мин {estimate % 60} с — "
+        f"запросы идут с паузой, чтобы не выглядеть перебором.</i>"
+    )
+
+    last_shown = 0
+
+    async def progress(done: int, count: int, current: str) -> None:
+        # Правим сообщение не чаще, чем раз в 10 источников: Telegram
+        # ограничивает частоту редактирования.
+        nonlocal last_shown
+        if done - last_shown < 10 and done != count:
+            return
+        last_shown = done
+        try:
+            await notice.edit_text(
+                f"🔍 Проверяю источники: <b>{done}/{count}</b>\n"
+                f"<i>сейчас: {esc(current)}</i>"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    report = await sourcecheck.check_all(channels, feeds, vk_groups, progress=progress)
+
+    # Отмечаем результат в базе — по нему потом видно проблемные источники
+    for item in report.statuses:
+        try:
+            await storage_repo_mark(item)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        await notice.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+    text = sourcecheck.render(report)
+    if report.dead:
+        text += "\n\n<i>Удалить недоступные можно кнопкой ниже.</i>"
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"🗑 Убрать недоступные ({len(report.dead)})",
+                    callback_data="src:drop_dead",
+                )],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
+            ]
+        )
+    else:
+        markup = back_kb("menu:mod", "◀️ Назад")
+
+    _last_check[str(call.from_user.id)] = [
+        (item.kind, item.ref) for item in report.dead
+    ]
+    await send_html(call.message.chat.id, text, markup)
+
+
+async def storage_repo_mark(item) -> None:
+    """Отмечает результат проверки в таблице источников."""
+    from ..db import repo
+
+    await repo.mark_source(item.kind, item.ref, error="" if item.state != "dead" else item.note)
+
+
+@router.callback_query(F.data == "src:drop_dead")
+async def drop_dead(call: CallbackQuery, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    dead = _last_check.get(str(call.from_user.id)) or []
+    if not dead:
+        await call.answer("Список устарел — запустите проверку заново.", show_alert=True)
+        return
+
+    removed = 0
+    for kind, ref in dead:
+        if kind == "tg" and ref in storage.channels():
+            storage.channels().remove(ref)
+            removed += 1
+        elif kind == "rss" and ref in storage.rss_feeds():
+            storage.rss_feeds().remove(ref)
+            removed += 1
+        elif kind == "vk" and ref in storage.vk_groups():
+            storage.vk_groups().remove(ref)
+            removed += 1
+
+    await storage.save()
+    _last_check.pop(str(call.from_user.id), None)
+    await call.answer(f"Удалено источников: {removed}")
+    await safe_edit(
+        call,
+        f"🗑 Удалено недоступных источников: <b>{removed}</b>.\n"
+        f"Осталось: каналов {len(storage.channels())}, лент {len(storage.rss_feeds())}.",
+        back_kb("menu:mod", "◀️ Назад"),
+    )
+
+
+@router.message(Command("checksources"))
+async def cmd_check_sources(message: Message, role: str) -> None:
+    if not roles.can_moderate_sources(role):
+        await message.answer("⛔️ Проверка источников доступна модераторам и выше.")
+        return
+
+    channels = list(storage.channels())
+    feeds = list(storage.rss_feeds())
+    total = len(channels) + len(feeds)
+    if not total:
+        await message.answer("Источников нет.")
+        return
+
+    notice = await message.answer(f"🔍 Проверяю источники: <b>{total}</b>…")
+    report = await sourcecheck.check_all(channels, feeds, list(storage.vk_groups()))
+    try:
+        await notice.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
