@@ -125,6 +125,8 @@ def install() -> None:
         "aiogram", Bot=Any, Dispatcher=Dispatcher, Router=Router, F=Any(), BaseMiddleware=object
     )
     module("aiogram.client.default", DefaultBotProperties=Any)
+    module("aiogram.client.session.aiohttp", AiohttpSession=Any)
+    module("aiogram.client.telegram", TelegramAPIServer=Any())
     module("aiogram.enums", ParseMode=Any())
     module(
         "aiogram.exceptions",
@@ -139,6 +141,7 @@ def install() -> None:
     module(
         "aiogram.types",
         CallbackQuery=Any, InlineKeyboardButton=Any, InlineKeyboardMarkup=Any,
+        FSInputFile=Any,
         KeyboardButton=Any, ReplyKeyboardMarkup=Any, BufferedInputFile=Any,
         LinkPreviewOptions=Any,
         Message=Any, TelegramObject=Any,
@@ -209,12 +212,12 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
+        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.media", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",
-        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.assistant",
-        "radar.platforms", "radar.platforms.base",
+        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.assistant",
+        "radar.platforms", "radar.platforms.base", "radar.platforms.max",
         "main",
     ]
     failures = 0

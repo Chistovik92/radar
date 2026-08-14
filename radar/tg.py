@@ -27,10 +27,30 @@ from .textutils import split_text, strip_tags
 
 log = logging.getLogger("radar.tg")
 
-bot = Bot(
-    token=config.BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
+def _build_bot() -> Bot:
+    """Экземпляр бота. При заданном TELEGRAM_API_SERVER — через свой сервер.
+
+    Собственный Bot API Server снимает предел отправки с 50 МБ до 2 ГБ.
+    Режим is_local означает, что сервер берёт файлы прямо с диска, минуя
+    передачу по HTTP, — для видео это на порядок быстрее.
+    """
+    properties = DefaultBotProperties(parse_mode=ParseMode.HTML)
+    if not config.TELEGRAM_API_SERVER:
+        return Bot(token=config.BOT_TOKEN, default=properties)
+
+    from aiogram.client.session.aiohttp import AiohttpSession
+    from aiogram.client.telegram import TelegramAPIServer
+
+    log.info("Использую собственный Bot API Server: %s", config.TELEGRAM_API_SERVER)
+    session = AiohttpSession(
+        api=TelegramAPIServer.from_base(
+            config.TELEGRAM_API_SERVER, is_local=config.TELEGRAM_API_LOCAL
+        )
+    )
+    return Bot(token=config.BOT_TOKEN, session=session, default=properties)
+
+
+bot = _build_bot()
 dp = Dispatcher(storage=MemoryStorage())
 
 def back_kb(target: str = "menu:main", title: str = "🏠 В главное меню") -> InlineKeyboardMarkup:

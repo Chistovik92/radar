@@ -6,8 +6,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     TZ=${TZ}
 
+# ffmpeg нужен для склейки видео и звука выше 720p. Он заметно увеличивает
+# образ (~150 МБ); если загрузка видео не нужна, его можно убрать.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata ca-certificates \
+ && apt-get install -y --no-install-recommends tzdata ca-certificates ffmpeg \
  && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
  && echo $TZ > /etc/timezone \
  && rm -rf /var/lib/apt/lists/*

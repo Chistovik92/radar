@@ -82,6 +82,11 @@ DB_ECHO: bool = (os.getenv("DB_ECHO") or "0").strip().lower() in ("1", "true", "
 EVENT_RETENTION_DAYS: int = max(0, _int("EVENT_RETENTION_DAYS", 180))
 
 
+def uses_local_api() -> bool:
+    """Работает ли бот через собственный Bot API Server."""
+    return bool(TELEGRAM_API_SERVER)
+
+
 def is_sqlite() -> bool:
     return DB_BACKEND == "sqlite" and not DATABASE_URL
 
@@ -130,6 +135,25 @@ PROMO_IN_ALERTS: bool = (os.getenv("PROMO_IN_ALERTS") or "0").strip().lower() in
 EGRESS_PROXY: str = (os.getenv("EGRESS_PROXY") or "").strip()
 # Ключ шифрования подписок и ключей серверов в базе.
 SECRET_KEY: str = (os.getenv("SECRET_KEY") or "").strip()
+
+# --- загрузка видео по ссылке (версия 4.2) ---
+MEDIA_ENABLED: bool = (os.getenv("MEDIA_ENABLED") or "0").strip().lower() in ("1", "true", "yes")
+# Собственный Bot API Server снимает предел отправки с 50 МБ до 2 ГБ.
+# Пусто — работает обычный api.telegram.org с пределом 50 МБ.
+TELEGRAM_API_SERVER: str = (os.getenv("TELEGRAM_API_SERVER") or "").strip()
+TELEGRAM_API_LOCAL: bool = (
+    os.getenv("TELEGRAM_API_LOCAL") or "1"
+).strip().lower() in ("1", "true", "yes")
+MEDIA_DIR: str = (os.getenv("MEDIA_DIR") or "data/media").strip()
+# Ограничение скорости скачивания, чтобы бот не забивал канал целиком
+MEDIA_RATE_LIMIT: str = (os.getenv("MEDIA_RATE_LIMIT") or "").strip()
+# Файл cookies для закрытых площадок
+MEDIA_COOKIES: str = (os.getenv("MEDIA_COOKIES") or "").strip()
+# Сколько одновременных загрузок допускается: на одноплатнике больше одной
+# означает деградацию всего бота
+MEDIA_CONCURRENCY: int = max(1, _int("MEDIA_CONCURRENCY", 1))
+# Кому доступна загрузка: user | moderator | admin | superadmin
+MEDIA_MIN_ROLE: str = (os.getenv("MEDIA_MIN_ROLE") or "moderator").strip().lower()
 
 # --- мессенджер MAX (включается в 4.2) ---
 MAX_BOT_TOKEN: str = (os.getenv("MAX_BOT_TOKEN") or "").strip()

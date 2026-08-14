@@ -15,10 +15,44 @@ services:
     env_file: .env
     volumes:
       - ./data:/app/data
+      # Общий том с Bot API Server: в локальном режиме он читает файлы
+      # прямо с диска, без передачи по HTTP
+      - ./data/bot-api:/var/lib/telegram-bot-api
     deploy:
       resources:
         limits:
           memory: ${RADAR_MEM_LIMIT:-512M}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Собственный Bot API Server: снимает предел отправки с 50 МБ до 2 ГБ.
+  # Включается профилем, когда нужна загрузка крупных видео:
+  #   docker compose --profile media up -d
+  # Требует api_id и api_hash с my.telegram.org.
+  telegram-bot-api:
+    profiles: ["media"]
+    image: aiogram/telegram-bot-api:latest
+    container_name: radar_bot_api
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?нужен api_id с my.telegram.org}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?нужен api_hash с my.telegram.org}
+      TELEGRAM_LOCAL: "true"
+    command:
+      # Кэш сервера растёт быстро: чистим файлы старше 6 часов
+      - --max-file-age=21600
+      # И принудительно, если на диске осталось меньше 15 процентов
+      - --dir-cleanup-threshold=15
+      - --local
+    volumes:
+      - ./data/bot-api:/var/lib/telegram-bot-api
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     logging:
       driver: json-file
       options:

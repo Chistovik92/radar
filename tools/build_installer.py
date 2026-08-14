@@ -44,6 +44,7 @@ MANIFEST = [
     "radar/presets.py",
     "radar/sourcecheck.py",
     "radar/sos.py",
+    "radar/media.py",
     "radar/db/__init__.py",
     "radar/db/models.py",
     "radar/db/engine.py",
@@ -55,6 +56,7 @@ MANIFEST = [
     "migrations/versions/0001_initial.py",
     "radar/platforms/__init__.py",
     "radar/platforms/base.py",
+    "radar/platforms/max.py",
     "radar/storage.py",
     "radar/exporting.py",
     "radar/ai.py",
@@ -75,6 +77,7 @@ MANIFEST = [
     "radar/handlers/features.py",
     "radar/handlers/logs.py",
     "radar/handlers/sos.py",
+    "radar/handlers/media.py",
     "radar/handlers/assistant.py",
 ]
 

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.1.1 — автономный установщик.
+# Система «Радар» v4.2.0 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.1.1"
+VERSION="4.2.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -957,7 +957,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
-FILE_COUNT=50
+FILE_COUNT=53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -972,6 +972,9 @@ SQLAlchemy[asyncio]>=2.0,<3
 aiosqlite>=0.20
 asyncpg>=0.29
 alembic>=1.13
+
+# Загрузка видео по ссылке (функция включается флагом media_download)
+yt-dlp>=2024.8.6
 RADAR_FILE_00
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "Dockerfile"
 cat > "Dockerfile" <<'RADAR_FILE_01'
@@ -983,8 +986,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     TZ=${TZ}
 
+# ffmpeg нужен для склейки видео и звука выше 720p. Он заметно увеличивает
+# образ (~150 МБ); если загрузка видео не нужна, его можно убрать.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata ca-certificates \
+ && apt-get install -y --no-install-recommends tzdata ca-certificates ffmpeg \
  && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
  && echo $TZ > /etc/timezone \
  && rm -rf /var/lib/apt/lists/*
@@ -1023,10 +1028,44 @@ services:
     env_file: .env
     volumes:
       - ./data:/app/data
+      # Общий том с Bot API Server: в локальном режиме он читает файлы
+      # прямо с диска, без передачи по HTTP
+      - ./data/bot-api:/var/lib/telegram-bot-api
     deploy:
       resources:
         limits:
           memory: ${RADAR_MEM_LIMIT:-512M}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Собственный Bot API Server: снимает предел отправки с 50 МБ до 2 ГБ.
+  # Включается профилем, когда нужна загрузка крупных видео:
+  #   docker compose --profile media up -d
+  # Требует api_id и api_hash с my.telegram.org.
+  telegram-bot-api:
+    profiles: ["media"]
+    image: aiogram/telegram-bot-api:latest
+    container_name: radar_bot_api
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?нужен api_id с my.telegram.org}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?нужен api_hash с my.telegram.org}
+      TELEGRAM_LOCAL: "true"
+    command:
+      # Кэш сервера растёт быстро: чистим файлы старше 6 часов
+      - --max-file-age=21600
+      # И принудительно, если на диске осталось меньше 15 процентов
+      - --dir-cleanup-threshold=15
+      - --local
+    volumes:
+      - ./data/bot-api:/var/lib/telegram-bot-api
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     logging:
       driver: json-file
       options:
@@ -1167,6 +1206,12 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.2.0", [
+        "🎬 <b>Загрузка видео по ссылке</b> с выбором качества — YouTube, VK, "
+        "RuTube, OK, Дзен и другие площадки. Включается флагом media_download.",
+        "🔌 <b>Адаптер мессенджера MAX</b> — реализован, но пока не проверен "
+        "на живом сервере: включайте только для испытаний.",
+    ]),
     ("4.1.1", [
         "🆘 <b>Кнопка SOS</b> — отправка геопозиции экстренному контакту.",
         "🌤 <b>Погода для пользователей от администрации</b> — режим и частоту "
@@ -1370,7 +1415,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.1.1"
+__version__ = "4.2.0"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -1465,6 +1510,11 @@ DB_ECHO: bool = (os.getenv("DB_ECHO") or "0").strip().lower() in ("1", "true", "
 EVENT_RETENTION_DAYS: int = max(0, _int("EVENT_RETENTION_DAYS", 180))
 
 
+def uses_local_api() -> bool:
+    """Работает ли бот через собственный Bot API Server."""
+    return bool(TELEGRAM_API_SERVER)
+
+
 def is_sqlite() -> bool:
     return DB_BACKEND == "sqlite" and not DATABASE_URL
 
@@ -1513,6 +1563,25 @@ PROMO_IN_ALERTS: bool = (os.getenv("PROMO_IN_ALERTS") or "0").strip().lower() in
 EGRESS_PROXY: str = (os.getenv("EGRESS_PROXY") or "").strip()
 # Ключ шифрования подписок и ключей серверов в базе.
 SECRET_KEY: str = (os.getenv("SECRET_KEY") or "").strip()
+
+# --- загрузка видео по ссылке (версия 4.2) ---
+MEDIA_ENABLED: bool = (os.getenv("MEDIA_ENABLED") or "0").strip().lower() in ("1", "true", "yes")
+# Собственный Bot API Server снимает предел отправки с 50 МБ до 2 ГБ.
+# Пусто — работает обычный api.telegram.org с пределом 50 МБ.
+TELEGRAM_API_SERVER: str = (os.getenv("TELEGRAM_API_SERVER") or "").strip()
+TELEGRAM_API_LOCAL: bool = (
+    os.getenv("TELEGRAM_API_LOCAL") or "1"
+).strip().lower() in ("1", "true", "yes")
+MEDIA_DIR: str = (os.getenv("MEDIA_DIR") or "data/media").strip()
+# Ограничение скорости скачивания, чтобы бот не забивал канал целиком
+MEDIA_RATE_LIMIT: str = (os.getenv("MEDIA_RATE_LIMIT") or "").strip()
+# Файл cookies для закрытых площадок
+MEDIA_COOKIES: str = (os.getenv("MEDIA_COOKIES") or "").strip()
+# Сколько одновременных загрузок допускается: на одноплатнике больше одной
+# означает деградацию всего бота
+MEDIA_CONCURRENCY: int = max(1, _int("MEDIA_CONCURRENCY", 1))
+# Кому доступна загрузка: user | moderator | admin | superadmin
+MEDIA_MIN_ROLE: str = (os.getenv("MEDIA_MIN_ROLE") or "moderator").strip().lower()
 
 # --- мессенджер MAX (включается в 4.2) ---
 MAX_BOT_TOKEN: str = (os.getenv("MAX_BOT_TOKEN") or "").strip()
@@ -2777,6 +2846,12 @@ FLAGS: tuple[Flag, ...] = (
          "Отправка геопозиции экстренному контакту по нажатию кнопки.",
          group="Экстренное", since="4.1", default=False),
 
+    # --- медиа ---
+    Flag("media_download", "Загрузка видео по ссылке",
+         "Скачивание роликов с внешних площадок с выбором качества. "
+         "Требует yt-dlp и ffmpeg в образе.",
+         group="Медиа", since="4.2", default=False),
+
     # --- данные ---
     Flag("history", "История событий", "Журнал того, что приходило по адресу.",
          group="Данные", since="4.0"),
@@ -3884,8 +3959,331 @@ def due_alerts(now: float | None = None) -> list[ActiveAlert]:
 def active_count() -> int:
     return len(_active)
 RADAR_FILE_17
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/media.py"
+cat > "radar/media.py" <<'RADAR_FILE_18'
+"""Загрузка видео по ссылке: разбор форматов, прогресс, ограничения.
+
+Модуль отделён от сети и от Telegram: здесь только чистая логика — выбор
+качества, расчёт прогресса, проверка лимитов, имена файлов. Благодаря этому
+поведение проверяется офлайн, а сам yt-dlp вызывается тонкой обёрткой.
+
+Ограничения, которые нельзя обойти кодом
+---------------------------------------
+* Telegram Bot API отдаёт файлы не больше 50 МБ. Снять лимит до 2 ГБ можно
+  только собственным Bot API Server — он поднимается отдельным контейнером
+  и требует `api_id` и `api_hash` с my.telegram.org.
+* Склейка видео и звука в качестве выше 720p требует ffmpeg. Без него
+  доступны только форматы, где дорожки уже соединены.
+* Одноплатнику это дорого: скачивание и склейка нагружают процессор и диск
+  сильнее, чем весь остальной бот вместе взятый.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Any, Iterable
+
+log = logging.getLogger("radar.media")
+
+# Лимит обычного Bot API. С собственным сервером поднимается до 2000 МБ.
+CLOUD_LIMIT_MB = 50
+LOCAL_LIMIT_MB = 1900
+
+# Как часто разрешено править сообщение с прогрессом: Telegram считает
+# частые правки флудом и отвечает 429.
+PROGRESS_INTERVAL = 3.0
+
+SUPPORTED_HINT = (
+    "YouTube, VK Видео, RuTube, Одноклассники, Дзен, TikTok, X, Instagram"
+)
+
+_URL_RE = re.compile(r"^https?://[^\s]+$", re.I)
+_UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
+
+
+@dataclass
+class Format:
+    """Один вариант качества."""
+
+    label: str                 # «1080p», «Максимальное»
+    height: int = 0            # 0 — качество не определено
+    size_mb: float = 0.0       # 0 — размер неизвестен
+    ext: str = "mp4"
+    note: str = ""
+
+    @property
+    def selector(self) -> str:
+        """Строка выбора формата для yt-dlp."""
+        if self.height:
+            return (
+                f"bestvideo[height<={self.height}]+bestaudio/"
+                f"best[height<={self.height}]/best"
+            )
+        return "bestvideo+bestaudio/best"
+
+    @property
+    def title(self) -> str:
+        if self.size_mb:
+            return f"{self.label} · ~{self.size_mb:.0f} МБ"
+        return self.label
+
+
+def looks_like_url(text: str) -> bool:
+    return bool(_URL_RE.match((text or "").strip()))
+
+
+def safe_filename(title: str, limit: int = 60) -> str:
+    """Имя файла без символов, ломающих файловую систему и Telegram."""
+    cleaned = _UNSAFE.sub(" ", title or "video").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return (cleaned[:limit].strip() or "video")
+
+
+def size_limit_mb(local_server: bool) -> int:
+    return LOCAL_LIMIT_MB if local_server else CLOUD_LIMIT_MB
+
+
+def parse_formats(info: dict[str, Any], limit: int = 6) -> list[Format]:
+    """Собирает список качеств из ответа yt-dlp.
+
+    Разные площадки отдают метаданные по-разному: у YouTube есть отдельные
+    видео- и аудиопотоки с высотой кадра, у TikTok и Instagram высоты часто
+    нет вовсе. Поэтому при отсутствии распознанных высот возвращается один
+    вариант «максимальное доступное» — это лучше пустого списка.
+    """
+    best: dict[int, Format] = {}
+
+    for item in info.get("formats") or []:
+        if not isinstance(item, dict):
+            continue
+        height = item.get("height")
+        if not isinstance(height, int) or height < 144:
+            continue
+
+        size = item.get("filesize") or item.get("filesize_approx") or 0
+        size_mb = round(size / (1024 * 1024), 1) if isinstance(size, (int, float)) else 0.0
+
+        current = best.get(height)
+        if current is None or (size_mb and size_mb > current.size_mb):
+            best[height] = Format(
+                label=f"{height}p",
+                height=height,
+                size_mb=size_mb,
+                ext=str(item.get("ext") or "mp4"),
+            )
+
+    if not best:
+        return [Format(label="Максимальное доступное", height=0)]
+
+    ordered = sorted(best.values(), key=lambda item: item.height, reverse=True)
+    return ordered[:limit]
+
+
+def describe(info: dict[str, Any]) -> str:
+    """Короткое описание ролика для сообщения с выбором качества."""
+    from .textutils import esc
+
+    title = str(info.get("title") or "Видео")
+    uploader = str(info.get("uploader") or info.get("channel") or "")
+    duration = info.get("duration")
+
+    lines = [f"🎬 <b>{esc(title[:120])}</b>"]
+    if uploader:
+        lines.append(f"👤 {esc(uploader[:60])}")
+    if isinstance(duration, (int, float)) and duration > 0:
+        minutes, seconds = divmod(int(duration), 60)
+        hours, minutes = divmod(minutes, 60)
+        stamp = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+        lines.append(f"⏱ {stamp}")
+    return "\n".join(lines)
+
+
+def progress_bar(percent: float, length: int = 12) -> str:
+    """Полоса прогресса. Символы ASCII — надёжнее в любой локали."""
+    value = max(0.0, min(100.0, percent))
+    filled = int(length * value / 100)
+    return f"[{'#' * filled}{'.' * (length - filled)}] {value:.0f}%"
+
+
+@dataclass
+class Progress:
+    """Состояние загрузки. Считает всё, кроме собственно скачивания."""
+
+    total: int = 0
+    done: int = 0
+    speed: str = ""
+    eta: str = ""
+    stage: str = "download"        # download | upload | merge
+    last_shown: float = field(default=0.0)
+
+    @property
+    def percent(self) -> float:
+        if self.total <= 0:
+            return 0.0
+        return min(100.0, self.done / self.total * 100)
+
+    def should_refresh(self, now: float | None = None) -> bool:
+        """Пора ли обновлять сообщение — защита от флуд-контроля Telegram."""
+        moment = now if now is not None else time.time()
+        if moment - self.last_shown < PROGRESS_INTERVAL:
+            return False
+        self.last_shown = moment
+        return True
+
+    def render(self) -> str:
+        titles = {
+            "download": "📥 <b>Скачиваю на сервер</b>",
+            "merge": "🔧 <b>Склеиваю видео и звук</b>",
+            "upload": "📤 <b>Отправляю в Telegram</b>",
+        }
+        lines = [titles.get(self.stage, "⏳ <b>Обработка</b>"), "", progress_bar(self.percent)]
+
+        if self.total:
+            lines.append(
+                f"📦 {self.done / (1024 * 1024):.0f} из {self.total / (1024 * 1024):.0f} МБ"
+            )
+        if self.speed:
+            lines.append(f"🚀 {self.speed}")
+        if self.eta:
+            lines.append(f"⏱ осталось {self.eta}")
+        return "\n".join(lines)
+
+
+def read_hook(payload: dict[str, Any], progress: Progress) -> bool:
+    """Переносит данные хука yt-dlp в состояние. True — пора обновить сообщение."""
+    status = payload.get("status")
+
+    if status == "downloading":
+        progress.stage = "download"
+        total = payload.get("total_bytes") or payload.get("total_bytes_estimate") or 0
+        progress.total = int(total) if isinstance(total, (int, float)) else 0
+        done = payload.get("downloaded_bytes") or 0
+        progress.done = int(done) if isinstance(done, (int, float)) else 0
+        progress.speed = str(payload.get("_speed_str") or "").strip()
+        progress.eta = str(payload.get("_eta_str") or "").strip()
+        return progress.should_refresh()
+
+    if status == "finished":
+        progress.stage = "merge"
+        progress.done = progress.total
+        return True
+
+    return False
+
+
+def too_big(size_bytes: int, local_server: bool) -> tuple[bool, str]:
+    """Помещается ли файл в лимит отправки."""
+    limit = size_limit_mb(local_server)
+    size_mb = size_bytes / (1024 * 1024)
+    if size_mb <= limit:
+        return False, ""
+
+    if local_server:
+        return True, (
+            f"Файл {size_mb:.0f} МБ превышает предел {limit} МБ даже для "
+            "собственного сервера Bot API. Выберите качество ниже."
+        )
+    return True, (
+        f"Файл {size_mb:.0f} МБ, а Telegram принимает от ботов не больше "
+        f"{limit} МБ. Выберите качество ниже — или поднимите собственный "
+        "Bot API Server, тогда предел станет 2 ГБ."
+    )
+
+
+def build_options(
+    target: str,
+    selector: str,
+    *,
+    proxy: str = "",
+    cookies: str = "",
+    limit_rate: str = "",
+) -> dict[str, Any]:
+    """Параметры yt-dlp. Вынесены отдельно, чтобы их можно было проверить."""
+    options: dict[str, Any] = {
+        "format": selector,
+        "outtmpl": target,
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        # Плейлист по ссылке на ролик — частая причина «скачалось не то»
+        "noplaylist": True,
+        "retries": 3,
+        "socket_timeout": 30,
+    }
+    if proxy:
+        options["proxy"] = proxy
+    if cookies:
+        options["cookiefile"] = cookies
+    if limit_rate:
+        options["ratelimit"] = limit_rate
+    return options
+
+
+def probe_options(proxy: str = "", cookies: str = "") -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "socket_timeout": 20,
+    }
+    if proxy:
+        options["proxy"] = proxy
+    if cookies:
+        options["cookiefile"] = cookies
+    return options
+
+
+def friendly_error(error: BaseException | str) -> str:
+    """Переводит типичные ошибки yt-dlp в понятное объяснение."""
+    text = str(error).lower()
+
+    if "unsupported url" in text:
+        return f"Площадка не поддерживается. Работают: {SUPPORTED_HINT}."
+    if "private" in text or "login required" in text or "sign in" in text:
+        return (
+            "Видео закрыто настройками приватности или требует входа. "
+            "Для таких ссылок нужен файл cookies."
+        )
+    if "video unavailable" in text or "not available" in text:
+        return "Видео недоступно — удалено или ограничено по региону."
+    if "age" in text and "restrict" in text:
+        return "Видео с возрастным ограничением: нужен файл cookies."
+    if "timed out" in text or "timeout" in text:
+        return "Площадка не ответила вовремя. Попробуйте ещё раз."
+    if "http error 429" in text or "too many requests" in text:
+        return "Площадка временно ограничила запросы. Подождите несколько минут."
+    if "ffmpeg" in text:
+        return (
+            "Для склейки видео и звука нужен ffmpeg, а он недоступен. "
+            "Выберите качество не выше 720p."
+        )
+    if "proxy" in text or "connection" in text or "resolve" in text:
+        return "Не удалось подключиться к площадке. Проверьте сеть или прокси."
+    return "Не удалось обработать ссылку."
+
+
+def choose_default(formats: Iterable[Format], limit_mb: int) -> Format | None:
+    """Качество по умолчанию: лучшее из помещающихся в лимит."""
+    known = [item for item in formats if item.size_mb]
+    for item in sorted(known, key=lambda value: value.height, reverse=True):
+        if item.size_mb <= limit_mb:
+            return item
+    ordered = sorted(formats, key=lambda value: value.height)
+    return ordered[0] if ordered else None
+RADAR_FILE_18
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_18'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_19'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -3918,9 +4316,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_18
+RADAR_FILE_19
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_19'
+cat > "radar/db/models.py" <<'RADAR_FILE_20'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -4160,9 +4558,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_19
+RADAR_FILE_20
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_20'
+cat > "radar/db/engine.py" <<'RADAR_FILE_21'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -4676,9 +5074,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_21'
+cat > "radar/db/repo.py" <<'RADAR_FILE_22'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -5204,9 +5602,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_22'
+cat > "radar/db/importer.py" <<'RADAR_FILE_23'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -5381,9 +5779,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_23'
+cat > "radar/doctor.py" <<'RADAR_FILE_24'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -5808,9 +6206,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_24'
+cat > "migrations/env.py" <<'RADAR_FILE_25'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -5870,9 +6268,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_25'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_26'
 """${message}
 
 Revision ID: ${up_revision}
@@ -5897,9 +6295,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_26'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_27'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -6066,9 +6464,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_27'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_28'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -6088,12 +6486,15 @@ from .base import (
     Transport,
 )
 
+from .max import MaxTransport
+
 __all__ = [
-    "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
+    "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
+    "Transport", "MaxTransport",
 ]
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_28'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_29'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -6218,9 +6619,275 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_28
+RADAR_FILE_29
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
+cat > "radar/platforms/max.py" <<'RADAR_FILE_30'
+"""Адаптер мессенджера MAX.
+
+⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
+
+Код написан по документации MAX Bot API и повторяет структуру рабочего
+Telegram-адаптера, но ни один запрос не выполнялся против живого сервера:
+для этого нужен токен, а он выдаётся только после регистрации приложения
+и верификации владельца (юрлицо, ИП или самозанятый РФ).
+
+Что заведомо потребует уточнения при первом запуске:
+
+* **Базовый адрес.** В документации встречаются `platform-api.max.ru`
+  и `platform-api2.max.ru`. Значение вынесено в `MAX_API_URL`.
+* **Имена полей.** Ниже разбираются оба варианта, встречающиеся в примерах:
+  `chat_id` и `chat.id`, `text` и `message.text`, `payload` и `callback_data`.
+* **Разметка.** Полный HTML MAX не поддерживает, поэтому `render`
+  срезает теги, оставляя чистый текст.
+* **Long polling** годится для проверки, но для боевой работы MAX требует
+  webhook, а он у нас появится вместе с белым IP.
+
+Пока функция `platform_max` выключена по умолчанию; включать её стоит
+только для испытаний.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from typing import Any, Sequence
+
+import aiohttp
+
+from .. import config
+from ..identity import MAX, make as make_identity
+from .base import Button, EventKind, InboundEvent, Keyboard, OutboundMessage
+
+log = logging.getLogger("radar.platform.max")
+
+_TAG = re.compile(r"<[^>]+>")
+
+
+class MaxTransport:
+    """Реализация протокола Transport поверх MAX Bot API."""
+
+    name = MAX
+
+    def __init__(self, token: str = "", base_url: str = "") -> None:
+        self.token = token or config.MAX_BOT_TOKEN
+        self.base_url = (base_url or config.MAX_API_URL).rstrip("/")
+        self._session: aiohttp.ClientSession | None = None
+        self._offset = 0
+        self._running = False
+        self._handler = None
+
+    # -- служебное -------------------------------------------------------
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.token)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=60),
+                headers=self._headers(),
+            )
+        return self._session
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        session = await self._ensure_session()
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        async with session.post(url, json=payload) as response:
+            body = await response.text()
+            if response.status != 200:
+                log.warning("MAX %s → HTTP %s: %s", path, response.status, body[:200])
+                return {}
+            try:
+                return await response.json(content_type=None)
+            except Exception:  # noqa: BLE001
+                log.warning("MAX %s вернул не JSON: %s", path, body[:200])
+                return {}
+
+    # -- преобразование --------------------------------------------------
+
+    def render(self, text: str) -> str:
+        """HTML-разметку MAX не принимает — отдаём чистый текст."""
+        import html as html_module
+
+        without_tags = _TAG.sub("", text or "")
+        return html_module.unescape(without_tags)
+
+    def to_keyboard(self, keyboard: Keyboard) -> list[list[dict[str, Any]]]:
+        """Кнопки Telegram → формат MAX: callback_data становится payload."""
+        result: list[list[dict[str, Any]]] = []
+        for row in keyboard or []:
+            converted: list[dict[str, Any]] = []
+            for button in row:
+                if button.is_link:
+                    converted.append(
+                        {"type": "link", "text": button.text, "url": button.url}
+                    )
+                else:
+                    converted.append(
+                        {
+                            "type": "callback",
+                            "text": button.text,
+                            "payload": button.payload or button.text,
+                        }
+                    )
+            if converted:
+                result.append(converted)
+        return result
+
+    def parse_update(self, update: dict[str, Any]) -> InboundEvent | None:
+        """Приводит событие MAX к общему виду.
+
+        Имена полей в примерах документации расходятся, поэтому проверяются
+        оба варианта: плоский `chat_id` и вложенный `chat.id`.
+        """
+        if not isinstance(update, dict):
+            return None
+
+        kind_raw = str(update.get("update_type") or update.get("type") or "")
+        message = update.get("message") or {}
+        if not isinstance(message, dict):
+            message = {}
+
+        chat = message.get("chat") or update.get("chat") or {}
+        chat_id = (
+            message.get("chat_id")
+            or update.get("chat_id")
+            or (chat.get("id") if isinstance(chat, dict) else None)
+        )
+        if chat_id is None:
+            return None
+
+        sender = message.get("from") or message.get("sender") or update.get("user") or {}
+        user_id = sender.get("user_id") or sender.get("id") or chat_id
+        username = str(sender.get("username") or sender.get("name") or "")
+
+        text = str(message.get("text") or update.get("text") or "")
+        payload = str(
+            update.get("payload")
+            or message.get("payload")
+            or update.get("callback", {}).get("payload", "")
+            if isinstance(update.get("callback"), dict)
+            else update.get("payload") or message.get("payload") or ""
+        )
+
+        event = InboundEvent(
+            platform=MAX,
+            identity=make_identity(MAX, user_id),
+            chat_id=str(chat_id),
+            text=text,
+            payload=payload,
+            username=username,
+            message_id=str(message.get("mid") or message.get("message_id") or ""),
+            raw=update,
+        )
+
+        if payload or "callback" in kind_raw:
+            event.kind = EventKind.CALLBACK
+        elif text.startswith("/"):
+            event.kind = EventKind.COMMAND
+            head, _, tail = text.partition(" ")
+            event.command = head[1:].split("@")[0]
+            event.args = tail.strip()
+        elif message.get("location") or update.get("location"):
+            location = message.get("location") or update.get("location") or {}
+            event.kind = EventKind.LOCATION
+            event.latitude = location.get("latitude") or location.get("lat")
+            event.longitude = location.get("longitude") or location.get("lon")
+        elif "bot_added" in kind_raw or "joined" in kind_raw:
+            event.kind = EventKind.JOINED
+        elif text:
+            event.kind = EventKind.MESSAGE
+
+        return event
+
+    # -- протокол Transport ----------------------------------------------
+
+    async def send(self, chat_id: str, message: OutboundMessage) -> bool:
+        if not self.configured:
+            return False
+
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": self.render(message.text),
+        }
+        keyboard = self.to_keyboard(message.keyboard)
+        if keyboard:
+            payload["attachments"] = [
+                {"type": "inline_keyboard", "payload": {"buttons": keyboard}}
+            ]
+
+        result = await self._post("messages/send", payload)
+        return bool(result)
+
+    async def set_commands(self, commands: Sequence[tuple[str, str]]) -> None:
+        if not self.configured:
+            return
+        await self._post(
+            "me",
+            {"commands": [{"name": name, "description": text} for name, text in commands]},
+        )
+
+    async def start(self, handler=None) -> None:
+        """Long polling. Для боевой работы MAX требует webhook."""
+        if not self.configured:
+            log.info("MAX не настроен: MAX_BOT_TOKEN пуст — адаптер не запускается")
+            return
+
+        self._handler = handler
+        self._running = True
+        log.warning(
+            "Запускаю адаптер MAX в тестовом режиме (long polling). "
+            "Реализация не проверялась на живом сервере."
+        )
+
+        session = await self._ensure_session()
+        while self._running:
+            try:
+                url = f"{self.base_url}/updates"
+                params = {"offset": self._offset, "timeout": 30}
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        await asyncio.sleep(5)
+                        continue
+                    data = await response.json(content_type=None)
+
+                for update in data.get("updates") or []:
+                    marker = update.get("update_id") or update.get("marker")
+                    if isinstance(marker, int):
+                        self._offset = marker + 1
+                    event = self.parse_update(update)
+                    if event is not None and self._handler is not None:
+                        try:
+                            await self._handler(event, self)
+                        except Exception:  # noqa: BLE001
+                            log.exception("Ошибка обработки события MAX")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("Сбой опроса MAX")
+                await asyncio.sleep(5)
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_29'
+cat > "radar/storage.py" <<'RADAR_FILE_31'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -6405,9 +7072,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_29
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_30'
+cat > "radar/exporting.py" <<'RADAR_FILE_32'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -6613,9 +7280,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_30
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_31'
+cat > "radar/ai.py" <<'RADAR_FILE_33'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -7250,9 +7917,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_31
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_32'
+cat > "radar/geocode.py" <<'RADAR_FILE_34'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -7444,9 +8111,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_32
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_33'
+cat > "radar/weather.py" <<'RADAR_FILE_35'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -7778,9 +8445,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_33
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_34'
+cat > "radar/sources.py" <<'RADAR_FILE_36'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -7961,9 +8628,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_34
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_35'
+cat > "radar/tg.py" <<'RADAR_FILE_37'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -7993,10 +8660,30 @@ from .textutils import split_text, strip_tags
 
 log = logging.getLogger("radar.tg")
 
-bot = Bot(
-    token=config.BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
+def _build_bot() -> Bot:
+    """Экземпляр бота. При заданном TELEGRAM_API_SERVER — через свой сервер.
+
+    Собственный Bot API Server снимает предел отправки с 50 МБ до 2 ГБ.
+    Режим is_local означает, что сервер берёт файлы прямо с диска, минуя
+    передачу по HTTP, — для видео это на порядок быстрее.
+    """
+    properties = DefaultBotProperties(parse_mode=ParseMode.HTML)
+    if not config.TELEGRAM_API_SERVER:
+        return Bot(token=config.BOT_TOKEN, default=properties)
+
+    from aiogram.client.session.aiohttp import AiohttpSession
+    from aiogram.client.telegram import TelegramAPIServer
+
+    log.info("Использую собственный Bot API Server: %s", config.TELEGRAM_API_SERVER)
+    session = AiohttpSession(
+        api=TelegramAPIServer.from_base(
+            config.TELEGRAM_API_SERVER, is_local=config.TELEGRAM_API_LOCAL
+        )
+    )
+    return Bot(token=config.BOT_TOKEN, session=session, default=properties)
+
+
+bot = _build_bot()
 dp = Dispatcher(storage=MemoryStorage())
 
 def back_kb(target: str = "menu:main", title: str = "🏠 В главное меню") -> InlineKeyboardMarkup:
@@ -8060,9 +8747,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_35
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_36'
+cat > "radar/keyboards.py" <<'RADAR_FILE_38'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -8358,9 +9045,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_36
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_37'
+cat > "radar/states.py" <<'RADAR_FILE_39'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -8385,9 +9072,9 @@ class Form(StatesGroup):
     admin_weather_interval = State()
     sos_contact = State()          # добавление доверенного контакта
     sos_location = State()         # ожидание геопозиции для сигнала
-RADAR_FILE_37
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_38'
+cat > "radar/middlewares.py" <<'RADAR_FILE_40'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -8476,9 +9163,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_38
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_39'
+cat > "radar/monitor.py" <<'RADAR_FILE_41'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -8720,9 +9407,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_39
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_40'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_42'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -8741,6 +9428,7 @@ from . import (
     features,
     locations,
     logs,
+    media,
     settings,
     sos,
     sources,
@@ -8756,14 +9444,16 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(features.router)
     dp.include_router(logs.router)
     dp.include_router(sos.router)
+    # Ссылки перехватываем до свободного диалога с моделью
+    dp.include_router(media.router)
     # Ассистент перехватывает любой оставшийся текст — только в самом конце.
     dp.include_router(assistant.router)
 
 
 __all__ = ["setup"]
-RADAR_FILE_40
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_41'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_43'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -9048,9 +9738,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_41
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_42'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_44'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -9214,9 +9904,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_42
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_43'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_45'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -9467,9 +10157,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         await message.answer(
             f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
         )
-RADAR_FILE_43
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_44'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_46'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -9904,9 +10594,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_44
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_45'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_47'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -10272,9 +10962,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_45
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_46'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_48'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -10402,9 +11092,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await repo.set_feature(flag.key, value, call.from_user.id)
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_46
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_47'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_49'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -10692,9 +11382,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_47
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_48'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_50'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -11025,9 +11715,324 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_48
+RADAR_FILE_50
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
+cat > "radar/handlers/media.py" <<'RADAR_FILE_51'
+"""Загрузка видео по ссылке в интерфейсе бота.
+
+Роутер подключается перед ассистентом, но после всех остальных: ссылку
+надо перехватить раньше, чем текст уйдёт в свободный диалог с моделью.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import time
+import uuid
+
+from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, StateFilter
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import config, features, media, roles
+from ..textutils import esc
+from ..tg import back_kb, safe_edit
+
+log = logging.getLogger("radar.handlers.media")
+router = Router(name="media")
+
+# Одновременных загрузок: на одноплатнике вторая параллельная задача
+# отбирает процессор у фонового мониторинга.
+_slots = asyncio.Semaphore(config.MEDIA_CONCURRENCY)
+
+# Разобранные ссылки: ключ короткий, потому что callback_data ограничен
+# 64 байтами и целый URL туда не помещается.
+_pending: dict[str, dict] = {}
+_PENDING_TTL = 900
+
+
+def _allowed(role: str) -> bool:
+    if not features.enabled("media_download"):
+        return False
+    return roles.at_least(role, config.MEDIA_MIN_ROLE)
+
+
+def _cleanup_pending() -> None:
+    edge = time.time() - _PENDING_TTL
+    for key in [key for key, item in _pending.items() if item["created"] < edge]:
+        _pending.pop(key, None)
+
+
+def _keyboard(token: str, formats: list[media.Format], limit_mb: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, item in enumerate(formats):
+        mark = ""
+        if item.size_mb and item.size_mb > limit_mb:
+            mark = " ⚠️"
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{item.title}{mark}", callback_data=f"med:get:{token}:{index}"
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"med:drop:{token}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# --------------------------------------------------------------------------
+#  Приём ссылки
+# --------------------------------------------------------------------------
+
+@router.message(StateFilter(None), F.text.func(media.looks_like_url))
+async def handle_link(message: Message, role: str) -> None:
+    if not _allowed(role):
+        return  # ссылка уйдёт дальше по цепочке роутеров
+
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        await message.answer(
+            "❌ Загрузка видео недоступна: в образе нет yt-dlp.\n"
+            "<i>Пересоберите образ: docker compose build --no-cache</i>"
+        )
+        return
+
+    url = (message.text or "").strip()
+    notice = await message.answer("🔎 <b>Смотрю, что за ссылка…</b>")
+
+    try:
+        info = await asyncio.wait_for(_probe(url), timeout=90)
+    except asyncio.TimeoutError:
+        await notice.edit_text("❌ Площадка не ответила за 90 секунд.")
+        return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Разбор ссылки не удался: %s", exc)
+        await notice.edit_text(f"❌ {esc(media.friendly_error(exc))}")
+        return
+
+    formats = media.parse_formats(info)
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    _cleanup_pending()
+    token = uuid.uuid4().hex[:10]
+    _pending[token] = {
+        "url": url,
+        "formats": formats,
+        "title": media.safe_filename(str(info.get("title") or "video")),
+        "owner": message.from_user.id,
+        "created": time.time(),
+    }
+
+    lines = [media.describe(info), "", "🎯 <b>Выберите качество:</b>"]
+    if not config.uses_local_api():
+        lines.append(
+            f"<i>Предел отправки — {limit_mb} МБ. Отмеченные ⚠️ варианты "
+            "не поместятся.</i>"
+        )
+    await notice.edit_text("\n".join(lines), reply_markup=_keyboard(token, formats, limit_mb))
+
+
+async def _probe(url: str) -> dict:
+    """Метаданные без скачивания. yt-dlp синхронный — уводим в поток."""
+    import yt_dlp
+
+    options = media.probe_options(config.EGRESS_PROXY, config.MEDIA_COOKIES)
+
+    def worker() -> dict:
+        with yt_dlp.YoutubeDL(options) as downloader:
+            return downloader.extract_info(url, download=False) or {}
+
+    return await asyncio.to_thread(worker)
+
+
+# --------------------------------------------------------------------------
+#  Скачивание
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("med:drop:"))
+async def drop_request(call: CallbackQuery) -> None:
+    _pending.pop(call.data.split(":")[2], None)
+    await call.answer("Отменено")
+    await safe_edit(call, "Загрузка отменена.", back_kb())
+
+
+@router.callback_query(F.data.startswith("med:get:"))
+async def download(call: CallbackQuery, role: str) -> None:
+    if not _allowed(role):
+        await call.answer("Функция недоступна.", show_alert=True)
+        return
+
+    parts = call.data.split(":")
+    token, index = parts[2], int(parts[3])
+    request = _pending.get(token)
+
+    if request is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    if request["owner"] != call.from_user.id:
+        await call.answer("Это чужой запрос.", show_alert=True)
+        return
+    if index >= len(request["formats"]):
+        await call.answer("Вариант недоступен.", show_alert=True)
+        return
+
+    chosen: media.Format = request["formats"][index]
+    await call.answer(f"Качество: {chosen.label}")
+
+    if _slots.locked():
+        await safe_edit(
+            call,
+            "⏳ Уже идёт другая загрузка. Дождитесь её завершения — "
+            "одновременные скачивания перегружают сервер.",
+            back_kb(),
+        )
+        return
+
+    os.makedirs(config.MEDIA_DIR, exist_ok=True)
+    target = os.path.join(
+        config.MEDIA_DIR, f"{request['title'][:40]}_{token}.%(ext)s"
+    )
+    progress = media.Progress()
+    status = call.message
+
+    async with _slots:
+        try:
+            path = await _run_download(request["url"], chosen, target, progress, status)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Скачивание не удалось: %s", exc)
+            await _safe_text(status, f"❌ {esc(media.friendly_error(exc))}")
+            return
+
+        if not path or not os.path.exists(path):
+            await _safe_text(status, "❌ Файл не сформирован.")
+            return
+
+        try:
+            size = os.path.getsize(path)
+            oversize, reason = media.too_big(size, config.uses_local_api())
+            if oversize:
+                await _safe_text(status, f"⚠️ {esc(reason)}")
+                return
+
+            await _safe_text(status, "📤 <b>Отправляю в Telegram…</b>")
+            await call.message.answer_video(
+                FSInputFile(path),
+                caption=f"✅ {esc(request['title'])}\n<i>Качество: {chosen.label}</i>",
+                supports_streaming=True,
+                request_timeout=1800,
+            )
+            try:
+                await status.delete()
+            except TelegramBadRequest:
+                pass
+        finally:
+            # Диск одноплатника кончается быстро — убираем сразу
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            _pending.pop(token, None)
+
+
+async def _run_download(url: str, chosen: media.Format, target: str,
+                        progress: media.Progress, status: Message) -> str | None:
+    """Скачивание в потоке с передачей прогресса в чат."""
+    import yt_dlp
+
+    loop = asyncio.get_running_loop()
+    result: dict[str, str] = {}
+
+    def hook(payload: dict) -> None:
+        # Хук вызывается в рабочем потоке десятки раз в секунду; правку
+        # сообщения планируем в основном цикле и только по таймеру.
+        if media.read_hook(payload, progress):
+            asyncio.run_coroutine_threadsafe(
+                _safe_text(status, progress.render()), loop
+            )
+        if payload.get("status") == "finished":
+            filename = payload.get("filename")
+            if filename:
+                result["path"] = filename
+
+    options = media.build_options(
+        target,
+        chosen.selector,
+        proxy=config.EGRESS_PROXY,
+        cookies=config.MEDIA_COOKIES,
+        limit_rate=config.MEDIA_RATE_LIMIT,
+    )
+    options["progress_hooks"] = [hook]
+
+    def worker() -> str | None:
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(url, download=True)
+            if info:
+                return downloader.prepare_filename(info)
+        return None
+
+    path = await asyncio.to_thread(worker)
+
+    # После склейки расширение меняется на mp4 — берём то, что есть на диске
+    for candidate in (path, result.get("path")):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    if path:
+        merged = os.path.splitext(path)[0] + ".mp4"
+        if os.path.exists(merged):
+            return merged
+    return None
+
+
+async def _safe_text(message: Message, text: str) -> None:
+    try:
+        await message.edit_text(text)
+    except TelegramBadRequest:
+        pass  # «message is not modified» и подобное — не повод падать
+    except Exception:  # noqa: BLE001
+        log.debug("Не удалось обновить сообщение прогресса", exc_info=True)
+
+
+# --------------------------------------------------------------------------
+#  Справка
+# --------------------------------------------------------------------------
+
+@router.message(Command("media"))
+async def cmd_media(message: Message, role: str) -> None:
+    if not features.enabled("media_download"):
+        await message.answer("Загрузка видео отключена суперадминистратором.")
+        return
+    if not _allowed(role):
+        await message.answer("⛔️ Загрузка видео доступна начиная с другой роли.")
+        return
+
+    limit = media.size_limit_mb(config.uses_local_api())
+    server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
+    await message.answer(
+        "🎬 <b>Загрузка видео</b>\n\n"
+        "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
+        f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
+        f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
+        "<i>Скачивайте только то, на что у вас есть право: правила площадок "
+        "и авторские права никто не отменял.</i>",
+        reply_markup=back_kb(),
+    )
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_49'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_52'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -11172,7 +12177,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_49
+RADAR_FILE_52
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

@@ -17,6 +17,9 @@ from .base import (
     Transport,
 )
 
+from .max import MaxTransport
+
 __all__ = [
-    "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage", "Transport",
+    "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
+    "Transport", "MaxTransport",
 ]

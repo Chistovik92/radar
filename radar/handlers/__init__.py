@@ -16,6 +16,7 @@ from . import (
     features,
     locations,
     logs,
+    media,
     settings,
     sos,
     sources,
@@ -31,6 +32,8 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(features.router)
     dp.include_router(logs.router)
     dp.include_router(sos.router)
+    # Ссылки перехватываем до свободного диалога с моделью
+    dp.include_router(media.router)
     # Ассистент перехватывает любой оставшийся текст — только в самом конце.
     dp.include_router(assistant.router)
 

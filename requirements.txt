@@ -10,3 +10,6 @@ SQLAlchemy[asyncio]>=2.0,<3
 aiosqlite>=0.20
 asyncpg>=0.29
 alembic>=1.13
+
+# Загрузка видео по ссылке (функция включается флагом media_download)
+yt-dlp>=2024.8.6
