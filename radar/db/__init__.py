@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 from .engine import (
+    check_schema_compatible,
     create_schema,
+    ensure_schema,
     dispose,
     get_engine,
     session,

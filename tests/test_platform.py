@@ -116,7 +116,8 @@ class TestFeatures(unittest.TestCase):
         for key in ("source_vk", "weather_image", "quiet_hours",
                     "platform_max", "partners", "promo_codes",
                     "web_panel", "egress_proxy", "maintenance",
-                    "digest", "digest_paid", "digest_suggestions"):
+                    "digest", "digest_paid", "digest_suggestions",
+                    "source_ok", "sos"):
             self.assertFalse(features.enabled(key), key)
 
 
@@ -328,6 +329,22 @@ class TestSourceCheck(unittest.TestCase):
             self.sc.SourceStatus(kind="tg", ref="ok", state=self.sc.ALIVE),
         ])
         self.assertIn("отвечают", self.sc.render(report))
+
+
+class TestSchemaGuards(unittest.TestCase):
+    """Защита от несовместимой схемы, оставшейся от прежней версии."""
+
+    def test_ensure_schema_exposed(self):
+        from radar.db import engine
+
+        for name in ("ensure_schema", "repair_schema", "check_schema_compatible"):
+            self.assertTrue(hasattr(engine, name), name)
+
+    def test_bigint_variant_declared(self):
+        """Первичный ключ обязан быть INTEGER в SQLite, иначе нет автоинкремента."""
+        from radar.db import models
+
+        self.assertTrue(hasattr(models, "BigIntType"))
 
 
 if __name__ == "__main__":

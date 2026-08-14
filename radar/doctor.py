@@ -194,14 +194,20 @@ async def check_database() -> bool:
     report.add("Подключение к базе", OK, config.database_url().split("@")[-1][:60])
 
     try:
-        created, tables = await db_engine.create_schema()
+        created, tables, repaired = await db_engine.ensure_schema()
         await db_engine.stamp_alembic()
     except Exception as exc:  # noqa: BLE001
         report.add("Схема базы", ERROR, str(exc)[:200],
                    "Возможна несовместимость версии базы", traceback.format_exc())
         return False
-    report.add("Схема базы", OK,
-               f"{'создана' if created else 'актуальна'}, таблиц: {tables}")
+
+    if repaired:
+        report.add("Схема базы", WARN,
+                   f"была несовместима и пересоздана, таблиц: {tables}",
+                   "Данные пользователей сохранены, история событий очищена")
+    else:
+        report.add("Схема базы", OK,
+                   f"{'создана' if created else 'актуальна'}, таблиц: {tables}")
 
     # Полный цикл: запись, чтение, удаление. Именно здесь всплывали ошибки
     # ленивой подгрузки, которых не видно при простом подключении.

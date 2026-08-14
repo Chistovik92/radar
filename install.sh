@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.0.8.4 — автономный установщик.
+# Система «Радар» v4.0.8.5-rc1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.0.8.4"
+VERSION="4.0.8.5-rc1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1236,9 +1236,11 @@ async def prepare_database() -> None:
     await db_engine.wait_ready()
 
     log.info("Проверяю схему базы")
-    created, tables = await db_engine.create_schema()
+    created, tables, repaired = await db_engine.ensure_schema()
     await db_engine.stamp_alembic()
-    if created:
+    if repaired:
+        log.warning("Схема была несовместима и пересоздана (%d таблиц)", tables)
+    elif created:
         log.info("Схема базы создана (%d таблиц)", tables)
     else:
         log.info("Схема базы актуальна (%d таблиц)", tables)
@@ -1336,7 +1338,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.0.8.4"
+__version__ = "4.0.8.5-rc1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -2710,6 +2712,9 @@ FLAGS: tuple[Flag, ...] = (
          group="Источники", since="3.0"),
     Flag("source_vk", "Источники ВКонтакте", "Стены открытых сообществ через VK API.",
          group="Источники", since="4.1", default=False),
+    Flag("source_ok", "Источники Одноклассники",
+         "Ленты групп через API OK. Требует регистрации приложения на apiok.ru.",
+         group="Источники", since="4.1", default=False),
 
     # --- подача ---
     Flag("all_clear", "Отбой опасности", "Отдельное сообщение при снятии угрозы.",
@@ -2734,6 +2739,11 @@ FLAGS: tuple[Flag, ...] = (
     Flag("digest_suggestions", "Предложение источников новостей",
          "Пользователи предлагают каналы и ленты по тематикам.",
          group="Новости", since="4.3", default=False),
+
+    # --- экстренная помощь ---
+    Flag("sos", "Кнопка SOS",
+         "Отправка геопозиции экстренному контакту по нажатию кнопки.",
+         group="Экстренное", since="4.1", default=False),
 
     # --- данные ---
     Flag("history", "История событий", "Журнал того, что приходило по адресу.",
@@ -3581,7 +3591,9 @@ cat > "radar/db/__init__.py" <<'RADAR_FILE_17'
 from __future__ import annotations
 
 from .engine import (
+    check_schema_compatible,
     create_schema,
+    ensure_schema,
     dispose,
     get_engine,
     session,
@@ -4035,6 +4047,171 @@ async def create_schema() -> tuple[bool, int]:
     if created:
         log.info("Созданы таблицы: %s", ", ".join(created))
     return bool(created), len(after)
+
+
+async def ensure_schema() -> tuple[bool, int, bool]:
+    """Создаёт схему и чинит её, если она осталась от версии с ошибкой.
+
+    Возвращает (создавалось ли что-то, число таблиц, была ли починка).
+    """
+    created, tables = await create_schema()
+
+    compatible, reason = await check_schema_compatible()
+    if compatible:
+        return created, tables, False
+
+    log.warning("Обнаружена несовместимая схема: %s", reason)
+    await repair_schema()
+    _created, tables = await create_schema()
+    return created, tables, True
+
+
+async def _sqlite_pk_type(connection, table: str, column: str) -> str:
+    """Объявленный тип столбца в SQLite — из PRAGMA table_info."""
+    from sqlalchemy import text
+
+    result = await connection.execute(text(f"PRAGMA table_info({table})"))
+    for row in result:
+        if row[1] == column:
+            return str(row[2] or "").upper()
+    return ""
+
+
+async def check_schema_compatible() -> tuple[bool, str]:
+    """Совместима ли существующая схема с текущими моделями.
+
+    Нужно потому, что `create_all` только досоздаёт недостающие таблицы
+    и никогда не меняет существующие. База, созданная версией с ошибкой
+    в типе первичного ключа, так и осталась бы нерабочей: таблицы на месте,
+    а вставка падает.
+    """
+    from sqlalchemy import inspect, text
+
+    if not config.is_sqlite():
+        return True, ""
+
+    async with get_engine().connect() as connection:
+        tables = await connection.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        if "users" not in tables:
+            return True, ""
+
+        pk_type = await _sqlite_pk_type(connection, "users", "id")
+        if pk_type and pk_type != "INTEGER":
+            return False, (
+                f"первичный ключ users.id объявлен как {pk_type}; "
+                "SQLite подставляет автоинкремент только для INTEGER"
+            )
+
+        for table, column in (("locations", "user_id"), ("deliveries", "user_id")):
+            if table not in tables:
+                continue
+            column_type = await _sqlite_pk_type(connection, table, column)
+            if column_type and column_type != "INTEGER":
+                return False, f"тип {table}.{column} = {column_type}, ожидается INTEGER"
+
+    return True, ""
+
+
+async def repair_schema() -> dict[str, int]:
+    """Пересоздаёт схему, сохраняя данные.
+
+    Содержимое читается обычными запросами — чтение из «сломанной» схемы
+    работает, падает только вставка, — затем таблицы создаются заново
+    и данные возвращаются на место. История событий не переносится:
+    она восстановима из источников и не стоит усложнения.
+    """
+    from sqlalchemy import select
+
+    from .models import Base, Feature, Location, Meta, Source, User
+
+    users: list[dict] = []
+    locations: list[dict] = []
+    sources: list[dict] = []
+    features: list[dict] = []
+    meta: list[dict] = []
+
+    async with session() as active:
+        for row in (await active.scalars(select(User))).all():
+            users.append({
+                "old_id": row.id,
+                "platform": row.platform, "external_id": row.external_id,
+                "role": row.role, "username": row.username,
+                "settings": row.settings or {},
+                "weather_mode": row.weather_mode, "weather_interval": row.weather_interval,
+                "weather_time": row.weather_time, "weather_format": row.weather_format,
+                "last_weather": row.last_weather, "last_fixed_date": row.last_fixed_date,
+                "quiet_from": row.quiet_from, "quiet_to": row.quiet_to,
+            })
+        for row in (await active.scalars(select(Location))).all():
+            locations.append({
+                "old_user_id": row.user_id,
+                "public_id": row.public_id, "name": row.name,
+                "lat": row.lat, "lon": row.lon, "street": row.street, "house": row.house,
+                "city": row.city, "district": row.district, "region": row.region,
+                "added_by": row.added_by,
+            })
+        for row in (await active.scalars(select(Source))).all():
+            sources.append({
+                "kind": row.kind, "ref": row.ref, "title": row.title, "city": row.city,
+                "enabled": row.enabled, "pending": row.pending, "added_by": row.added_by,
+            })
+        for row in (await active.scalars(select(Feature))).all():
+            features.append({"key": row.key, "enabled": row.enabled,
+                             "changed_by": row.changed_by})
+        for row in (await active.scalars(select(Meta))).all():
+            meta.append({"key": row.key, "value": row.value})
+
+    log.warning(
+        "Схема несовместима — пересоздаю. Сохранено: пользователей %d, "
+        "локаций %d, источников %d",
+        len(users), len(locations), len(sources),
+    )
+
+    async with get_engine().begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+
+    restored_locations = 0
+    async with session() as active:
+        # Старый идентификатор → новый: связь локаций с владельцами
+        # восстанавливается именно по нему, а не по порядку строк.
+        id_map: dict[int, int] = {}
+        for item in users:
+            old_id = item.pop("old_id")
+            row = User(**item)
+            active.add(row)
+            await active.flush()
+            id_map[old_id] = row.id
+
+        for item in locations:
+            old_user = item.pop("old_user_id")
+            new_user = id_map.get(old_user)
+            if new_user is None:
+                log.warning("Локация «%s» пропущена: владелец не найден", item.get("name"))
+                continue
+            active.add(Location(user_id=new_user, **item))
+            restored_locations += 1
+
+        for item in sources:
+            active.add(Source(**item))
+        for item in features:
+            active.add(Feature(**item))
+        for item in meta:
+            active.add(Meta(**item))
+
+    log.info(
+        "Схема пересоздана: пользователей %d, локаций %d, источников %d",
+        len(users), restored_locations, len(sources),
+    )
+    return {
+        "users": len(users),
+        "locations": restored_locations,
+        "sources": len(sources),
+        "features": len(features),
+        "meta": len(meta),
+    }
 
 
 async def stamp_alembic(revision: str = "0001_initial") -> None:
@@ -4955,14 +5132,20 @@ async def check_database() -> bool:
     report.add("Подключение к базе", OK, config.database_url().split("@")[-1][:60])
 
     try:
-        created, tables = await db_engine.create_schema()
+        created, tables, repaired = await db_engine.ensure_schema()
         await db_engine.stamp_alembic()
     except Exception as exc:  # noqa: BLE001
         report.add("Схема базы", ERROR, str(exc)[:200],
                    "Возможна несовместимость версии базы", traceback.format_exc())
         return False
-    report.add("Схема базы", OK,
-               f"{'создана' if created else 'актуальна'}, таблиц: {tables}")
+
+    if repaired:
+        report.add("Схема базы", WARN,
+                   f"была несовместима и пересоздана, таблиц: {tables}",
+                   "Данные пользователей сохранены, история событий очищена")
+    else:
+        report.add("Схема базы", OK,
+                   f"{'создана' if created else 'актуальна'}, таблиц: {tables}")
 
     # Полный цикл: запись, чтение, удаление. Именно здесь всплывали ошибки
     # ленивой подгрузки, которых не видно при простом подключении.

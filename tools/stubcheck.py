@@ -179,6 +179,9 @@ def smoke_checks() -> list[str]:
     for holder, attribute in (
         ("db_engine", "wait_ready"),
         ("db_engine", "AuthenticationError"),
+        ("db_engine", "ensure_schema"),
+        ("db_engine", "repair_schema"),
+        ("db_engine", "check_schema_compatible"),
         ("db_engine", "dispose"),
         ("importer", "is_empty"),
         ("importer", "run"),

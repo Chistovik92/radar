@@ -98,9 +98,11 @@ async def prepare_database() -> None:
     await db_engine.wait_ready()
 
     log.info("Проверяю схему базы")
-    created, tables = await db_engine.create_schema()
+    created, tables, repaired = await db_engine.ensure_schema()
     await db_engine.stamp_alembic()
-    if created:
+    if repaired:
+        log.warning("Схема была несовместима и пересоздана (%d таблиц)", tables)
+    elif created:
         log.info("Схема базы создана (%d таблиц)", tables)
     else:
         log.info("Схема базы актуальна (%d таблиц)", tables)
