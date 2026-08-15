@@ -16,7 +16,7 @@ from typing import Any
 
 import aiohttp
 
-from . import ai, config, features, geocode, sos, sources, storage, weather
+from . import ai, config, features, geocode, secrets, sos, sources, storage, weather
 from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
@@ -240,6 +240,23 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
         config.MSG_PER_SOURCE,
         warmup=warmup,
     )
+    # ВКонтакте читается тем же циклом: сообщества добавляются как источники,
+    # а разбор дальше общий для всех типов.
+    if features.enabled("source_vk"):
+        vk_token = secrets.get("VK_SERVICE_TOKEN")
+        groups = list(storage.vk_groups())
+        if vk_token and groups:
+            for group in groups:
+                fetched = await sources.fetch_vk(
+                    session, group, vk_token, config.MSG_PER_SOURCE
+                )
+                for entry in fetched:
+                    if seen.add(entry.text):
+                        items.append(entry)
+                await asyncio.sleep(0.4)
+        elif groups and not vk_token:
+            log.info("Источники VK включены, но VK_SERVICE_TOKEN не задан")
+
     if warmup:
         log.info("Первый проход: %d сообщений помечены прочитанными", len(seen))
         return

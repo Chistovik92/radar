@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.2.8 — автономный установщик.
+# Система «Радар» v4.3.0 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.2.8"
+VERSION="4.3.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -415,7 +415,6 @@ choose_database() {
 # Файлы проекта перезаписываются на месте, поэтому перед развёртыванием
 # сохраняем текущую установку целиком. Если новая версия не поднимется,
 # откат возвращает ровно то, что работало до обновления.
-FALLBACK_VERSION="3.3.5"     # последняя версия с файловым хранилищем
 ROLLBACK_SNAPSHOT=""
 PREVIOUS_VERSION=""
 
@@ -443,15 +442,36 @@ make_snapshot() {
                  docker-compose.yml alembic.ini .env; do
         [ -e "$APP_DIR/$entry" ] && items="$items $entry"
     done
+
+    # База входит в снимок целиком: восстановление без данных бесполезно.
+    # SQLite копируется вместе с журналами WAL, иначе часть записей теряется.
+    for entry in data/radar.db data/radar.db-wal data/radar.db-shm data/db.json; do
+        [ -e "$APP_DIR/$entry" ] && items="$items $entry"
+    done
+    if [ -d "$APP_DIR/data/postgres" ]; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^radar_db$'; then
+            local dump="$APP_DIR/data/postgres-dump.sql"
+            if docker exec radar_db pg_dump -U radar radar > "$dump" 2>>"$LOG_FILE"; then
+                items="$items data/postgres-dump.sql"
+            fi
+        else
+            items="$items data/postgres"
+        fi
+    fi
+
     [ -z "$items" ] && return 0
 
+    spinner_start "снимок установки и базы…"
     if tar -czf "$archive" -C "$APP_DIR" $items 2>>"$LOG_FILE"; then
+        spinner_stop
         ROLLBACK_SNAPSHOT="$archive"
         printf '%s\n' "$PREVIOUS_VERSION" > "$dir/.last-version"
         ok "Снимок: $(basename "$archive") ($(du -h "$archive" | cut -f1))"
+        rm -f "$APP_DIR/data/postgres-dump.sql" 2>/dev/null || true
         # Оставляем последние 5 снимков
         ls -1t "$dir"/rollback-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f || true
     else
+        spinner_stop
         warn "Снимок создать не удалось — откат будет недоступен"
     fi
     return 0
@@ -474,11 +494,19 @@ do_rollback() {       # do_rollback [путь к снимку]
     run docker rm -f "$CONTAINER_NAME" || true
 
     rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    spinner_start "распаковка снимка…"
     if ! tar -xzf "$archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
+        spinner_stop
         fail "Распаковать снимок не удалось"
         return 1
     fi
-    ok "Файлы восстановлены"
+    spinner_stop "Файлы и база восстановлены"
+
+    # Дамп PostgreSQL из снимка заливается после подъёма контейнера
+    if [ -f "$APP_DIR/data/postgres-dump.sql" ]; then
+        info "В снимке есть дамп PostgreSQL — залейте его после запуска:"
+        info "  docker exec -i radar_db psql -U radar radar < data/postgres-dump.sql"
+    fi
 
     info "Пересобираю образ прежней версии"
     if ! (cd "$APP_DIR" && run $COMPOSE build); then
@@ -502,78 +530,39 @@ offer_rollback() {    # offer_rollback <причина>
     printf "  %sЧто можно сделать:%s\n\n" "$C_BOLD" "$C_RESET"
 
     if [ -n "$archive" ]; then
-        printf "    1) Откатиться на предыдущую версию %s(%s)%s\n" \
-            "$C_DIM" "${PREVIOUS_VERSION:-из снимка}" "$C_RESET"
-        printf "       %sфайлы вернутся из снимка, база не трогается%s\n" "$C_DIM" "$C_RESET"
+        printf "    %s1) Восстановить из резервной копии%s\n" "$C_BOLD" "$C_RESET"
+        printf "       %s%s%s\n" "$C_DIM" "$(basename "$archive")" "$C_RESET"
+        printf "       %sвернутся файлы и настройки, база не трогается%s\n" \
+            "$C_DIM" "$C_RESET"
     else
-        printf "    1) %s(снимка нет — откат недоступен)%s\n" "$C_DIM" "$C_RESET"
+        printf "    %s1) (копии нет — восстановление недоступно)%s\n" "$C_DIM" "$C_RESET"
     fi
-    printf "    2) Поставить проверенную версию %s%s\n" "$FALLBACK_VERSION" ""
-    printf "       %sпоследняя версия на файловом хранилище, без базы данных%s\n" "$C_DIM" "$C_RESET"
-    printf "    3) Ничего не делать — разберусь сам\n\n"
-    printf "  Выбор [3]: "
+    printf "    %s2) Восстановить и файлы, и базу данных%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sполный откат к состоянию до запуска установщика%s\n" \
+        "$C_DIM" "$C_RESET"
+    printf "    %s3) Ничего не делать — разберусь сам%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "  Выбор [1]: "
 
     local answer=""
     read -r answer < /dev/tty || answer="3"
-    : "${answer:=3}"
+    : "${answer:=1}"
     log_raw "Действие после сбоя ($reason): $answer"
 
     case "$answer" in
         1)
-            if [ -z "$archive" ]; then
-                warn "Снимка нет, откат невозможен"
-                return 1
-            fi
+            [ -z "$archive" ] && { warn "Копии нет, восстановление невозможно"; return 1; }
             do_rollback "$archive" && return 0
             return 1
             ;;
         2)
-            echo
-            info "Ищу установщик версии $FALLBACK_VERSION"
-
-            # Источники по убыванию надёжности: локальный архив, тег, ветка.
-            local local_archive="$APP_DIR/fallback/radar-${FALLBACK_VERSION}.tar.gz"
-            if [ -f "$local_archive" ]; then
-                info "Найден локальный архив: $local_archive"
-                if tar -xzf "$local_archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
-                    ok "Версия $FALLBACK_VERSION распакована"
-                    (cd "$APP_DIR" && run $COMPOSE down) || true
-                    if (cd "$APP_DIR" && run $COMPOSE build) &&
-                       (cd "$APP_DIR" && run $COMPOSE up -d); then
-                        ok "Версия $FALLBACK_VERSION запущена"
-                        return 0
-                    fi
-                    fail "Запустить $FALLBACK_VERSION не удалось"
-                    return 1
-                fi
-                warn "Архив повреждён"
-            fi
-
-            local url="https://raw.githubusercontent.com/Chistovik92/radar/v${FALLBACK_VERSION}/install.sh"
-            printf "  Пробую %s\n" "$url"
-            if curl -fsSLo "$APP_DIR/install-${FALLBACK_VERSION}.sh" "$url" 2>>"$LOG_FILE"; then
-                ok "Установщик $FALLBACK_VERSION скачан"
-                printf "\n  Запустите его:\n    bash %s/install-%s.sh\n\n" \
-                    "$APP_DIR" "$FALLBACK_VERSION"
-                return 1
-            fi
-
-            rm -f "$APP_DIR/install-${FALLBACK_VERSION}.sh"
-            warn "Тег v$FALLBACK_VERSION в репозитории не найден (ответ 404)"
-            echo
-            printf "  %sЧтобы этот вариант заработал, поставьте тег на нужный коммит:%s\n" \
-                "$C_BOLD" "$C_RESET"
-            printf "    git log --oneline | grep -i 3.3.5      %s# найти коммит%s\n" "$C_DIM" "$C_RESET"
-            printf "    git tag v%s <хеш коммита>\n" "$FALLBACK_VERSION"
-            printf "    git push origin v%s\n" "$FALLBACK_VERSION"
-            echo
-            printf "  %sЛибо положите архив вручную:%s\n" "$C_BOLD" "$C_RESET"
-            printf "    %s/fallback/radar-%s.tar.gz\n\n" "$APP_DIR" "$FALLBACK_VERSION"
+            [ -z "$archive" ] && { warn "Копии нет, восстановление невозможно"; return 1; }
+            restore_database || warn "Базу восстановить не удалось"
+            do_rollback "$archive" && return 0
             return 1
             ;;
         *)
             printf "\n  Полный журнал: %s\n" "$LOG_FILE"
-            printf "  Откат позже:   bash %s/install.sh --rollback\n\n" "$APP_DIR"
+            printf "  Восстановить позже: bash %s/install.sh --rollback\n\n" "$APP_DIR"
             return 1
             ;;
     esac
@@ -1008,7 +997,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
-FILE_COUNT=56
+FILE_COUNT=59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1126,6 +1115,28 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Выход в сеть через внешний узел. Поднимается профилем, когда
+  # суперадминистратор выбрал сервер в боте:
+  #   docker compose --profile proxy up -d
+  # Конфигурация пишется ботом в data/singbox/config.json.
+  singbox:
+    profiles: ["proxy"]
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: radar_singbox
+    restart: unless-stopped
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./data/singbox:/etc/sing-box:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   postgres:
     profiles: ["postgres"]
@@ -1261,6 +1272,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.3.0", [
+        "🌐 <b>Выход в сеть через свой узел</b> — подписки, VLESS, Shadowsocks, "
+        "Trojan. Ключ добавляется в боте, но сервер выбирается вручную: "
+        "добавление ключа ничего не включает.",
+        "🤖 <b>Смена провайдера ИИ на лету</b> — Gemini или DeepSeek, "
+        "с проверкой баланса перед переключением.",
+        "🔵 <b>ВКонтакте как источник</b> — стены открытых сообществ.",
+        "💾 <b>Снимок перед установкой включает базу</b>: откат возвращает "
+        "и файлы, и данные.",
+    ]),
     ("4.2.8", [
         "🐛 Исправлен сбой запуска на Python 3.11: обратный слэш в f-строке.",
         "🩺 Диагностика теперь импортирует всё дерево модулей — "
@@ -1488,7 +1509,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.2.8"
+__version__ = "4.3.0"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3000,7 +3021,7 @@ FLAGS: tuple[Flag, ...] = (
     Flag("source_rss", "Источники RSS", "Ленты СМИ и официальных сайтов.",
          group="Источники", since="3.0"),
     Flag("source_vk", "Источники ВКонтакте", "Стены открытых сообществ через VK API.",
-         group="Источники", since="4.1", default=False),
+         group="Источники", since="4.3", default=False),
     Flag("source_ok", "Источники Одноклассники",
          "Ленты групп через API OK. Требует регистрации приложения на apiok.ru.",
          group="Источники", since="4.1", default=False),
@@ -3049,8 +3070,11 @@ FLAGS: tuple[Flag, ...] = (
     # --- инфраструктура ---
     Flag("egress_proxy", "Выход в сеть через внешний узел",
          "Исходящий трафик бота идёт через SOCKS5 от sing-box. "
-         "Настраивается только суперадминистратором.",
-         group="Инфраструктура", since="4.1", default=False),
+         "Ключ добавляется в боте, сервер выбирается вручную.",
+         group="Инфраструктура", since="4.3", default=False),
+    Flag("provider_switch", "Смена провайдера ИИ",
+         "Переключение между Gemini и DeepSeek на лету, с проверкой баланса.",
+         group="Ядро", since="4.3"),
     Flag("maintenance", "Режим обслуживания",
          "Бот отвечает «идут работы», фоновый цикл остановлен.",
          group="Инфраструктура", since="4.5", default=False),
@@ -5106,8 +5130,655 @@ def render(report: Report) -> str:
 
     return "\n".join(lines)
 RADAR_FILE_20
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/proxy.py"
+cat > "radar/proxy.py" <<'RADAR_FILE_21'
+"""Выход бота в интернет через внешний узел: подписки, ключи, выбор сервера.
+
+Как это устроено
+----------------
+Бот сам не устанавливает соединение: он ходит через локальный SOCKS5, который
+поднимает sing-box в соседнем контейнере. Здесь — разбор ключей и подписок,
+список серверов и генерация конфигурации для sing-box.
+
+Ключевое правило: **добавление ключа ничего не включает**. Из подписки
+приходят десятки серверов разных протоколов, и выбирать за администратора,
+через какой именно пойдёт трафик бота, неправильно — от этого зависит
+и скорость, и то, из какой страны бот виден площадкам. Пока сервер не выбран
+явно, выход в сеть остаётся прямым.
+
+Поддерживаются: подписка (base64-список или построчный), VLESS, Shadowsocks,
+Trojan, а также готовые SOCKS5 и HTTP-прокси.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import base64
+import binascii
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+log = logging.getLogger("radar.proxy")
+
+SUPPORTED = ("vless", "ss", "trojan", "socks5", "http")
+
+LOCAL_PORT = 1080
+CONFIG_PATH = "data/singbox/config.json"
+
+
+@dataclass
+class Server:
+    """Один узел из подписки или отдельной ссылки."""
+
+    protocol: str
+    host: str
+    port: int
+    title: str = ""
+    uuid: str = ""            # VLESS
+    password: str = ""        # Shadowsocks, Trojan, SOCKS5
+    method: str = ""          # Shadowsocks
+    security: str = ""        # tls | reality | none
+    sni: str = ""
+    flow: str = ""
+    public_key: str = ""      # Reality
+    short_id: str = ""
+    fingerprint: str = ""
+    transport: str = ""       # ws | grpc | tcp
+    path: str = ""
+    host_header: str = ""
+    raw: str = ""
+
+    @property
+    def key(self) -> str:
+        """Устойчивый идентификатор: подписка может менять порядок серверов."""
+        return f"{self.protocol}:{self.host}:{self.port}"
+
+    @property
+    def label(self) -> str:
+        name = self.title or self.host
+        marker = self.protocol.upper()
+        if self.security in ("reality", "tls"):
+            marker += f"+{self.security}"
+        return f"{name} · {marker}"
+
+    def to_outbound(self) -> dict[str, Any]:
+        """Конфигурация исходящего соединения для sing-box."""
+        outbound: dict[str, Any] = {
+            "type": self.protocol if self.protocol != "ss" else "shadowsocks",
+            "tag": "proxy",
+            "server": self.host,
+            "server_port": self.port,
+        }
+
+        if self.protocol == "vless":
+            outbound["uuid"] = self.uuid
+            if self.flow:
+                outbound["flow"] = self.flow
+        elif self.protocol == "ss":
+            outbound["method"] = self.method or "aes-256-gcm"
+            outbound["password"] = self.password
+        elif self.protocol == "trojan":
+            outbound["password"] = self.password
+        elif self.protocol in ("socks5", "http"):
+            outbound["type"] = "socks" if self.protocol == "socks5" else "http"
+            if self.password:
+                outbound["username"] = self.uuid or "user"
+                outbound["password"] = self.password
+            return outbound
+
+        if self.security == "reality":
+            outbound["tls"] = {
+                "enabled": True,
+                "server_name": self.sni or self.host,
+                "utls": {"enabled": True, "fingerprint": self.fingerprint or "chrome"},
+                "reality": {
+                    "enabled": True,
+                    "public_key": self.public_key,
+                    "short_id": self.short_id,
+                },
+            }
+        elif self.security == "tls":
+            outbound["tls"] = {
+                "enabled": True,
+                "server_name": self.sni or self.host,
+                "insecure": False,
+            }
+
+        if self.transport == "ws":
+            outbound["transport"] = {
+                "type": "ws",
+                "path": self.path or "/",
+                "headers": {"Host": self.host_header or self.sni or self.host},
+            }
+        elif self.transport == "grpc":
+            outbound["transport"] = {"type": "grpc", "service_name": self.path or ""}
+
+        return outbound
+
+
+# --------------------------------------------------------------------------
+#  Разбор
+# --------------------------------------------------------------------------
+
+def _decode_base64(text: str) -> str:
+    """Мягкое декодирование: подписки часто без выравнивания и в URL-варианте."""
+    cleaned = re.sub(r"\s+", "", text)
+    cleaned = cleaned.replace("-", "+").replace("_", "/")
+    padding = len(cleaned) % 4
+    if padding:
+        cleaned += "=" * (4 - padding)
+    try:
+        return base64.b64decode(cleaned).decode("utf-8", errors="replace")
+    except (binascii.Error, ValueError):
+        return ""
+
+
+def parse_vless(uri: str) -> Server | None:
+    try:
+        parsed = urlparse(uri)
+    except ValueError:
+        return None
+    if parsed.scheme != "vless" or not parsed.hostname:
+        return None
+
+    query = parse_qs(parsed.query)
+
+    def first(name: str, default: str = "") -> str:
+        values = query.get(name)
+        return values[0] if values else default
+
+    return Server(
+        protocol="vless",
+        host=parsed.hostname,
+        port=parsed.port or 443,
+        title=unquote(parsed.fragment or ""),
+        uuid=parsed.username or "",
+        security=first("security", "none"),
+        sni=first("sni") or first("peer"),
+        flow=first("flow"),
+        public_key=first("pbk"),
+        short_id=first("sid"),
+        fingerprint=first("fp"),
+        transport=first("type", "tcp"),
+        path=unquote(first("path")),
+        host_header=first("host"),
+        raw=uri,
+    )
+
+
+def parse_shadowsocks(uri: str) -> Server | None:
+    """Формат ss:// встречается в двух видах: с base64 и без."""
+    body = uri[5:]
+    fragment = ""
+    if "#" in body:
+        body, fragment = body.split("#", 1)
+
+    if "@" not in body:
+        decoded = _decode_base64(body)
+        if "@" not in decoded:
+            return None
+        body = decoded
+        credentials, _, address = body.rpartition("@")
+    else:
+        credentials, _, address = body.rpartition("@")
+        if ":" not in credentials:
+            decoded = _decode_base64(credentials)
+            if decoded:
+                credentials = decoded
+
+    if ":" not in credentials or ":" not in address:
+        return None
+    method, _, password = credentials.partition(":")
+    host, _, port = address.partition(":")
+    port = port.split("?")[0].split("/")[0]
+
+    try:
+        port_number = int(port)
+    except ValueError:
+        return None
+
+    return Server(
+        protocol="ss", host=host, port=port_number,
+        title=unquote(fragment), method=method, password=password, raw=uri,
+    )
+
+
+def parse_trojan(uri: str) -> Server | None:
+    try:
+        parsed = urlparse(uri)
+    except ValueError:
+        return None
+    if not parsed.hostname:
+        return None
+    query = parse_qs(parsed.query)
+    return Server(
+        protocol="trojan",
+        host=parsed.hostname,
+        port=parsed.port or 443,
+        title=unquote(parsed.fragment or ""),
+        password=parsed.username or "",
+        security="tls",
+        sni=(query.get("sni") or [""])[0],
+        transport=(query.get("type") or ["tcp"])[0],
+        path=unquote((query.get("path") or [""])[0]),
+        raw=uri,
+    )
+
+
+def parse_plain_proxy(uri: str) -> Server | None:
+    try:
+        parsed = urlparse(uri)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("socks5", "socks", "http", "https") or not parsed.hostname:
+        return None
+    protocol = "socks5" if parsed.scheme.startswith("socks") else "http"
+    return Server(
+        protocol=protocol,
+        host=parsed.hostname,
+        port=parsed.port or (1080 if protocol == "socks5" else 8080),
+        title=parsed.hostname,
+        uuid=parsed.username or "",
+        password=parsed.password or "",
+        raw=uri,
+    )
+
+
+def parse_uri(uri: str) -> Server | None:
+    text = (uri or "").strip()
+    if not text:
+        return None
+    if text.startswith("vless://"):
+        return parse_vless(text)
+    if text.startswith("ss://"):
+        return parse_shadowsocks(text)
+    if text.startswith("trojan://"):
+        return parse_trojan(text)
+    if text.startswith(("socks5://", "socks://", "http://", "https://")):
+        # Ссылка на подписку тоже начинается с http — отличаем по содержимому
+        return parse_plain_proxy(text)
+    return None
+
+
+def parse_subscription(payload: str) -> list[Server]:
+    """Разбирает содержимое подписки: base64-блок или список ссылок."""
+    text = (payload or "").strip()
+    if not text:
+        return []
+
+    # Подписки чаще всего приходят одним base64-блоком
+    if "://" not in text:
+        decoded = _decode_base64(text)
+        if decoded:
+            text = decoded
+
+    servers: list[Server] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        server = parse_uri(line.strip())
+        if server is not None and server.key not in seen:
+            seen.add(server.key)
+            servers.append(server)
+    return servers
+
+
+def is_subscription_url(text: str) -> bool:
+    """Ссылка на подписку, а не готовый прокси."""
+    value = (text or "").strip().lower()
+    if not value.startswith(("http://", "https://")):
+        return False
+    # У прокси нет пути; у подписки он почти всегда есть
+    parsed = urlparse(value)
+    return bool(parsed.path and parsed.path not in ("/", ""))
+
+
+# --------------------------------------------------------------------------
+#  Состояние
+# --------------------------------------------------------------------------
+
+@dataclass
+class ProxyState:
+    """Что известно о выходе в сеть."""
+
+    source: str = ""                       # ссылка на подписку или сам ключ
+    servers: list[Server] = field(default_factory=list)
+    selected: str = ""                     # key выбранного сервера
+    enabled: bool = False
+
+    @property
+    def active(self) -> Server | None:
+        if not self.enabled or not self.selected:
+            return None
+        return next((item for item in self.servers if item.key == self.selected), None)
+
+    def by_protocol(self) -> dict[str, list[Server]]:
+        grouped: dict[str, list[Server]] = {}
+        for server in self.servers:
+            grouped.setdefault(server.protocol, []).append(server)
+        return grouped
+
+
+def build_config(server: Server, port: int = LOCAL_PORT) -> dict[str, Any]:
+    """Конфигурация sing-box: локальный SOCKS5 → выбранный узел."""
+    return {
+        "log": {"level": "warn"},
+        "inbounds": [
+            {
+                "type": "socks",
+                "tag": "in",
+                "listen": "0.0.0.0",
+                "listen_port": port,
+                "sniff": True,
+            }
+        ],
+        "outbounds": [server.to_outbound(), {"type": "direct", "tag": "direct"}],
+        "route": {"final": "proxy"},
+    }
+
+
+def render_config(server: Server, port: int = LOCAL_PORT) -> str:
+    return json.dumps(build_config(server, port), ensure_ascii=False, indent=2)
+
+
+def describe(state: ProxyState) -> str:
+    """Состояние для сообщения в боте."""
+    from .textutils import esc
+
+    lines = ["🌐 <b>Выход в интернет</b>", ""]
+
+    if not state.servers:
+        lines.append("Ключ или подписка не добавлены — бот ходит напрямую.")
+        return "\n".join(lines)
+
+    grouped = state.by_protocol()
+    summary = ", ".join(
+        f"{protocol.upper()}: {len(items)}" for protocol, items in sorted(grouped.items())
+    )
+    lines.append(f"Загружено серверов: <b>{len(state.servers)}</b> ({esc(summary)})")
+
+    active = state.active
+    if active is not None:
+        lines.append(f"Активен: <b>{esc(active.label)}</b>")
+    elif state.selected:
+        lines.append("Сервер выбран, но выход через него выключен.")
+    else:
+        lines.append(
+            "⚠️ Сервер не выбран — трафик идёт напрямую.\n"
+            "<i>Ключ сам по себе ничего не включает: выберите узел "
+            "и протокол вручную.</i>"
+        )
+    return "\n".join(lines)
+RADAR_FILE_21
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/provider.py"
+cat > "radar/provider.py" <<'RADAR_FILE_22'
+"""Выбор провайдера ИИ на лету: Google Gemini или DeepSeek.
+
+Зачем
+-----
+Сравнение в `aibench` показывает, кто точнее на реальных сообщениях служб.
+Раньше результат оставался справкой: переключиться можно было только правкой
+`.env` и перезапуском. Теперь провайдер меняется кнопкой, и следующий же
+разбор идёт через выбранного.
+
+Проверка баланса
+----------------
+У DeepSeek оплата по факту, и ключ с нулевым балансом не отличается от рабочего
+до первого запроса — а первым запросом окажется разбор реальной тревоги.
+Поэтому перед переключением баланс проверяется отдельным запросом. У Gemini
+такого метода нет: там смотрим на успешность пробного вызова и остаток квоты.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+import aiohttp
+
+from . import secrets
+
+log = logging.getLogger("radar.provider")
+
+GEMINI = "gemini"
+DEEPSEEK = "deepseek"
+
+TIMEOUT = 25
+
+
+@dataclass(frozen=True)
+class ProviderInfo:
+    key: str
+    title: str
+    env: str
+    note: str
+    paid: bool
+
+
+PROVIDERS: dict[str, ProviderInfo] = {
+    GEMINI: ProviderInfo(
+        GEMINI, "Google Gemini", "GEMINI_API_KEY",
+        "Бесплатный тариф с ограничением по запросам. Умеет поиск в интернете.",
+        paid=False,
+    ),
+    DEEPSEEK: ProviderInfo(
+        DEEPSEEK, "DeepSeek", "DEEPSEEK_API_KEY",
+        "Оплата по факту, очень низкая цена. Поиска в интернете нет.",
+        paid=True,
+    ),
+}
+
+# Текущий выбор. Пустая строка — используется значение из .env.
+_selected: str = ""
+
+
+def available() -> list[ProviderInfo]:
+    return [item for item in PROVIDERS.values() if secrets.get(item.env)]
+
+
+def current() -> str:
+    """Активный провайдер для разбора новостей."""
+    if _selected and secrets.get(PROVIDERS[_selected].env):
+        return _selected
+    stored = (secrets.get("AI_PROVIDER") or "").strip().lower()
+    if stored in PROVIDERS and secrets.get(PROVIDERS[stored].env):
+        return stored
+    return GEMINI
+
+
+def select(name: str, persist: bool = True) -> bool:
+    """Переключает провайдера. Действует со следующего разбора."""
+    global _selected
+
+    key = (name or "").strip().lower()
+    if key not in PROVIDERS:
+        return False
+    if not secrets.get(PROVIDERS[key].env):
+        return False
+
+    _selected = key
+    if persist:
+        secrets.write("AI_PROVIDER", key)
+    log.info("Провайдер разбора новостей переключён на «%s»", key)
+    return True
+
+
+# --------------------------------------------------------------------------
+#  Проверка доступности и баланса
+# --------------------------------------------------------------------------
+
+@dataclass
+class Health:
+    provider: str
+    ok: bool = False
+    balance: str = ""          # человекочитаемый остаток
+    balance_low: bool = False
+    detail: str = ""
+
+    @property
+    def icon(self) -> str:
+        if not self.ok:
+            return "❌"
+        return "⚠️" if self.balance_low else "✅"
+
+
+async def check_deepseek(session: aiohttp.ClientSession, api_key: str) -> Health:
+    """Баланс DeepSeek: у него есть отдельный метод, и им стоит пользоваться."""
+    health = Health(provider=DEEPSEEK)
+    try:
+        async with session.get(
+            "https://api.deepseek.com/user/balance",
+            headers={"Authorization": f"Bearer {api_key}"},
+        ) as response:
+            if response.status == 401:
+                health.detail = "ключ отклонён"
+                return health
+            if response.status != 200:
+                health.detail = f"HTTP {response.status}"
+                return health
+            payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        health.detail = f"{type(exc).__name__}"
+        return health
+
+    infos = payload.get("balance_infos") or []
+    if not infos:
+        health.ok = bool(payload.get("is_available"))
+        health.detail = "баланс не сообщён"
+        return health
+
+    info = infos[0]
+    currency = str(info.get("currency") or "")
+    total = info.get("total_balance")
+    try:
+        amount = float(total)
+    except (TypeError, ValueError):
+        amount = 0.0
+
+    health.ok = bool(payload.get("is_available", amount > 0))
+    health.balance = f"{amount:.2f} {currency}".strip()
+    # Порог условный: при таком остатке разбора хватит на считаные дни
+    health.balance_low = amount <= 0.5
+    if amount <= 0:
+        health.ok = False
+        health.detail = "нулевой баланс"
+    return health
+
+
+async def check_gemini(session: aiohttp.ClientSession, api_key: str) -> Health:
+    """У Gemini метода баланса нет — проверяем, что ключ принимается."""
+    health = Health(provider=GEMINI)
+    try:
+        async with session.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            headers={"x-goog-api-key": api_key},
+        ) as response:
+            if response.status == 401 or response.status == 403:
+                health.detail = "ключ отклонён"
+                return health
+            if response.status != 200:
+                health.detail = f"HTTP {response.status}"
+                return health
+            payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        health.detail = f"{type(exc).__name__}"
+        return health
+
+    models = [
+        str(item.get("name", "")).removeprefix("models/")
+        for item in payload.get("models") or []
+    ]
+    usable = [name for name in models if "gemini" in name]
+    health.ok = bool(usable)
+    health.balance = "тариф по квоте"
+    health.detail = f"моделей доступно: {len(usable)}" if usable else "моделей нет"
+
+    # Остаток дневной квоты берём у собственного счётчика: у Gemini
+    # нет метода, который сообщал бы его снаружи.
+    try:
+        from . import ai  # локальный импорт: избегаем цикла на старте
+
+        snapshot = ai.limiter.snapshot()
+        left = int(snapshot.get("limit_day", 0)) - int(snapshot.get("used_today", 0))
+        health.balance = f"осталось запросов сегодня: {max(0, left)}"
+        health.balance_low = left < 20
+    except Exception:  # noqa: BLE001
+        pass
+
+    return health
+
+
+async def check(name: str) -> Health:
+    """Проверяет одного провайдера."""
+    key = (name or "").strip().lower()
+    info = PROVIDERS.get(key)
+    if info is None:
+        return Health(provider=key, detail="неизвестный провайдер")
+
+    api_key = secrets.get(info.env)
+    if not api_key:
+        return Health(provider=key, detail="ключ не задан")
+
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        if key == DEEPSEEK:
+            return await check_deepseek(session, api_key)
+        return await check_gemini(session, api_key)
+
+
+async def check_all() -> dict[str, Health]:
+    results: dict[str, Health] = {}
+    for info in PROVIDERS.values():
+        if secrets.get(info.env):
+            results[info.key] = await check(info.key)
+    return results
+
+
+def render(results: dict[str, Health]) -> str:
+    """Состояние провайдеров для сообщения."""
+    from .textutils import esc
+
+    active = current()
+    lines = ["🤖 <b>Провайдер разбора новостей</b>", ""]
+
+    if not results:
+        lines.append(
+            "Ни одного ключа не задано. Добавьте их в разделе «Ключи доступа»."
+        )
+        return "\n".join(lines)
+
+    for key, health in results.items():
+        info = PROVIDERS[key]
+        mark = " ← активен" if key == active else ""
+        lines.append(f"{health.icon} <b>{esc(info.title)}</b>{mark}")
+        if health.balance:
+            lines.append(f"   {esc(health.balance)}")
+        if health.detail:
+            lines.append(f"   <i>{esc(health.detail)}</i>")
+        lines.append("")
+
+    if any(item.balance_low for item in results.values()):
+        lines.append("⚠️ <i>Остаток на исходе — разбор скоро переключится "
+                     "на эвристику по ключевым словам.</i>")
+    return "\n".join(lines).strip()
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_21'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_23'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -5140,9 +5811,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_21
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_22'
+cat > "radar/db/models.py" <<'RADAR_FILE_24'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -5382,9 +6053,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_22
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_23'
+cat > "radar/db/engine.py" <<'RADAR_FILE_25'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -5898,9 +6569,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_23
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_24'
+cat > "radar/db/repo.py" <<'RADAR_FILE_26'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -6426,9 +7097,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_24
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_25'
+cat > "radar/db/importer.py" <<'RADAR_FILE_27'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -6603,9 +7274,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_25
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_26'
+cat > "radar/doctor.py" <<'RADAR_FILE_28'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -7054,9 +7725,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_26
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_27'
+cat > "migrations/env.py" <<'RADAR_FILE_29'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -7116,9 +7787,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_27
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_28'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_30'
 """${message}
 
 Revision ID: ${up_revision}
@@ -7143,9 +7814,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_28
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_29'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_31'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -7312,9 +7983,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_29
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_30'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_32'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -7340,9 +8011,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_30
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_31'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_33'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -7467,9 +8138,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_31
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_32'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_34'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -7733,9 +8404,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_32
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_33'
+cat > "radar/storage.py" <<'RADAR_FILE_35'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -7920,9 +8591,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_33
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_34'
+cat > "radar/exporting.py" <<'RADAR_FILE_36'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -8128,9 +8799,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_34
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_35'
+cat > "radar/ai.py" <<'RADAR_FILE_37'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -8647,6 +9318,46 @@ def _fallback(text: str, source: str, link: str = "") -> Analysis:
     return analysis
 
 
+async def _deepseek_batch(prompt: str) -> str:
+    """Пакетный разбор через DeepSeek. Формат ответа тот же, что у Gemini."""
+    import aiohttp
+
+    from . import secrets
+
+    api_key = secrets.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise AIError("ключ DeepSeek не задан")
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 2000,
+        "response_format": {"type": "json_object"},
+    }
+    timeout = aiohttp.ClientTimeout(total=90)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        ) as response:
+            body = await response.text()
+            if response.status != 200:
+                detail = body[:200]
+                raise AIError(f"DeepSeek HTTP {response.status}: {detail}")
+            data = json.loads(body)
+
+    for choice in data.get("choices") or []:
+        content = (choice.get("message") or {}).get("content")
+        if content:
+            return content
+    raise AIError("DeepSeek вернул пустой ответ")
+
+
 async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
     """Разбирает список кортежей (текст, источник[, ссылка]).
 
@@ -8692,15 +9403,22 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             for position, index in enumerate(chunk)
         )
         try:
-            raw = await generate(
-                ANALYST_PROMPT.format(items=listing),
-                system=ANALYST_SYSTEM,
-                json_mode=True,
-                max_tokens=700 * len(chunk) + 300,
-                temperature=0.1,
-                role=ANALYSIS,
-                priority=False,
-            )
+            # Провайдер выбирается на лету: переключение в боте действует
+            # со следующего разбора, перезапуск не нужен.
+            from . import provider as provider_choice
+
+            if provider_choice.current() == provider_choice.DEEPSEEK:
+                raw = await _deepseek_batch(ANALYST_PROMPT.format(items=listing))
+            else:
+                raw = await generate(
+                    ANALYST_PROMPT.format(items=listing),
+                    system=ANALYST_SYSTEM,
+                    json_mode=True,
+                    max_tokens=700 * len(chunk) + 300,
+                    temperature=0.1,
+                    role=ANALYSIS,
+                    priority=False,
+                )
             _counters["requests"] += 1
             payloads = _parse_array(raw)
         except QuotaExceeded:
@@ -8787,9 +9505,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_35
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_36'
+cat > "radar/geocode.py" <<'RADAR_FILE_38'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -8981,9 +9699,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_36
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_37'
+cat > "radar/weather.py" <<'RADAR_FILE_39'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -9315,9 +10033,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_37
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_38'
+cat > "radar/sources.py" <<'RADAR_FILE_40'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -9498,9 +10216,87 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_38
+
+
+# --------------------------------------------------------------------------
+#  ВКонтакте
+# --------------------------------------------------------------------------
+
+VK_API = "https://api.vk.com/method"
+VK_VERSION = "5.199"
+
+# Коды ошибок VK, при которых нужно притормозить, а не считать источник мёртвым
+VK_RATE_CODES = {6, 9, 29}
+
+
+async def fetch_vk(
+    session: aiohttp.ClientSession, group: str, token: str, limit: int = 10
+) -> list[Item]:
+    """Стена открытого сообщества через wall.get.
+
+    Особенности VK, из-за которых нельзя просто смотреть на код ответа:
+
+    * ошибки приходят с HTTP 200 и телом `{"error": {...}}`, а не с 429;
+    * код 6 — слишком много запросов в секунду, код 9 — флуд-контроль;
+      это временные состояния, источник исключать нельзя;
+    * пустой массив без ошибки не означает «новостей нет»: так же выглядит
+      закрытая или удалённая стена.
+    """
+    identifier = group.strip().lstrip("@")
+    params = {
+        "domain": identifier,
+        "count": str(limit),
+        "filter": "owner",
+        "access_token": token,
+        "v": VK_VERSION,
+    }
+    if identifier.lstrip("-").isdigit():
+        params.pop("domain")
+        params["owner_id"] = identifier if identifier.startswith("-") else f"-{identifier}"
+
+    try:
+        async with session.get(f"{VK_API}/wall.get", params=params) as response:
+            if response.status != 200:
+                log.warning("VK %s: HTTP %s", identifier, response.status)
+                return []
+            payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("VK %s недоступен: %s", identifier, exc)
+        return []
+
+    error = payload.get("error")
+    if error:
+        code = int(error.get("error_code") or 0)
+        message = str(error.get("error_msg") or "")
+        if code in VK_RATE_CODES:
+            log.info("VK %s: ограничение частоты (код %d) — пропускаю цикл",
+                     identifier, code)
+        else:
+            log.warning("VK %s: ошибка %d — %s", identifier, code, message)
+        return []
+
+    response_body = payload.get("response") or {}
+    posts = response_body.get("items") or []
+    if not posts:
+        # Пустая выдача без ошибки: стена закрыта, пуста или сообщество удалено
+        log.info("VK %s: записей нет — проверьте, открыта ли стена", identifier)
+        return []
+
+    items: list[Item] = []
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        text = clean(str(post.get("text") or ""))
+        if len(text) < 20:
+            continue
+        owner = post.get("owner_id")
+        post_id = post.get("id")
+        link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
+        items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
+    return items
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_39'
+cat > "radar/tg.py" <<'RADAR_FILE_41'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -9617,9 +10413,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_39
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_40'
+cat > "radar/keyboards.py" <<'RADAR_FILE_42'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -9702,6 +10498,10 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
         ])
         rows.append([
             InlineKeyboardButton(text="🧪 Проверка ИИ", callback_data="bench:menu"),
+            InlineKeyboardButton(text="🤖 Провайдер ИИ", callback_data="prov:menu"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
             InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
         ])
 
@@ -9950,9 +10750,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_40
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_41'
+cat > "radar/states.py" <<'RADAR_FILE_43'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -9978,9 +10778,10 @@ class Form(StatesGroup):
     sos_contact = State()          # добавление доверенного контакта
     sos_location = State()         # ожидание геопозиции для сигнала
     secret_value = State()         # ввод ключа доступа суперадминистратором
-RADAR_FILE_41
+    proxy_key = State()            # ключ или подписка для выхода в сеть
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_42'
+cat > "radar/middlewares.py" <<'RADAR_FILE_44'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -10069,9 +10870,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_42
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_43'
+cat > "radar/monitor.py" <<'RADAR_FILE_45'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -10090,7 +10891,7 @@ from typing import Any
 
 import aiohttp
 
-from . import ai, config, features, geocode, sos, sources, storage, weather
+from . import ai, config, features, geocode, secrets, sos, sources, storage, weather
 from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
@@ -10314,6 +11115,23 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
         config.MSG_PER_SOURCE,
         warmup=warmup,
     )
+    # ВКонтакте читается тем же циклом: сообщества добавляются как источники,
+    # а разбор дальше общий для всех типов.
+    if features.enabled("source_vk"):
+        vk_token = secrets.get("VK_SERVICE_TOKEN")
+        groups = list(storage.vk_groups())
+        if vk_token and groups:
+            for group in groups:
+                fetched = await sources.fetch_vk(
+                    session, group, vk_token, config.MSG_PER_SOURCE
+                )
+                for entry in fetched:
+                    if seen.add(entry.text):
+                        items.append(entry)
+                await asyncio.sleep(0.4)
+        elif groups and not vk_token:
+            log.info("Источники VK включены, но VK_SERVICE_TOKEN не задан")
+
     if warmup:
         log.info("Первый проход: %d сообщений помечены прочитанными", len(seen))
         return
@@ -10377,9 +11195,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_43
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_44'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_46'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -10399,6 +11217,7 @@ from . import (
     locations,
     logs,
     media,
+    network,
     settings,
     settings_admin,
     sos,
@@ -10414,6 +11233,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(users.router)
     dp.include_router(features.router)
     dp.include_router(settings_admin.router)
+    dp.include_router(network.router)
     dp.include_router(logs.router)
     dp.include_router(sos.router)
     # Ссылки перехватываем до свободного диалога с моделью
@@ -10423,9 +11243,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_44
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_45'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_47'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -10776,9 +11596,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_45
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_46'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_48'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -10942,9 +11762,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_46
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_47'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_49'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -11195,9 +12015,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         await message.answer(
             f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
         )
-RADAR_FILE_47
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_48'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_50'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -11632,9 +12452,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_48
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_49'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_51'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -12000,9 +12820,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_49
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_50'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_52'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -12130,9 +12950,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await repo.set_feature(flag.key, value, call.from_user.id)
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_50
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_51'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_53'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -12420,9 +13240,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_51
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_52'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_54'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -12828,9 +13648,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_52
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_53'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_55'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -13143,9 +13963,9 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_53
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_54'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_56'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -13488,9 +14308,532 @@ async def bench_run(call: CallbackQuery, role: str) -> None:
         "в версии 4.3.</i>",
         back_kb("bench:menu", "◀️ Назад"),
     )
-RADAR_FILE_54
+RADAR_FILE_56
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
+cat > "radar/handlers/network.py" <<'RADAR_FILE_57'
+"""Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+
+import aiohttp
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import config, proxy, provider, roles, secrets
+from ..states import Form
+from ..textutils import esc, split_text
+from ..tg import back_kb, safe_edit, send_html
+
+log = logging.getLogger("radar.handlers.network")
+router = Router(name="network")
+
+_state = proxy.ProxyState()
+
+
+def _load_state() -> proxy.ProxyState:
+    """Восстанавливает состояние из .env при первом обращении."""
+    if _state.servers or not secrets.get("EGRESS_SOURCE"):
+        return _state
+
+    source = secrets.get("EGRESS_SOURCE")
+    _state.source = source
+    payload = secrets.get("EGRESS_PAYLOAD")
+    if payload:
+        _state.servers = proxy.parse_subscription(payload)
+    elif not proxy.is_subscription_url(source):
+        server = proxy.parse_uri(source)
+        if server is not None:
+            _state.servers = [server]
+
+    _state.selected = secrets.get("EGRESS_SELECTED")
+    _state.enabled = bool(config.EGRESS_PROXY)
+    return _state
+
+
+# --------------------------------------------------------------------------
+#  Меню
+# --------------------------------------------------------------------------
+
+def _menu() -> InlineKeyboardMarkup:
+    state = _load_state()
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if state.servers:
+        rows.append([
+            InlineKeyboardButton(text="🖥 Выбрать сервер", callback_data="net:list:0")
+        ])
+        if state.selected:
+            action = "⏸ Выключить выход" if state.enabled else "▶️ Включить выход"
+            rows.append([InlineKeyboardButton(text=action, callback_data="net:toggle")])
+        rows.append([
+            InlineKeyboardButton(text="🔄 Обновить подписку", callback_data="net:refresh"),
+            InlineKeyboardButton(text="🗑 Удалить ключ", callback_data="net:drop"),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(text="➕ Добавить ключ или подписку", callback_data="net:add")
+        ])
+
+    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("network"))
+async def cmd_network(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Выход в сеть настраивает суперадминистратор.")
+        return
+    await message.answer(proxy.describe(_load_state()), reply_markup=_menu())
+
+
+@router.callback_query(F.data == "net:menu")
+async def show_menu(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await state.clear()
+    await call.answer()
+    await safe_edit(call, proxy.describe(_load_state()), _menu())
+
+
+# --------------------------------------------------------------------------
+#  Добавление ключа
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data == "net:add")
+async def ask_key(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(Form.proxy_key)
+    await safe_edit(
+        call,
+        "➕ <b>Ключ или подписка</b>\n\n"
+        "Пришлите одно из:\n"
+        "• ссылку на подписку (<code>https://…/sub/…</code>)\n"
+        "• <code>vless://…</code>\n"
+        "• <code>ss://…</code>\n"
+        "• <code>trojan://…</code>\n"
+        "• <code>socks5://host:port</code>\n\n"
+        "<b>Добавление ключа ничего не включает.</b> Из подписки приходят "
+        "десятки серверов; какой из них использовать и по какому протоколу — "
+        "вы выберете вручную следующим шагом.\n\n"
+        "<i>/cancel — отмена.</i>",
+        back_kb("net:menu", "Отмена"),
+    )
+
+
+@router.message(Form.proxy_key)
+async def save_key(message: Message, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+
+    await state.clear()
+    try:
+        await message.delete()      # ключ не должен оставаться в переписке
+    except Exception:  # noqa: BLE001
+        pass
+
+    notice = await message.answer("🔎 Разбираю ключ…")
+
+    servers: list[proxy.Server] = []
+    payload = ""
+
+    if proxy.is_subscription_url(text):
+        payload = await _download(text)
+        if not payload:
+            await notice.edit_text(
+                "❌ Подписку скачать не удалось. Проверьте ссылку и доступность "
+                "сервера подписки.",
+                reply_markup=back_kb("net:menu", "◀️ Назад"),
+            )
+            return
+        servers = proxy.parse_subscription(payload)
+    else:
+        single = proxy.parse_uri(text)
+        if single is not None:
+            servers = [single]
+
+    if not servers:
+        await notice.edit_text(
+            "❌ Не удалось разобрать. Поддерживаются подписки, vless://, ss://, "
+            "trojan:// и socks5://.",
+            reply_markup=back_kb("net:menu", "◀️ Назад"),
+        )
+        return
+
+    _state.source = text
+    _state.servers = servers
+    _state.selected = ""
+    _state.enabled = False
+
+    secrets.write("EGRESS_SOURCE", text)
+    if payload:
+        secrets.write("EGRESS_PAYLOAD", payload.replace("\n", "|"))
+    secrets.write("EGRESS_SELECTED", "")
+
+    grouped = _state.by_protocol()
+    summary = ", ".join(
+        f"{name.upper()}: {len(items)}" for name, items in sorted(grouped.items())
+    )
+    await notice.edit_text(
+        f"✅ Загружено серверов: <b>{len(servers)}</b>\n{esc(summary)}\n\n"
+        "⚠️ <b>Выход в сеть пока не включён.</b> Выберите сервер — только после "
+        "этого трафик пойдёт через него.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🖥 Выбрать сервер", callback_data="net:list:0")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="net:menu")],
+        ]),
+    )
+
+
+async def _download(url: str) -> str:
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {"User-Agent": config.USER_AGENT}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    log.warning("Подписка вернула HTTP %s", response.status)
+                    return ""
+                return await response.text()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Подписка недоступна: %s", exc)
+        return ""
+
+
+# --------------------------------------------------------------------------
+#  Выбор сервера
+# --------------------------------------------------------------------------
+
+PAGE = 8
+
+
+@router.callback_query(F.data.startswith("net:list:"))
+async def list_servers(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    page = int(call.data.split(":")[2])
+    state = _load_state()
+    if not state.servers:
+        await call.answer("Серверов нет.", show_alert=True)
+        return
+
+    chunk = state.servers[page * PAGE:(page + 1) * PAGE]
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=("✅ " if item.key == state.selected else "") + item.label[:48],
+                callback_data=f"net:pick:{page * PAGE + index}",
+            )
+        ]
+        for index, item in enumerate(chunk)
+    ]
+
+    navigation: list[InlineKeyboardButton] = []
+    if page:
+        navigation.append(
+            InlineKeyboardButton(text="◀️", callback_data=f"net:list:{page - 1}")
+        )
+    if (page + 1) * PAGE < len(state.servers):
+        navigation.append(
+            InlineKeyboardButton(text="▶️", callback_data=f"net:list:{page + 1}")
+        )
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="net:menu")])
+
+    total_pages = (len(state.servers) + PAGE - 1) // PAGE
+    await call.answer()
+    await safe_edit(
+        call,
+        f"🖥 <b>Выбор сервера</b>\nСтраница {page + 1} из {total_pages}\n\n"
+        "<i>Выбор определяет и протокол, и страну, из которой бот виден "
+        "площадкам.</i>",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("net:pick:"))
+async def pick_server(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    index = int(call.data.split(":")[2])
+    state = _load_state()
+    if index >= len(state.servers):
+        await call.answer("Сервер не найден.", show_alert=True)
+        return
+
+    server = state.servers[index]
+    state.selected = server.key
+    secrets.write("EGRESS_SELECTED", server.key)
+
+    # Конфигурация пишется рядом с ботом: её читает sing-box
+    written = _write_config(server)
+    await call.answer(f"Выбран: {server.label[:40]}")
+
+    lines = [
+        f"✅ <b>Сервер выбран</b>\n{esc(server.label)}",
+        f"<code>{esc(server.host)}:{server.port}</code>",
+        "",
+    ]
+    if written:
+        lines.append("Конфигурация sing-box записана.")
+    else:
+        lines.append("⚠️ Конфигурацию записать не удалось — проверьте права на data/.")
+    lines.append("")
+    lines.append(
+        "Чтобы трафик пошёл через него, включите выход и перезапустите "
+        "контейнеры: <code>docker compose --profile proxy up -d</code>"
+    )
+
+    await safe_edit(
+        call,
+        "\n".join(lines),
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="▶️ Включить выход", callback_data="net:toggle")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="net:menu")],
+        ]),
+    )
+
+
+def _write_config(server: proxy.Server) -> bool:
+    try:
+        path = proxy.CONFIG_PATH
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(proxy.render_config(server))
+        return True
+    except OSError as exc:
+        log.error("Конфигурация sing-box не записана: %s", exc)
+        return False
+
+
+@router.callback_query(F.data == "net:toggle")
+async def toggle(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    state = _load_state()
+    if not state.selected:
+        await call.answer("Сначала выберите сервер.", show_alert=True)
+        return
+
+    state.enabled = not state.enabled
+    value = f"socks5://singbox:{proxy.LOCAL_PORT}" if state.enabled else ""
+    secrets.write("EGRESS_PROXY", value)
+
+    await call.answer("Включено" if state.enabled else "Выключено")
+    note = (
+        "Трафик пойдёт через выбранный сервер после перезапуска."
+        if state.enabled else
+        "Бот вернётся к прямому подключению после перезапуска."
+    )
+    await safe_edit(
+        call,
+        f"{proxy.describe(state)}\n\n⚠️ <i>{note}</i>\n"
+        "<code>docker compose --profile proxy up -d</code>",
+        _menu(),
+    )
+
+
+@router.callback_query(F.data == "net:refresh")
+async def refresh(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    state = _load_state()
+    if not proxy.is_subscription_url(state.source):
+        await call.answer("Обновлять нечего: добавлен отдельный ключ.", show_alert=True)
+        return
+
+    await call.answer("Обновляю…")
+    payload = await _download(state.source)
+    servers = proxy.parse_subscription(payload) if payload else []
+    if not servers:
+        await safe_edit(call, "❌ Подписка недоступна или пуста.", _menu())
+        return
+
+    previous = state.selected
+    state.servers = servers
+    secrets.write("EGRESS_PAYLOAD", payload.replace("\n", "|"))
+
+    # Выбранный сервер мог исчезнуть из подписки — честно об этом сообщаем
+    if previous and not any(item.key == previous for item in servers):
+        state.selected = ""
+        state.enabled = False
+        secrets.write("EGRESS_SELECTED", "")
+        secrets.write("EGRESS_PROXY", "")
+        await safe_edit(
+            call,
+            f"🔄 Обновлено: <b>{len(servers)}</b> серверов.\n\n"
+            "⚠️ Прежний сервер из подписки пропал — выход выключен, "
+            "выберите новый.",
+            _menu(),
+        )
+        return
+
+    await safe_edit(call, f"🔄 Обновлено: <b>{len(servers)}</b> серверов.\n\n"
+                          f"{proxy.describe(state)}", _menu())
+
+
+@router.callback_query(F.data == "net:drop")
+async def drop(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    _state.source = ""
+    _state.servers = []
+    _state.selected = ""
+    _state.enabled = False
+    for key in ("EGRESS_SOURCE", "EGRESS_PAYLOAD", "EGRESS_SELECTED", "EGRESS_PROXY"):
+        secrets.clear(key)
+
+    await call.answer("Удалено")
+    await safe_edit(
+        call,
+        "🗑 Ключ удалён, бот вернётся к прямому подключению после перезапуска.",
+        _menu(),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Провайдер ИИ
+# --------------------------------------------------------------------------
+
+def _provider_menu() -> InlineKeyboardMarkup:
+    active = provider.current()
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=("✅ " if info.key == active else "") + info.title,
+                callback_data=f"prov:pick:{info.key}",
+            )
+        ]
+        for info in provider.available()
+    ]
+    rows.append([
+        InlineKeyboardButton(text="🔄 Проверить доступ и баланс", callback_data="prov:check")
+    ])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("provider"))
+async def cmd_provider(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Провайдера выбирает суперадминистратор.")
+        return
+    await message.answer(_provider_overview(), reply_markup=_provider_menu())
+
+
+def _provider_overview() -> str:
+    active = provider.current()
+    lines = ["🤖 <b>Провайдер разбора новостей</b>", ""]
+    for info in provider.PROVIDERS.values():
+        mark = "✅" if info.key == active else ("•" if secrets.get(info.env) else "—")
+        lines.append(f"{mark} <b>{esc(info.title)}</b>")
+        lines.append(f"   <i>{esc(info.note)}</i>")
+    lines.append("")
+    lines.append(
+        "<i>Смена действует со следующего разбора, перезапуск не нужен. "
+        "ИИ-ассистент в диалоге всегда работает через Gemini: только он "
+        "умеет искать в интернете.</i>"
+    )
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data == "prov:menu")
+async def provider_menu(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, _provider_overview(), _provider_menu())
+
+
+@router.callback_query(F.data == "prov:check")
+async def provider_check(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    await call.answer("Проверяю…")
+    results = await provider.check_all()
+    await safe_edit(call, provider.render(results), _provider_menu())
+
+
+@router.callback_query(F.data.startswith("prov:pick:"))
+async def provider_pick(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    key = call.data.split(":")[2]
+    info = provider.PROVIDERS.get(key)
+    if info is None:
+        await call.answer("Неизвестный провайдер.", show_alert=True)
+        return
+
+    await call.answer("Проверяю доступ…")
+    health = await provider.check(key)
+
+    # Платный провайдер с нулевым балансом не отличить от рабочего до первого
+    # запроса — а первым окажется разбор настоящей тревоги. Проверяем заранее.
+    if not health.ok:
+        await safe_edit(
+            call,
+            f"❌ <b>{esc(info.title)}</b> недоступен: {esc(health.detail or 'нет ответа')}\n\n"
+            "Переключение отменено — прежний провайдер продолжает работать.",
+            _provider_menu(),
+        )
+        return
+
+    if not provider.select(key):
+        await safe_edit(call, "❌ Переключить не удалось.", _provider_menu())
+        return
+
+    lines = [f"✅ Провайдер разбора: <b>{esc(info.title)}</b>"]
+    if health.balance:
+        lines.append(f"{esc(health.balance)}")
+    if health.balance_low:
+        lines.append("\n⚠️ <i>Остаток на исходе — пополните, иначе разбор "
+                     "переключится на эвристику.</i>")
+    lines.append("\n<i>Действует со следующего разбора новостей.</i>")
+
+    await safe_edit(call, "\n".join(lines), _provider_menu())
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_55'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_58'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -13635,7 +14978,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_55
+RADAR_FILE_58
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

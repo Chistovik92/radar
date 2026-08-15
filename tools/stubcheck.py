@@ -213,11 +213,11 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.media", "radar.secrets", "radar.aibench", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
+        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.media", "radar.secrets", "radar.aibench", "radar.proxy", "radar.provider", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",
-        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.settings_admin", "radar.handlers.assistant",
+        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.settings_admin", "radar.handlers.network", "radar.handlers.assistant",
         "radar.platforms", "radar.platforms.base", "radar.platforms.max",
         "main",
     ]

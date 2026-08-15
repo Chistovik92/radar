@@ -178,3 +178,81 @@ async def collect(
                 fresh.append(item)
 
     return fresh
+
+
+# --------------------------------------------------------------------------
+#  ВКонтакте
+# --------------------------------------------------------------------------
+
+VK_API = "https://api.vk.com/method"
+VK_VERSION = "5.199"
+
+# Коды ошибок VK, при которых нужно притормозить, а не считать источник мёртвым
+VK_RATE_CODES = {6, 9, 29}
+
+
+async def fetch_vk(
+    session: aiohttp.ClientSession, group: str, token: str, limit: int = 10
+) -> list[Item]:
+    """Стена открытого сообщества через wall.get.
+
+    Особенности VK, из-за которых нельзя просто смотреть на код ответа:
+
+    * ошибки приходят с HTTP 200 и телом `{"error": {...}}`, а не с 429;
+    * код 6 — слишком много запросов в секунду, код 9 — флуд-контроль;
+      это временные состояния, источник исключать нельзя;
+    * пустой массив без ошибки не означает «новостей нет»: так же выглядит
+      закрытая или удалённая стена.
+    """
+    identifier = group.strip().lstrip("@")
+    params = {
+        "domain": identifier,
+        "count": str(limit),
+        "filter": "owner",
+        "access_token": token,
+        "v": VK_VERSION,
+    }
+    if identifier.lstrip("-").isdigit():
+        params.pop("domain")
+        params["owner_id"] = identifier if identifier.startswith("-") else f"-{identifier}"
+
+    try:
+        async with session.get(f"{VK_API}/wall.get", params=params) as response:
+            if response.status != 200:
+                log.warning("VK %s: HTTP %s", identifier, response.status)
+                return []
+            payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("VK %s недоступен: %s", identifier, exc)
+        return []
+
+    error = payload.get("error")
+    if error:
+        code = int(error.get("error_code") or 0)
+        message = str(error.get("error_msg") or "")
+        if code in VK_RATE_CODES:
+            log.info("VK %s: ограничение частоты (код %d) — пропускаю цикл",
+                     identifier, code)
+        else:
+            log.warning("VK %s: ошибка %d — %s", identifier, code, message)
+        return []
+
+    response_body = payload.get("response") or {}
+    posts = response_body.get("items") or []
+    if not posts:
+        # Пустая выдача без ошибки: стена закрыта, пуста или сообщество удалено
+        log.info("VK %s: записей нет — проверьте, открыта ли стена", identifier)
+        return []
+
+    items: list[Item] = []
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        text = clean(str(post.get("text") or ""))
+        if len(text) < 20:
+            continue
+        owner = post.get("owner_id")
+        post_id = post.get("id")
+        link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
+        items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
+    return items

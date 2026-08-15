@@ -514,6 +514,46 @@ def _fallback(text: str, source: str, link: str = "") -> Analysis:
     return analysis
 
 
+async def _deepseek_batch(prompt: str) -> str:
+    """Пакетный разбор через DeepSeek. Формат ответа тот же, что у Gemini."""
+    import aiohttp
+
+    from . import secrets
+
+    api_key = secrets.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise AIError("ключ DeepSeek не задан")
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 2000,
+        "response_format": {"type": "json_object"},
+    }
+    timeout = aiohttp.ClientTimeout(total=90)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        ) as response:
+            body = await response.text()
+            if response.status != 200:
+                detail = body[:200]
+                raise AIError(f"DeepSeek HTTP {response.status}: {detail}")
+            data = json.loads(body)
+
+    for choice in data.get("choices") or []:
+        content = (choice.get("message") or {}).get("content")
+        if content:
+            return content
+    raise AIError("DeepSeek вернул пустой ответ")
+
+
 async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
     """Разбирает список кортежей (текст, источник[, ссылка]).
 
@@ -559,15 +599,22 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             for position, index in enumerate(chunk)
         )
         try:
-            raw = await generate(
-                ANALYST_PROMPT.format(items=listing),
-                system=ANALYST_SYSTEM,
-                json_mode=True,
-                max_tokens=700 * len(chunk) + 300,
-                temperature=0.1,
-                role=ANALYSIS,
-                priority=False,
-            )
+            # Провайдер выбирается на лету: переключение в боте действует
+            # со следующего разбора, перезапуск не нужен.
+            from . import provider as provider_choice
+
+            if provider_choice.current() == provider_choice.DEEPSEEK:
+                raw = await _deepseek_batch(ANALYST_PROMPT.format(items=listing))
+            else:
+                raw = await generate(
+                    ANALYST_PROMPT.format(items=listing),
+                    system=ANALYST_SYSTEM,
+                    json_mode=True,
+                    max_tokens=700 * len(chunk) + 300,
+                    temperature=0.1,
+                    role=ANALYSIS,
+                    priority=False,
+                )
             _counters["requests"] += 1
             payloads = _parse_array(raw)
         except QuotaExceeded:

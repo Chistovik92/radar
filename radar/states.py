@@ -23,3 +23,4 @@ class Form(StatesGroup):
     sos_contact = State()          # добавление доверенного контакта
     sos_location = State()         # ожидание геопозиции для сигнала
     secret_value = State()         # ввод ключа доступа суперадминистратором
+    proxy_key = State()            # ключ или подписка для выхода в сеть

@@ -80,6 +80,10 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
         ])
         rows.append([
             InlineKeyboardButton(text="🧪 Проверка ИИ", callback_data="bench:menu"),
+            InlineKeyboardButton(text="🤖 Провайдер ИИ", callback_data="prov:menu"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
             InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
         ])
 

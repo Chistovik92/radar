@@ -415,7 +415,6 @@ choose_database() {
 # Файлы проекта перезаписываются на месте, поэтому перед развёртыванием
 # сохраняем текущую установку целиком. Если новая версия не поднимется,
 # откат возвращает ровно то, что работало до обновления.
-FALLBACK_VERSION="3.3.5"     # последняя версия с файловым хранилищем
 ROLLBACK_SNAPSHOT=""
 PREVIOUS_VERSION=""
 
@@ -443,15 +442,36 @@ make_snapshot() {
                  docker-compose.yml alembic.ini .env; do
         [ -e "$APP_DIR/$entry" ] && items="$items $entry"
     done
+
+    # База входит в снимок целиком: восстановление без данных бесполезно.
+    # SQLite копируется вместе с журналами WAL, иначе часть записей теряется.
+    for entry in data/radar.db data/radar.db-wal data/radar.db-shm data/db.json; do
+        [ -e "$APP_DIR/$entry" ] && items="$items $entry"
+    done
+    if [ -d "$APP_DIR/data/postgres" ]; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^radar_db$'; then
+            local dump="$APP_DIR/data/postgres-dump.sql"
+            if docker exec radar_db pg_dump -U radar radar > "$dump" 2>>"$LOG_FILE"; then
+                items="$items data/postgres-dump.sql"
+            fi
+        else
+            items="$items data/postgres"
+        fi
+    fi
+
     [ -z "$items" ] && return 0
 
+    spinner_start "снимок установки и базы…"
     if tar -czf "$archive" -C "$APP_DIR" $items 2>>"$LOG_FILE"; then
+        spinner_stop
         ROLLBACK_SNAPSHOT="$archive"
         printf '%s\n' "$PREVIOUS_VERSION" > "$dir/.last-version"
         ok "Снимок: $(basename "$archive") ($(du -h "$archive" | cut -f1))"
+        rm -f "$APP_DIR/data/postgres-dump.sql" 2>/dev/null || true
         # Оставляем последние 5 снимков
         ls -1t "$dir"/rollback-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f || true
     else
+        spinner_stop
         warn "Снимок создать не удалось — откат будет недоступен"
     fi
     return 0
@@ -474,11 +494,19 @@ do_rollback() {       # do_rollback [путь к снимку]
     run docker rm -f "$CONTAINER_NAME" || true
 
     rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    spinner_start "распаковка снимка…"
     if ! tar -xzf "$archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
+        spinner_stop
         fail "Распаковать снимок не удалось"
         return 1
     fi
-    ok "Файлы восстановлены"
+    spinner_stop "Файлы и база восстановлены"
+
+    # Дамп PostgreSQL из снимка заливается после подъёма контейнера
+    if [ -f "$APP_DIR/data/postgres-dump.sql" ]; then
+        info "В снимке есть дамп PostgreSQL — залейте его после запуска:"
+        info "  docker exec -i radar_db psql -U radar radar < data/postgres-dump.sql"
+    fi
 
     info "Пересобираю образ прежней версии"
     if ! (cd "$APP_DIR" && run $COMPOSE build); then
@@ -502,78 +530,39 @@ offer_rollback() {    # offer_rollback <причина>
     printf "  %sЧто можно сделать:%s\n\n" "$C_BOLD" "$C_RESET"
 
     if [ -n "$archive" ]; then
-        printf "    1) Откатиться на предыдущую версию %s(%s)%s\n" \
-            "$C_DIM" "${PREVIOUS_VERSION:-из снимка}" "$C_RESET"
-        printf "       %sфайлы вернутся из снимка, база не трогается%s\n" "$C_DIM" "$C_RESET"
+        printf "    %s1) Восстановить из резервной копии%s\n" "$C_BOLD" "$C_RESET"
+        printf "       %s%s%s\n" "$C_DIM" "$(basename "$archive")" "$C_RESET"
+        printf "       %sвернутся файлы и настройки, база не трогается%s\n" \
+            "$C_DIM" "$C_RESET"
     else
-        printf "    1) %s(снимка нет — откат недоступен)%s\n" "$C_DIM" "$C_RESET"
+        printf "    %s1) (копии нет — восстановление недоступно)%s\n" "$C_DIM" "$C_RESET"
     fi
-    printf "    2) Поставить проверенную версию %s%s\n" "$FALLBACK_VERSION" ""
-    printf "       %sпоследняя версия на файловом хранилище, без базы данных%s\n" "$C_DIM" "$C_RESET"
-    printf "    3) Ничего не делать — разберусь сам\n\n"
-    printf "  Выбор [3]: "
+    printf "    %s2) Восстановить и файлы, и базу данных%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sполный откат к состоянию до запуска установщика%s\n" \
+        "$C_DIM" "$C_RESET"
+    printf "    %s3) Ничего не делать — разберусь сам%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "  Выбор [1]: "
 
     local answer=""
     read -r answer < /dev/tty || answer="3"
-    : "${answer:=3}"
+    : "${answer:=1}"
     log_raw "Действие после сбоя ($reason): $answer"
 
     case "$answer" in
         1)
-            if [ -z "$archive" ]; then
-                warn "Снимка нет, откат невозможен"
-                return 1
-            fi
+            [ -z "$archive" ] && { warn "Копии нет, восстановление невозможно"; return 1; }
             do_rollback "$archive" && return 0
             return 1
             ;;
         2)
-            echo
-            info "Ищу установщик версии $FALLBACK_VERSION"
-
-            # Источники по убыванию надёжности: локальный архив, тег, ветка.
-            local local_archive="$APP_DIR/fallback/radar-${FALLBACK_VERSION}.tar.gz"
-            if [ -f "$local_archive" ]; then
-                info "Найден локальный архив: $local_archive"
-                if tar -xzf "$local_archive" -C "$APP_DIR" 2>>"$LOG_FILE"; then
-                    ok "Версия $FALLBACK_VERSION распакована"
-                    (cd "$APP_DIR" && run $COMPOSE down) || true
-                    if (cd "$APP_DIR" && run $COMPOSE build) &&
-                       (cd "$APP_DIR" && run $COMPOSE up -d); then
-                        ok "Версия $FALLBACK_VERSION запущена"
-                        return 0
-                    fi
-                    fail "Запустить $FALLBACK_VERSION не удалось"
-                    return 1
-                fi
-                warn "Архив повреждён"
-            fi
-
-            local url="https://raw.githubusercontent.com/Chistovik92/radar/v${FALLBACK_VERSION}/install.sh"
-            printf "  Пробую %s\n" "$url"
-            if curl -fsSLo "$APP_DIR/install-${FALLBACK_VERSION}.sh" "$url" 2>>"$LOG_FILE"; then
-                ok "Установщик $FALLBACK_VERSION скачан"
-                printf "\n  Запустите его:\n    bash %s/install-%s.sh\n\n" \
-                    "$APP_DIR" "$FALLBACK_VERSION"
-                return 1
-            fi
-
-            rm -f "$APP_DIR/install-${FALLBACK_VERSION}.sh"
-            warn "Тег v$FALLBACK_VERSION в репозитории не найден (ответ 404)"
-            echo
-            printf "  %sЧтобы этот вариант заработал, поставьте тег на нужный коммит:%s\n" \
-                "$C_BOLD" "$C_RESET"
-            printf "    git log --oneline | grep -i 3.3.5      %s# найти коммит%s\n" "$C_DIM" "$C_RESET"
-            printf "    git tag v%s <хеш коммита>\n" "$FALLBACK_VERSION"
-            printf "    git push origin v%s\n" "$FALLBACK_VERSION"
-            echo
-            printf "  %sЛибо положите архив вручную:%s\n" "$C_BOLD" "$C_RESET"
-            printf "    %s/fallback/radar-%s.tar.gz\n\n" "$APP_DIR" "$FALLBACK_VERSION"
+            [ -z "$archive" ] && { warn "Копии нет, восстановление невозможно"; return 1; }
+            restore_database || warn "Базу восстановить не удалось"
+            do_rollback "$archive" && return 0
             return 1
             ;;
         *)
             printf "\n  Полный журнал: %s\n" "$LOG_FILE"
-            printf "  Откат позже:   bash %s/install.sh --rollback\n\n" "$APP_DIR"
+            printf "  Восстановить позже: bash %s/install.sh --rollback\n\n" "$APP_DIR"
             return 1
             ;;
     esac

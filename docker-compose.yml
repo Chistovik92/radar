@@ -63,6 +63,28 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Выход в сеть через внешний узел. Поднимается профилем, когда
+  # суперадминистратор выбрал сервер в боте:
+  #   docker compose --profile proxy up -d
+  # Конфигурация пишется ботом в data/singbox/config.json.
+  singbox:
+    profiles: ["proxy"]
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: radar_singbox
+    restart: unless-stopped
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./data/singbox:/etc/sing-box:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   postgres:
     profiles: ["postgres"]
     image: postgres:16-alpine
