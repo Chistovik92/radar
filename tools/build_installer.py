@@ -45,6 +45,8 @@ MANIFEST = [
     "radar/sourcecheck.py",
     "radar/sos.py",
     "radar/media.py",
+    "radar/secrets.py",
+    "radar/aibench.py",
     "radar/db/__init__.py",
     "radar/db/models.py",
     "radar/db/engine.py",
@@ -78,6 +80,7 @@ MANIFEST = [
     "radar/handlers/logs.py",
     "radar/handlers/sos.py",
     "radar/handlers/media.py",
+    "radar/handlers/settings_admin.py",
     "radar/handlers/assistant.py",
 ]
 

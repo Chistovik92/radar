@@ -21,33 +21,69 @@ from . import config, features, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None) -> InlineKeyboardMarkup:
+    """Главное меню.
+
+    Собрано по назначению, а не по ролям: сначала то, чем пользуются каждый
+    день, ниже — разделы управления. Каждый служебный раздел свёрнут в одну
+    кнопку, иначе у суперадминистратора меню разрасталось до полутора
+    десятков строк и переставало читаться.
+    """
     rows = [
         [
             InlineKeyboardButton(text="📍 Мои локации", callback_data="loc:list"),
-            InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
+            InlineKeyboardButton(text="🌤 Погода", callback_data="loc:weather"),
         ],
         [
-            InlineKeyboardButton(text="🌤 Погода сейчас", callback_data="loc:weather"),
+            InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
             InlineKeyboardButton(text="📢 Предложить источник", callback_data="src:suggest"),
         ],
     ]
+
     if features.enabled("sos"):
         rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
+
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text="🧠 ИИ-ассистент", callback_data="menu:ai")])
+
+    # Один вход в управление вместо россыпи кнопок
     if roles.is_moderator(role):
-        rows.append([InlineKeyboardButton(text="🛡 Модерация", callback_data="menu:mod")])
-    if roles.is_admin(role):
-        rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
-    if roles.is_superadmin(role):
-        rows.append([
-            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
-            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
-        ])
+        rows.append([InlineKeyboardButton(text="🛠 Управление", callback_data="menu:manage")])
+
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
+
     promo = promo_row()
     if promo:
         rows.append(promo)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def manage_menu(role: str | None) -> InlineKeyboardMarkup:
+    """Раздел управления: содержимое зависит от роли."""
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if roles.is_moderator(role):
+        rows.append([
+            InlineKeyboardButton(text="📡 Источники", callback_data="menu:mod"),
+            InlineKeyboardButton(text="👥 Пользователи", callback_data="usr:list:0"),
+        ])
+
+    if roles.is_admin(role):
+        rows.append([
+            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats"),
+            InlineKeyboardButton(text="🔗 Инвайт", callback_data="usr:invite"),
+        ])
+
+    if roles.is_superadmin(role):
+        rows.append([
+            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
+            InlineKeyboardButton(text="🔑 Ключи доступа", callback_data="key:list"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="🧪 Проверка ИИ", callback_data="bench:menu"),
+            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
+        ])
+
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -187,8 +223,7 @@ def moderation_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="⬇️ Скачать список", callback_data="src:export"),
                 InlineKeyboardButton(text="⬆️ Загрузить список", callback_data="src:import"),
             ],
-            [InlineKeyboardButton(text="👥 Пользователи и локации", callback_data="usr:list:0")],
-            [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")],
+            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
         ]
     )
 
@@ -199,7 +234,7 @@ def admin_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Список пользователей", callback_data="usr:list:0")],
             [InlineKeyboardButton(text="🔗 Инвайт-ссылка", callback_data="usr:invite")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
-            [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")],
+            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
         ]
     )
 

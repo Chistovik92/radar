@@ -234,8 +234,18 @@ class TestResiliencePlanning(unittest.TestCase):
         loc = {"id": "a", "name": "Старая", "lat": 51.5, "lon": 46.0}
         alert = Analysis(relevant=True, categories=["bpla"], scope="city",
                          city="Саратов", summary="БПЛА", source="s")
-        messages = plan_alerts([loc], {"bpla": True}, [alert])
-        self.assertEqual(len(messages), 1)
+        # Разбор не падает; сообщения нет — у локации неизвестна география,
+        # а рассылать тревогу «на всякий случай» опаснее, чем промолчать
+        self.assertEqual(plan_alerts([loc], {"bpla": True}, [alert]), [])
+
+    def test_location_without_city_gets_address_alert(self):
+        """Адресное событие доходит и до локации без города — по улице."""
+        loc = {"id": "a", "name": "Чапаева, 12", "lat": 51.5, "lon": 46.0,
+               "street": "улица Чапаева", "house": "12"}
+        alert = Analysis(relevant=True, categories=["jkh"], scope="street",
+                         streets=[{"street": "улица Чапаева", "houses": ["12"]}],
+                         summary="Нет воды", source="s")
+        self.assertEqual(len(plan_alerts([loc], {"jkh": True}, [alert])), 1)
 
     def test_empty_settings(self):
         loc = {"id": "a", "name": "A", "lat": 51.5, "lon": 46.0, "city": "Саратов"}

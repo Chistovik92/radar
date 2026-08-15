@@ -17,7 +17,7 @@ from typing import Any
 import aiohttp
 
 from . import ai, config, features, geocode, sos, sources, storage, weather
-from .matching import Analysis, cluster_title, plan_alerts
+from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
 
@@ -134,6 +134,68 @@ async def dispatch_user(
 #  Цикл
 # --------------------------------------------------------------------------
 
+# Завершившиеся события копятся до утренней и вечерней сводки: тревожить
+# ими сразу бессмысленно, а знать о них полезно.
+_recap_pool: list[Analysis] = []
+_recap_sent: dict[str, str] = {}
+
+RECAP_HOURS = (9, 20)
+
+
+def collect_recap(analyses: list[Analysis]) -> None:
+    for item in analyses:
+        if item.historical and item.relevant:
+            _recap_pool.append(item)
+    # Держим разумный объём: сводка за сутки, а не за месяц
+    del _recap_pool[:-100]
+
+
+def recap_due(now: datetime) -> str | None:
+    """Пора ли отправлять сводку. Возвращает метку периода или None."""
+    if not _recap_pool:
+        return None
+    for hour in RECAP_HOURS:
+        if now.hour == hour:
+            marker = f"{now:%Y-%m-%d}-{hour}"
+            if _recap_sent.get("last") != marker:
+                return marker
+    return None
+
+
+async def send_recap(now: datetime) -> None:
+    """Утренняя и вечерняя сводка по тому, что уже произошло."""
+    marker = recap_due(now)
+    if marker is None:
+        return
+
+    _recap_sent["last"] = marker
+    period = "за ночь" if now.hour < 12 else "за день"
+
+    delivered = 0
+    for uid, user in list(storage.users().items()):
+        locations = user.get("locs") or []
+        if not locations:
+            continue
+        enabled = {key for key, value in (user.get("settings") or {}).items() if value}
+
+        relevant = [
+            item for item in _recap_pool
+            if (set(item.categories) & enabled)
+            and any(geo_matches(item, loc) for loc in locations)
+        ]
+        if not relevant:
+            continue
+
+        hint = str(locations[0].get("city") or "")
+        text = build_recap(relevant, period, hint)
+        if text and await send_html(uid, text, back_kb()):
+            delivered += 1
+        await asyncio.sleep(0.3)
+
+    log.info("Сводка %s разослана: %d получателей", period, delivered)
+    _recap_pool.clear()
+
+
 async def repeat_sos() -> None:
     """Повторяет активные сигналы SOS, пока отправитель не дал отбой."""
     if not features.enabled("sos"):
@@ -196,6 +258,7 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []
         analyses = [analysis for analysis in parsed if analysis.relevant]
+        collect_recap(analyses)
         counters = ai.counters()
         log.info(
             "Новых сообщений: %d, значимых: %d | запросов к ИИ: %d, "
@@ -232,6 +295,7 @@ async def run() -> None:
             started = time.monotonic()
             try:
                 await repeat_sos()
+                await send_recap(datetime.now())
                 await cycle(session)
             except asyncio.CancelledError:
                 raise

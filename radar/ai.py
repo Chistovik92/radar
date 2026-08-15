@@ -180,6 +180,19 @@ async def discover_models() -> list[str]:
     return _available
 
 
+def pin_model(role: str, name: str) -> bool:
+    """Закрепляет конкретную модель за ролью до перезапуска."""
+    clean = (name or "").strip().removeprefix("models/")
+    if not clean:
+        return False
+    _current[role] = clean
+    _unavailable.discard(clean)
+    if clean not in _chain.setdefault(role, []):
+        _chain[role].insert(0, clean)
+    log.info("Модель для роли «%s» закреплена вручную: %s", role, clean)
+    return True
+
+
 def models_report() -> dict[str, Any]:
     return {
         "assistant": current_model(ASSISTANT),
@@ -425,6 +438,7 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
 [{{"index": 1,
    "relevant": true,
    "all_clear": false,
+   "historical": false,
    "categories": ["jkh"],
    "severity": "critical" | "warning" | "info",
    "scope": "region" | "city" | "district" | "street",
@@ -446,7 +460,15 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
    «опасность снята», «режим беспилотной опасности отменён», «угроза миновала»,
    «обстановка спокойная». Категорию при этом указывай ту же, что у самой угрозы
    (например, отбой БПЛА → categories=["bpla"], all_clear=true, severity="info").
-9. Количество объектов в массиве должно совпадать с количеством сообщений."""
+9. historical=true, если событие уже произошло и завершилось: «вчера»,
+   «в ночь на», «по итогам суток», «был сбит», «напомним», «как сообщалось»,
+   а также если названа дата в прошлом. Такие сообщения нужны как сводка,
+   но тревогой не считаются.
+10. Поля region и city заполняй всегда, когда место можно определить, —
+    хотя бы по названию источника или упоминанию области. Пустой город
+    означает, что оповещение не дойдёт до пользователей: без географии
+    рассылать тревогу нельзя.
+11. Количество объектов в массиве должно совпадать с количеством сообщений."""
 
 _cache: "OrderedDict[str, Analysis]" = OrderedDict()
 _CACHE_LIMIT = 800

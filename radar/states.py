@@ -22,3 +22,4 @@ class Form(StatesGroup):
     admin_weather_interval = State()
     sos_contact = State()          # добавление доверенного контакта
     sos_location = State()         # ожидание геопозиции для сигнала
+    secret_value = State()         # ввод ключа доступа суперадминистратором

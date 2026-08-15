@@ -210,6 +210,46 @@ progress() {          # progress <текущий> <всего> <подпись>
 
 progress_done() { printf "\r%*s\r" "$((COLS - 1))" ""; return 0; }
 
+# --- анимированная шкала для операций без известного прогресса --------------
+# Docker не сообщает, сколько осталось, поэтому вместо ложных процентов
+# показываем движение: видно, что процесс жив, а не завис.
+SPIN_FRAMES='|/-\\'
+SPINNER_PID=""
+
+spinner_start() {     # spinner_start <подпись>
+    local label="$1"
+    ( 
+        local index=0 pos=0 dir=1 width=24
+        while :; do
+            local bar="" i
+            for (( i = 0; i < width; i++ )); do
+                if [ "$i" -eq "$pos" ]; then bar="${bar}#"; else bar="${bar}."; fi
+            done
+            printf "\r  %s[%s]%s %s %-30s" \
+                "$C_CYAN" "$bar" "$C_RESET" \
+                "${SPIN_FRAMES:index:1}" "$label"
+            index=$(( (index + 1) % 4 ))
+            pos=$(( pos + dir ))
+            if [ "$pos" -ge $((width - 1)) ]; then dir=-1; fi
+            if [ "$pos" -le 0 ]; then dir=1; fi
+            sleep 0.2
+        done
+    ) &
+    SPINNER_PID=$!
+    return 0
+}
+
+spinner_stop() {      # spinner_stop [подпись завершения]
+    if [ -n "$SPINNER_PID" ]; then
+        kill "$SPINNER_PID" 2>/dev/null || true
+        wait "$SPINNER_PID" 2>/dev/null || true
+        SPINNER_PID=""
+    fi
+    progress_done
+    [ -n "${1:-}" ] && ok "$1"
+    return 0
+}
+
 # --- резервное копирование ------------------------------------------------
 make_backup() {       # make_backup <причина>
     local reason="${1:-ручная}"
@@ -256,9 +296,10 @@ make_backup() {       # make_backup <причина>
         "$VERSION" "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" > "$staging/manifest.txt"
 
     # 4. упаковка
-    progress 4 4 "упаковка архива"
+    spinner_start "упаковка архива…"
     tar -czf "$archive" -C "$staging" . 2>>"$LOG_FILE"
     rm -rf "$staging"
+    spinner_stop
 
     if [ -f "$archive" ]; then
         ok "Копия сохранена: $archive ($(du -h "$archive" | cut -f1))"
@@ -878,13 +919,17 @@ elif [ "$MODE" = "новая установка" ]; then
 else
     echo
     printf "  %sКак поступить с существующей установкой?%s\n\n" "$C_BOLD" "$C_RESET"
-    printf "    1) Обновить поверх\n"
-    printf "       %sфайлы обновятся, база, настройки и образ сохранятся%s\n" "$C_DIM" "$C_RESET"
-    printf "    2) Переустановить\n"
-    printf "       %sобраз и файлы проекта заново, база и .env сохраняются%s\n" "$C_DIM" "$C_RESET"
-    printf "    3) С чистого листа\n"
-    printf "       %sсначала резервная копия, затем удаление базы и настроек%s\n" "$C_DIM" "$C_RESET"
-    printf "    4) Только резервная копия и выход\n\n"
+    printf "    %s1) Обновление%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sтекущая версия обновится до новой из репозитория,%s\n" "$C_DIM" "$C_RESET"
+    printf "       %sбаза, настройки и собранный образ сохраняются%s\n" "$C_DIM" "$C_RESET"
+    printf "    %s2) Переустановка%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sобраз и файлы проекта соберутся заново,%s\n" "$C_DIM" "$C_RESET"
+    printf "       %sбаза данных и .env сохраняются%s\n" "$C_DIM" "$C_RESET"
+    printf "    %s3) С чистого листа%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sудаление всех данных и установка с настройкой заново%s\n" "$C_DIM" "$C_RESET"
+    printf "    %s4) Только резервная копия%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sснять копию и выйти, ничего не меняя%s\n" "$C_DIM" "$C_RESET"
+    printf "\n  %sПеред любым из вариантов снимается резервная копия.%s\n\n" "$C_DIM" "$C_RESET"
 
     if [ "$HEALTHY" != true ] && [ -n "$DIAGNOSIS" ]; then
         printf "  %sДиагностика: %s → рекомендуется вариант %d%s\n" \
@@ -904,8 +949,14 @@ else
             printf "\n  Установка не выполнялась. Копия: %s\n\n" "${BACKUP_PATH:-$APP_DIR/backups}"
             exit 0
             ;;
-        *) info "Обновляю поверх существующей установки" ;;
+        *) info "Обновление поверх существующей установки" ;;
     esac
+
+    # Копия снимается при любом варианте: при обновлении и переустановке
+    # тоже есть чему ломаться, а восстановление без копии невозможно.
+    if [ "$FULL_RESET" != true ]; then
+        make_backup "перед установкой" || warn "Продолжаю без резервной копии"
+    fi
 fi
 
 # --- применение выбранного способа ----------------------------------------
@@ -1119,10 +1170,157 @@ ENVEOF
     fi
 fi
 
+# --- обслуживание базы данных ---------------------------------------------
+# Отдельная копия только базы: она нужна чаще полной и восстанавливается
+# быстрее. Полная копия проекта делается выше, при выборе способа установки.
+database_menu() {
+    local backend db_file
+    backend="$(get_env_value DB_BACKEND)"
+    : "${backend:=sqlite}"
+    db_file="$APP_DIR/data/radar.db"
+
+    local has_db=false
+    if [ "$backend" = "sqlite" ] && [ -f "$db_file" ]; then has_db=true; fi
+    if [ "$backend" = "postgres" ] && [ -d "$APP_DIR/data/postgres" ]; then has_db=true; fi
+
+    local snapshots
+    snapshots="$(ls -1 "$APP_DIR/backups"/db-*.tar.gz 2>/dev/null | wc -l || echo 0)"
+
+    if [ "$has_db" != true ] && [ "$snapshots" -eq 0 ]; then
+        return 0
+    fi
+
+    echo
+    printf "  %sОбслуживание базы данных%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "    1) Ничего не делать %s(по умолчанию)%s\n" "$C_DIM" "$C_RESET"
+    printf "    2) Снять копию базы\n"
+    printf "    3) Снять копию, удалить базу и создать заново\n"
+    printf "    4) Восстановить базу из копии %s(доступно: %s)%s\n" \
+        "$C_DIM" "$snapshots" "$C_RESET"
+    printf "  Выбор [1]: "
+
+    local answer=""
+    read -r answer < /dev/tty || answer="1"
+    : "${answer:=1}"
+    log_raw "Обслуживание базы: вариант $answer"
+
+    case "$answer" in
+        2) backup_database ;;
+        3)
+            backup_database || { warn "Копия не создана — база не тронута"; return 0; }
+            info "Удаляю базу"
+            (cd "$APP_DIR" && run $COMPOSE down) || true
+            rm -f "$db_file" "$db_file-wal" "$db_file-shm" 2>/dev/null || true
+            rm -rf "$APP_DIR/data/postgres" 2>/dev/null || true
+            ok "База удалена, будет создана заново при запуске"
+            ;;
+        4) restore_database ;;
+        *) : ;;
+    esac
+    return 0
+}
+
+backup_database() {
+    local stamp archive backend
+    backend="$(get_env_value DB_BACKEND)"
+    : "${backend:=sqlite}"
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$APP_DIR/backups"
+    archive="$APP_DIR/backups/db-${backend}-${stamp}.tar.gz"
+
+    spinner_start "копирую базу данных…"
+    local ok_flag=false
+    if [ "$backend" = "postgres" ]; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^radar_db$'; then
+            local dump="$APP_DIR/backups/.dump-$stamp.sql"
+            if docker exec radar_db pg_dump -U radar radar > "$dump" 2>>"$LOG_FILE"; then
+                tar -czf "$archive" -C "$APP_DIR/backups" "$(basename "$dump")" 2>>"$LOG_FILE"
+                rm -f "$dump"
+                ok_flag=true
+            fi
+        else
+            # Контейнер не поднят — копируем сам том
+            tar -czf "$archive" -C "$APP_DIR/data" postgres 2>>"$LOG_FILE" && ok_flag=true
+        fi
+    else
+        if [ -f "$APP_DIR/data/radar.db" ]; then
+            tar -czf "$archive" -C "$APP_DIR/data" radar.db 2>>"$LOG_FILE" && ok_flag=true
+        fi
+    fi
+    spinner_stop
+
+    if [ "$ok_flag" = true ] && [ -f "$archive" ]; then
+        ok "Копия базы: $(basename "$archive") ($(du -h "$archive" | cut -f1))"
+        ls -1t "$APP_DIR/backups"/db-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+        return 0
+    fi
+    rm -f "$archive" 2>/dev/null || true
+    warn "Копию базы создать не удалось"
+    return 1
+}
+
+restore_database() {
+    local archives count choice archive
+    mapfile -t archives < <(ls -1t "$APP_DIR/backups"/db-*.tar.gz 2>/dev/null || true)
+    count=${#archives[@]}
+    if [ "$count" -eq 0 ]; then
+        warn "Копий базы не найдено"
+        return 1
+    fi
+
+    echo
+    printf "  %sДоступные копии:%s\n" "$C_BOLD" "$C_RESET"
+    local index=1
+    for item in "${archives[@]}"; do
+        printf "    %d) %s  %s%s%s\n" "$index" "$(basename "$item")" \
+            "$C_DIM" "$(du -h "$item" | cut -f1)" "$C_RESET"
+        index=$((index + 1))
+    done
+    printf "  Выбор [1]: "
+    read -r choice < /dev/tty || choice="1"
+    : "${choice:=1}"
+
+    if ! printf '%s' "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] ||
+       [ "$choice" -gt "$count" ]; then
+        warn "Неверный выбор — восстановление отменено"
+        return 1
+    fi
+    archive="${archives[$((choice - 1))]}"
+
+    warn "Текущая база будет заменена содержимым копии"
+    printf "  Продолжить? (y/N): "
+    local confirm=""
+    read -r confirm < /dev/tty || confirm="n"
+    case "${confirm:-n}" in [Yy]*) : ;; *) info "Восстановление отменено"; return 1 ;; esac
+
+    (cd "$APP_DIR" && run $COMPOSE down) || true
+    spinner_start "восстанавливаю базу…"
+    local restored=false
+    if tar -tzf "$archive" 2>/dev/null | grep -q '\.sql$'; then
+        # Дамп PostgreSQL: распаковываем, зальётся при первом старте вручную
+        tar -xzf "$archive" -C "$APP_DIR/backups" 2>>"$LOG_FILE" && restored=true
+        spinner_stop
+        ok "Дамп распакован в $APP_DIR/backups"
+        info "Залейте его после запуска:"
+        info "  docker exec -i radar_db psql -U radar radar < <файл>.sql"
+        return 0
+    fi
+    tar -xzf "$archive" -C "$APP_DIR/data" 2>>"$LOG_FILE" && restored=true
+    spinner_stop
+
+    if [ "$restored" = true ]; then
+        ok "База восстановлена из $(basename "$archive")"
+        return 0
+    fi
+    warn "Восстановить не удалось — подробности в журнале"
+    return 1
+}
+
 # Базу выбираем всегда: и при новом .env, и при использовании существующего.
 # Раньше выбор молча наследовался из старого файла, где строки DB_BACKEND
 # могло не быть вовсе — пользователь о базе даже не знал.
 choose_database
+database_menu
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
@@ -1147,27 +1345,16 @@ run $COMPOSE down --remove-orphans || true
 run docker rm -f "$CONTAINER_NAME" || true   # наследие версий 3.x
 
 info "Собираю образ (первый раз это занимает 5–15 минут)"
-(
-    # Полоса ползёт по времени: точного прогресса Docker не сообщает,
-    # поэтому шкала показывает долю от ожидаемых 15 минут.
-    elapsed=0
-    while [ "$elapsed" -lt 900 ]; do
-        progress "$elapsed" 900 "сборка образа"
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
-) &
-PROGRESS_PID=$!
+spinner_start "сборка образа…"
 if ! run $COMPOSE build $NO_CACHE_FLAG; then
-    kill "$PROGRESS_PID" 2>/dev/null || true
-    wait "$PROGRESS_PID" 2>/dev/null || true
-    progress_done
-    die "Сборка образа не удалась. Подробности: $LOG_FILE"
+    spinner_stop
+    trap - ERR
+    fail "Сборка образа не удалась"
+    offer_rollback "сборка образа" || true
+    printf "  Полный журнал: %s\n\n" "$LOG_FILE"
+    exit 1
 fi
-kill "$PROGRESS_PID" 2>/dev/null || true
-wait "$PROGRESS_PID" 2>/dev/null || true
-progress 900 900 "образ готов"
-ok "Образ собран"
+spinner_stop "Образ собран"
 
 # PostgreSQL запоминает пароль при инициализации тома. Если .env изменился,
 # а том остался прежним, бот будет молча биться в отказ авторизации.

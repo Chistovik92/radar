@@ -18,7 +18,11 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestUsers,
     Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 
 from .. import config, features, geocode, roles, sos, storage
@@ -119,6 +123,32 @@ async def cmd_sos(message: Message, state: FSMContext, user: dict) -> None:
 #  Контакты
 # --------------------------------------------------------------------------
 
+def _picker_keyboard() -> ReplyKeyboardMarkup:
+    """Кнопка выбора контакта средствами самого Telegram.
+
+    Это надёжнее пересылки: при закрытых настройках приватности пересланное
+    сообщение не содержит идентификатора отправителя, а встроенный выбор
+    возвращает его всегда.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(
+                text="👤 Выбрать контакт",
+                request_users=KeyboardButtonRequestUsers(
+                    request_id=1,
+                    user_is_bot=False,
+                    max_quantity=1,
+                    request_name=True,
+                    request_username=True,
+                ),
+            )
+        ]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Или пришлите числовой ID",
+    )
+
+
 @router.callback_query(F.data == "sos:add")
 async def ask_contact(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
@@ -126,38 +156,83 @@ async def ask_contact(call: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(
         call,
         "➕ <b>Доверенный контакт</b>\n\n"
-        "Пришлите <b>числовой ID</b> человека в Telegram — его можно узнать "
-        "у @userinfobot, — либо перешлите сюда любое его сообщение.\n\n"
-        "После этого вы получите ссылку-приглашение: контакт откроет её "
+        "Нажмите кнопку <b>«Выбрать контакт»</b> под полем ввода — Telegram "
+        "предложит выбрать человека из списка.\n\n"
+        "Другие способы: переслать сюда его сообщение или прислать "
+        "<b>числовой ID</b> (узнать можно у @userinfobot).\n\n"
+        "После добавления вы получите ссылку-приглашение: контакт откроет её "
         "и нажмёт «Старт». Без этого шага Telegram не позволит боту "
         "написать ему первым.\n\n<i>/cancel — отмена.</i>",
         back_kb("sos:menu", "Отмена"),
     )
+    await call.message.answer(
+        "Выберите способ:", reply_markup=_picker_keyboard()
+    )
+
+
+def _extract_contact(message: Message) -> tuple[str, str]:
+    """Достаёт идентификатор контакта из сообщения любым доступным способом."""
+    # 1. Встроенный выбор Telegram — самый надёжный путь
+    shared = getattr(message, "users_shared", None)
+    if shared is not None:
+        people = getattr(shared, "users", None) or getattr(shared, "user_ids", None) or []
+        for person in people:
+            person_id = getattr(person, "user_id", None) or person
+            if person_id:
+                name = " ".join(
+                    part for part in (
+                        getattr(person, "first_name", "") or "",
+                        getattr(person, "last_name", "") or "",
+                    ) if part
+                ).strip()
+                username = getattr(person, "username", "") or ""
+                title = name or (f"@{username}" if username else f"ID {person_id}")
+                return str(person_id), title
+
+    # 2. Пересланное сообщение. В aiogram 3.7+ поле forward_from удалено:
+    #    сведения об источнике переехали в forward_origin.
+    origin = getattr(message, "forward_origin", None)
+    sender = getattr(origin, "sender_user", None) if origin is not None else None
+    if sender is None:
+        sender = getattr(message, "forward_from", None)   # совместимость со старыми версиями
+    if sender is not None:
+        title = getattr(sender, "full_name", "") or getattr(sender, "username", "") or ""
+        return str(sender.id), title or f"ID {sender.id}"
+
+    # 3. Скрытый отправитель: имя есть, идентификатора нет
+    if origin is not None and getattr(origin, "sender_user_name", None):
+        return "", str(origin.sender_user_name)
+
+    # 4. Числовой идентификатор текстом
+    text = (message.text or "").strip()
+    if text.isdigit() and len(text) >= 5:
+        return text, f"ID {text}"
+
+    return "", ""
 
 
 @router.message(Form.sos_contact)
 async def save_contact(message: Message, state: FSMContext, user: dict) -> None:
-    key = ""
-    title = ""
+    if (message.text or "").startswith("/"):
+        return
 
-    forwarded = getattr(message, "forward_from", None)
-    if forwarded is not None:
-        key = str(forwarded.id)
-        title = forwarded.full_name or forwarded.username or key
-    else:
-        text = (message.text or "").strip()
-        if text.startswith("/"):
-            return
-        if text.isdigit() and len(text) >= 5:
-            key = text
-            title = f"ID {text}"
-        else:
-            await message.answer(
-                "❌ Нужен числовой ID или пересланное сообщение.\n"
-                "<i>Если пересылка не сработала — у человека закрыт профиль "
-                "в настройках приватности, попросите у него ID через @userinfobot.</i>"
+    key, title = _extract_contact(message)
+
+    if not key:
+        hint = (
+            "❌ Не удалось определить пользователя.\n\n"
+            "Нажмите кнопку <b>«Выбрать контакт»</b> под полем ввода — это "
+            "работает всегда."
+        )
+        if title:
+            hint += (
+                f"\n\n<i>У пользователя {esc(title)} закрыта пересылка "
+                "в настройках приватности, поэтому его идентификатор скрыт.</i>"
             )
-            return
+        else:
+            hint += "\n\nИли пришлите числовой ID — узнать можно у @userinfobot."
+        await message.answer(hint, reply_markup=_picker_keyboard())
+        return
 
     if key == str(message.from_user.id):
         await message.answer("❌ Нельзя указать самого себя.")
@@ -178,9 +253,9 @@ async def save_contact(message: Message, state: FSMContext, user: dict) -> None:
     await message.answer(
         f"✅ Контакт <b>{esc(contact.title)}</b> добавлен.\n\n"
         "Перешлите ему сообщение ниже — без подтверждения сигнал не дойдёт.",
-        reply_markup=back_kb("sos:menu", "◀️ К настройкам"),
+        reply_markup=ReplyKeyboardRemove(),
     )
-    await message.answer(invite)
+    await message.answer(invite, reply_markup=back_kb("sos:menu", "◀️ К настройкам"))
 
 
 @router.callback_query(F.data.startswith("sos:contact:"))

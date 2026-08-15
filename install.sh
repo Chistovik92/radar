@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.2.1 — автономный установщик.
+# Система «Радар» v4.2.7 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.2.1"
+VERSION="4.2.7"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -210,6 +210,46 @@ progress() {          # progress <текущий> <всего> <подпись>
 
 progress_done() { printf "\r%*s\r" "$((COLS - 1))" ""; return 0; }
 
+# --- анимированная шкала для операций без известного прогресса --------------
+# Docker не сообщает, сколько осталось, поэтому вместо ложных процентов
+# показываем движение: видно, что процесс жив, а не завис.
+SPIN_FRAMES='|/-\\'
+SPINNER_PID=""
+
+spinner_start() {     # spinner_start <подпись>
+    local label="$1"
+    ( 
+        local index=0 pos=0 dir=1 width=24
+        while :; do
+            local bar="" i
+            for (( i = 0; i < width; i++ )); do
+                if [ "$i" -eq "$pos" ]; then bar="${bar}#"; else bar="${bar}."; fi
+            done
+            printf "\r  %s[%s]%s %s %-30s" \
+                "$C_CYAN" "$bar" "$C_RESET" \
+                "${SPIN_FRAMES:index:1}" "$label"
+            index=$(( (index + 1) % 4 ))
+            pos=$(( pos + dir ))
+            if [ "$pos" -ge $((width - 1)) ]; then dir=-1; fi
+            if [ "$pos" -le 0 ]; then dir=1; fi
+            sleep 0.2
+        done
+    ) &
+    SPINNER_PID=$!
+    return 0
+}
+
+spinner_stop() {      # spinner_stop [подпись завершения]
+    if [ -n "$SPINNER_PID" ]; then
+        kill "$SPINNER_PID" 2>/dev/null || true
+        wait "$SPINNER_PID" 2>/dev/null || true
+        SPINNER_PID=""
+    fi
+    progress_done
+    [ -n "${1:-}" ] && ok "$1"
+    return 0
+}
+
 # --- резервное копирование ------------------------------------------------
 make_backup() {       # make_backup <причина>
     local reason="${1:-ручная}"
@@ -256,9 +296,10 @@ make_backup() {       # make_backup <причина>
         "$VERSION" "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" > "$staging/manifest.txt"
 
     # 4. упаковка
-    progress 4 4 "упаковка архива"
+    spinner_start "упаковка архива…"
     tar -czf "$archive" -C "$staging" . 2>>"$LOG_FILE"
     rm -rf "$staging"
+    spinner_stop
 
     if [ -f "$archive" ]; then
         ok "Копия сохранена: $archive ($(du -h "$archive" | cut -f1))"
@@ -878,13 +919,17 @@ elif [ "$MODE" = "новая установка" ]; then
 else
     echo
     printf "  %sКак поступить с существующей установкой?%s\n\n" "$C_BOLD" "$C_RESET"
-    printf "    1) Обновить поверх\n"
-    printf "       %sфайлы обновятся, база, настройки и образ сохранятся%s\n" "$C_DIM" "$C_RESET"
-    printf "    2) Переустановить\n"
-    printf "       %sобраз и файлы проекта заново, база и .env сохраняются%s\n" "$C_DIM" "$C_RESET"
-    printf "    3) С чистого листа\n"
-    printf "       %sсначала резервная копия, затем удаление базы и настроек%s\n" "$C_DIM" "$C_RESET"
-    printf "    4) Только резервная копия и выход\n\n"
+    printf "    %s1) Обновление%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sтекущая версия обновится до новой из репозитория,%s\n" "$C_DIM" "$C_RESET"
+    printf "       %sбаза, настройки и собранный образ сохраняются%s\n" "$C_DIM" "$C_RESET"
+    printf "    %s2) Переустановка%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sобраз и файлы проекта соберутся заново,%s\n" "$C_DIM" "$C_RESET"
+    printf "       %sбаза данных и .env сохраняются%s\n" "$C_DIM" "$C_RESET"
+    printf "    %s3) С чистого листа%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sудаление всех данных и установка с настройкой заново%s\n" "$C_DIM" "$C_RESET"
+    printf "    %s4) Только резервная копия%s\n" "$C_BOLD" "$C_RESET"
+    printf "       %sснять копию и выйти, ничего не меняя%s\n" "$C_DIM" "$C_RESET"
+    printf "\n  %sПеред любым из вариантов снимается резервная копия.%s\n\n" "$C_DIM" "$C_RESET"
 
     if [ "$HEALTHY" != true ] && [ -n "$DIAGNOSIS" ]; then
         printf "  %sДиагностика: %s → рекомендуется вариант %d%s\n" \
@@ -904,8 +949,14 @@ else
             printf "\n  Установка не выполнялась. Копия: %s\n\n" "${BACKUP_PATH:-$APP_DIR/backups}"
             exit 0
             ;;
-        *) info "Обновляю поверх существующей установки" ;;
+        *) info "Обновление поверх существующей установки" ;;
     esac
+
+    # Копия снимается при любом варианте: при обновлении и переустановке
+    # тоже есть чему ломаться, а восстановление без копии невозможно.
+    if [ "$FULL_RESET" != true ]; then
+        make_backup "перед установкой" || warn "Продолжаю без резервной копии"
+    fi
 fi
 
 # --- применение выбранного способа ----------------------------------------
@@ -957,7 +1008,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms"
-FILE_COUNT=53
+FILE_COUNT=56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1210,6 +1261,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.2.7", [
+        "🎯 <b>Оповещения строго по вашему региону.</b> Раньше сообщение без "
+        "распознанного города уходило всем — саратовцы получали тревоги "
+        "про Подмосковье.",
+        "📰 <b>События в прошлом — не тревога.</b> «Вчера», «по итогам суток», "
+        "«напомним» уходят в утреннюю и вечернюю сводку.",
+        "🔑 <b>Ключи доступа настраиваются в боте</b> — раздел «Управление».",
+        "🧪 <b>Сравнение провайдеров ИИ</b> запускается кнопкой, без SSH.",
+        "🤖 <b>Выбор модели Gemini</b>: /models и /setmodel.",
+        "🆘 <b>SOS</b>: контакт выбирается кнопкой Telegram — работает "
+        "и при закрытых настройках приватности.",
+        "🛠 <b>Меню перестроено</b>: служебные разделы собраны в «Управление».",
+    ]),
     ("4.2.1", [
         "🎬 <b>Загрузка видео по ссылке</b> с выбором качества — YouTube, VK, "
         "RuTube, OK, Дзен и другие площадки. Включается флагом media_download.",
@@ -1419,7 +1483,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.2.1"
+__version__ = "4.2.7"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -2263,6 +2327,7 @@ class Analysis:
     raw: str = ""
     link: str = ""            # ссылка на новость (для RSS)
     all_clear: bool = False   # отбой ранее объявленной опасности
+    historical: bool = False  # событие в прошлом: сводка, а не тревога
     engine: str = "ai"  # ai | heuristic
 
     @classmethod
@@ -2298,6 +2363,7 @@ class Analysis:
             raw=raw,
             link=link,
             all_clear=bool(payload.get("all_clear")),
+            historical=bool(payload.get("historical")),
         )
 
     @property
@@ -2348,6 +2414,19 @@ _HEURISTICS: list[tuple[str, re.Pattern]] = [
         r"бел\w* список|ограничен\w* мобильн\w* интернет|мобильн\w* интернет"
         r"|перебо\w* (?:со )?связ|ограничен\w* связи", re.I)),
 ]
+
+# Признаки того, что событие уже произошло и завершилось: такие сообщения
+# нужны как сводка, но поднимать по ним тревогу поздно и вредно —
+# пользователь перестаёт доверять сигналам.
+HISTORICAL_RE = re.compile(
+    r"\bвчера\b|\bпозавчера\b|на прошл\w+ (?:недел|выходн)|"
+    r"\bв ночь на\b|минувш\w+ (?:ноч|сутк|день)|"
+    r"по итогам (?:дня|ночи|суток)|за (?:прошедши\w+ )?(?:сутки|ночь|неделю)|"
+    r"был\w* (?:сбит|уничтожен|отражен|отражён)|"
+    r"сообщал\w* ранее|напомним|как сообщалось|"
+    r"\d{1,2}\s+(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*",
+    re.I,
+)
 
 ALL_CLEAR_RE = re.compile(
     r"отбо[йя]\b|снят\w*\s+(?:режим\w*\s+)?(?:беспилотн\w*|ракетн\w*|воздушн\w*|опасн\w*)|"
@@ -2409,7 +2488,8 @@ def heuristic_analysis(
         scope = "city"
 
     all_clear = bool(ALL_CLEAR_RE.search(text))
-    if all_clear:
+    historical = bool(HISTORICAL_RE.search(text))
+    if all_clear or historical:
         severity = "info"
     else:
         severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
@@ -2417,6 +2497,7 @@ def heuristic_analysis(
     return Analysis(
         relevant=True,
         all_clear=all_clear,
+        historical=historical,
         categories=categories,
         severity=severity,
         scope=scope,
@@ -2439,17 +2520,61 @@ def location_city(loc: dict[str, Any]) -> str:
     return str(loc.get("city") or "")
 
 
+def geo_matches(analysis: Analysis, loc: dict[str, Any]) -> bool:
+    """Относится ли событие к местности пользователя.
+
+    Правило намеренно строгое: **без подтверждённого совпадения оповещение
+    на весь город не отправляется**. Прежде проверка пропускалась, если ИИ
+    не извлёк город, и сообщение федерального канала о другом регионе уходило
+    всем — саратовец получал тревогу про Подмосковье.
+
+    Порядок проверок:
+      1. Город события совпал с городом локации.
+      2. Регион события совпал с регионом локации.
+      3. География события известна, но не совпала — отказ.
+      4. География события не распознана: для адресных событий полагаемся
+         на совпадение улицы (она достаточно специфична), для общегородских —
+         ищем упоминание города или региона в тексте, иначе отказ.
+    """
+    loc_city = location_city(loc)
+    loc_region = str(loc.get("region") or "")
+
+    if analysis.city and loc_city and same_city(analysis.city, loc_city):
+        return True
+    if analysis.region and loc_region and same_city(analysis.region, loc_region):
+        return True
+
+    # География события известна, но с локацией не сошлась
+    if (analysis.city and loc_city) or (analysis.region and loc_region):
+        return False
+
+    # География события не распознана
+    if not analysis.city and not analysis.region:
+        if analysis.streets:
+            # Адресное событие: решает совпадение улицы дальше по цепочке
+            return True
+        haystack = f"{analysis.raw} {analysis.summary}".lower()
+        for name in (loc_city, loc_region):
+            normalized = normalize_city(name)
+            if normalized and len(normalized) >= 4 and normalized in haystack:
+                return True
+        return False
+
+    # У локации нет географии — записи из старых версий, где хранился
+    # только адрес. Доверяем улице, но не рассылаем общегородские тревоги.
+    if not loc_city and not loc_region:
+        return bool(analysis.streets)
+
+    return False
+
+
 def matches_location(analysis: Analysis, loc: dict[str, Any]) -> bool:
     """Затрагивает ли событие конкретную локацию пользователя."""
     if not analysis.relevant:
         return False
 
-    loc_city = location_city(loc)
-    if analysis.city and loc_city and not same_city(analysis.city, loc_city):
-        # Регион совпал, город — нет: пропускаем, кроме региональных оповещений
-        if not (analysis.scope == "region" and analysis.region and loc.get("region")
-                and same_city(analysis.region, str(loc["region"]))):
-            return False
+    if not geo_matches(analysis, loc):
+        return False
 
     if analysis.is_city_wide:
         return True
@@ -2631,6 +2756,12 @@ def plan_alerts(
     for analysis in analyses:
         if not analysis.relevant or not (set(analysis.categories) & enabled):
             continue
+
+        # Событие в прошлом — не повод для тревоги. Оно уйдёт в сводку,
+        # которую бот присылает утром и вечером.
+        if analysis.historical:
+            continue
+
         matched = match_locations(analysis, locations)
         if not matched:
             continue
@@ -2683,6 +2814,54 @@ def plan_alerts(
             )
         )
     return messages
+
+
+# --------------------------------------------------------------------------
+#  Сводка по завершившимся событиям
+# --------------------------------------------------------------------------
+
+def build_recap(
+    events: Sequence[Analysis],
+    period: str = "за сутки",
+    region_hint: str = "",
+) -> str:
+    """Спокойная сводка по тому, что уже произошло.
+
+    Отделена от тревог намеренно: сигнал об опасности должен означать
+    «происходит сейчас». Если мешать его с пересказом вчерашних событий,
+    люди перестают реагировать на оба.
+    """
+    if not events:
+        return ""
+
+    by_category: dict[str, list[Analysis]] = {}
+    for item in events:
+        for category in item.categories or ["other"]:
+            by_category.setdefault(category, []).append(item)
+
+    header = f"📰 <b>Сводка {esc(period)}</b>"
+    if region_hint:
+        header += f" — {esc(region_hint)}"
+    lines = [header, ""]
+
+    order = ("bpla", "mchs", "jkh", "whitelist")
+    for category in order:
+        items = by_category.get(category)
+        if not items:
+            continue
+        icon = CATEGORY_ICONS.get(category, "•")
+        lines.append(f"{icon} <b>{esc(CATEGORY_TITLES.get(category, category))}</b>")
+        for item in items[:6]:
+            lines.append(f"• {esc(item.text()[:280])}")
+            if item.link:
+                lines.append(f'  🔗 <a href="{esc_attr(item.link)}">источник</a>')
+        if len(items) > 6:
+            lines.append(f"  <i>…и ещё {len(items) - 6}</i>")
+        lines.append("")
+
+    lines.append("<i>Это сводка о том, что уже завершилось. "
+                 "Об опасности прямо сейчас бот сообщает отдельно.</i>")
+    return "\n".join(lines).strip()
 RADAR_FILE_11
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/identity.py"
 cat > "radar/identity.py" <<'RADAR_FILE_12'
@@ -4286,8 +4465,641 @@ def choose_default(formats: Iterable[Format], limit_mb: int) -> Format | None:
     ordered = sorted(formats, key=lambda value: value.height)
     return ordered[0] if ordered else None
 RADAR_FILE_18
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/secrets.py"
+cat > "radar/secrets.py" <<'RADAR_FILE_19'
+"""Секреты, которые задаются из бота: ключи ИИ, доступы к площадкам, Bot API.
+
+Значения пишутся в `.env` рядом с ботом — тот же файл, что читает установщик.
+Так настройка из интерфейса и настройка руками не расходятся.
+
+Что важно понимать про применение
+---------------------------------
+Часть значений подхватывается сразу (ключи провайдеров ИИ читаются при
+каждом запросе), часть — только после перезапуска контейнера: это касается
+всего, что участвует в создании клиентов на старте, в первую очередь
+`TELEGRAM_API_ID`, `TELEGRAM_API_HASH` и `TELEGRAM_API_SERVER`. В интерфейсе
+это подписано у каждого поля, чтобы не гадать, почему «не сработало».
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from dataclasses import dataclass
+
+from . import config
+
+log = logging.getLogger("radar.secrets")
+
+ENV_PATH = os.getenv("ENV_FILE") or ".env"
+
+
+@dataclass(frozen=True)
+class Setting:
+    key: str
+    title: str
+    hint: str
+    group: str
+    restart: bool = False     # применяется только после перезапуска
+    secret: bool = True       # показывать замаскированным
+    where: str = ""           # где получить значение
+
+
+SETTINGS: tuple[Setting, ...] = (
+    # --- провайдеры ИИ ---
+    Setting("GEMINI_API_KEY", "Google Gemini", "Основной провайдер: разбор новостей и ассистент.",
+            "ИИ", where="aistudio.google.com/apikey"),
+    Setting("GROQ_API_KEY", "Groq", "Быстрые открытые модели, щедрый бесплатный тариф.",
+            "ИИ", where="console.groq.com/keys"),
+    Setting("CEREBRAS_API_KEY", "Cerebras", "Открытые модели, около миллиона токенов в сутки.",
+            "ИИ", where="cloud.cerebras.ai"),
+    Setting("MISTRAL_API_KEY", "Mistral", "Европейская юрисдикция, 2 запроса в минуту.",
+            "ИИ", where="console.mistral.ai"),
+    Setting("OPENROUTER_API_KEY", "OpenRouter", "Один ключ на десятки моделей, есть бесплатные.",
+            "ИИ", where="openrouter.ai/keys"),
+    Setting("DEEPSEEK_API_KEY", "DeepSeek", "Очень низкая цена; проверьте фильтрацию военных тем.",
+            "ИИ", where="platform.deepseek.com"),
+    Setting("ZAI_API_KEY", "Z.ai / GLM", "Модели GLM, часть доступна бесплатно.",
+            "ИИ", where="z.ai"),
+    Setting("MOONSHOT_API_KEY", "Moonshot Kimi", "До тысячи запросов в сутки бесплатно.",
+            "ИИ", where="platform.moonshot.ai"),
+    Setting("DASHSCOPE_API_KEY", "Alibaba Qwen", "Международный эндпоинт DashScope.",
+            "ИИ", where="modelstudio.console.alibabacloud.com"),
+    Setting("OPENAI_API_KEY", "OpenAI", "Платный.", "ИИ", where="platform.openai.com"),
+    Setting("ANTHROPIC_API_KEY", "Anthropic Claude", "Платный.", "ИИ",
+            where="console.anthropic.com"),
+
+    # --- источники ---
+    Setting("VK_SERVICE_TOKEN", "ВКонтакте", "Сервисный ключ сообщества для чтения стен.",
+            "Источники", where="Управление сообществом → Работа с API"),
+    Setting("OK_APPLICATION_KEY", "OK: ключ приложения", "Публичный ключ приложения.",
+            "Источники", secret=False, where="apiok.ru"),
+    Setting("OK_ACCESS_TOKEN", "OK: токен доступа", "Токен приложения.",
+            "Источники", where="apiok.ru"),
+    Setting("OK_SECRET_KEY", "OK: секретный ключ", "Используется для подписи запросов.",
+            "Источники", where="apiok.ru"),
+
+    # --- медиа ---
+    Setting("TELEGRAM_API_ID", "Telegram api_id", "Нужен для своего Bot API Server.",
+            "Медиа", restart=True, secret=False, where="my.telegram.org → API development tools"),
+    Setting("TELEGRAM_API_HASH", "Telegram api_hash", "Нужен для своего Bot API Server.",
+            "Медиа", restart=True, where="my.telegram.org → API development tools"),
+    Setting("TELEGRAM_API_SERVER", "Адрес Bot API Server",
+            "Например http://telegram-bot-api:8081. Снимает предел 50 МБ.",
+            "Медиа", restart=True, secret=False),
+
+    # --- сеть ---
+    Setting("EGRESS_PROXY", "Прокси для выхода в сеть",
+            "Например socks5://singbox:1080.", "Сеть", restart=True, secret=False),
+    Setting("MEDIA_COOKIES", "Файл cookies",
+            "Путь к cookies.txt для закрытых площадок.", "Медиа", secret=False),
+)
+
+BY_KEY = {item.key: item for item in SETTINGS}
+GROUPS: tuple[str, ...] = tuple(dict.fromkeys(item.group for item in SETTINGS))
+
+_LINE = re.compile(r"^(\w+)=(.*)$")
+
+
+def env_path() -> str:
+    return ENV_PATH
+
+
+def read_env() -> dict[str, str]:
+    """Текущее содержимое .env. Отсутствие файла — не ошибка."""
+    values: dict[str, str] = {}
+    try:
+        with open(ENV_PATH, "r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                match = _LINE.match(stripped)
+                if match:
+                    values[match.group(1)] = match.group(2)
+    except OSError:
+        pass
+    return values
+
+
+def get(key: str) -> str:
+    """Значение: сначала из .env, потом из окружения процесса."""
+    return read_env().get(key) or os.getenv(key) or ""
+
+
+def write(key: str, value: str) -> bool:
+    """Записывает значение в .env, сохраняя остальные строки и комментарии."""
+    if "\n" in value or "\r" in value:
+        return False
+
+    try:
+        lines: list[str] = []
+        if os.path.exists(ENV_PATH):
+            with open(ENV_PATH, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+
+        replaced = False
+        for index, line in enumerate(lines):
+            match = _LINE.match(line.strip())
+            if match and match.group(1) == key:
+                lines[index] = f"{key}={value}\n"
+                replaced = True
+                break
+        if not replaced:
+            if lines and not lines[-1].endswith("\n"):
+                lines.append("\n")
+            lines.append(f"{key}={value}\n")
+
+        # Атомарная запись: оборванная запись .env оставила бы бота без токена
+        temporary = f"{ENV_PATH}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.writelines(lines)
+        os.replace(temporary, ENV_PATH)
+        os.chmod(ENV_PATH, 0o600)
+    except OSError as exc:
+        log.error("Не удалось записать %s в %s: %s", key, ENV_PATH, exc)
+        return False
+
+    # Применяем к текущему процессу: провайдеры ИИ читают ключи на лету
+    os.environ[key] = value
+    log.info("Обновлено значение %s (%d символов)", key, len(value))
+    return True
+
+
+def clear(key: str) -> bool:
+    return write(key, "")
+
+
+def mask(value: str) -> str:
+    """Показ значения без раскрытия секрета."""
+    if not value:
+        return "— не задано —"
+    if len(value) <= 8:
+        return "•" * len(value)
+    return f"{value[:4]}…{value[-4:]} ({len(value)} симв.)"
+
+
+def display(setting: Setting) -> str:
+    value = get(setting.key)
+    if not value:
+        return "— не задано —"
+    return value if not setting.secret else mask(value)
+
+
+def by_group() -> dict[str, list[Setting]]:
+    grouped: dict[str, list[Setting]] = {name: [] for name in GROUPS}
+    for setting in SETTINGS:
+        grouped[setting.group].append(setting)
+    return grouped
+
+
+def filled(group: str | None = None) -> int:
+    items = SETTINGS if group is None else by_group().get(group, [])
+    return sum(1 for item in items if get(item.key))
+
+
+def writable() -> bool:
+    """Доступен ли .env на запись — иначе настройка из бота бессмысленна."""
+    target = os.path.dirname(os.path.abspath(ENV_PATH)) or "."
+    if os.path.exists(ENV_PATH):
+        return os.access(ENV_PATH, os.W_OK)
+    return os.access(target, os.W_OK)
+RADAR_FILE_19
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/aibench.py"
+cat > "radar/aibench.py" <<'RADAR_FILE_20'
+"""Сравнение провайдеров ИИ прямо из бота.
+
+Раньше это был отдельный стенд в `bench/`, который на сервере никто
+не запускал: нужно было зайти по SSH, положить ключи в отдельный файл,
+поставить зависимости. Теперь тот же набор тест-кейсов прогоняется
+по кнопке, а ключи берутся из общего `.env`.
+
+Что проверяется
+---------------
+Одинаковые сообщения городских служб уходят каждому провайдеру, у которого
+задан ключ. Сравнивается не «качество вообще», а именно то, что нужно
+«Радару»: правильные категории, извлечённые улицы и дома, отсутствие ложных
+тревог на шуме и — отдельной колонкой — способность вообще разбирать
+сообщения о БПЛА. Провайдер, который срезает военные темы, для оповещений
+непригоден, каким бы точным он ни был в остальном.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Callable, Awaitable
+
+import aiohttp
+
+from . import secrets
+from .textutils import esc
+
+log = logging.getLogger("radar.aibench")
+
+REQUEST_TIMEOUT = 60
+PAUSE = 1.5
+
+
+@dataclass(frozen=True)
+class Provider:
+    key: str
+    title: str
+    env: str
+    base_url: str
+    model: str
+    kind: str = "openai"       # openai | gemini | anthropic
+    region: str = ""
+
+
+PROVIDERS: tuple[Provider, ...] = (
+    Provider("google", "Google Gemini", "GEMINI_API_KEY",
+             "https://generativelanguage.googleapis.com/v1beta",
+             "gemini-3.5-flash-lite", kind="gemini", region="США"),
+    Provider("groq", "Groq", "GROQ_API_KEY",
+             "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", region="США"),
+    Provider("cerebras", "Cerebras", "CEREBRAS_API_KEY",
+             "https://api.cerebras.ai/v1", "gpt-oss-120b", region="США"),
+    Provider("mistral", "Mistral", "MISTRAL_API_KEY",
+             "https://api.mistral.ai/v1", "mistral-small-latest", region="Франция"),
+    Provider("openrouter", "OpenRouter", "OPENROUTER_API_KEY",
+             "https://openrouter.ai/api/v1", "deepseek/deepseek-chat-v3.1:free",
+             region="агрегатор"),
+    Provider("deepseek", "DeepSeek", "DEEPSEEK_API_KEY",
+             "https://api.deepseek.com/v1", "deepseek-chat", region="КНР"),
+    Provider("zai", "Z.ai / GLM", "ZAI_API_KEY",
+             "https://api.z.ai/api/paas/v4", "glm-4.5-air", region="КНР"),
+    Provider("moonshot", "Moonshot Kimi", "MOONSHOT_API_KEY",
+             "https://api.moonshot.ai/v1", "moonshot-v1-32k", region="КНР"),
+    Provider("qwen", "Alibaba Qwen", "DASHSCOPE_API_KEY",
+             "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-turbo",
+             region="КНР"),
+    Provider("openai", "OpenAI", "OPENAI_API_KEY",
+             "https://api.openai.com/v1", "gpt-4.1-mini", region="США"),
+    Provider("anthropic", "Anthropic Claude", "ANTHROPIC_API_KEY",
+             "https://api.anthropic.com/v1", "claude-haiku-4-5-20251001",
+             kind="anthropic", region="США"),
+)
+
+
+@dataclass(frozen=True)
+class Case:
+    ident: str
+    text: str
+    categories: tuple[str, ...]
+    streets: tuple[str, ...] = ()
+    sensitive: bool = False
+
+
+CASES: tuple[Case, ...] = (
+    Case("jkh", "Внимание! Отключение холодной воды по улице Чапаева, дома 12 и 14 "
+                "до 18:00 в связи с устранением порыва.",
+         ("jkh",), ("чапаева",)),
+    Case("jkh-city", "Начинаются гидравлические испытания: горячая вода будет "
+                     "отключена во всём городе с 12 по 22 августа.", ("jkh",)),
+    Case("bpla", "Внимание! На территории области объявлена опасность атаки "
+                 "беспилотных летательных аппаратов. Сообщайте по номеру 112.",
+         ("bpla",), sensitive=True),
+    Case("bpla-clear", "Отбой беспилотной опасности. Обстановка спокойная.",
+         ("bpla",), sensitive=True),
+    Case("mchs", "Экстренное предупреждение МЧС: гроза с усилением ветра "
+                 "до 25 м/с и градом в ближайшие два часа.", ("mchs",)),
+    Case("noise", "Розыгрыш сертификата на 5000 рублей среди подписчиков! "
+                  "Подпишись и поставь лайк.", ()),
+    Case("noise-sport", "«Сокол» обыграл соперника со счётом 2:1 в домашнем матче.", ()),
+)
+
+SYSTEM = (
+    "Ты — аналитик сообщений городских служб. Отвечаешь одним валидным "
+    "JSON-объектом без пояснений и без Markdown."
+)
+
+PROMPT = """Разбери сообщение.
+
+СООБЩЕНИЕ:
+\"\"\"{text}\"\"\"
+
+Категории: "bpla" (БПЛА, ракетная опасность, воздушная тревога),
+"mchs" (МЧС, ЧС, штормовое предупреждение), "jkh" (вода, свет, газ,
+отопление, аварии на сетях), "whitelist" (ограничения связи).
+
+Верни JSON:
+{{"relevant": true|false, "categories": ["jkh"],
+  "streets": [{{"street": "улица Чапаева", "houses": ["12"]}}],
+  "summary": "кратко"}}
+
+Реклама, розыгрыши, спорт → relevant=false, categories=[]."""
+
+
+@dataclass
+class ProviderResult:
+    provider: Provider
+    reachable: bool = False
+    error: str = ""
+    runs: int = 0
+    parsed: int = 0
+    correct: int = 0
+    streets_hit: int = 0
+    streets_total: int = 0
+    false_alarms: int = 0
+    censored: int = 0
+    sensitive_total: int = 0
+    latencies: list[float] = field(default_factory=list)
+
+    @property
+    def accuracy(self) -> float:
+        return self.correct / self.runs if self.runs else 0.0
+
+    @property
+    def latency(self) -> float:
+        if not self.latencies:
+            return 0.0
+        ordered = sorted(self.latencies)
+        return ordered[len(ordered) // 2]
+
+    @property
+    def military_ok(self) -> bool:
+        return self.sensitive_total > 0 and self.censored == 0
+
+
+@dataclass
+class Report:
+    results: list[ProviderResult] = field(default_factory=list)
+    finished: datetime = field(default_factory=datetime.now)
+
+
+_running = False
+_last: Report | None = None
+
+
+def is_running() -> bool:
+    return _running
+
+
+def last_report() -> Report | None:
+    return _last
+
+
+def configured_providers() -> list[Provider]:
+    """Провайдеры, у которых задан ключ."""
+    return [item for item in PROVIDERS if secrets.get(item.env)]
+
+
+# --------------------------------------------------------------------------
+#  Запросы
+# --------------------------------------------------------------------------
+
+async def _ask(session: aiohttp.ClientSession, provider: Provider,
+               api_key: str, prompt: str) -> tuple[str, str]:
+    """Возвращает (ответ, ошибка)."""
+    try:
+        if provider.kind == "gemini":
+            url = f"{provider.base_url}/models/{provider.model}:generateContent"
+            headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "systemInstruction": {"parts": [{"text": SYSTEM}]},
+                "generationConfig": {
+                    "maxOutputTokens": 700,
+                    "responseMimeType": "application/json",
+                    "thinkingConfig": {"thinkingLevel": "minimal"},
+                },
+            }
+        elif provider.kind == "anthropic":
+            url = f"{provider.base_url}/messages"
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": provider.model, "max_tokens": 700, "system": SYSTEM,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        else:
+            url = f"{provider.base_url}/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": provider.model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 700,
+                "temperature": 0.1,
+            }
+
+        async with session.post(url, json=payload, headers=headers) as response:
+            body = await response.text()
+            if response.status != 200:
+                return "", f"HTTP {response.status}: {re.sub(r'\\s+', ' ', body)[:120]}"
+            data = json.loads(body)
+    except asyncio.TimeoutError:
+        return "", "таймаут"
+    except Exception as exc:  # noqa: BLE001
+        return "", f"{type(exc).__name__}"
+
+    return _extract(provider.kind, data), ""
+
+
+def _extract(kind: str, data: dict[str, Any]) -> str:
+    if kind == "gemini":
+        chunks = []
+        for candidate in data.get("candidates") or []:
+            for part in (candidate.get("content") or {}).get("parts") or []:
+                if part.get("text"):
+                    chunks.append(part["text"])
+        return "\n".join(chunks)
+    if kind == "anthropic":
+        return "\n".join(
+            block.get("text", "") for block in data.get("content") or []
+            if block.get("type") == "text"
+        )
+    for choice in data.get("choices") or []:
+        content = (choice.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content
+    return ""
+
+
+def _parse(raw: str) -> dict[str, Any] | None:
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", (raw or "").strip(), flags=re.S)
+    match = re.search(r"\{.*\}", cleaned, re.S)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _score(case: Case, payload: dict[str, Any], result: ProviderResult) -> None:
+    relevant = bool(payload.get("relevant"))
+    categories = {
+        str(item) for item in (payload.get("categories") or [])
+        if str(item) in ("jkh", "bpla", "mchs", "whitelist")
+    }
+    if not relevant:
+        categories = set()
+
+    expected = set(case.categories)
+    if categories == expected:
+        result.correct += 1
+    if expected and not categories:
+        if case.sensitive:
+            result.censored += 1
+    if not expected and categories:
+        result.false_alarms += 1
+
+    if case.streets:
+        result.streets_total += 1
+        found = " ".join(
+            str(item.get("street", "") if isinstance(item, dict) else item).lower()
+            for item in (payload.get("streets") or [])
+        )
+        if all(part in found for part in case.streets):
+            result.streets_hit += 1
+
+
+# --------------------------------------------------------------------------
+#  Прогон
+# --------------------------------------------------------------------------
+
+async def run(
+    progress: Callable[[int, int, str], Awaitable[None]] | None = None,
+) -> Report:
+    """Прогоняет все настроенные провайдеры по набору кейсов."""
+    global _running, _last
+
+    if _running:
+        raise RuntimeError("Проверка уже выполняется")
+
+    providers = configured_providers()
+    if not providers:
+        raise RuntimeError("Нет провайдеров с заданными ключами")
+
+    _running = True
+    report = Report()
+    total = len(providers) * len(CASES)
+    done = 0
+
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for provider in providers:
+                api_key = secrets.get(provider.env)
+                result = ProviderResult(provider=provider)
+
+                for case in CASES:
+                    if case.sensitive:
+                        result.sensitive_total += 1
+
+                    started = time.monotonic()
+                    answer, error = await _ask(
+                        session, provider, api_key, PROMPT.format(text=case.text)
+                    )
+                    result.latencies.append(time.monotonic() - started)
+                    result.runs += 1
+                    done += 1
+
+                    if error:
+                        result.error = result.error or error
+                        # Ключ неверен или провайдер недоступен — дальше нет смысла
+                        if "401" in error or "403" in error or "таймаут" in error:
+                            done += len(CASES) - result.runs
+                            break
+                    else:
+                        result.reachable = True
+                        payload = _parse(answer)
+                        if payload is not None:
+                            result.parsed += 1
+                            _score(case, payload, result)
+                        elif case.sensitive:
+                            result.censored += 1
+
+                    if progress:
+                        await progress(done, total, provider.title)
+                    await asyncio.sleep(PAUSE)
+
+                report.results.append(result)
+
+        _last = report
+        log.info("Сравнение провайдеров завершено: %d участников", len(report.results))
+        return report
+    finally:
+        _running = False
+
+
+def render(report: Report) -> str:
+    """Отчёт для сообщения в боте."""
+    lines = [
+        "🧪 <b>Сравнение провайдеров ИИ</b>",
+        f"<i>{report.finished:%d.%m.%Y %H:%M}, кейсов на провайдера: {len(CASES)}</i>",
+        "",
+    ]
+
+    ranked = sorted(report.results, key=lambda item: (-item.accuracy, item.latency))
+    for item in ranked:
+        if not item.reachable:
+            lines.append(f"❌ <b>{esc(item.provider.title)}</b> — {esc(item.error or 'нет ответа')}")
+            continue
+
+        military = "✅ разбирает" if item.military_ok else (
+            f"⚠️ срезано {item.censored}/{item.sensitive_total}"
+        )
+        streets = (
+            f"{item.streets_hit}/{item.streets_total}" if item.streets_total else "—"
+        )
+        lines.append(
+            f"<b>{esc(item.provider.title)}</b> · {esc(item.provider.region)}\n"
+            f"  точность {item.accuracy * 100:.0f}% · JSON {item.parsed}/{item.runs} · "
+            f"адреса {streets}\n"
+            f"  военные темы: {military} · ложных тревог: {item.false_alarms} · "
+            f"{item.latency:.1f} с"
+        )
+
+    working = [item for item in ranked if item.reachable]
+    if working:
+        lines.append("")
+        best = working[0]
+        lines.append(f"🏆 <b>Точнее всех:</b> {esc(best.provider.title)}")
+        military = [item for item in working if item.military_ok]
+        if military:
+            lines.append(
+                f"🛸 <b>Без цензуры военных тем:</b> {esc(military[0].provider.title)}"
+            )
+        else:
+            lines.append(
+                "⚠️ <b>Все провайдеры срезают военные темы</b> — оповещения "
+                "о БПЛА придётся оставить на эвристике."
+            )
+    else:
+        lines.append("")
+        lines.append("Ни один провайдер не ответил. Проверьте ключи и доступ в сеть.")
+
+    return "\n".join(lines)
+RADAR_FILE_20
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_19'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_21'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -4320,9 +5132,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_19
+RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_20'
+cat > "radar/db/models.py" <<'RADAR_FILE_22'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -4562,9 +5374,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_20
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_21'
+cat > "radar/db/engine.py" <<'RADAR_FILE_23'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -5078,9 +5890,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_21
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_22'
+cat > "radar/db/repo.py" <<'RADAR_FILE_24'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -5606,9 +6418,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_22
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_23'
+cat > "radar/db/importer.py" <<'RADAR_FILE_25'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -5783,9 +6595,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_23
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_24'
+cat > "radar/doctor.py" <<'RADAR_FILE_26'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -6210,9 +7022,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_24
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_25'
+cat > "migrations/env.py" <<'RADAR_FILE_27'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -6272,9 +7084,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_25
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_26'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_28'
 """${message}
 
 Revision ID: ${up_revision}
@@ -6299,9 +7111,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_26
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_27'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_29'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -6468,9 +7280,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_27
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_28'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_30'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -6496,9 +7308,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_28
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_29'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_31'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -6623,9 +7435,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_29
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_30'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_32'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -6889,9 +7701,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_30
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_31'
+cat > "radar/storage.py" <<'RADAR_FILE_33'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -7076,9 +7888,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_31
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_32'
+cat > "radar/exporting.py" <<'RADAR_FILE_34'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -7284,9 +8096,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_32
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_33'
+cat > "radar/ai.py" <<'RADAR_FILE_35'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -7467,6 +8279,19 @@ async def discover_models() -> list[str]:
                 role, _current.get(role),
             )
     return _available
+
+
+def pin_model(role: str, name: str) -> bool:
+    """Закрепляет конкретную модель за ролью до перезапуска."""
+    clean = (name or "").strip().removeprefix("models/")
+    if not clean:
+        return False
+    _current[role] = clean
+    _unavailable.discard(clean)
+    if clean not in _chain.setdefault(role, []):
+        _chain[role].insert(0, clean)
+    log.info("Модель для роли «%s» закреплена вручную: %s", role, clean)
+    return True
 
 
 def models_report() -> dict[str, Any]:
@@ -7714,6 +8539,7 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
 [{{"index": 1,
    "relevant": true,
    "all_clear": false,
+   "historical": false,
    "categories": ["jkh"],
    "severity": "critical" | "warning" | "info",
    "scope": "region" | "city" | "district" | "street",
@@ -7735,7 +8561,15 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
    «опасность снята», «режим беспилотной опасности отменён», «угроза миновала»,
    «обстановка спокойная». Категорию при этом указывай ту же, что у самой угрозы
    (например, отбой БПЛА → categories=["bpla"], all_clear=true, severity="info").
-9. Количество объектов в массиве должно совпадать с количеством сообщений."""
+9. historical=true, если событие уже произошло и завершилось: «вчера»,
+   «в ночь на», «по итогам суток», «был сбит», «напомним», «как сообщалось»,
+   а также если названа дата в прошлом. Такие сообщения нужны как сводка,
+   но тревогой не считаются.
+10. Поля region и city заполняй всегда, когда место можно определить, —
+    хотя бы по названию источника или упоминанию области. Пустой город
+    означает, что оповещение не дойдёт до пользователей: без географии
+    рассылать тревогу нельзя.
+11. Количество объектов в массиве должно совпадать с количеством сообщений."""
 
 _cache: "OrderedDict[str, Analysis]" = OrderedDict()
 _CACHE_LIMIT = 800
@@ -7921,9 +8755,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_33
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_34'
+cat > "radar/geocode.py" <<'RADAR_FILE_36'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -8115,9 +8949,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_34
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_35'
+cat > "radar/weather.py" <<'RADAR_FILE_37'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -8449,9 +9283,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_35
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_36'
+cat > "radar/sources.py" <<'RADAR_FILE_38'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -8632,9 +9466,9 @@ async def collect(
                 fresh.append(item)
 
     return fresh
-RADAR_FILE_36
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_37'
+cat > "radar/tg.py" <<'RADAR_FILE_39'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -8751,9 +9585,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_37
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_38'
+cat > "radar/keyboards.py" <<'RADAR_FILE_40'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -8777,33 +9611,69 @@ from . import config, features, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None) -> InlineKeyboardMarkup:
+    """Главное меню.
+
+    Собрано по назначению, а не по ролям: сначала то, чем пользуются каждый
+    день, ниже — разделы управления. Каждый служебный раздел свёрнут в одну
+    кнопку, иначе у суперадминистратора меню разрасталось до полутора
+    десятков строк и переставало читаться.
+    """
     rows = [
         [
             InlineKeyboardButton(text="📍 Мои локации", callback_data="loc:list"),
-            InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
+            InlineKeyboardButton(text="🌤 Погода", callback_data="loc:weather"),
         ],
         [
-            InlineKeyboardButton(text="🌤 Погода сейчас", callback_data="loc:weather"),
+            InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
             InlineKeyboardButton(text="📢 Предложить источник", callback_data="src:suggest"),
         ],
     ]
+
     if features.enabled("sos"):
         rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
+
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text="🧠 ИИ-ассистент", callback_data="menu:ai")])
+
+    # Один вход в управление вместо россыпи кнопок
     if roles.is_moderator(role):
-        rows.append([InlineKeyboardButton(text="🛡 Модерация", callback_data="menu:mod")])
-    if roles.is_admin(role):
-        rows.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="menu:admin")])
-    if roles.is_superadmin(role):
-        rows.append([
-            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
-            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
-        ])
+        rows.append([InlineKeyboardButton(text="🛠 Управление", callback_data="menu:manage")])
+
     rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
+
     promo = promo_row()
     if promo:
         rows.append(promo)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def manage_menu(role: str | None) -> InlineKeyboardMarkup:
+    """Раздел управления: содержимое зависит от роли."""
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if roles.is_moderator(role):
+        rows.append([
+            InlineKeyboardButton(text="📡 Источники", callback_data="menu:mod"),
+            InlineKeyboardButton(text="👥 Пользователи", callback_data="usr:list:0"),
+        ])
+
+    if roles.is_admin(role):
+        rows.append([
+            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats"),
+            InlineKeyboardButton(text="🔗 Инвайт", callback_data="usr:invite"),
+        ])
+
+    if roles.is_superadmin(role):
+        rows.append([
+            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
+            InlineKeyboardButton(text="🔑 Ключи доступа", callback_data="key:list"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="🧪 Проверка ИИ", callback_data="bench:menu"),
+            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
+        ])
+
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -8943,8 +9813,7 @@ def moderation_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="⬇️ Скачать список", callback_data="src:export"),
                 InlineKeyboardButton(text="⬆️ Загрузить список", callback_data="src:import"),
             ],
-            [InlineKeyboardButton(text="👥 Пользователи и локации", callback_data="usr:list:0")],
-            [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")],
+            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
         ]
     )
 
@@ -8955,7 +9824,7 @@ def admin_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Список пользователей", callback_data="usr:list:0")],
             [InlineKeyboardButton(text="🔗 Инвайт-ссылка", callback_data="usr:invite")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
-            [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")],
+            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
         ]
     )
 
@@ -9049,9 +9918,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_38
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_39'
+cat > "radar/states.py" <<'RADAR_FILE_41'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -9076,9 +9945,10 @@ class Form(StatesGroup):
     admin_weather_interval = State()
     sos_contact = State()          # добавление доверенного контакта
     sos_location = State()         # ожидание геопозиции для сигнала
-RADAR_FILE_39
+    secret_value = State()         # ввод ключа доступа суперадминистратором
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_40'
+cat > "radar/middlewares.py" <<'RADAR_FILE_42'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -9167,9 +10037,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_40
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_41'
+cat > "radar/monitor.py" <<'RADAR_FILE_43'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -9189,7 +10059,7 @@ from typing import Any
 import aiohttp
 
 from . import ai, config, features, geocode, sos, sources, storage, weather
-from .matching import Analysis, cluster_title, plan_alerts
+from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
 
@@ -9306,6 +10176,68 @@ async def dispatch_user(
 #  Цикл
 # --------------------------------------------------------------------------
 
+# Завершившиеся события копятся до утренней и вечерней сводки: тревожить
+# ими сразу бессмысленно, а знать о них полезно.
+_recap_pool: list[Analysis] = []
+_recap_sent: dict[str, str] = {}
+
+RECAP_HOURS = (9, 20)
+
+
+def collect_recap(analyses: list[Analysis]) -> None:
+    for item in analyses:
+        if item.historical and item.relevant:
+            _recap_pool.append(item)
+    # Держим разумный объём: сводка за сутки, а не за месяц
+    del _recap_pool[:-100]
+
+
+def recap_due(now: datetime) -> str | None:
+    """Пора ли отправлять сводку. Возвращает метку периода или None."""
+    if not _recap_pool:
+        return None
+    for hour in RECAP_HOURS:
+        if now.hour == hour:
+            marker = f"{now:%Y-%m-%d}-{hour}"
+            if _recap_sent.get("last") != marker:
+                return marker
+    return None
+
+
+async def send_recap(now: datetime) -> None:
+    """Утренняя и вечерняя сводка по тому, что уже произошло."""
+    marker = recap_due(now)
+    if marker is None:
+        return
+
+    _recap_sent["last"] = marker
+    period = "за ночь" if now.hour < 12 else "за день"
+
+    delivered = 0
+    for uid, user in list(storage.users().items()):
+        locations = user.get("locs") or []
+        if not locations:
+            continue
+        enabled = {key for key, value in (user.get("settings") or {}).items() if value}
+
+        relevant = [
+            item for item in _recap_pool
+            if (set(item.categories) & enabled)
+            and any(geo_matches(item, loc) for loc in locations)
+        ]
+        if not relevant:
+            continue
+
+        hint = str(locations[0].get("city") or "")
+        text = build_recap(relevant, period, hint)
+        if text and await send_html(uid, text, back_kb()):
+            delivered += 1
+        await asyncio.sleep(0.3)
+
+    log.info("Сводка %s разослана: %d получателей", period, delivered)
+    _recap_pool.clear()
+
+
 async def repeat_sos() -> None:
     """Повторяет активные сигналы SOS, пока отправитель не дал отбой."""
     if not features.enabled("sos"):
@@ -9368,6 +10300,7 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []
         analyses = [analysis for analysis in parsed if analysis.relevant]
+        collect_recap(analyses)
         counters = ai.counters()
         log.info(
             "Новых сообщений: %d, значимых: %d | запросов к ИИ: %d, "
@@ -9404,6 +10337,7 @@ async def run() -> None:
             started = time.monotonic()
             try:
                 await repeat_sos()
+                await send_recap(datetime.now())
                 await cycle(session)
             except asyncio.CancelledError:
                 raise
@@ -9411,9 +10345,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_41
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_42'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_44'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -9434,6 +10368,7 @@ from . import (
     logs,
     media,
     settings,
+    settings_admin,
     sos,
     sources,
     users,
@@ -9446,6 +10381,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(sources.router)
     dp.include_router(users.router)
     dp.include_router(features.router)
+    dp.include_router(settings_admin.router)
     dp.include_router(logs.router)
     dp.include_router(sos.router)
     # Ссылки перехватываем до свободного диалога с моделью
@@ -9455,9 +10391,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_42
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_43'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_45'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -9477,7 +10413,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
 from .. import ai, config, keyboards, monitor, roles, storage
-from ..textutils import esc
+from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit
 
 router = Router(name="common")
@@ -9596,6 +10532,24 @@ async def menu_settings(call: CallbackQuery, state: FSMContext, user: dict[str, 
     )
 
 
+@router.callback_query(F.data == "menu:manage")
+async def menu_manage(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_moderator(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await state.clear()
+    await call.answer()
+
+    lines = ["🛠 <b>Управление</b>", "", f"Ваша роль: {roles.title(role)}", ""]
+    if roles.is_superadmin(role):
+        lines.append("Доступны все разделы, включая ключи доступа и журналы.")
+    elif roles.is_admin(role):
+        lines.append("Доступны источники, пользователи, статистика и приглашения.")
+    else:
+        lines.append("Доступны источники и правка настроек пользователей.")
+    await safe_edit(call, "\n".join(lines), keyboards.manage_menu(role))
+
+
 @router.callback_query(F.data == "menu:mod")
 async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
     if not roles.is_moderator(role):
@@ -9603,7 +10557,13 @@ async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
         return
     await state.clear()
     await call.answer()
-    await safe_edit(call, "🛡 <b>Панель модератора</b>", keyboards.moderation_menu())
+    await safe_edit(
+        call,
+        "📡 <b>Источники</b>\n\n"
+        "Здесь добавляются каналы и ленты, проверяется их доступность "
+        "и разбирается очередь предложений от пользователей.",
+        keyboards.moderation_menu(),
+    )
 
 
 @router.callback_query(F.data == "menu:admin")
@@ -9707,6 +10667,8 @@ async def cmd_quota(message: Message, role: str) -> None:
 async def cmd_models(message: Message, role: str) -> None:
     if not roles.is_admin(role):
         return
+    await message.answer("🔎 Запрашиваю список моделей у Google…")
+    await ai.discover_models()
     report = ai.models_report()
     lines = [
         "🤖 <b>Модели Gemini</b>",
@@ -9720,19 +10682,59 @@ async def cmd_models(message: Message, role: str) -> None:
     available = [m for m in report["available"] if "gemini" in m]
     if available:
         lines.append("")
-        lines.append(f"<b>Доступно ключу ({len(available)}):</b>")
-        lines.extend(f"• <code>{esc(name)}</code>" for name in available[:40])
-        if len(available) > 40:
-            lines.append(f"…и ещё {len(available) - 40}")
+        lines.append(f"<b>Доступно вашему ключу ({len(available)}):</b>")
+        lines.extend(f"• <code>{esc(name)}</code>" for name in available)
     else:
         lines.append("")
         lines.append("<i>Список моделей получить не удалось — используются значения из .env.</i>")
     lines.append("")
     lines.append(
-        "<i>Модель подбирается автоматически. Чтобы закрепить свою — задайте "
-        "GEMINI_MODEL в .env и перезапустите контейнер.</i>"
+        "<i>Модель подбирается автоматически из доступных. Закрепить свою: "
+        "<code>/setmodel имя</code> — для ассистента, "
+        "<code>/setmodel имя analysis</code> — для разбора новостей.</i>"
     )
-    await message.answer("\n".join(lines), reply_markup=back_kb())
+    for chunk in split_text("\n".join(lines)):
+        await message.answer(chunk, reply_markup=back_kb())
+
+
+@router.message(Command("setmodel"))
+async def cmd_setmodel(message: Message, role: str) -> None:
+    """Закрепить конкретную модель Gemini из доступных ключу."""
+    if not roles.is_admin(role):
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer(
+            "Укажите модель: <code>/setmodel gemini-3.6-flash</code>\n"
+            "Для разбора новостей: <code>/setmodel gemini-3.5-flash-lite analysis</code>\n"
+            "Список доступных — команда /models."
+        )
+        return
+
+    name = parts[1].strip()
+    target = ai.ANALYSIS if len(parts) > 2 and parts[2].startswith("anal") else ai.ASSISTANT
+
+    available = ai.models_report()["available"]
+    if available and name not in available:
+        await message.answer(
+            f"❌ Модель <code>{esc(name)}</code> недоступна вашему ключу.\n"
+            "Посмотрите список: /models"
+        )
+        return
+
+    if not ai.pin_model(target, name):
+        await message.answer("❌ Не удалось закрепить модель.")
+        return
+
+    role_title = "разбора новостей" if target == ai.ANALYSIS else "ассистента"
+    await message.answer(
+        f"✅ Модель {role_title}: <code>{esc(name)}</code>\n"
+        "<i>Действует сразу. Чтобы сохранить после перезапуска, задайте "
+        f"{'GEMINI_MODEL_ANALYSIS' if target == ai.ANALYSIS else 'GEMINI_MODEL'} "
+        "в разделе «Ключи доступа».</i>",
+        reply_markup=back_kb(),
+    )
 
 
 @router.callback_query(F.data == "menu:stats")
@@ -9742,9 +10744,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_43
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_44'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_46'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -9908,9 +10910,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_44
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_45'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_47'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -10161,9 +11163,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         await message.answer(
             f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
         )
-RADAR_FILE_45
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_46'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_48'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -10598,9 +11600,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_46
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_47'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_49'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -10966,9 +11968,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_47
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_48'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_50'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -11096,9 +12098,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await repo.set_feature(flag.key, value, call.from_user.id)
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_48
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_49'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_51'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -11386,9 +12388,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_49
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_50'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_52'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -11409,7 +12411,11 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestUsers,
     Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 
 from .. import config, features, geocode, roles, sos, storage
@@ -11510,6 +12516,32 @@ async def cmd_sos(message: Message, state: FSMContext, user: dict) -> None:
 #  Контакты
 # --------------------------------------------------------------------------
 
+def _picker_keyboard() -> ReplyKeyboardMarkup:
+    """Кнопка выбора контакта средствами самого Telegram.
+
+    Это надёжнее пересылки: при закрытых настройках приватности пересланное
+    сообщение не содержит идентификатора отправителя, а встроенный выбор
+    возвращает его всегда.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(
+                text="👤 Выбрать контакт",
+                request_users=KeyboardButtonRequestUsers(
+                    request_id=1,
+                    user_is_bot=False,
+                    max_quantity=1,
+                    request_name=True,
+                    request_username=True,
+                ),
+            )
+        ]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Или пришлите числовой ID",
+    )
+
+
 @router.callback_query(F.data == "sos:add")
 async def ask_contact(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
@@ -11517,38 +12549,83 @@ async def ask_contact(call: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(
         call,
         "➕ <b>Доверенный контакт</b>\n\n"
-        "Пришлите <b>числовой ID</b> человека в Telegram — его можно узнать "
-        "у @userinfobot, — либо перешлите сюда любое его сообщение.\n\n"
-        "После этого вы получите ссылку-приглашение: контакт откроет её "
+        "Нажмите кнопку <b>«Выбрать контакт»</b> под полем ввода — Telegram "
+        "предложит выбрать человека из списка.\n\n"
+        "Другие способы: переслать сюда его сообщение или прислать "
+        "<b>числовой ID</b> (узнать можно у @userinfobot).\n\n"
+        "После добавления вы получите ссылку-приглашение: контакт откроет её "
         "и нажмёт «Старт». Без этого шага Telegram не позволит боту "
         "написать ему первым.\n\n<i>/cancel — отмена.</i>",
         back_kb("sos:menu", "Отмена"),
     )
+    await call.message.answer(
+        "Выберите способ:", reply_markup=_picker_keyboard()
+    )
+
+
+def _extract_contact(message: Message) -> tuple[str, str]:
+    """Достаёт идентификатор контакта из сообщения любым доступным способом."""
+    # 1. Встроенный выбор Telegram — самый надёжный путь
+    shared = getattr(message, "users_shared", None)
+    if shared is not None:
+        people = getattr(shared, "users", None) or getattr(shared, "user_ids", None) or []
+        for person in people:
+            person_id = getattr(person, "user_id", None) or person
+            if person_id:
+                name = " ".join(
+                    part for part in (
+                        getattr(person, "first_name", "") or "",
+                        getattr(person, "last_name", "") or "",
+                    ) if part
+                ).strip()
+                username = getattr(person, "username", "") or ""
+                title = name or (f"@{username}" if username else f"ID {person_id}")
+                return str(person_id), title
+
+    # 2. Пересланное сообщение. В aiogram 3.7+ поле forward_from удалено:
+    #    сведения об источнике переехали в forward_origin.
+    origin = getattr(message, "forward_origin", None)
+    sender = getattr(origin, "sender_user", None) if origin is not None else None
+    if sender is None:
+        sender = getattr(message, "forward_from", None)   # совместимость со старыми версиями
+    if sender is not None:
+        title = getattr(sender, "full_name", "") or getattr(sender, "username", "") or ""
+        return str(sender.id), title or f"ID {sender.id}"
+
+    # 3. Скрытый отправитель: имя есть, идентификатора нет
+    if origin is not None and getattr(origin, "sender_user_name", None):
+        return "", str(origin.sender_user_name)
+
+    # 4. Числовой идентификатор текстом
+    text = (message.text or "").strip()
+    if text.isdigit() and len(text) >= 5:
+        return text, f"ID {text}"
+
+    return "", ""
 
 
 @router.message(Form.sos_contact)
 async def save_contact(message: Message, state: FSMContext, user: dict) -> None:
-    key = ""
-    title = ""
+    if (message.text or "").startswith("/"):
+        return
 
-    forwarded = getattr(message, "forward_from", None)
-    if forwarded is not None:
-        key = str(forwarded.id)
-        title = forwarded.full_name or forwarded.username or key
-    else:
-        text = (message.text or "").strip()
-        if text.startswith("/"):
-            return
-        if text.isdigit() and len(text) >= 5:
-            key = text
-            title = f"ID {text}"
-        else:
-            await message.answer(
-                "❌ Нужен числовой ID или пересланное сообщение.\n"
-                "<i>Если пересылка не сработала — у человека закрыт профиль "
-                "в настройках приватности, попросите у него ID через @userinfobot.</i>"
+    key, title = _extract_contact(message)
+
+    if not key:
+        hint = (
+            "❌ Не удалось определить пользователя.\n\n"
+            "Нажмите кнопку <b>«Выбрать контакт»</b> под полем ввода — это "
+            "работает всегда."
+        )
+        if title:
+            hint += (
+                f"\n\n<i>У пользователя {esc(title)} закрыта пересылка "
+                "в настройках приватности, поэтому его идентификатор скрыт.</i>"
             )
-            return
+        else:
+            hint += "\n\nИли пришлите числовой ID — узнать можно у @userinfobot."
+        await message.answer(hint, reply_markup=_picker_keyboard())
+        return
 
     if key == str(message.from_user.id):
         await message.answer("❌ Нельзя указать самого себя.")
@@ -11569,9 +12646,9 @@ async def save_contact(message: Message, state: FSMContext, user: dict) -> None:
     await message.answer(
         f"✅ Контакт <b>{esc(contact.title)}</b> добавлен.\n\n"
         "Перешлите ему сообщение ниже — без подтверждения сигнал не дойдёт.",
-        reply_markup=back_kb("sos:menu", "◀️ К настройкам"),
+        reply_markup=ReplyKeyboardRemove(),
     )
-    await message.answer(invite)
+    await message.answer(invite, reply_markup=back_kb("sos:menu", "◀️ К настройкам"))
 
 
 @router.callback_query(F.data.startswith("sos:contact:"))
@@ -11719,9 +12796,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_50
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_51'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_53'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -12034,9 +13111,354 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_51
+RADAR_FILE_53
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_54'
+"""Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
+
+Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
+в `bench/`, который на сервере никто не запускал. Теперь тот же набор
+тест-кейсов прогоняется прямо из бота по кнопке.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import ai, aibench, config, roles, secrets
+from ..states import Form
+from ..textutils import esc, split_text
+from ..tg import back_kb, safe_edit, send_html
+
+log = logging.getLogger("radar.handlers.settings_admin")
+router = Router(name="admin_settings")
+
+
+# --------------------------------------------------------------------------
+#  Ключи доступа
+# --------------------------------------------------------------------------
+
+def _groups_menu() -> InlineKeyboardMarkup:
+    rows = []
+    for group in secrets.GROUPS:
+        items = secrets.by_group()[group]
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{group} — {secrets.filled(group)}/{len(items)}",
+                callback_data=f"key:group:{group}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(text="🧪 Сравнить провайдеров ИИ", callback_data="bench:menu")
+    ])
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _group_menu(group: str) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{'✅' if secrets.get(item.key) else '➕'} {item.title}",
+                callback_data=f"key:edit:{item.key}",
+            )
+        ]
+        for item in secrets.by_group().get(group, [])
+    ]
+    rows.append([InlineKeyboardButton(text="◀️ К разделам", callback_data="key:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _overview() -> str:
+    lines = [
+        "🔑 <b>Ключи доступа</b>",
+        f"Заполнено: <b>{secrets.filled()}</b> из {len(secrets.SETTINGS)}",
+        "",
+    ]
+    if not secrets.writable():
+        lines.append(
+            "⚠️ Файл <code>.env</code> недоступен на запись — сохранить "
+            "значения из бота не получится. Проверьте права на файл."
+        )
+        lines.append("")
+    lines.append(
+        "<i>Ключи хранятся в .env рядом с ботом. Значения показаны "
+        "замаскированными.</i>"
+    )
+    return "\n".join(lines)
+
+
+@router.message(Command("keys"))
+async def cmd_keys(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Ключи доступа настраивает суперадминистратор.")
+        return
+    await message.answer(_overview(), reply_markup=_groups_menu())
+
+
+@router.callback_query(F.data == "key:list")
+async def show_groups(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await state.clear()
+    await call.answer()
+    await safe_edit(call, _overview(), _groups_menu())
+
+
+@router.callback_query(F.data.startswith("key:group:"))
+async def show_group(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    group = call.data.split(":", 2)[2]
+    await call.answer()
+
+    lines = [f"🔑 <b>{esc(group)}</b>", ""]
+    for item in secrets.by_group().get(group, []):
+        lines.append(f"<b>{esc(item.title)}</b> — {esc(secrets.display(item))}")
+        lines.append(f"<i>{esc(item.hint)}</i>")
+        if item.where:
+            lines.append(f"<i>Получить: {esc(item.where)}</i>")
+        if item.restart:
+            lines.append("<i>Применится после перезапуска контейнера.</i>")
+        lines.append("")
+    await safe_edit(call, "\n".join(lines).strip(), _group_menu(group))
+
+
+@router.callback_query(F.data.startswith("key:edit:"))
+async def ask_value(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    key = call.data.split(":", 2)[2]
+    setting = secrets.BY_KEY.get(key)
+    if setting is None:
+        await call.answer("Неизвестный параметр.", show_alert=True)
+        return
+
+    await call.answer()
+    await state.set_state(Form.secret_value)
+    await state.update_data(secret_key=key)
+
+    lines = [
+        f"🔑 <b>{esc(setting.title)}</b>",
+        f"Сейчас: {esc(secrets.display(setting))}",
+        "",
+        esc(setting.hint),
+    ]
+    if setting.where:
+        lines.append(f"\n<b>Где взять:</b> {esc(setting.where)}")
+    if setting.restart:
+        lines.append("\n⚠️ <i>Применится после перезапуска контейнера.</i>")
+    lines.append("\nПришлите значение одним сообщением.")
+    lines.append("<i>«-» очистит поле. /cancel — отмена.</i>")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"key:group:{setting.group}")]
+    ])
+    await safe_edit(call, "\n".join(lines), kb)
+
+
+@router.message(Form.secret_value)
+async def save_value(message: Message, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    key = data.get("secret_key") or ""
+    setting = secrets.BY_KEY.get(key)
+    value = (message.text or "").strip()
+
+    if value.startswith("/"):
+        return
+    if setting is None:
+        await state.clear()
+        await message.answer("❌ Параметр не найден.")
+        return
+
+    await state.clear()
+
+    # Само сообщение с ключом лучше убрать из переписки
+    try:
+        await message.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+    if value == "-":
+        secrets.clear(key)
+        await message.answer(
+            f"🧹 <b>{esc(setting.title)}</b> очищено.",
+            reply_markup=back_kb(f"key:group:{setting.group}", "◀️ Назад"),
+        )
+        return
+
+    if not secrets.write(key, value):
+        await message.answer(
+            "❌ Не удалось записать в .env — проверьте права на файл.",
+            reply_markup=back_kb("key:list", "◀️ Назад"),
+        )
+        return
+
+    note = (
+        "\n\n⚠️ <i>Изменение применится после перезапуска:</i> "
+        "<code>docker compose restart</code>"
+        if setting.restart else "\n\n<i>Применяется сразу.</i>"
+    )
+    await message.answer(
+        f"✅ <b>{esc(setting.title)}</b> сохранено: {esc(secrets.display(setting))}{note}",
+        reply_markup=back_kb(f"key:group:{setting.group}", "◀️ Назад"),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Сравнение провайдеров ИИ
+# --------------------------------------------------------------------------
+
+def _bench_menu() -> InlineKeyboardMarkup:
+    ready = aibench.configured_providers()
+    rows = [[
+        InlineKeyboardButton(
+            text=f"▶️ Запустить проверку ({len(ready)} провайдеров)",
+            callback_data="bench:run",
+        )
+    ]]
+    if aibench.last_report() is not None:
+        rows.append([
+            InlineKeyboardButton(text="📊 Последний отчёт", callback_data="bench:last")
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ К ключам", callback_data="key:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _bench_overview() -> str:
+    ready = aibench.configured_providers()
+    lines = [
+        "🧪 <b>Сравнение провайдеров ИИ</b>",
+        "",
+        "Одинаковые сообщения городских служб прогоняются через все "
+        "провайдеры, у которых задан ключ. Сравнивается точность разбора: "
+        "категории, улицы и дома, отсутствие ложных тревог.",
+        "",
+    ]
+    if ready:
+        lines.append("<b>Готовы к проверке:</b>")
+        lines += [f"• {esc(item.title)}" for item in ready]
+    else:
+        lines.append(
+            "⚠️ Ни у одного провайдера не задан ключ. Добавьте их "
+            "в разделе «ИИ»."
+        )
+    lines.append("")
+    lines.append(
+        "<i>Важно: смотрите на колонку «военные темы». Провайдер, который "
+        "срезает сообщения о БПЛА, для оповещений непригоден, каким бы "
+        "точным он ни был в остальном.</i>"
+    )
+    return "\n".join(lines)
+
+
+@router.message(Command("bench"))
+async def cmd_bench(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Проверка провайдеров доступна суперадминистратору.")
+        return
+    await message.answer(_bench_overview(), reply_markup=_bench_menu())
+
+
+@router.callback_query(F.data == "bench:menu")
+async def bench_menu(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, _bench_overview(), _bench_menu())
+
+
+@router.callback_query(F.data == "bench:last")
+async def bench_last(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    report = aibench.last_report()
+    if report is None:
+        await call.answer("Отчётов ещё нет.", show_alert=True)
+        return
+    await call.answer()
+    for chunk in split_text(aibench.render(report)):
+        await send_html(call.message.chat.id, chunk)
+
+
+@router.callback_query(F.data == "bench:run")
+async def bench_run(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    ready = aibench.configured_providers()
+    if not ready:
+        await call.answer("Нет провайдеров с ключами.", show_alert=True)
+        return
+    if aibench.is_running():
+        await call.answer("Проверка уже идёт.", show_alert=True)
+        return
+
+    await call.answer("Запускаю проверку…")
+    notice = await call.message.answer(
+        f"🧪 Проверяю {len(ready)} провайдеров…\n"
+        "<i>Займёт несколько минут: запросы идут с паузами.</i>"
+    )
+
+    async def progress(done: int, total: int, current: str) -> None:
+        try:
+            await notice.edit_text(
+                f"🧪 Проверка: <b>{done}/{total}</b>\n<i>сейчас: {esc(current)}</i>"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        report = await aibench.run(progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Проверка провайдеров не удалась")
+        await notice.edit_text(f"❌ Проверка не удалась: {esc(exc)}")
+        return
+
+    try:
+        await notice.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+    for chunk in split_text(aibench.render(report)):
+        await send_html(call.message.chat.id, chunk)
+    await send_html(
+        call.message.chat.id,
+        "<i>Провайдер для разбора новостей задаётся переменной "
+        "GEMINI_MODEL_ANALYSIS; смена провайдера по умолчанию появится "
+        "в версии 4.3.</i>",
+        back_kb("bench:menu", "◀️ Назад"),
+    )
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_52'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_55'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -12181,7 +13603,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_52
+RADAR_FILE_55
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -12344,10 +13766,157 @@ ENVEOF
     fi
 fi
 
+# --- обслуживание базы данных ---------------------------------------------
+# Отдельная копия только базы: она нужна чаще полной и восстанавливается
+# быстрее. Полная копия проекта делается выше, при выборе способа установки.
+database_menu() {
+    local backend db_file
+    backend="$(get_env_value DB_BACKEND)"
+    : "${backend:=sqlite}"
+    db_file="$APP_DIR/data/radar.db"
+
+    local has_db=false
+    if [ "$backend" = "sqlite" ] && [ -f "$db_file" ]; then has_db=true; fi
+    if [ "$backend" = "postgres" ] && [ -d "$APP_DIR/data/postgres" ]; then has_db=true; fi
+
+    local snapshots
+    snapshots="$(ls -1 "$APP_DIR/backups"/db-*.tar.gz 2>/dev/null | wc -l || echo 0)"
+
+    if [ "$has_db" != true ] && [ "$snapshots" -eq 0 ]; then
+        return 0
+    fi
+
+    echo
+    printf "  %sОбслуживание базы данных%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "    1) Ничего не делать %s(по умолчанию)%s\n" "$C_DIM" "$C_RESET"
+    printf "    2) Снять копию базы\n"
+    printf "    3) Снять копию, удалить базу и создать заново\n"
+    printf "    4) Восстановить базу из копии %s(доступно: %s)%s\n" \
+        "$C_DIM" "$snapshots" "$C_RESET"
+    printf "  Выбор [1]: "
+
+    local answer=""
+    read -r answer < /dev/tty || answer="1"
+    : "${answer:=1}"
+    log_raw "Обслуживание базы: вариант $answer"
+
+    case "$answer" in
+        2) backup_database ;;
+        3)
+            backup_database || { warn "Копия не создана — база не тронута"; return 0; }
+            info "Удаляю базу"
+            (cd "$APP_DIR" && run $COMPOSE down) || true
+            rm -f "$db_file" "$db_file-wal" "$db_file-shm" 2>/dev/null || true
+            rm -rf "$APP_DIR/data/postgres" 2>/dev/null || true
+            ok "База удалена, будет создана заново при запуске"
+            ;;
+        4) restore_database ;;
+        *) : ;;
+    esac
+    return 0
+}
+
+backup_database() {
+    local stamp archive backend
+    backend="$(get_env_value DB_BACKEND)"
+    : "${backend:=sqlite}"
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$APP_DIR/backups"
+    archive="$APP_DIR/backups/db-${backend}-${stamp}.tar.gz"
+
+    spinner_start "копирую базу данных…"
+    local ok_flag=false
+    if [ "$backend" = "postgres" ]; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^radar_db$'; then
+            local dump="$APP_DIR/backups/.dump-$stamp.sql"
+            if docker exec radar_db pg_dump -U radar radar > "$dump" 2>>"$LOG_FILE"; then
+                tar -czf "$archive" -C "$APP_DIR/backups" "$(basename "$dump")" 2>>"$LOG_FILE"
+                rm -f "$dump"
+                ok_flag=true
+            fi
+        else
+            # Контейнер не поднят — копируем сам том
+            tar -czf "$archive" -C "$APP_DIR/data" postgres 2>>"$LOG_FILE" && ok_flag=true
+        fi
+    else
+        if [ -f "$APP_DIR/data/radar.db" ]; then
+            tar -czf "$archive" -C "$APP_DIR/data" radar.db 2>>"$LOG_FILE" && ok_flag=true
+        fi
+    fi
+    spinner_stop
+
+    if [ "$ok_flag" = true ] && [ -f "$archive" ]; then
+        ok "Копия базы: $(basename "$archive") ($(du -h "$archive" | cut -f1))"
+        ls -1t "$APP_DIR/backups"/db-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+        return 0
+    fi
+    rm -f "$archive" 2>/dev/null || true
+    warn "Копию базы создать не удалось"
+    return 1
+}
+
+restore_database() {
+    local archives count choice archive
+    mapfile -t archives < <(ls -1t "$APP_DIR/backups"/db-*.tar.gz 2>/dev/null || true)
+    count=${#archives[@]}
+    if [ "$count" -eq 0 ]; then
+        warn "Копий базы не найдено"
+        return 1
+    fi
+
+    echo
+    printf "  %sДоступные копии:%s\n" "$C_BOLD" "$C_RESET"
+    local index=1
+    for item in "${archives[@]}"; do
+        printf "    %d) %s  %s%s%s\n" "$index" "$(basename "$item")" \
+            "$C_DIM" "$(du -h "$item" | cut -f1)" "$C_RESET"
+        index=$((index + 1))
+    done
+    printf "  Выбор [1]: "
+    read -r choice < /dev/tty || choice="1"
+    : "${choice:=1}"
+
+    if ! printf '%s' "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] ||
+       [ "$choice" -gt "$count" ]; then
+        warn "Неверный выбор — восстановление отменено"
+        return 1
+    fi
+    archive="${archives[$((choice - 1))]}"
+
+    warn "Текущая база будет заменена содержимым копии"
+    printf "  Продолжить? (y/N): "
+    local confirm=""
+    read -r confirm < /dev/tty || confirm="n"
+    case "${confirm:-n}" in [Yy]*) : ;; *) info "Восстановление отменено"; return 1 ;; esac
+
+    (cd "$APP_DIR" && run $COMPOSE down) || true
+    spinner_start "восстанавливаю базу…"
+    local restored=false
+    if tar -tzf "$archive" 2>/dev/null | grep -q '\.sql$'; then
+        # Дамп PostgreSQL: распаковываем, зальётся при первом старте вручную
+        tar -xzf "$archive" -C "$APP_DIR/backups" 2>>"$LOG_FILE" && restored=true
+        spinner_stop
+        ok "Дамп распакован в $APP_DIR/backups"
+        info "Залейте его после запуска:"
+        info "  docker exec -i radar_db psql -U radar radar < <файл>.sql"
+        return 0
+    fi
+    tar -xzf "$archive" -C "$APP_DIR/data" 2>>"$LOG_FILE" && restored=true
+    spinner_stop
+
+    if [ "$restored" = true ]; then
+        ok "База восстановлена из $(basename "$archive")"
+        return 0
+    fi
+    warn "Восстановить не удалось — подробности в журнале"
+    return 1
+}
+
 # Базу выбираем всегда: и при новом .env, и при использовании существующего.
 # Раньше выбор молча наследовался из старого файла, где строки DB_BACKEND
 # могло не быть вовсе — пользователь о базе даже не знал.
 choose_database
+database_menu
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
@@ -12372,27 +13941,16 @@ run $COMPOSE down --remove-orphans || true
 run docker rm -f "$CONTAINER_NAME" || true   # наследие версий 3.x
 
 info "Собираю образ (первый раз это занимает 5–15 минут)"
-(
-    # Полоса ползёт по времени: точного прогресса Docker не сообщает,
-    # поэтому шкала показывает долю от ожидаемых 15 минут.
-    elapsed=0
-    while [ "$elapsed" -lt 900 ]; do
-        progress "$elapsed" 900 "сборка образа"
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
-) &
-PROGRESS_PID=$!
+spinner_start "сборка образа…"
 if ! run $COMPOSE build $NO_CACHE_FLAG; then
-    kill "$PROGRESS_PID" 2>/dev/null || true
-    wait "$PROGRESS_PID" 2>/dev/null || true
-    progress_done
-    die "Сборка образа не удалась. Подробности: $LOG_FILE"
+    spinner_stop
+    trap - ERR
+    fail "Сборка образа не удалась"
+    offer_rollback "сборка образа" || true
+    printf "  Полный журнал: %s\n\n" "$LOG_FILE"
+    exit 1
 fi
-kill "$PROGRESS_PID" 2>/dev/null || true
-wait "$PROGRESS_PID" 2>/dev/null || true
-progress 900 900 "образ готов"
-ok "Образ собран"
+spinner_stop "Образ собран"
 
 # PostgreSQL запоминает пароль при инициализации тома. Если .env изменился,
 # а том остался прежним, бот будет молча биться в отказ авторизации.

@@ -79,6 +79,7 @@ class Analysis:
     raw: str = ""
     link: str = ""            # ссылка на новость (для RSS)
     all_clear: bool = False   # отбой ранее объявленной опасности
+    historical: bool = False  # событие в прошлом: сводка, а не тревога
     engine: str = "ai"  # ai | heuristic
 
     @classmethod
@@ -114,6 +115,7 @@ class Analysis:
             raw=raw,
             link=link,
             all_clear=bool(payload.get("all_clear")),
+            historical=bool(payload.get("historical")),
         )
 
     @property
@@ -164,6 +166,19 @@ _HEURISTICS: list[tuple[str, re.Pattern]] = [
         r"бел\w* список|ограничен\w* мобильн\w* интернет|мобильн\w* интернет"
         r"|перебо\w* (?:со )?связ|ограничен\w* связи", re.I)),
 ]
+
+# Признаки того, что событие уже произошло и завершилось: такие сообщения
+# нужны как сводка, но поднимать по ним тревогу поздно и вредно —
+# пользователь перестаёт доверять сигналам.
+HISTORICAL_RE = re.compile(
+    r"\bвчера\b|\bпозавчера\b|на прошл\w+ (?:недел|выходн)|"
+    r"\bв ночь на\b|минувш\w+ (?:ноч|сутк|день)|"
+    r"по итогам (?:дня|ночи|суток)|за (?:прошедши\w+ )?(?:сутки|ночь|неделю)|"
+    r"был\w* (?:сбит|уничтожен|отражен|отражён)|"
+    r"сообщал\w* ранее|напомним|как сообщалось|"
+    r"\d{1,2}\s+(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*",
+    re.I,
+)
 
 ALL_CLEAR_RE = re.compile(
     r"отбо[йя]\b|снят\w*\s+(?:режим\w*\s+)?(?:беспилотн\w*|ракетн\w*|воздушн\w*|опасн\w*)|"
@@ -225,7 +240,8 @@ def heuristic_analysis(
         scope = "city"
 
     all_clear = bool(ALL_CLEAR_RE.search(text))
-    if all_clear:
+    historical = bool(HISTORICAL_RE.search(text))
+    if all_clear or historical:
         severity = "info"
     else:
         severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
@@ -233,6 +249,7 @@ def heuristic_analysis(
     return Analysis(
         relevant=True,
         all_clear=all_clear,
+        historical=historical,
         categories=categories,
         severity=severity,
         scope=scope,
@@ -255,17 +272,61 @@ def location_city(loc: dict[str, Any]) -> str:
     return str(loc.get("city") or "")
 
 
+def geo_matches(analysis: Analysis, loc: dict[str, Any]) -> bool:
+    """Относится ли событие к местности пользователя.
+
+    Правило намеренно строгое: **без подтверждённого совпадения оповещение
+    на весь город не отправляется**. Прежде проверка пропускалась, если ИИ
+    не извлёк город, и сообщение федерального канала о другом регионе уходило
+    всем — саратовец получал тревогу про Подмосковье.
+
+    Порядок проверок:
+      1. Город события совпал с городом локации.
+      2. Регион события совпал с регионом локации.
+      3. География события известна, но не совпала — отказ.
+      4. География события не распознана: для адресных событий полагаемся
+         на совпадение улицы (она достаточно специфична), для общегородских —
+         ищем упоминание города или региона в тексте, иначе отказ.
+    """
+    loc_city = location_city(loc)
+    loc_region = str(loc.get("region") or "")
+
+    if analysis.city and loc_city and same_city(analysis.city, loc_city):
+        return True
+    if analysis.region and loc_region and same_city(analysis.region, loc_region):
+        return True
+
+    # География события известна, но с локацией не сошлась
+    if (analysis.city and loc_city) or (analysis.region and loc_region):
+        return False
+
+    # География события не распознана
+    if not analysis.city and not analysis.region:
+        if analysis.streets:
+            # Адресное событие: решает совпадение улицы дальше по цепочке
+            return True
+        haystack = f"{analysis.raw} {analysis.summary}".lower()
+        for name in (loc_city, loc_region):
+            normalized = normalize_city(name)
+            if normalized and len(normalized) >= 4 and normalized in haystack:
+                return True
+        return False
+
+    # У локации нет географии — записи из старых версий, где хранился
+    # только адрес. Доверяем улице, но не рассылаем общегородские тревоги.
+    if not loc_city and not loc_region:
+        return bool(analysis.streets)
+
+    return False
+
+
 def matches_location(analysis: Analysis, loc: dict[str, Any]) -> bool:
     """Затрагивает ли событие конкретную локацию пользователя."""
     if not analysis.relevant:
         return False
 
-    loc_city = location_city(loc)
-    if analysis.city and loc_city and not same_city(analysis.city, loc_city):
-        # Регион совпал, город — нет: пропускаем, кроме региональных оповещений
-        if not (analysis.scope == "region" and analysis.region and loc.get("region")
-                and same_city(analysis.region, str(loc["region"]))):
-            return False
+    if not geo_matches(analysis, loc):
+        return False
 
     if analysis.is_city_wide:
         return True
@@ -447,6 +508,12 @@ def plan_alerts(
     for analysis in analyses:
         if not analysis.relevant or not (set(analysis.categories) & enabled):
             continue
+
+        # Событие в прошлом — не повод для тревоги. Оно уйдёт в сводку,
+        # которую бот присылает утром и вечером.
+        if analysis.historical:
+            continue
+
         matched = match_locations(analysis, locations)
         if not matched:
             continue
@@ -499,3 +566,51 @@ def plan_alerts(
             )
         )
     return messages
+
+
+# --------------------------------------------------------------------------
+#  Сводка по завершившимся событиям
+# --------------------------------------------------------------------------
+
+def build_recap(
+    events: Sequence[Analysis],
+    period: str = "за сутки",
+    region_hint: str = "",
+) -> str:
+    """Спокойная сводка по тому, что уже произошло.
+
+    Отделена от тревог намеренно: сигнал об опасности должен означать
+    «происходит сейчас». Если мешать его с пересказом вчерашних событий,
+    люди перестают реагировать на оба.
+    """
+    if not events:
+        return ""
+
+    by_category: dict[str, list[Analysis]] = {}
+    for item in events:
+        for category in item.categories or ["other"]:
+            by_category.setdefault(category, []).append(item)
+
+    header = f"📰 <b>Сводка {esc(period)}</b>"
+    if region_hint:
+        header += f" — {esc(region_hint)}"
+    lines = [header, ""]
+
+    order = ("bpla", "mchs", "jkh", "whitelist")
+    for category in order:
+        items = by_category.get(category)
+        if not items:
+            continue
+        icon = CATEGORY_ICONS.get(category, "•")
+        lines.append(f"{icon} <b>{esc(CATEGORY_TITLES.get(category, category))}</b>")
+        for item in items[:6]:
+            lines.append(f"• {esc(item.text()[:280])}")
+            if item.link:
+                lines.append(f'  🔗 <a href="{esc_attr(item.link)}">источник</a>')
+        if len(items) > 6:
+            lines.append(f"  <i>…и ещё {len(items) - 6}</i>")
+        lines.append("")
+
+    lines.append("<i>Это сводка о том, что уже завершилось. "
+                 "Об опасности прямо сейчас бот сообщает отдельно.</i>")
+    return "\n".join(lines).strip()

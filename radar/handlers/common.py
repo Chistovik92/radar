@@ -17,7 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
 from .. import ai, config, keyboards, monitor, roles, storage
-from ..textutils import esc
+from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit
 
 router = Router(name="common")
@@ -136,6 +136,24 @@ async def menu_settings(call: CallbackQuery, state: FSMContext, user: dict[str, 
     )
 
 
+@router.callback_query(F.data == "menu:manage")
+async def menu_manage(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_moderator(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await state.clear()
+    await call.answer()
+
+    lines = ["🛠 <b>Управление</b>", "", f"Ваша роль: {roles.title(role)}", ""]
+    if roles.is_superadmin(role):
+        lines.append("Доступны все разделы, включая ключи доступа и журналы.")
+    elif roles.is_admin(role):
+        lines.append("Доступны источники, пользователи, статистика и приглашения.")
+    else:
+        lines.append("Доступны источники и правка настроек пользователей.")
+    await safe_edit(call, "\n".join(lines), keyboards.manage_menu(role))
+
+
 @router.callback_query(F.data == "menu:mod")
 async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
     if not roles.is_moderator(role):
@@ -143,7 +161,13 @@ async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
         return
     await state.clear()
     await call.answer()
-    await safe_edit(call, "🛡 <b>Панель модератора</b>", keyboards.moderation_menu())
+    await safe_edit(
+        call,
+        "📡 <b>Источники</b>\n\n"
+        "Здесь добавляются каналы и ленты, проверяется их доступность "
+        "и разбирается очередь предложений от пользователей.",
+        keyboards.moderation_menu(),
+    )
 
 
 @router.callback_query(F.data == "menu:admin")
@@ -247,6 +271,8 @@ async def cmd_quota(message: Message, role: str) -> None:
 async def cmd_models(message: Message, role: str) -> None:
     if not roles.is_admin(role):
         return
+    await message.answer("🔎 Запрашиваю список моделей у Google…")
+    await ai.discover_models()
     report = ai.models_report()
     lines = [
         "🤖 <b>Модели Gemini</b>",
@@ -260,19 +286,59 @@ async def cmd_models(message: Message, role: str) -> None:
     available = [m for m in report["available"] if "gemini" in m]
     if available:
         lines.append("")
-        lines.append(f"<b>Доступно ключу ({len(available)}):</b>")
-        lines.extend(f"• <code>{esc(name)}</code>" for name in available[:40])
-        if len(available) > 40:
-            lines.append(f"…и ещё {len(available) - 40}")
+        lines.append(f"<b>Доступно вашему ключу ({len(available)}):</b>")
+        lines.extend(f"• <code>{esc(name)}</code>" for name in available)
     else:
         lines.append("")
         lines.append("<i>Список моделей получить не удалось — используются значения из .env.</i>")
     lines.append("")
     lines.append(
-        "<i>Модель подбирается автоматически. Чтобы закрепить свою — задайте "
-        "GEMINI_MODEL в .env и перезапустите контейнер.</i>"
+        "<i>Модель подбирается автоматически из доступных. Закрепить свою: "
+        "<code>/setmodel имя</code> — для ассистента, "
+        "<code>/setmodel имя analysis</code> — для разбора новостей.</i>"
     )
-    await message.answer("\n".join(lines), reply_markup=back_kb())
+    for chunk in split_text("\n".join(lines)):
+        await message.answer(chunk, reply_markup=back_kb())
+
+
+@router.message(Command("setmodel"))
+async def cmd_setmodel(message: Message, role: str) -> None:
+    """Закрепить конкретную модель Gemini из доступных ключу."""
+    if not roles.is_admin(role):
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer(
+            "Укажите модель: <code>/setmodel gemini-3.6-flash</code>\n"
+            "Для разбора новостей: <code>/setmodel gemini-3.5-flash-lite analysis</code>\n"
+            "Список доступных — команда /models."
+        )
+        return
+
+    name = parts[1].strip()
+    target = ai.ANALYSIS if len(parts) > 2 and parts[2].startswith("anal") else ai.ASSISTANT
+
+    available = ai.models_report()["available"]
+    if available and name not in available:
+        await message.answer(
+            f"❌ Модель <code>{esc(name)}</code> недоступна вашему ключу.\n"
+            "Посмотрите список: /models"
+        )
+        return
+
+    if not ai.pin_model(target, name):
+        await message.answer("❌ Не удалось закрепить модель.")
+        return
+
+    role_title = "разбора новостей" if target == ai.ANALYSIS else "ассистента"
+    await message.answer(
+        f"✅ Модель {role_title}: <code>{esc(name)}</code>\n"
+        "<i>Действует сразу. Чтобы сохранить после перезапуска, задайте "
+        f"{'GEMINI_MODEL_ANALYSIS' if target == ai.ANALYSIS else 'GEMINI_MODEL'} "
+        "в разделе «Ключи доступа».</i>",
+        reply_markup=back_kb(),
+    )
 
 
 @router.callback_query(F.data == "menu:stats")
