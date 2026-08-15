@@ -1611,7 +1611,12 @@ printf "    Откройте бота в Telegram → /start → пришлит�
 echo
 printf "  %sУправление:%s\n" "$C_BOLD" "$C_RESET"
 printf "    Логи бота     docker logs -f %s\n" "$CONTAINER_NAME"
-printf "    Логи базы     docker logs -f radar_db\n"
+if [ "${DB_BACKEND_VALUE:-sqlite}" = "postgres" ]; then
+    printf "    Логи базы     docker logs -f radar_db\n"
+else
+    printf "    %sБаза — файл data/radar.db, отдельного контейнера нет%s\n" \
+        "$C_DIM" "$C_RESET"
+fi
 printf "    Перезапуск    cd %s && %s restart\n" "$APP_DIR" "$COMPOSE"
 printf "    Остановка     cd %s && %s down\n" "$APP_DIR" "$COMPOSE"
 printf "    Все журналы   bash %s/collect-logs.sh\n" "$APP_DIR"

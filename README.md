@@ -1,4 +1,4 @@
-# Система «Радар» v4.2.7
+# Система «Радар» v4.2.8
 
 Telegram-бот, который следит за городскими угрозами и авариями ЖКХ по вашим адресам.
 Сообщения публичных каналов служб ЖКХ, МЧС, администраций города, района и области,
@@ -286,6 +286,7 @@ python3 tools/stubcheck.py                 # импорт всех модуле�
 python3 tools/lint_names.py                # сверка имён
 python3 tools/lint_undefined.py            # неопределённые имена
 python3 tools/lint_docker.py               # Dockerfile против .dockerignore
+python3 tools/lint_pyversion.py            # совместимость с Python из образа
 bash -n install.sh                         # синтаксис установщика
 ```
 

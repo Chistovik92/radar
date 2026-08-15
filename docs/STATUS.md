@@ -5,7 +5,7 @@
 План развития — в [ROADMAP.md](ROADMAP.md), заработок — в
 [MONETIZATION.md](MONETIZATION.md).
 
-**Версия:** 4.2.7 · **Автор:** SecretHero · **Обновлён:** август 2026
+**Версия:** 4.2.8 · **Автор:** SecretHero · **Обновлён:** август 2026
 **Репозиторий:** https://github.com/Chistovik92/radar
 
 ---
@@ -57,7 +57,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/insta
 | 4.1.1 | схема дополняется новыми столбцами через ALTER TABLE |
 | 4.2.0 | загрузка видео по ссылке, адаптер MAX (не проверен), собственный Bot API Server |
 | 4.2.1 | исправлена сборка: Compose требовал ключи Bot API Server всегда |
-| **4.2.7** | **оповещения строго по региону, события в прошлом уходят в сводку, ключи и сравнение ИИ из бота, выбор модели Gemini, SOS через кнопку Telegram, перестроенное меню** |
+| 4.2.7 | оповещения строго по региону, события в прошлом уходят в сводку, ключи и сравнение ИИ из бота, выбор модели Gemini |
+| **4.2.8** | **исправлен сбой запуска на Python 3.11 (обратный слэш в f-строке), добавлена проверка совместимости с версией Python из образа** |
 
 ---
 
@@ -304,6 +305,14 @@ Docker означало бы отдать ему весь сервер.
 
 ---
 
+## Разработка идёт на Python 3.12, образ собран на 3.11
+
+Часть синтаксиса, разрешённого в 3.12, старая версия не принимает. Ни
+`py_compile`, ни `ast.parse(feature_version=...)` этого не ловят: у f-строк
+отдельный токенизатор. Поэтому есть `tools/lint_pyversion.py` — он берёт
+версию из `Dockerfile` и разбирает f-строки вручную. Проверка встроена
+в `stubcheck` и в CI.
+
 ## Как проверять изменения
 
 ```bash
@@ -312,6 +321,7 @@ python3 tools/stubcheck.py              # импорт 31 модуля с заг
 python3 tools/lint_names.py             # сверка имён между модулями
 python3 tools/lint_undefined.py         # обращения к неопределённым именам
 python3 tools/lint_docker.py            # Dockerfile против .dockerignore
+python3 tools/lint_pyversion.py         # совместимость с Python из образа
 # на сервере, внутри контейнера:
 docker compose run --rm radar python -m radar.doctor   # на сервере
 bash ~/radar_bot/collect-logs.sh                       # все журналы в архив

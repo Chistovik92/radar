@@ -348,5 +348,56 @@ class TestSchemaGuards(unittest.TestCase):
         self.assertTrue(hasattr(models, "BigIntType"))
 
 
+class TestPythonVersionLint(unittest.TestCase):
+    """Проверка совместимости с версией Python из образа."""
+
+    def setUp(self):
+        import importlib.util
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spec = importlib.util.spec_from_file_location(
+            "lint_pyversion", os.path.join(root, "tools", "lint_pyversion.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.lint = module
+
+    def test_target_taken_from_dockerfile(self):
+        major, minor = self.lint.target_version()
+        self.assertEqual(major, 3)
+        self.assertGreaterEqual(minor, 10)
+
+    def test_backslash_in_fstring_detected(self):
+        source = 'x = f"code {re.sub(chr(92), 1, body)}"\n'
+        found = self.lint._fstring_literals(source)
+        self.assertEqual(len(found), 1)
+
+    def test_plain_string_not_treated_as_fstring(self):
+        self.assertEqual(self.lint._fstring_literals('x = "просто {строка}"\n'), [])
+
+    def test_comment_skipped(self):
+        self.assertEqual(self.lint._fstring_literals('# f"{a}"\n'), [])
+
+    def test_triple_quoted_fstring_found(self):
+        source = 'x = f"""многострочная {value}"""\n'
+        found = self.lint._fstring_literals(source)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][1], '"""')
+
+    def test_line_numbers_tracked(self):
+        source = 'a = 1\nb = 2\nc = f"{x}"\n'
+        found = self.lint._fstring_literals(source)
+        self.assertEqual(found[0][0], 3)
+
+    def test_project_is_compatible(self):
+        """Сам проект обязан быть совместим с целевой версией."""
+        target = self.lint.target_version()
+        problems = []
+        for path in self.lint.targets():
+            problems.extend(self.lint.syntax_problems(path, target))
+            problems.extend(self.lint.fstring_problems(path, target))
+        self.assertEqual(problems, [], "\n".join(problems))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

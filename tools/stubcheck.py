@@ -234,6 +234,18 @@ def main() -> int:
     if failures:
         return 1
 
+    # Совместимость с целевой версией Python: py_compile её не проверяет
+    import subprocess
+
+    checker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lint_pyversion.py")
+    if os.path.exists(checker):
+        result = subprocess.run(
+            [sys.executable, checker], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(result.stdout.strip())
+            return 1
+
     issues = smoke_checks()
     for issue in issues:
         print(f"  ✗ {issue}")

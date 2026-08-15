@@ -138,6 +138,30 @@ def check_imports() -> bool:
         )
         return False
     report.add("Зависимости", OK, f"проверено модулей: {len(modules)}")
+
+    # Полное дерево модулей бота: синтаксическая ошибка в любом обработчике
+    # роняет запуск ещё до подключения к базе, и снаружи это выглядит как
+    # «отвалилась база». Импортируем ровно то, что грузит main.py.
+    try:
+        import importlib
+
+        for name in ("radar.config", "radar.storage", "radar.monitor", "radar.handlers"):
+            importlib.import_module(name)
+    except SyntaxError as exc:
+        report.add(
+            "Код бота", ERROR,
+            f"{exc.filename}:{exc.lineno}: {exc.msg}",
+            "Синтаксическая ошибка — бот не запустится. "
+            "Проверьте версию Python в образе.",
+            traceback.format_exc(),
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001
+        report.add("Код бота", ERROR, str(exc)[:200],
+                   "Модули бота не импортируются", traceback.format_exc())
+        return False
+
+    report.add("Код бота", OK, "все модули импортируются")
     return True
 
 

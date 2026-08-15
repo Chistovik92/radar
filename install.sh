@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.2.7 — автономный установщик.
+# Система «Радар» v4.2.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.2.7"
+VERSION="4.2.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1261,6 +1261,11 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.2.8", [
+        "🐛 Исправлен сбой запуска на Python 3.11: обратный слэш в f-строке.",
+        "🩺 Диагностика теперь импортирует всё дерево модулей — "
+        "синтаксическая ошибка ловится до старта, а не выглядит как отказ базы.",
+    ]),
     ("4.2.7", [
         "🎯 <b>Оповещения строго по вашему региону.</b> Раньше сообщение без "
         "распознанного города уходило всем — саратовцы получали тревоги "
@@ -1483,7 +1488,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.2.7"
+__version__ = "4.2.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -4910,7 +4915,10 @@ async def _ask(session: aiohttp.ClientSession, provider: Provider,
         async with session.post(url, json=payload, headers=headers) as response:
             body = await response.text()
             if response.status != 200:
-                return "", f"HTTP {response.status}: {re.sub(r'\\s+', ' ', body)[:120]}"
+                # Свёртку пробелов выносим из f-строки: обратный слэш внутри
+                # выражения запрещён до Python 3.12, а образ собран на 3.11.
+                detail = re.sub(r"\s+", " ", body)[:120]
+                return "", f"HTTP {response.status}: {detail}"
             data = json.loads(body)
     except asyncio.TimeoutError:
         return "", "таймаут"
@@ -6738,6 +6746,30 @@ def check_imports() -> bool:
         )
         return False
     report.add("Зависимости", OK, f"проверено модулей: {len(modules)}")
+
+    # Полное дерево модулей бота: синтаксическая ошибка в любом обработчике
+    # роняет запуск ещё до подключения к базе, и снаружи это выглядит как
+    # «отвалилась база». Импортируем ровно то, что грузит main.py.
+    try:
+        import importlib
+
+        for name in ("radar.config", "radar.storage", "radar.monitor", "radar.handlers"):
+            importlib.import_module(name)
+    except SyntaxError as exc:
+        report.add(
+            "Код бота", ERROR,
+            f"{exc.filename}:{exc.lineno}: {exc.msg}",
+            "Синтаксическая ошибка — бот не запустится. "
+            "Проверьте версию Python в образе.",
+            traceback.format_exc(),
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001
+        report.add("Код бота", ERROR, str(exc)[:200],
+                   "Модули бота не импортируются", traceback.format_exc())
+        return False
+
+    report.add("Код бота", OK, "все модули импортируются")
     return True
 
 
@@ -14207,7 +14239,12 @@ printf "    Откройте бота в Telegram → /start → пришлит�
 echo
 printf "  %sУправление:%s\n" "$C_BOLD" "$C_RESET"
 printf "    Логи бота     docker logs -f %s\n" "$CONTAINER_NAME"
-printf "    Логи базы     docker logs -f radar_db\n"
+if [ "${DB_BACKEND_VALUE:-sqlite}" = "postgres" ]; then
+    printf "    Логи базы     docker logs -f radar_db\n"
+else
+    printf "    %sБаза — файл data/radar.db, отдельного контейнера нет%s\n" \
+        "$C_DIM" "$C_RESET"
+fi
 printf "    Перезапуск    cd %s && %s restart\n" "$APP_DIR" "$COMPOSE"
 printf "    Остановка     cd %s && %s down\n" "$APP_DIR" "$COMPOSE"
 printf "    Все журналы   bash %s/collect-logs.sh\n" "$APP_DIR"

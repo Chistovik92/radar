@@ -329,7 +329,8 @@ async def list_models(
         ) as response:
             body = await response.text()
             if response.status != 200:
-                return [], f"HTTP {response.status}: {re.sub(r'\\s+', ' ', body)[:200]}"
+                detail = re.sub(r"\s+", " ", body)[:200]
+                return [], f"HTTP {response.status}: {detail}"
             data = json.loads(body)
     except Exception as exc:  # noqa: BLE001
         return [], f"{type(exc).__name__}: {exc}"

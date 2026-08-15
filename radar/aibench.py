@@ -234,7 +234,10 @@ async def _ask(session: aiohttp.ClientSession, provider: Provider,
         async with session.post(url, json=payload, headers=headers) as response:
             body = await response.text()
             if response.status != 200:
-                return "", f"HTTP {response.status}: {re.sub(r'\\s+', ' ', body)[:120]}"
+                # Свёртку пробелов выносим из f-строки: обратный слэш внутри
+                # выражения запрещён до Python 3.12, а образ собран на 3.11.
+                detail = re.sub(r"\s+", " ", body)[:120]
+                return "", f"HTTP {response.status}: {detail}"
             data = json.loads(body)
     except asyncio.TimeoutError:
         return "", "таймаут"
