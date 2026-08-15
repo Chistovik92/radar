@@ -64,6 +64,7 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         "quiet_from": "",
         "quiet_to": "",
         "sos_contacts": [],
+        "digest": {},
         "created": int(datetime.now(timezone.utc).timestamp()),
     }
 
@@ -122,6 +123,7 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "quiet_from": row.quiet_from,
         "quiet_to": row.quiet_to,
         "sos_contacts": list(row.sos_contacts or []),
+        "digest": dict(row.digest or {}),
         "created": int(row.created_at.timestamp()) if row.created_at else 0,
     }
 
@@ -172,6 +174,7 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.quiet_from = data.get("quiet_from", "")
         row.quiet_to = data.get("quiet_to", "")
         row.sos_contacts = list(data.get("sos_contacts") or [])
+        row.digest = dict(data.get("digest") or {})
         row.seen_at = datetime.now(timezone.utc)
 
         await active.flush()

@@ -24,3 +24,5 @@ class Form(StatesGroup):
     sos_location = State()         # ожидание геопозиции для сигнала
     secret_value = State()         # ввод ключа доступа суперадминистратором
     proxy_key = State()            # ключ или подписка для выхода в сеть
+    digest_time = State()          # время доставки новостной подборки
+    quiet_hours = State()          # интервал тихих часов

@@ -155,6 +155,12 @@ MEDIA_CONCURRENCY: int = max(1, _int("MEDIA_CONCURRENCY", 1))
 # Кому доступна загрузка: user | moderator | admin | superadmin
 MEDIA_MIN_ROLE: str = (os.getenv("MEDIA_MIN_ROLE") or "moderator").strip().lower()
 
+# --- веб-панель (версия 4.5) ---
+WEB_HOST: str = (os.getenv("WEB_HOST") or "0.0.0.0").strip()
+WEB_PORT: int = _int("WEB_PORT", 8080)
+# Панель обязана стоять за HTTPS: без него cookie сессии уходит открытым текстом.
+WEB_HTTPS: bool = (os.getenv("WEB_HTTPS") or "0").strip().lower() in ("1", "true", "yes")
+
 # --- мессенджер MAX (включается в 4.2) ---
 MAX_BOT_TOKEN: str = (os.getenv("MAX_BOT_TOKEN") or "").strip()
 # В документации встречаются оба домена; оставлено настраиваемым.

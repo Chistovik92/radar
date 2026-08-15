@@ -13,6 +13,7 @@ from aiogram import Dispatcher
 from . import (
     assistant,
     common,
+    digest,
     features,
     locations,
     logs,
@@ -35,6 +36,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Ссылки перехватываем до свободного диалога с моделью
     dp.include_router(media.router)

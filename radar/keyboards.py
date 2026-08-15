@@ -39,6 +39,10 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
         ],
     ]
 
+    if features.enabled("digest"):
+        rows.append([
+            InlineKeyboardButton(text="📰 Новостные подборки", callback_data="dig:menu")
+        ])
     if features.enabled("sos"):
         rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
 

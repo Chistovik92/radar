@@ -16,7 +16,19 @@ from typing import Any
 
 import aiohttp
 
-from . import ai, config, features, geocode, secrets, sos, sources, storage, weather
+from . import (
+    ai,
+    config,
+    digest,
+    features,
+    geocode,
+    quiet,
+    secrets,
+    sos,
+    sources,
+    storage,
+    weather,
+)
 from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
 from .textutils import cluster_center, cluster_locations
 from .tg import back_kb, send_html
@@ -105,8 +117,26 @@ async def dispatch_user(
         config.DEFAULT_CITY,
     )
 
+    # Антиспам: несколько источников часто сообщают об одном событии
+    if features.enabled("antispam"):
+        messages = quiet.merge_similar(messages)
+
+    moment = datetime.now()
+    categories = {name for item in analyses for name in item.categories}
+
     sent = 0
     for _kind, text in messages:
+        # Повтор того же события по той же локации не отправляем
+        if features.enabled("antispam"):
+            if quiet.deliveries.already(uid, "all", text):
+                continue
+            quiet.deliveries.remember(uid, "all", text)
+
+        # Тихие часы придерживают несрочное; военные и МЧС проходят всегда
+        if features.enabled("quiet_hours") and quiet.should_hold(categories, user, moment):
+            quiet.hold(uid, text)
+            continue
+
         if await send_html(uid, text, back_kb()):
             sent += 1
         await asyncio.sleep(0.3)
@@ -118,7 +148,31 @@ async def dispatch_user(
             lat, lon = cluster_center(cluster)
             data = await weather.fetch(session, lat, lon)
             markup = back_kb() if index == len(clusters) - 1 else None
-            await send_html(uid, weather.render(data, cluster_title(cluster)), markup)
+            title = cluster_title(cluster)
+
+            picture = None
+            if features.enabled("weather_image") and user.get("weather_format") != "text":
+                from . import weather_image
+
+                picture = weather_image.render(data, title)
+
+            if picture is not None:
+                from aiogram.types import BufferedInputFile
+
+                from .tg import bot
+
+                try:
+                    await bot.send_photo(
+                        int(uid),
+                        BufferedInputFile(picture, filename="weather.png"),
+                        caption=title,
+                        reply_markup=markup,
+                    )
+                except Exception:  # noqa: BLE001
+                    # Картинка не ушла — текст всё равно должен дойти
+                    await send_html(uid, weather.render(data, title), markup)
+            else:
+                await send_html(uid, weather.render(data, title), markup)
             sent += 1
             await asyncio.sleep(0.2)
         user["last_weather"] = now_ts
@@ -194,6 +248,69 @@ async def send_recap(now: datetime) -> None:
 
     log.info("Сводка %s разослана: %d получателей", period, delivered)
     _recap_pool.clear()
+
+
+async def send_digests(now: datetime) -> None:
+    """Новостные подборки в выбранное пользователем время."""
+    if not features.enabled("digest") or not _digest_pool:
+        return
+
+    delivered = 0
+    for uid, user in list(storage.users().items()):
+        subscription = digest.subscription_of(user)
+        marker = digest.due(subscription, now)
+        if marker is None:
+            continue
+
+        locations = user.get("locs") or []
+        city = str(locations[0].get("city") or "") if locations else ""
+        text = digest.build(_digest_pool, subscription, now, city)
+        if not text:
+            continue
+
+        if await send_html(uid, text, back_kb()):
+            subscription.last_sent = marker
+            digest.store_subscription(user, subscription)
+            delivered += 1
+        await asyncio.sleep(0.3)
+
+    if delivered:
+        await storage.save()
+        log.info("Подборки разосланы: %d получателей", delivered)
+
+
+def collect_digest(analyses: list[Analysis]) -> None:
+    """Копит материал для подборки: всё значимое, не только тревожное."""
+    if not features.enabled("digest"):
+        return
+    for item in analyses:
+        if not item.relevant:
+            continue
+        topic = digest.topic_of(f"{item.summary} {item.raw}")
+        if topic is None:
+            continue
+        _digest_pool.append(
+            digest.Entry(
+                topic=topic,
+                summary=item.summary or item.raw[:200],
+                source=item.source,
+                link=item.link,
+            )
+        )
+    del _digest_pool[:-300]
+
+
+_digest_pool: list["digest.Entry"] = []
+
+
+async def release_held(now: datetime) -> None:
+    """Отдаёт то, что придержали тихие часы."""
+    if not features.enabled("quiet_hours") or not quiet.held_count():
+        return
+    for uid, user in list(storage.users().items()):
+        for text in quiet.release(uid, user, now):
+            await send_html(uid, text, back_kb())
+            await asyncio.sleep(0.2)
 
 
 async def repeat_sos() -> None:
@@ -276,6 +393,7 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
             parsed = []
         analyses = [analysis for analysis in parsed if analysis.relevant]
         collect_recap(analyses)
+        collect_digest(analyses)
         counters = ai.counters()
         log.info(
             "Новых сообщений: %d, значимых: %d | запросов к ИИ: %d, "
@@ -311,8 +429,11 @@ async def run() -> None:
         while True:
             started = time.monotonic()
             try:
+                now_moment = datetime.now()
                 await repeat_sos()
-                await send_recap(datetime.now())
+                await release_held(now_moment)
+                await send_recap(now_moment)
+                await send_digests(now_moment)
                 await cycle(session)
             except asyncio.CancelledError:
                 raise

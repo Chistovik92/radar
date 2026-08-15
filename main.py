@@ -29,6 +29,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.0", [
+        "📰 <b>Новостные подборки</b> — 12 тематик, одно сообщение в выбранное "
+        "время, подписка через Telegram Stars.",
+        "🌤 <b>Погода картинкой</b> — переключается в настройках.",
+        "🌙 <b>Тихие часы</b>: несрочное придерживается до утра, "
+        "военные угрозы и МЧС проходят всегда.",
+        "🔁 <b>Антиспам</b> — одно событие не приходит пятью формулировками.",
+        "🖥 <b>Веб-панель</b> с входом через Telegram: пользователи, источники, "
+        "события, журнал действий.",
+    ]),
     ("4.3.0", [
         "🌐 <b>Выход в сеть через свой узел</b> — подписки, VLESS, Shadowsocks, "
         "Trojan. Ключ добавляется в боте, но сервер выбирается вручную: "
@@ -218,6 +228,13 @@ async def main() -> None:
     await setup_commands()
 
     background = asyncio.create_task(monitor.run(), name="monitor")
+
+    # Веб-панель — отдельная задача: её сбой не должен касаться оповещений
+    panel_task = None
+    if features.enabled("web_panel"):
+        from radar.web import run as run_panel
+
+        panel_task = asyncio.create_task(run_panel(), name="web-panel")
     asyncio.create_task(announce(), name="announce")
 
     try:
@@ -229,6 +246,8 @@ async def main() -> None:
             await background
         except asyncio.CancelledError:
             pass
+        if panel_task is not None:
+            panel_task.cancel()
         await bot.session.close()
         await db_engine.dispose()
         log.info("Остановлено")

@@ -88,6 +88,9 @@ class User(Base):
     # Доверенные контакты для кнопки SOS: список словарей, см. radar/sos.py
     sos_contacts: Mapped[list[str]] = mapped_column(JSONType, default=list)
 
+    # Подписка на новостные подборки, см. radar/digest.py
+    digest: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     blocked: Mapped[bool] = mapped_column(Boolean, default=False)
