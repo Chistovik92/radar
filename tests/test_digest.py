@@ -320,11 +320,34 @@ class TestWebAuth(unittest.TestCase):
     def test_missing_auth_date_rejected(self):
         self.assertFalse(auth.check_freshness({}))
 
-    def test_full_flow_requires_admin(self):
+    def test_plain_user_rejected(self):
+        """Панель — контур управления: обычному пользователю в ней нечего делать."""
         data = self._sign({"id": "42", "auth_date": str(int(time.time()))})
         session, reason = auth.authenticate(data, self.TOKEN, lambda _key: "user")
         self.assertIsNone(session)
-        self.assertIn("администратор", reason)
+        self.assertIn("модератор", reason)
+
+    def test_moderator_allowed(self):
+        data = self._sign({"id": "42", "auth_date": str(int(time.time()))})
+        session, reason = auth.authenticate(data, self.TOKEN, lambda _key: "moderator")
+        self.assertIsNotNone(session)
+        self.assertEqual(session.role, "moderator")
+
+    def test_sections_scoped_by_role(self):
+        """Разделы панели повторяют права бота, а не расширяют их."""
+        from radar.web.panel import _links_for
+
+        moderator = {key for _href, _name, key in _links_for("moderator")}
+        admin = {key for _href, _name, key in _links_for("admin")}
+        owner = {key for _href, _name, key in _links_for("superadmin")}
+
+        self.assertNotIn("features", moderator)
+        self.assertNotIn("audit", moderator)
+        self.assertNotIn("backup", admin)
+        self.assertIn("events", admin)
+        self.assertIn("backup", owner)
+        self.assertIn("audit", owner)
+        self.assertTrue(moderator < admin < owner)
 
     def test_full_flow_admin_passes(self):
         data = self._sign({"id": "42", "auth_date": str(int(time.time()))})
@@ -371,6 +394,55 @@ class TestWebAudit(unittest.TestCase):
         self.audit.record("1", "первое")
         self.audit.record("2", "второе")
         self.assertEqual(self.audit.recent()[0].action, "второе")
+
+
+class TestBackup(unittest.TestCase):
+    """Резервные копии: общий модуль для бота и панели."""
+
+    def setUp(self):
+        import tempfile
+
+        from radar import backup as backup_module
+
+        self.backup = backup_module
+        self.tmp = tempfile.mkdtemp()
+        self.saved = backup_module.DIRECTORY
+        backup_module.DIRECTORY = os.path.join(self.tmp, "backups")
+
+    def tearDown(self):
+        import shutil
+
+        self.backup.DIRECTORY = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_empty_listing(self):
+        self.assertEqual(self.backup.listing(), [])
+
+    def test_summary_without_copies(self):
+        self.assertIn("пока нет", self.backup.summary())
+
+    def test_find_rejects_traversal(self):
+        self.assertIsNone(self.backup.find("../../etc/passwd"))
+        self.assertIsNone(self.backup.find(".hidden"))
+        self.assertIsNone(self.backup.find(""))
+
+    def test_create_makes_archive(self):
+        path, error = self.backup.create_sync("тест")
+        self.assertEqual(error, "")
+        self.assertIsNotNone(path)
+        self.assertTrue(path.exists())
+        self.assertEqual(len(self.backup.listing()), 1)
+
+    def test_archive_contains_manifest(self):
+        import tarfile
+
+        path, _error = self.backup.create_sync("тест")
+        with tarfile.open(path) as bundle:
+            self.assertIn("manifest.txt", bundle.getnames())
+
+    def test_summary_lists_copies(self):
+        self.backup.create_sync("тест")
+        self.assertIn("radar-backup-", self.backup.summary())
 
 
 if __name__ == "__main__":

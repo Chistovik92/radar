@@ -135,9 +135,11 @@ def authenticate(
 
     from .. import roles as role_module
 
-    if not role_module.is_admin(role):
+    # Панель — дублирующий контур управления, поэтому доступ начинается
+    # с модератора: у него будут только свои разделы.
+    if not role_module.is_moderator(role):
         log.info("Веб-панель: отказ пользователю %s с ролью %s", user_key, role)
-        return None, "нужны права администратора"
+        return None, "нужны права модератора или выше"
 
     if address:
         clear_failures(address)

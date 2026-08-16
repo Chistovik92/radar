@@ -192,18 +192,19 @@ async def confirm_delete(call: CallbackQuery, role: str) -> None:
 
 
 @router.callback_query(F.data == "usr:invite")
-async def invite(call: CallbackQuery, role: str) -> None:
-    if not roles.is_admin(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
-        return
+async def invite(call: CallbackQuery) -> None:
+    """Приглашение доступно любому пользователю: система тем полезнее,
+    чем больше соседей о ней знает. Перешедший получает роль «Пользователь»,
+    повысить её может только администрация."""
     await call.answer()
     me = await bot.get_me()
     await safe_edit(
         call,
         "🔗 <b>Инвайт-ссылка</b>\n"
         f"https://t.me/{me.username}?start=join\n\n"
-        "<i>Перешедший по ней получает роль «Пользователь».</i>",
-        back_kb("menu:admin", "◀️ Назад"),
+        "<i>Перешедший по ней получает роль «Пользователь»: свои локации "
+        "и оповещения. Повысить роль может только администрация.</i>",
+        back_kb("menu:main", "🏠 В главное меню"),
     )
 
 

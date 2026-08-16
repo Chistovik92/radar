@@ -26,7 +26,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import ai, aibench, config, roles, secrets
+from .. import ai, aibench, backup, config, features, roles, secrets
 from ..states import Form
 from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit, send_html
@@ -339,4 +339,160 @@ async def bench_run(call: CallbackQuery, role: str) -> None:
         "GEMINI_MODEL_ANALYSIS; смена провайдера по умолчанию появится "
         "в версии 4.3.</i>",
         back_kb("bench:menu", "◀️ Назад"),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Веб-панель
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data == "menu:panel")
+async def panel_info(call: CallbackQuery, role: str) -> None:
+    if not roles.is_moderator(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, _panel_text(role), back_kb("menu:manage", "◀️ Назад"))
+
+
+@router.message(Command("panel"))
+async def cmd_panel(message: Message, role: str) -> None:
+    """Как попасть в панель: адрес и состояние доступа."""
+    if not roles.is_moderator(role):
+        await message.answer("⛔️ Панель доступна модераторам и выше.")
+        return
+
+    await message.answer(_panel_text(role), reply_markup=back_kb())
+
+
+def _panel_text(role: str) -> str:
+    if not features.enabled("web_panel"):
+        return (
+            "🖥 <b>Веб-панель выключена</b>\n\n"
+            "Включить: /features → Администрирование → Веб-панель.\n"
+            "После включения перезапустите контейнер: "
+            "<code>docker compose restart</code>"
+        )
+
+    host = secrets.get("WEB_PUBLIC_URL")
+    port = config.WEB_PORT
+    lines = ["🖥 <b>Веб-панель</b>", ""]
+
+    if host:
+        lines.append(f"Адрес: {esc(host)}")
+    else:
+        lines.append(f"Порт: <code>{port}</code>")
+        lines.append("")
+        lines.append(
+            "По умолчанию панель слушает только сам сервер — это безопасно. "
+            "Открыть с ноутбука можно через SSH-туннель:"
+        )
+        lines.append(f"<code>ssh -L {port}:127.0.0.1:{port} root@ваш-сервер</code>")
+        lines.append(f"затем откройте <code>http://localhost:{port}</code>")
+        lines.append("")
+        lines.append(
+            "Чтобы открыть панель наружу, задайте <code>WEB_BIND=0.0.0.0</code>, "
+            "<code>WEB_HTTPS=1</code> и поставьте reverse proxy с сертификатом. "
+            "Без HTTPS cookie сессии уходит открытым текстом."
+        )
+
+    lines.append("")
+    lines.append(
+        "Вход — кнопкой Telegram, паролей нет. Разделы зависят от роли: "
+        "модератор видит источники и пользователей, администратор — ещё "
+        "события, суперадминистратор — возможности, копии и журнал."
+    )
+    lines.append("")
+    lines.append(
+        "<i>Панель — дублирующий контур. Основное управление остаётся в боте.</i>"
+    )
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+#  Резервные копии
+# --------------------------------------------------------------------------
+
+def _backup_menu() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="💾 Создать копию", callback_data="bak:make")]]
+    items = backup.listing()
+    if items:
+        rows.append([
+            InlineKeyboardButton(text="⬇️ Скачать последнюю", callback_data="bak:get")
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("backup"))
+async def cmd_backup(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Резервные копии делает суперадминистратор.")
+        return
+    await message.answer(backup.summary(), reply_markup=_backup_menu())
+
+
+@router.callback_query(F.data == "bak:menu")
+async def backup_menu(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, backup.summary(), _backup_menu())
+
+
+@router.callback_query(F.data == "bak:make")
+async def backup_make(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    await call.answer("Собираю копию…")
+    notice = await call.message.answer("💾 Собираю копию: база, настройки, версия…")
+
+    path, error = await backup.create(f"бот:{call.from_user.id}")
+    if path is None:
+        await notice.edit_text(f"❌ Копию создать не удалось: {esc(error)}")
+        return
+
+    size = path.stat().st_size
+    await notice.edit_text(
+        f"✅ <b>Копия создана</b>\n<code>{esc(path.name)}</code>\n"
+        f"Размер: {size // 1024} КБ\n\n"
+        "<i>Восстановление — установщиком: "
+        "<code>bash install.sh --rollback</code></i>",
+        reply_markup=_backup_menu(),
+    )
+
+
+@router.callback_query(F.data == "bak:get")
+async def backup_download(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    items = backup.listing()
+    if not items:
+        await call.answer("Копий нет.", show_alert=True)
+        return
+
+    latest = items[0]
+    # Telegram не примет файл больше 50 МБ без своего Bot API Server
+    limit = 1900 if config.uses_local_api() else 50
+    if latest.size > limit * 1024 * 1024:
+        await call.answer()
+        await call.message.answer(
+            f"⚠️ Копия весит {latest.size_human} — больше предела отправки "
+            f"({limit} МБ). Заберите её с сервера:\n"
+            f"<code>scp root@сервер:~/radar_bot/backups/{esc(latest.name)} .</code>"
+        )
+        return
+
+    await call.answer("Отправляю…")
+    from aiogram.types import FSInputFile
+
+    await call.message.answer_document(
+        FSInputFile(str(latest.path)),
+        caption=f"💾 {esc(latest.name)}\n{latest.when} · {latest.size_human}",
+        reply_markup=_backup_menu(),
     )

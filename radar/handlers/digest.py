@@ -48,7 +48,7 @@ def _plans() -> list[tuple[int, int]]:
     return plans or list(DEFAULT_PLANS)
 
 
-def _menu(subscription: digest.Subscription) -> InlineKeyboardMarkup:
+def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📋 Тематики", callback_data="dig:topics")],
         [InlineKeyboardButton(text="🕘 Время доставки", callback_data="dig:time")],
@@ -56,6 +56,10 @@ def _menu(subscription: digest.Subscription) -> InlineKeyboardMarkup:
     if features.enabled("digest_paid"):
         label = "⭐️ Продлить подписку" if subscription.active else "⭐️ Оформить подписку"
         rows.append([InlineKeyboardButton(text=label, callback_data="dig:buy")])
+    if roles.is_superadmin(role):
+        rows.append([
+            InlineKeyboardButton(text="💰 Тарифы и оплата", callback_data="dig:price")
+        ])
     rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -82,23 +86,26 @@ def _topics_menu(subscription: digest.Subscription) -> InlineKeyboardMarkup:
 
 
 @router.message(Command("digest"))
-async def cmd_digest(message: Message, user: dict) -> None:
+async def cmd_digest(message: Message, user: dict, role: str) -> None:
     if not features.enabled("digest"):
         await message.answer("Новостные подборки пока отключены.")
         return
     subscription = digest.subscription_of(user)
-    await message.answer(digest.describe(subscription), reply_markup=_menu(subscription))
+    await message.answer(
+        digest.describe(subscription), reply_markup=_menu(subscription, role)
+    )
 
 
 @router.callback_query(F.data == "dig:menu")
-async def show_menu(call: CallbackQuery, state: FSMContext, user: dict) -> None:
+async def show_menu(call: CallbackQuery, state: FSMContext, user: dict,
+                    role: str) -> None:
     if not features.enabled("digest"):
         await call.answer("Функция отключена.", show_alert=True)
         return
     await state.clear()
     await call.answer()
     subscription = digest.subscription_of(user)
-    await safe_edit(call, digest.describe(subscription), _menu(subscription))
+    await safe_edit(call, digest.describe(subscription), _menu(subscription, role))
 
 
 @router.callback_query(F.data == "dig:topics")
@@ -267,27 +274,83 @@ async def payment_done(message: Message, user: dict) -> None:
     )
 
 
+# --------------------------------------------------------------------------
+#  Тарифы — только суперадминистратор
+# --------------------------------------------------------------------------
+
+def _pricing_text() -> str:
+    plans = ", ".join(f"{days} дн. — {stars} ⭐️" for days, stars in _plans())
+    return (
+        "⭐️ <b>Тарифы подписки</b>\n\n"
+        f"Сейчас: {esc(plans)}\n\n"
+        "<b>Куда поступают звёзды.</b> Оплата зачисляется на баланс самого "
+        "бота в Telegram — отдельный счёт или эквайринг не нужны. Баланс "
+        "виден в @BotFather → выбрать бота → Payments. Вывести можно "
+        "через Fragment, но не раньше чем через 21 день после оплаты — "
+        "это правило Telegram, а не системы.\n\n"
+        "<b>Возвраты.</b> Звёзды возвращаются командой Telegram по обращению "
+        "пользователя; бот в этом не участвует.\n\n"
+        "Изменить тарифы: пришлите строку вида\n"
+        "<code>30:150, 90:400, 365:1400</code>\n"
+        "<i>Формат «дни:звёзды» через запятую. /cancel — отмена.</i>"
+    )
+
+
+@router.callback_query(F.data == "dig:price")
+async def pricing(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Тарифы задаёт суперадминистратор.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(Form.digest_price)
+    await safe_edit(call, _pricing_text(), back_kb("dig:menu", "Отмена"))
+
+
 @router.message(Command("digestprice"))
-async def set_price(message: Message, role: str) -> None:
+async def set_price(message: Message, state: FSMContext, role: str) -> None:
     """Цены задаёт только суперадминистратор."""
     if not roles.is_superadmin(role):
+        await message.answer("⛔️ Тарифы задаёт суперадминистратор.")
         return
 
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
-        current = ", ".join(f"{days}д:{stars}⭐️" for days, stars in _plans())
+        await state.set_state(Form.digest_price)
+        await message.answer(_pricing_text(), reply_markup=back_kb("dig:menu", "Отмена"))
+        return
+
+    await _apply_plans(message, state, parts[1].strip())
+
+
+@router.message(Form.digest_price)
+async def save_price(message: Message, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+    await _apply_plans(message, state, text)
+
+
+async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
+    if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
         await message.answer(
-            f"Текущие тарифы: {current}\n\n"
-            "Изменить: <code>/digestprice 30:150, 90:400, 365:1400</code>\n"
-            "<i>Формат «дни:звёзды» через запятую.</i>"
+            "❌ Формат: <code>30:150, 90:400</code> — дни и звёзды через двоеточие."
         )
         return
 
-    value = parts[1].strip()
-    if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
-        await message.answer("❌ Формат: <code>30:150, 90:400</code>")
-        return
+    # Telegram не принимает счета дешевле одной звезды
+    for chunk in value.split(","):
+        _days, _, stars = chunk.strip().partition(":")
+        if int(stars) < 1:
+            await message.answer("❌ Цена не может быть меньше одной звезды.")
+            return
 
     secrets.write("DIGEST_PLANS", value)
-    plans = ", ".join(f"{days}д:{stars}⭐️" for days, stars in _plans())
-    await message.answer(f"✅ Тарифы обновлены: {plans}")
+    await state.clear()
+    plans = ", ".join(f"{days} дн. — {stars} ⭐️" for days, stars in _plans())
+    await message.answer(
+        f"✅ Тарифы обновлены: {esc(plans)}",
+        reply_markup=back_kb("dig:menu", "◀️ Назад"),
+    )

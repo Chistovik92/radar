@@ -84,6 +84,35 @@ def collect_files() -> list[tuple[str, str]]:
     return files
 
 
+def duplicate_definitions() -> list[str]:
+    """Функции и классы, объявленные в модуле дважды.
+
+    Второе определение молча перекрывает первое: ошибка не проявляется
+    ни при импорте, ни в тестах, но правки уходят в мёртвый код. Так
+    в keyboards.py оказалось два разных меню модератора.
+    """
+    problems: list[str] = []
+    for dirpath, _dirs, names in os.walk(os.path.join(ROOT, PACKAGE)):
+        for name in names:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), filename=path)
+
+            seen: dict[str, int] = {}
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if node.name in seen:
+                        relative = os.path.relpath(path, ROOT)
+                        problems.append(
+                            f"{relative}:{node.lineno}: «{node.name}» объявлено "
+                            f"повторно (первое — строка {seen[node.name]})"
+                        )
+                    seen[node.name] = node.lineno
+    return problems
+
+
 def shadowed_submodules() -> list[str]:
     """Ищет пакеты, где __init__.py вводит имя, совпадающее с подмодулем.
 
@@ -196,6 +225,7 @@ def main() -> int:
                     )
 
     problems.extend(shadowed_submodules())
+    problems.extend(duplicate_definitions())
 
     for problem in sorted(set(problems)):
         print("  ✗", problem)

@@ -29,6 +29,15 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.3", [
+        "🖥 <b>Веб-панель стала доступна</b>: порт публикуется, разделы "
+        "зависят от роли, вход через /panel.",
+        "💰 <b>Тарифы подписки</b> настраиваются в меню, с пояснением, "
+        "куда поступают звёзды.",
+        "💾 <b>Резервные копии</b> из бота и из панели одной кнопкой.",
+        "🔗 <b>Пригласить</b> — кнопка доступна всем пользователям.",
+        "🧹 Убраны дублирующиеся меню и кнопки.",
+    ]),
     ("4.5.0", [
         "📰 <b>Новостные подборки</b> — 12 тематик, одно сообщение в выбранное "
         "время, подписка через Telegram Stars.",
@@ -159,6 +168,7 @@ async def setup_commands() -> None:
     commands = [
         BotCommand(command="menu", description="Главное меню"),
         BotCommand(command="partner", description="Партнёрский проект"),
+        BotCommand(command="panel", description="Веб-панель"),
         BotCommand(command="help", description="Справка"),
         BotCommand(command="id", description="Мой ID и роль"),
         BotCommand(command="cancel", description="Отменить ввод"),

@@ -170,16 +170,6 @@ async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
     )
 
 
-@router.callback_query(F.data == "menu:admin")
-async def menu_admin(call: CallbackQuery, state: FSMContext, role: str) -> None:
-    if not roles.is_admin(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
-        return
-    await state.clear()
-    await call.answer()
-    await safe_edit(call, "👥 <b>Управление пользователями</b>", keyboards.admin_menu())
-
-
 @router.callback_query(F.data == "menu:about")
 async def menu_about(call: CallbackQuery) -> None:
     await call.answer()
@@ -347,4 +337,4 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         await call.answer("Недостаточно прав.", show_alert=True)
         return
     await call.answer()
-    await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
+    await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))

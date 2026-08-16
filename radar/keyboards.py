@@ -37,6 +37,7 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
             InlineKeyboardButton(text="📢 Предложить источник", callback_data="src:suggest"),
         ],
+        [InlineKeyboardButton(text="🔗 Пригласить", callback_data="usr:invite")],
     ]
 
     if features.enabled("digest"):
@@ -73,8 +74,7 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
 
     if roles.is_admin(role):
         rows.append([
-            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats"),
-            InlineKeyboardButton(text="🔗 Инвайт", callback_data="usr:invite"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")
         ])
 
     if roles.is_superadmin(role):
@@ -88,7 +88,13 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
         ])
         rows.append([
             InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
-            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
+            InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu"),
+        ])
+        rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
+
+    if roles.is_moderator(role) and features.enabled("web_panel"):
+        rows.append([
+            InlineKeyboardButton(text="🖥 Веб-панель", callback_data="menu:panel")
         ])
 
     rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
@@ -231,17 +237,6 @@ def moderation_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="⬇️ Скачать список", callback_data="src:export"),
                 InlineKeyboardButton(text="⬆️ Загрузить список", callback_data="src:import"),
             ],
-            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
-        ]
-    )
-
-
-def admin_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Список пользователей", callback_data="usr:list:0")],
-            [InlineKeyboardButton(text="🔗 Инвайт-ссылка", callback_data="usr:invite")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
             [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
         ]
     )

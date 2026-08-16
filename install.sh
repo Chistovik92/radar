@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.5.0 — автономный установщик.
+# Система «Радар» v4.5.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.5.0"
+VERSION="4.5.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -997,7 +997,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=67
+FILE_COUNT=69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1073,6 +1073,12 @@ services:
     container_name: radar_container
     restart: on-failure:5
     env_file: .env
+    # Порт веб-панели. По умолчанию слушает только localhost: панель
+    # с доступом снаружи обязана стоять за HTTPS, иначе cookie сессии
+    # уходит открытым текстом. Чтобы открыть наружу, поставьте
+    # WEB_BIND=0.0.0.0 и обязательно WEB_HTTPS=1 с reverse proxy.
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
       # Общий том с Bot API Server: в локальном режиме он читает файлы
@@ -1279,6 +1285,15 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.3", [
+        "🖥 <b>Веб-панель стала доступна</b>: порт публикуется, разделы "
+        "зависят от роли, вход через /panel.",
+        "💰 <b>Тарифы подписки</b> настраиваются в меню, с пояснением, "
+        "куда поступают звёзды.",
+        "💾 <b>Резервные копии</b> из бота и из панели одной кнопкой.",
+        "🔗 <b>Пригласить</b> — кнопка доступна всем пользователям.",
+        "🧹 Убраны дублирующиеся меню и кнопки.",
+    ]),
     ("4.5.0", [
         "📰 <b>Новостные подборки</b> — 12 тематик, одно сообщение в выбранное "
         "время, подписка через Telegram Stars.",
@@ -1409,6 +1424,7 @@ async def setup_commands() -> None:
     commands = [
         BotCommand(command="menu", description="Главное меню"),
         BotCommand(command="partner", description="Партнёрский проект"),
+        BotCommand(command="panel", description="Веб-панель"),
         BotCommand(command="help", description="Справка"),
         BotCommand(command="id", description="Мой ID и роль"),
         BotCommand(command="cancel", description="Отменить ввод"),
@@ -1535,7 +1551,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.5.0"
+__version__ = "4.5.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -1608,6 +1624,7 @@ AI_PREFILTER: bool = (os.getenv("AI_PREFILTER") or "1").strip().lower() not in (
 AI_SEARCH: bool = (os.getenv("AI_SEARCH") or "1").strip().lower() not in ("0", "false", "no")
 
 DATA_FILE: str = (os.getenv("DATA_FILE") or "data/db.json").strip()
+ENV_FILE: str = (os.getenv("ENV_FILE") or ".env").strip()
 
 # --- база данных ---
 # sqlite — по умолчанию: файл рядом с ботом, без отдельного контейнера,
@@ -4665,6 +4682,14 @@ def write(key: str, value: str) -> bool:
     if "\n" in value or "\r" in value:
         return False
 
+    # Копия перед правкой: потерять прежние ключи из-за опечатки нельзя
+    try:
+        from . import backup as backup_module
+
+        backup_module.backup_env()
+    except Exception:  # noqa: BLE001
+        log.debug("Копию .env создать не удалось", exc_info=True)
+
     try:
         lines: list[str] = []
         if os.path.exists(ENV_PATH):
@@ -6349,8 +6374,233 @@ def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
 def held_count() -> int:
     return len(_held)
 RADAR_FILE_24
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
+cat > "radar/backup.py" <<'RADAR_FILE_25'
+"""Резервные копии проекта: база, настройки, данные.
+
+Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
+логика здесь, а не продублирована в обработчиках.
+
+Что попадает в копию: база (SQLite целиком с журналами WAL или дамп
+PostgreSQL), файл `.env`, выгрузка источников, версия проекта. Журналы
+не берём: они объёмные и восстановление от них не зависит.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import shutil
+import tarfile
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+from . import config
+
+log = logging.getLogger("radar.backup")
+
+KEEP = 10
+DIRECTORY = "backups"
+
+
+@dataclass
+class Archive:
+    path: Path
+    size: int
+    created: float
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+    @property
+    def size_human(self) -> str:
+        value = float(self.size)
+        for unit in ("Б", "КБ", "МБ", "ГБ"):
+            if value < 1024 or unit == "ГБ":
+                return f"{value:.0f} {unit}" if unit == "Б" else f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{value:.1f} ГБ"
+
+    @property
+    def when(self) -> str:
+        return f"{datetime.fromtimestamp(self.created):%d.%m.%Y %H:%M}"
+
+
+def directory() -> Path:
+    path = Path(DIRECTORY)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def listing() -> list[Archive]:
+    """Копии, новые сверху."""
+    items: list[Archive] = []
+    for path in directory().glob("radar-backup-*.tar.gz"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        items.append(Archive(path, stat.st_size, stat.st_mtime))
+    return sorted(items, key=lambda item: item.created, reverse=True)
+
+
+def find(name: str) -> Path | None:
+    """Ищет копию по имени. Имя проверяется — иначе можно уйти из каталога."""
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    target = directory() / name
+    return target if target.exists() and target.is_file() else None
+
+
+def _dump_postgres(destination: Path) -> bool:
+    """Дамп PostgreSQL через контейнер. Без него копия бесполезна."""
+    import subprocess
+
+    try:
+        with destination.open("wb") as handle:
+            result = subprocess.run(
+                ["docker", "exec", "radar_db", "pg_dump", "-U", config.DB_USER,
+                 config.DB_NAME],
+                stdout=handle, stderr=subprocess.PIPE, timeout=300, check=False,
+            )
+        if result.returncode == 0:
+            return True
+        log.warning("pg_dump вернул %s: %s", result.returncode,
+                    result.stderr.decode("utf-8", "replace")[:200])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Дамп PostgreSQL не выполнен: %s", exc)
+    destination.unlink(missing_ok=True)
+    return False
+
+
+def _collect(staging: Path, reason: str) -> None:
+    """Складывает во временный каталог всё, что должно попасть в копию."""
+    staging.mkdir(parents=True, exist_ok=True)
+
+    if config.is_sqlite():
+        source = Path(config.DB_FILE)
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(f"{source}{suffix}")
+            if candidate.exists():
+                shutil.copy2(candidate, staging / candidate.name)
+    else:
+        _dump_postgres(staging / "database.sql")
+
+    env_path = Path(".env")
+    if env_path.exists():
+        shutil.copy2(env_path, staging / "env.backup")
+
+    legacy = Path("data/db.json")
+    if legacy.exists():
+        shutil.copy2(legacy, staging / "db.json")
+
+    manifest = staging / "manifest.txt"
+    manifest.write_text(
+        f"Система «Радар»\n"
+        f"Версия: {config.VERSION}\n"
+        f"Дата: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+        f"База: {'SQLite' if config.is_sqlite() else 'PostgreSQL'}\n"
+        f"Причина: {reason}\n",
+        encoding="utf-8",
+    )
+
+
+def _prune() -> None:
+    for extra in listing()[KEEP:]:
+        try:
+            extra.path.unlink()
+        except OSError:
+            pass
+
+
+def create_sync(reason: str = "вручную") -> tuple[Path | None, str]:
+    """Собирает копию. Возвращает (путь, ошибка)."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive = directory() / f"radar-backup-{config.VERSION}-{stamp}.tar.gz"
+    staging = directory() / f".staging-{stamp}"
+
+    try:
+        _collect(staging, reason)
+        with tarfile.open(archive, "w:gz") as bundle:
+            for item in staging.iterdir():
+                bundle.add(item, arcname=item.name)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Копия не создана: %s", exc)
+        archive.unlink(missing_ok=True)
+        return None, str(exc)[:200]
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    _prune()
+    log.info("Копия создана: %s (%d КБ)", archive.name, archive.stat().st_size // 1024)
+    return archive, ""
+
+
+async def create(reason: str = "вручную") -> tuple[Path | None, str]:
+    """Асинхронная обёртка: упаковка блокирует, уводим в поток."""
+    return await asyncio.to_thread(create_sync, reason)
+
+
+def backup_env() -> Path | None:
+    """Копия .env перед изменением ключей.
+
+    Отдельная и дешёвая: правка ключа через бот не должна требовать полной
+    копии проекта, но и потерять прежние значения нельзя.
+    """
+    source = Path(config.ENV_FILE if hasattr(config, "ENV_FILE") else ".env")
+    if not source.exists():
+        return None
+    target = directory() / f"env-{datetime.now():%Y%m%d-%H%M%S}.backup"
+    try:
+        shutil.copy2(source, target)
+        os.chmod(target, 0o600)
+    except OSError as exc:
+        log.warning("Копия .env не создана: %s", exc)
+        return None
+
+    # Держим последние 10 копий настроек
+    old = sorted(directory().glob("env-*.backup"), key=lambda item: item.stat().st_mtime)
+    for extra in old[:-10]:
+        extra.unlink(missing_ok=True)
+    return target
+
+
+def summary() -> str:
+    """Состояние копий для сообщения в боте."""
+    items = listing()
+    if not items:
+        return (
+            "💾 <b>Резервные копии</b>\n\nКопий пока нет.\n\n"
+            "<i>Копия включает базу целиком, файл настроек и версию проекта.</i>"
+        )
+
+    total = sum(item.size for item in items)
+    lines = [
+        "💾 <b>Резервные копии</b>",
+        f"Всего: <b>{len(items)}</b>, объём {total // 1024} КБ",
+        "",
+    ]
+    for item in items[:10]:
+        lines.append(f"• <code>{item.name}</code>\n  {item.when} · {item.size_human}")
+    lines.append("")
+    lines.append(
+        "<i>Хранятся последние 10. Восстановление — установщиком: "
+        "<code>bash install.sh --rollback</code></i>"
+    )
+    return "\n".join(lines)
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_25'
+cat > "radar/weather_image.py" <<'RADAR_FILE_26'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -6561,9 +6811,9 @@ def _strip_tags(text: str) -> str:
     import re
 
     return re.sub(r"<[^>]+>", "", text or "").strip()
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_26'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_27'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -6578,9 +6828,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_27'
+cat > "radar/web/auth.py" <<'RADAR_FILE_28'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -6718,9 +6968,11 @@ def authenticate(
 
     from .. import roles as role_module
 
-    if not role_module.is_admin(role):
+    # Панель — дублирующий контур управления, поэтому доступ начинается
+    # с модератора: у него будут только свои разделы.
+    if not role_module.is_moderator(role):
         log.info("Веб-панель: отказ пользователю %s с ролью %s", user_key, role)
-        return None, "нужны права администратора"
+        return None, "нужны права модератора или выше"
 
     if address:
         clear_failures(address)
@@ -6760,9 +7012,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_28'
+cat > "radar/web/audit.py" <<'RADAR_FILE_29'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -6829,9 +7081,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_29'
+cat > "radar/web/panel.py" <<'RADAR_FILE_30'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -6888,15 +7140,23 @@ tr:last-child td { border-bottom:none; }
 """
 
 
-def _layout(title: str, body: str, active: str = "", role: str = "") -> str:
-    links = [
-        ("/", "Обзор", "home"),
-        ("/users", "Пользователи", "users"),
-        ("/sources", "Источники", "sources"),
-        ("/events", "События", "events"),
-        ("/features", "Возможности", "features"),
-        ("/audit", "Журнал", "audit"),
-    ]
+def _links_for(role: str) -> list[tuple[str, str, str]]:
+    """Разделы по роли: панель повторяет права бота, а не расширяет их."""
+    links = [("/", "Обзор", "home"), ("/sources", "Источники", "sources")]
+    if roles.is_moderator(role):
+        links.append(("/users", "Пользователи", "users"))
+    if roles.is_admin(role):
+        links.append(("/events", "События", "events"))
+    if roles.is_superadmin(role):
+        links.append(("/features", "Возможности", "features"))
+        links.append(("/backup", "Копии", "backup"))
+        links.append(("/audit", "Журнал", "audit"))
+    return links
+
+
+def _layout(title: str, body: str, active: str = "", role: str = "",
+            role_key: str = "") -> str:
+    links = _links_for(role_key)
     nav = "".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{name}</a>'
         for href, name, key in links
@@ -6967,7 +7227,10 @@ def _overview_body() -> str:
     )
 
 
-def _users_body() -> str:
+def _users_body(role: str = "") -> str:
+    """Список пользователей. Модератору идентификаторы показываются частично:
+    для его задач они не нужны, а утечка списка — лишний риск."""
+    full = roles.is_admin(role)
     rows = []
     for key, item in sorted(storage.users().items()):
         locations = item.get("locs") or []
@@ -6975,7 +7238,7 @@ def _users_body() -> str:
             sorted({str(loc.get("city") or "") for loc in locations if loc.get("city")})
         )
         rows.append(
-            f"<tr><td><code>{html.escape(key)}</code></td>"
+            f"<tr><td><code>{html.escape(key if full else key[:4] + '…')}</code></td>"
             f"<td>{html.escape(roles.title(item.get('role', 'user')))}</td>"
             f"<td>{len(locations)}</td>"
             f"<td>{html.escape(cities or '—')}</td></tr>"
@@ -7089,13 +7352,23 @@ async def create_app() -> Any:
     def current_session(request):
         return auth.session_by_token(request.cookies.get(auth.SESSION_COOKIE, ""))
 
-    def guard(handler):
+    def guard(handler, minimum: str = "moderator"):
+        """Доступ к странице. Роль проверяется на каждом запросе, а не при входе."""
         async def wrapper(request):
             session = current_session(request)
             if session is None:
                 raise web.HTTPFound("/login")
+            if not roles.at_least(session.role, minimum):
+                audit.record(session.user_key, "отказ в доступе", request.path)
+                raise web.HTTPFound("/")
             return await handler(request, session)
         return wrapper
+
+    def admin_only(handler):
+        return guard(handler, "admin")
+
+    def owner_only(handler):
+        return guard(handler, "superadmin")
 
     async def login(request):
         return web.Response(
@@ -7140,49 +7413,80 @@ async def create_app() -> Any:
     @guard
     async def overview(_request, session):
         return web.Response(
-            text=_layout("Обзор", _overview_body(), "home", roles.title(session.role)),
+            text=_layout("Обзор", _overview_body(), "home", roles.title(session.role), session.role),
             content_type="text/html",
         )
 
     @guard
     async def users_page(_request, session):
         return web.Response(
-            text=_layout("Пользователи", _users_body(), "users", roles.title(session.role)),
+            text=_layout("Пользователи", _users_body(session.role), "users",
+                         roles.title(session.role), session.role),
             content_type="text/html",
         )
 
     @guard
     async def sources_page(_request, session):
         return web.Response(
-            text=_layout("Источники", _sources_body(), "sources", roles.title(session.role)),
+            text=_layout("Источники", _sources_body(), "sources", roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @guard
+    @admin_only
     async def events_page(_request, session):
         body = await _events_body()
         return web.Response(
-            text=_layout("События", body, "events", roles.title(session.role)),
+            text=_layout("События", body, "events", roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @guard
+    @owner_only
     async def features_page(_request, session):
         return web.Response(
             text=_layout("Возможности", _features_body(), "features",
-                         roles.title(session.role)),
+                         roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @guard
+    @owner_only
     async def audit_page(_request, session):
-        if not roles.is_superadmin(session.role):
-            raise web.HTTPFound("/")
         return web.Response(
             text=_layout("Журнал действий", _audit_body(), "audit",
-                         roles.title(session.role)),
+                         roles.title(session.role), session.role),
             content_type="text/html",
         )
+
+    @owner_only
+    async def backup_page(_request, session):
+        from . import backup as backup_module
+
+        return web.Response(
+            text=_layout("Резервные копии", backup_module.body(), "backup",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @owner_only
+    async def backup_create(request, session):
+        from . import backup as backup_module
+
+        path, error = await backup_module.create(f"панель:{session.user_key}")
+        if error:
+            audit.record(session.user_key, "копия не создана", error)
+            raise web.HTTPFound("/backup?error=1")
+        audit.record(session.user_key, "создана копия", path.name)
+        raise web.HTTPFound("/backup")
+
+    @owner_only
+    async def backup_download(request, session):
+        from . import backup as backup_module
+
+        name = request.query.get("name", "")
+        target = backup_module.find(name)
+        if target is None:
+            raise web.HTTPFound("/backup")
+        audit.record(session.user_key, "скачана копия", name)
+        return web.FileResponse(target)
 
     async def health(_request):
         return web.json_response({"status": "ok", "version": config.VERSION})
@@ -7197,6 +7501,9 @@ async def create_app() -> Any:
         web.get("/events", events_page),
         web.get("/features", features_page),
         web.get("/audit", audit_page),
+        web.get("/backup", backup_page),
+        web.get("/backup/create", backup_create),
+        web.get("/backup/download", backup_download),
         web.get("/health", health),
     ])
     return application
@@ -7228,9 +7535,54 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_29
+RADAR_FILE_30
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
+cat > "radar/web/backup.py" <<'RADAR_FILE_31'
+"""Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import html
+
+from .. import backup as backup_module
+
+create = backup_module.create
+find = backup_module.find
+
+
+def body() -> str:
+    items = backup_module.listing()
+    rows = "".join(
+        f"<tr><td><code>{html.escape(item.name)}</code></td>"
+        f"<td>{html.escape(item.when)}</td>"
+        f"<td>{html.escape(item.size_human)}</td>"
+        f'<td><a href="/backup/download?name={html.escape(item.name)}">скачать</a></td>'
+        "</tr>"
+        for item in items
+    )
+    return (
+        '<div class="card">'
+        '<a href="/backup/create" style="color:#5ea8ff">Создать копию сейчас</a>'
+        '<p class="muted">В копию входят база целиком, файл настроек '
+        "и версия проекта. Журналы не включаются — восстановление от них "
+        "не зависит.</p></div>"
+        '<div class="card"><table><tr><th>Файл</th><th>Создана</th>'
+        f"<th>Размер</th><th></th></tr>"
+        f"{rows or '<tr><td colspan=4 class=muted>копий нет</td></tr>'}</table></div>"
+        '<div class="card muted">Восстановление выполняется установщиком '
+        "на сервере: <code>bash install.sh --rollback</code>. Из браузера "
+        "восстановление не запускается намеренно — это операция, которая "
+        "должна выполняться осознанно и с доступом к машине.</div>"
+    )
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_30'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_32'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -7263,9 +7615,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_30
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_31'
+cat > "radar/db/models.py" <<'RADAR_FILE_33'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -7508,9 +7860,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_31
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_32'
+cat > "radar/db/engine.py" <<'RADAR_FILE_34'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -8024,9 +8376,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_32
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_33'
+cat > "radar/db/repo.py" <<'RADAR_FILE_35'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -8555,9 +8907,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_33
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_34'
+cat > "radar/db/importer.py" <<'RADAR_FILE_36'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -8732,9 +9084,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_34
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_35'
+cat > "radar/doctor.py" <<'RADAR_FILE_37'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -9183,9 +9535,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_35
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_36'
+cat > "migrations/env.py" <<'RADAR_FILE_38'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -9245,9 +9597,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_36
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_37'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_39'
 """${message}
 
 Revision ID: ${up_revision}
@@ -9272,9 +9624,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_37
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_38'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_40'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -9441,9 +9793,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_38
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_39'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_41'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -9469,9 +9821,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_39
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_40'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_42'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -9596,9 +9948,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_40
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_41'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_43'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -9862,9 +10214,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_41
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_42'
+cat > "radar/storage.py" <<'RADAR_FILE_44'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -10049,9 +10401,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_42
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_43'
+cat > "radar/exporting.py" <<'RADAR_FILE_45'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -10257,9 +10609,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_43
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_44'
+cat > "radar/ai.py" <<'RADAR_FILE_46'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -10963,9 +11315,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_44
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_45'
+cat > "radar/geocode.py" <<'RADAR_FILE_47'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -11157,9 +11509,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_45
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_46'
+cat > "radar/weather.py" <<'RADAR_FILE_48'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -11491,9 +11843,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_46
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_47'
+cat > "radar/sources.py" <<'RADAR_FILE_49'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -11752,9 +12104,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_47
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_48'
+cat > "radar/tg.py" <<'RADAR_FILE_50'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -11871,9 +12223,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_48
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_49'
+cat > "radar/keyboards.py" <<'RADAR_FILE_51'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -11913,6 +12265,7 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
             InlineKeyboardButton(text="📢 Предложить источник", callback_data="src:suggest"),
         ],
+        [InlineKeyboardButton(text="🔗 Пригласить", callback_data="usr:invite")],
     ]
 
     if features.enabled("digest"):
@@ -11949,8 +12302,7 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
 
     if roles.is_admin(role):
         rows.append([
-            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats"),
-            InlineKeyboardButton(text="🔗 Инвайт", callback_data="usr:invite"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")
         ])
 
     if roles.is_superadmin(role):
@@ -11964,7 +12316,13 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
         ])
         rows.append([
             InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
-            InlineKeyboardButton(text="📋 Журналы", callback_data="log:list"),
+            InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu"),
+        ])
+        rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
+
+    if roles.is_moderator(role) and features.enabled("web_panel"):
+        rows.append([
+            InlineKeyboardButton(text="🖥 Веб-панель", callback_data="menu:panel")
         ])
 
     rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
@@ -12112,17 +12470,6 @@ def moderation_menu() -> InlineKeyboardMarkup:
     )
 
 
-def admin_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Список пользователей", callback_data="usr:list:0")],
-            [InlineKeyboardButton(text="🔗 Инвайт-ссылка", callback_data="usr:invite")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")],
-            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
-        ]
-    )
-
-
 def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [
@@ -12212,9 +12559,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_49
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_50'
+cat > "radar/states.py" <<'RADAR_FILE_52'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -12242,10 +12589,11 @@ class Form(StatesGroup):
     secret_value = State()         # ввод ключа доступа суперадминистратором
     proxy_key = State()            # ключ или подписка для выхода в сеть
     digest_time = State()          # время доставки новостной подборки
+    digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_50
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_51'
+cat > "radar/middlewares.py" <<'RADAR_FILE_53'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -12334,9 +12682,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = record.get("role", "user")
         return await handler(event, data)
-RADAR_FILE_51
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_52'
+cat > "radar/monitor.py" <<'RADAR_FILE_54'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -12780,9 +13128,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_52
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_53'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_55'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -12830,9 +13178,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_53
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_54'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_56'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -13005,16 +13353,6 @@ async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
     )
 
 
-@router.callback_query(F.data == "menu:admin")
-async def menu_admin(call: CallbackQuery, state: FSMContext, role: str) -> None:
-    if not roles.is_admin(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
-        return
-    await state.clear()
-    await call.answer()
-    await safe_edit(call, "👥 <b>Управление пользователями</b>", keyboards.admin_menu())
-
-
 @router.callback_query(F.data == "menu:about")
 async def menu_about(call: CallbackQuery) -> None:
     await call.answer()
@@ -13182,10 +13520,10 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         await call.answer("Недостаточно прав.", show_alert=True)
         return
     await call.answer()
-    await safe_edit(call, _stats_text(), back_kb("menu:admin", "◀️ Назад"))
-RADAR_FILE_54
+    await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_55'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_57'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -13349,9 +13687,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_55
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_56'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_58'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -13602,9 +13940,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         await message.answer(
             f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
         )
-RADAR_FILE_56
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_57'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_59'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -14039,9 +14377,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_57
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_58'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_60'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -14236,18 +14574,19 @@ async def confirm_delete(call: CallbackQuery, role: str) -> None:
 
 
 @router.callback_query(F.data == "usr:invite")
-async def invite(call: CallbackQuery, role: str) -> None:
-    if not roles.is_admin(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
-        return
+async def invite(call: CallbackQuery) -> None:
+    """Приглашение доступно любому пользователю: система тем полезнее,
+    чем больше соседей о ней знает. Перешедший получает роль «Пользователь»,
+    повысить её может только администрация."""
     await call.answer()
     me = await bot.get_me()
     await safe_edit(
         call,
         "🔗 <b>Инвайт-ссылка</b>\n"
         f"https://t.me/{me.username}?start=join\n\n"
-        "<i>Перешедший по ней получает роль «Пользователь».</i>",
-        back_kb("menu:admin", "◀️ Назад"),
+        "<i>Перешедший по ней получает роль «Пользователь»: свои локации "
+        "и оповещения. Повысить роль может только администрация.</i>",
+        back_kb("menu:main", "🏠 В главное меню"),
     )
 
 
@@ -14407,9 +14746,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_58
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_59'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_61'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -14537,9 +14876,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     await repo.set_feature(flag.key, value, call.from_user.id)
     await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_59
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_60'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_62'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -14827,9 +15166,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_60
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_61'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_63'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -15235,9 +15574,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_61
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_62'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_64'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -15550,9 +15889,9 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_62
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_63'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_65'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -15581,7 +15920,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import ai, aibench, config, roles, secrets
+from .. import ai, aibench, backup, config, features, roles, secrets
 from ..states import Form
 from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit, send_html
@@ -15895,9 +16234,165 @@ async def bench_run(call: CallbackQuery, role: str) -> None:
         "в версии 4.3.</i>",
         back_kb("bench:menu", "◀️ Назад"),
     )
-RADAR_FILE_63
+
+
+# --------------------------------------------------------------------------
+#  Веб-панель
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data == "menu:panel")
+async def panel_info(call: CallbackQuery, role: str) -> None:
+    if not roles.is_moderator(role):
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, _panel_text(role), back_kb("menu:manage", "◀️ Назад"))
+
+
+@router.message(Command("panel"))
+async def cmd_panel(message: Message, role: str) -> None:
+    """Как попасть в панель: адрес и состояние доступа."""
+    if not roles.is_moderator(role):
+        await message.answer("⛔️ Панель доступна модераторам и выше.")
+        return
+
+    await message.answer(_panel_text(role), reply_markup=back_kb())
+
+
+def _panel_text(role: str) -> str:
+    if not features.enabled("web_panel"):
+        return (
+            "🖥 <b>Веб-панель выключена</b>\n\n"
+            "Включить: /features → Администрирование → Веб-панель.\n"
+            "После включения перезапустите контейнер: "
+            "<code>docker compose restart</code>"
+        )
+
+    host = secrets.get("WEB_PUBLIC_URL")
+    port = config.WEB_PORT
+    lines = ["🖥 <b>Веб-панель</b>", ""]
+
+    if host:
+        lines.append(f"Адрес: {esc(host)}")
+    else:
+        lines.append(f"Порт: <code>{port}</code>")
+        lines.append("")
+        lines.append(
+            "По умолчанию панель слушает только сам сервер — это безопасно. "
+            "Открыть с ноутбука можно через SSH-туннель:"
+        )
+        lines.append(f"<code>ssh -L {port}:127.0.0.1:{port} root@ваш-сервер</code>")
+        lines.append(f"затем откройте <code>http://localhost:{port}</code>")
+        lines.append("")
+        lines.append(
+            "Чтобы открыть панель наружу, задайте <code>WEB_BIND=0.0.0.0</code>, "
+            "<code>WEB_HTTPS=1</code> и поставьте reverse proxy с сертификатом. "
+            "Без HTTPS cookie сессии уходит открытым текстом."
+        )
+
+    lines.append("")
+    lines.append(
+        "Вход — кнопкой Telegram, паролей нет. Разделы зависят от роли: "
+        "модератор видит источники и пользователей, администратор — ещё "
+        "события, суперадминистратор — возможности, копии и журнал."
+    )
+    lines.append("")
+    lines.append(
+        "<i>Панель — дублирующий контур. Основное управление остаётся в боте.</i>"
+    )
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+#  Резервные копии
+# --------------------------------------------------------------------------
+
+def _backup_menu() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="💾 Создать копию", callback_data="bak:make")]]
+    items = backup.listing()
+    if items:
+        rows.append([
+            InlineKeyboardButton(text="⬇️ Скачать последнюю", callback_data="bak:get")
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("backup"))
+async def cmd_backup(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Резервные копии делает суперадминистратор.")
+        return
+    await message.answer(backup.summary(), reply_markup=_backup_menu())
+
+
+@router.callback_query(F.data == "bak:menu")
+async def backup_menu(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, backup.summary(), _backup_menu())
+
+
+@router.callback_query(F.data == "bak:make")
+async def backup_make(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    await call.answer("Собираю копию…")
+    notice = await call.message.answer("💾 Собираю копию: база, настройки, версия…")
+
+    path, error = await backup.create(f"бот:{call.from_user.id}")
+    if path is None:
+        await notice.edit_text(f"❌ Копию создать не удалось: {esc(error)}")
+        return
+
+    size = path.stat().st_size
+    await notice.edit_text(
+        f"✅ <b>Копия создана</b>\n<code>{esc(path.name)}</code>\n"
+        f"Размер: {size // 1024} КБ\n\n"
+        "<i>Восстановление — установщиком: "
+        "<code>bash install.sh --rollback</code></i>",
+        reply_markup=_backup_menu(),
+    )
+
+
+@router.callback_query(F.data == "bak:get")
+async def backup_download(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    items = backup.listing()
+    if not items:
+        await call.answer("Копий нет.", show_alert=True)
+        return
+
+    latest = items[0]
+    # Telegram не примет файл больше 50 МБ без своего Bot API Server
+    limit = 1900 if config.uses_local_api() else 50
+    if latest.size > limit * 1024 * 1024:
+        await call.answer()
+        await call.message.answer(
+            f"⚠️ Копия весит {latest.size_human} — больше предела отправки "
+            f"({limit} МБ). Заберите её с сервера:\n"
+            f"<code>scp root@сервер:~/radar_bot/backups/{esc(latest.name)} .</code>"
+        )
+        return
+
+    await call.answer("Отправляю…")
+    from aiogram.types import FSInputFile
+
+    await call.message.answer_document(
+        FSInputFile(str(latest.path)),
+        caption=f"💾 {esc(latest.name)}\n{latest.when} · {latest.size_human}",
+        reply_markup=_backup_menu(),
+    )
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_64'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_66'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -16418,9 +16913,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_64
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_65'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_67'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -16471,7 +16966,7 @@ def _plans() -> list[tuple[int, int]]:
     return plans or list(DEFAULT_PLANS)
 
 
-def _menu(subscription: digest.Subscription) -> InlineKeyboardMarkup:
+def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📋 Тематики", callback_data="dig:topics")],
         [InlineKeyboardButton(text="🕘 Время доставки", callback_data="dig:time")],
@@ -16479,6 +16974,10 @@ def _menu(subscription: digest.Subscription) -> InlineKeyboardMarkup:
     if features.enabled("digest_paid"):
         label = "⭐️ Продлить подписку" if subscription.active else "⭐️ Оформить подписку"
         rows.append([InlineKeyboardButton(text=label, callback_data="dig:buy")])
+    if roles.is_superadmin(role):
+        rows.append([
+            InlineKeyboardButton(text="💰 Тарифы и оплата", callback_data="dig:price")
+        ])
     rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -16505,23 +17004,26 @@ def _topics_menu(subscription: digest.Subscription) -> InlineKeyboardMarkup:
 
 
 @router.message(Command("digest"))
-async def cmd_digest(message: Message, user: dict) -> None:
+async def cmd_digest(message: Message, user: dict, role: str) -> None:
     if not features.enabled("digest"):
         await message.answer("Новостные подборки пока отключены.")
         return
     subscription = digest.subscription_of(user)
-    await message.answer(digest.describe(subscription), reply_markup=_menu(subscription))
+    await message.answer(
+        digest.describe(subscription), reply_markup=_menu(subscription, role)
+    )
 
 
 @router.callback_query(F.data == "dig:menu")
-async def show_menu(call: CallbackQuery, state: FSMContext, user: dict) -> None:
+async def show_menu(call: CallbackQuery, state: FSMContext, user: dict,
+                    role: str) -> None:
     if not features.enabled("digest"):
         await call.answer("Функция отключена.", show_alert=True)
         return
     await state.clear()
     await call.answer()
     subscription = digest.subscription_of(user)
-    await safe_edit(call, digest.describe(subscription), _menu(subscription))
+    await safe_edit(call, digest.describe(subscription), _menu(subscription, role))
 
 
 @router.callback_query(F.data == "dig:topics")
@@ -16690,33 +17192,89 @@ async def payment_done(message: Message, user: dict) -> None:
     )
 
 
+# --------------------------------------------------------------------------
+#  Тарифы — только суперадминистратор
+# --------------------------------------------------------------------------
+
+def _pricing_text() -> str:
+    plans = ", ".join(f"{days} дн. — {stars} ⭐️" for days, stars in _plans())
+    return (
+        "⭐️ <b>Тарифы подписки</b>\n\n"
+        f"Сейчас: {esc(plans)}\n\n"
+        "<b>Куда поступают звёзды.</b> Оплата зачисляется на баланс самого "
+        "бота в Telegram — отдельный счёт или эквайринг не нужны. Баланс "
+        "виден в @BotFather → выбрать бота → Payments. Вывести можно "
+        "через Fragment, но не раньше чем через 21 день после оплаты — "
+        "это правило Telegram, а не системы.\n\n"
+        "<b>Возвраты.</b> Звёзды возвращаются командой Telegram по обращению "
+        "пользователя; бот в этом не участвует.\n\n"
+        "Изменить тарифы: пришлите строку вида\n"
+        "<code>30:150, 90:400, 365:1400</code>\n"
+        "<i>Формат «дни:звёзды» через запятую. /cancel — отмена.</i>"
+    )
+
+
+@router.callback_query(F.data == "dig:price")
+async def pricing(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Тарифы задаёт суперадминистратор.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(Form.digest_price)
+    await safe_edit(call, _pricing_text(), back_kb("dig:menu", "Отмена"))
+
+
 @router.message(Command("digestprice"))
-async def set_price(message: Message, role: str) -> None:
+async def set_price(message: Message, state: FSMContext, role: str) -> None:
     """Цены задаёт только суперадминистратор."""
     if not roles.is_superadmin(role):
+        await message.answer("⛔️ Тарифы задаёт суперадминистратор.")
         return
 
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
-        current = ", ".join(f"{days}д:{stars}⭐️" for days, stars in _plans())
+        await state.set_state(Form.digest_price)
+        await message.answer(_pricing_text(), reply_markup=back_kb("dig:menu", "Отмена"))
+        return
+
+    await _apply_plans(message, state, parts[1].strip())
+
+
+@router.message(Form.digest_price)
+async def save_price(message: Message, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+    await _apply_plans(message, state, text)
+
+
+async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
+    if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
         await message.answer(
-            f"Текущие тарифы: {current}\n\n"
-            "Изменить: <code>/digestprice 30:150, 90:400, 365:1400</code>\n"
-            "<i>Формат «дни:звёзды» через запятую.</i>"
+            "❌ Формат: <code>30:150, 90:400</code> — дни и звёзды через двоеточие."
         )
         return
 
-    value = parts[1].strip()
-    if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
-        await message.answer("❌ Формат: <code>30:150, 90:400</code>")
-        return
+    # Telegram не принимает счета дешевле одной звезды
+    for chunk in value.split(","):
+        _days, _, stars = chunk.strip().partition(":")
+        if int(stars) < 1:
+            await message.answer("❌ Цена не может быть меньше одной звезды.")
+            return
 
     secrets.write("DIGEST_PLANS", value)
-    plans = ", ".join(f"{days}д:{stars}⭐️" for days, stars in _plans())
-    await message.answer(f"✅ Тарифы обновлены: {plans}")
-RADAR_FILE_65
+    await state.clear()
+    plans = ", ".join(f"{days} дн. — {stars} ⭐️" for days, stars in _plans())
+    await message.answer(
+        f"✅ Тарифы обновлены: {esc(plans)}",
+        reply_markup=back_kb("dig:menu", "◀️ Назад"),
+    )
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_66'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_68'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -16861,7 +17419,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_66
+RADAR_FILE_68
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

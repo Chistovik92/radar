@@ -13,6 +13,12 @@ services:
     container_name: radar_container
     restart: on-failure:5
     env_file: .env
+    # Порт веб-панели. По умолчанию слушает только localhost: панель
+    # с доступом снаружи обязана стоять за HTTPS, иначе cookie сессии
+    # уходит открытым текстом. Чтобы открыть наружу, поставьте
+    # WEB_BIND=0.0.0.0 и обязательно WEB_HTTPS=1 с reverse proxy.
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
       # Общий том с Bot API Server: в локальном режиме он читает файлы

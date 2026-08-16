@@ -54,15 +54,23 @@ tr:last-child td { border-bottom:none; }
 """
 
 
-def _layout(title: str, body: str, active: str = "", role: str = "") -> str:
-    links = [
-        ("/", "Обзор", "home"),
-        ("/users", "Пользователи", "users"),
-        ("/sources", "Источники", "sources"),
-        ("/events", "События", "events"),
-        ("/features", "Возможности", "features"),
-        ("/audit", "Журнал", "audit"),
-    ]
+def _links_for(role: str) -> list[tuple[str, str, str]]:
+    """Разделы по роли: панель повторяет права бота, а не расширяет их."""
+    links = [("/", "Обзор", "home"), ("/sources", "Источники", "sources")]
+    if roles.is_moderator(role):
+        links.append(("/users", "Пользователи", "users"))
+    if roles.is_admin(role):
+        links.append(("/events", "События", "events"))
+    if roles.is_superadmin(role):
+        links.append(("/features", "Возможности", "features"))
+        links.append(("/backup", "Копии", "backup"))
+        links.append(("/audit", "Журнал", "audit"))
+    return links
+
+
+def _layout(title: str, body: str, active: str = "", role: str = "",
+            role_key: str = "") -> str:
+    links = _links_for(role_key)
     nav = "".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{name}</a>'
         for href, name, key in links
@@ -133,7 +141,10 @@ def _overview_body() -> str:
     )
 
 
-def _users_body() -> str:
+def _users_body(role: str = "") -> str:
+    """Список пользователей. Модератору идентификаторы показываются частично:
+    для его задач они не нужны, а утечка списка — лишний риск."""
+    full = roles.is_admin(role)
     rows = []
     for key, item in sorted(storage.users().items()):
         locations = item.get("locs") or []
@@ -141,7 +152,7 @@ def _users_body() -> str:
             sorted({str(loc.get("city") or "") for loc in locations if loc.get("city")})
         )
         rows.append(
-            f"<tr><td><code>{html.escape(key)}</code></td>"
+            f"<tr><td><code>{html.escape(key if full else key[:4] + '…')}</code></td>"
             f"<td>{html.escape(roles.title(item.get('role', 'user')))}</td>"
             f"<td>{len(locations)}</td>"
             f"<td>{html.escape(cities or '—')}</td></tr>"
@@ -255,13 +266,23 @@ async def create_app() -> Any:
     def current_session(request):
         return auth.session_by_token(request.cookies.get(auth.SESSION_COOKIE, ""))
 
-    def guard(handler):
+    def guard(handler, minimum: str = "moderator"):
+        """Доступ к странице. Роль проверяется на каждом запросе, а не при входе."""
         async def wrapper(request):
             session = current_session(request)
             if session is None:
                 raise web.HTTPFound("/login")
+            if not roles.at_least(session.role, minimum):
+                audit.record(session.user_key, "отказ в доступе", request.path)
+                raise web.HTTPFound("/")
             return await handler(request, session)
         return wrapper
+
+    def admin_only(handler):
+        return guard(handler, "admin")
+
+    def owner_only(handler):
+        return guard(handler, "superadmin")
 
     async def login(request):
         return web.Response(
@@ -306,49 +327,80 @@ async def create_app() -> Any:
     @guard
     async def overview(_request, session):
         return web.Response(
-            text=_layout("Обзор", _overview_body(), "home", roles.title(session.role)),
+            text=_layout("Обзор", _overview_body(), "home", roles.title(session.role), session.role),
             content_type="text/html",
         )
 
     @guard
     async def users_page(_request, session):
         return web.Response(
-            text=_layout("Пользователи", _users_body(), "users", roles.title(session.role)),
+            text=_layout("Пользователи", _users_body(session.role), "users",
+                         roles.title(session.role), session.role),
             content_type="text/html",
         )
 
     @guard
     async def sources_page(_request, session):
         return web.Response(
-            text=_layout("Источники", _sources_body(), "sources", roles.title(session.role)),
+            text=_layout("Источники", _sources_body(), "sources", roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @guard
+    @admin_only
     async def events_page(_request, session):
         body = await _events_body()
         return web.Response(
-            text=_layout("События", body, "events", roles.title(session.role)),
+            text=_layout("События", body, "events", roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @guard
+    @owner_only
     async def features_page(_request, session):
         return web.Response(
             text=_layout("Возможности", _features_body(), "features",
-                         roles.title(session.role)),
+                         roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @guard
+    @owner_only
     async def audit_page(_request, session):
-        if not roles.is_superadmin(session.role):
-            raise web.HTTPFound("/")
         return web.Response(
             text=_layout("Журнал действий", _audit_body(), "audit",
-                         roles.title(session.role)),
+                         roles.title(session.role), session.role),
             content_type="text/html",
         )
+
+    @owner_only
+    async def backup_page(_request, session):
+        from . import backup as backup_module
+
+        return web.Response(
+            text=_layout("Резервные копии", backup_module.body(), "backup",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @owner_only
+    async def backup_create(request, session):
+        from . import backup as backup_module
+
+        path, error = await backup_module.create(f"панель:{session.user_key}")
+        if error:
+            audit.record(session.user_key, "копия не создана", error)
+            raise web.HTTPFound("/backup?error=1")
+        audit.record(session.user_key, "создана копия", path.name)
+        raise web.HTTPFound("/backup")
+
+    @owner_only
+    async def backup_download(request, session):
+        from . import backup as backup_module
+
+        name = request.query.get("name", "")
+        target = backup_module.find(name)
+        if target is None:
+            raise web.HTTPFound("/backup")
+        audit.record(session.user_key, "скачана копия", name)
+        return web.FileResponse(target)
 
     async def health(_request):
         return web.json_response({"status": "ok", "version": config.VERSION})
@@ -363,6 +415,9 @@ async def create_app() -> Any:
         web.get("/events", events_page),
         web.get("/features", features_page),
         web.get("/audit", audit_page),
+        web.get("/backup", backup_page),
+        web.get("/backup/create", backup_create),
+        web.get("/backup/download", backup_download),
         web.get("/health", health),
     ])
     return application

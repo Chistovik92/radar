@@ -25,4 +25,5 @@ class Form(StatesGroup):
     secret_value = State()         # ввод ключа доступа суперадминистратором
     proxy_key = State()            # ключ или подписка для выхода в сеть
     digest_time = State()          # время доставки новостной подборки
+    digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов

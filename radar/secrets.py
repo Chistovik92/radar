@@ -130,6 +130,14 @@ def write(key: str, value: str) -> bool:
     if "\n" in value or "\r" in value:
         return False
 
+    # Копия перед правкой: потерять прежние ключи из-за опечатки нельзя
+    try:
+        from . import backup as backup_module
+
+        backup_module.backup_env()
+    except Exception:  # noqa: BLE001
+        log.debug("Копию .env создать не удалось", exc_info=True)
+
     try:
         lines: list[str] = []
         if os.path.exists(ENV_PATH):

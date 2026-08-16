@@ -60,6 +60,7 @@ AI_PREFILTER: bool = (os.getenv("AI_PREFILTER") or "1").strip().lower() not in (
 AI_SEARCH: bool = (os.getenv("AI_SEARCH") or "1").strip().lower() not in ("0", "false", "no")
 
 DATA_FILE: str = (os.getenv("DATA_FILE") or "data/db.json").strip()
+ENV_FILE: str = (os.getenv("ENV_FILE") or ".env").strip()
 
 # --- база данных ---
 # sqlite — по умолчанию: файл рядом с ботом, без отдельного контейнера,
