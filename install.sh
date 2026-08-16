@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.5.3 — автономный установщик.
+# Система «Радар» v4.5.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.5.3"
+VERSION="4.5.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1071,7 +1071,12 @@ services:
         TZ: ${TZ:-Europe/Saratov}
     image: radar_image
     container_name: radar_container
-    restart: on-failure:5
+    # unless-stopped, а не on-failure: с on-failure контейнер не поднимался
+    # после штатной остановки и после перезагрузки сервера — бот оставался
+    # выключенным молча. Для системы оповещения это хуже цикла рестартов,
+    # тем более что от него защищает диагностика: при неверной конфигурации
+    # установщик просто не запускает бота.
+    restart: unless-stopped
     env_file: .env
     # Порт веб-панели. По умолчанию слушает только localhost: панель
     # с доступом снаружи обязана стоять за HTTPS, иначе cookie сессии
@@ -1285,6 +1290,12 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.4", [
+        "🔁 <b>Бот снова поднимается сам</b> после остановки и перезагрузки "
+        "сервера — прежняя политика оставляла его выключенным молча.",
+        "🖥 Порт панели теперь применяется: контейнер пересоздаётся "
+        "при обновлении.",
+    ]),
     ("4.5.3", [
         "🖥 <b>Веб-панель стала доступна</b>: порт публикуется, разделы "
         "зависят от роли, вход через /panel.",
@@ -1551,7 +1562,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.5.3"
+__version__ = "4.5.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -9428,6 +9439,32 @@ async def check_telegram() -> None:
                    "Проверьте BOT_TOKEN в .env — возможно, он отозван")
 
 
+def check_panel() -> None:
+    """Доступна ли веб-панель снаружи контейнера.
+
+    Изнутри контейнера проверить публикацию порта нельзя, поэтому
+    ограничиваемся тем, что реально видно: включён ли флаг и не забыт ли
+    HTTPS при доступе наружу.
+    """
+    from radar import config, features
+
+    if not features.enabled("web_panel"):
+        return
+
+    if config.WEB_HOST not in ("0.0.0.0", "::"):
+        report.add("Веб-панель", WARN,
+                   f"слушает {config.WEB_HOST} — снаружи контейнера недоступна",
+                   "Задайте WEB_HOST=0.0.0.0")
+        return
+
+    if not config.WEB_HTTPS:
+        report.add("Веб-панель", WARN, f"порт {config.WEB_PORT}, HTTPS выключен",
+                   "Для доступа снаружи нужны WEB_HTTPS=1 и reverse proxy; "
+                   "иначе подключайтесь через SSH-туннель")
+    else:
+        report.add("Веб-панель", OK, f"порт {config.WEB_PORT}, HTTPS включён")
+
+
 def check_resources() -> None:
     """Хватит ли памяти и места."""
     announce("resources")
@@ -9474,6 +9511,7 @@ async def run(quick: bool) -> None:
     if not await check_database():
         return
     await check_import_file()
+    check_panel()
     if not quick:
         await check_telegram()
 

@@ -11,7 +11,12 @@ services:
         TZ: ${TZ:-Europe/Saratov}
     image: radar_image
     container_name: radar_container
-    restart: on-failure:5
+    # unless-stopped, а не on-failure: с on-failure контейнер не поднимался
+    # после штатной остановки и после перезагрузки сервера — бот оставался
+    # выключенным молча. Для системы оповещения это хуже цикла рестартов,
+    # тем более что от него защищает диагностика: при неверной конфигурации
+    # установщик просто не запускает бота.
+    restart: unless-stopped
     env_file: .env
     # Порт веб-панели. По умолчанию слушает только localhost: панель
     # с доступом снаружи обязана стоять за HTTPS, иначе cookie сессии

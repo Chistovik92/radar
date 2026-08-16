@@ -339,6 +339,32 @@ async def check_telegram() -> None:
                    "Проверьте BOT_TOKEN в .env — возможно, он отозван")
 
 
+def check_panel() -> None:
+    """Доступна ли веб-панель снаружи контейнера.
+
+    Изнутри контейнера проверить публикацию порта нельзя, поэтому
+    ограничиваемся тем, что реально видно: включён ли флаг и не забыт ли
+    HTTPS при доступе наружу.
+    """
+    from radar import config, features
+
+    if not features.enabled("web_panel"):
+        return
+
+    if config.WEB_HOST not in ("0.0.0.0", "::"):
+        report.add("Веб-панель", WARN,
+                   f"слушает {config.WEB_HOST} — снаружи контейнера недоступна",
+                   "Задайте WEB_HOST=0.0.0.0")
+        return
+
+    if not config.WEB_HTTPS:
+        report.add("Веб-панель", WARN, f"порт {config.WEB_PORT}, HTTPS выключен",
+                   "Для доступа снаружи нужны WEB_HTTPS=1 и reverse proxy; "
+                   "иначе подключайтесь через SSH-туннель")
+    else:
+        report.add("Веб-панель", OK, f"порт {config.WEB_PORT}, HTTPS включён")
+
+
 def check_resources() -> None:
     """Хватит ли памяти и места."""
     announce("resources")
@@ -385,6 +411,7 @@ async def run(quick: bool) -> None:
     if not await check_database():
         return
     await check_import_file()
+    check_panel()
     if not quick:
         await check_telegram()
 
