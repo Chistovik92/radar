@@ -445,5 +445,109 @@ class TestBackup(unittest.TestCase):
         self.assertIn("radar-backup-", self.backup.summary())
 
 
+class TestMenus(unittest.TestCase):
+    """Структура меню: без дублей и с учётом флагов."""
+
+    def setUp(self):
+        from radar import features, keyboards
+
+        self.keyboards = keyboards
+        self.features = features
+        features.apply({})
+
+    def tearDown(self):
+        self.features.apply({})
+
+    def _callbacks(self, markup) -> list[str]:
+        return [
+            button.callback_data
+            for row in markup.inline_keyboard
+            for button in row
+            if getattr(button, "callback_data", None)
+        ]
+
+    def test_manage_menu_has_single_ai_entry(self):
+        """Раньше проверка ИИ открывалась из двух мест сразу."""
+        calls = self._callbacks(self.keyboards.manage_menu("superadmin"))
+        self.assertIn("ai:menu", calls)
+        self.assertNotIn("bench:menu", calls)
+        self.assertNotIn("prov:menu", calls)
+
+    def test_manage_menu_no_duplicates(self):
+        for role in ("moderator", "admin", "superadmin"):
+            calls = self._callbacks(self.keyboards.manage_menu(role))
+            self.assertEqual(len(calls), len(set(calls)), role)
+
+    def test_manage_menu_scoped_by_role(self):
+        moderator = set(self._callbacks(self.keyboards.manage_menu("moderator")))
+        owner = set(self._callbacks(self.keyboards.manage_menu("superadmin")))
+        self.assertNotIn("feat:list", moderator)
+        self.assertIn("feat:list", owner)
+        self.assertTrue(moderator < owner)
+
+    def test_ai_menu_gathers_everything(self):
+        calls = self._callbacks(self.keyboards.ai_menu())
+        for expected in ("prov:menu", "bench:menu", "ai:models"):
+            self.assertIn(expected, calls)
+
+    def test_main_menu_has_invite_for_everyone(self):
+        calls = self._callbacks(self.keyboards.main_menu("user"))
+        self.assertIn("usr:invite", calls)
+
+    def test_main_menu_no_duplicates(self):
+        for role in ("user", "moderator", "admin", "superadmin"):
+            calls = self._callbacks(self.keyboards.main_menu(role))
+            self.assertEqual(len(calls), len(set(calls)), role)
+
+
+class TestWeatherFormat(unittest.TestCase):
+    """Переключатель вида сводки погоды."""
+
+    def setUp(self):
+        from radar import features, keyboards
+
+        self.keyboards = keyboards
+        self.features = features
+
+    def tearDown(self):
+        self.features.apply({})
+
+    def _callbacks(self, markup) -> list[str]:
+        return [
+            button.callback_data
+            for row in markup.inline_keyboard
+            for button in row
+            if getattr(button, "callback_data", None)
+        ]
+
+    def test_hidden_when_flag_off(self):
+        self.features.apply({})
+        calls = self._callbacks(self.keyboards.settings_menu({"settings": {}}))
+        self.assertNotIn("set:wformat", calls)
+
+    def test_shown_when_flag_on(self):
+        self.features.apply({"weather_image": True})
+        calls = self._callbacks(self.keyboards.settings_menu({"settings": {}}))
+        self.assertIn("set:wformat", calls)
+
+    def test_quiet_hours_shown_when_enabled(self):
+        self.features.apply({"quiet_hours": True})
+        calls = self._callbacks(self.keyboards.settings_menu({"settings": {}}))
+        self.assertIn("set:quiet", calls)
+
+    def test_format_menu_offers_both(self):
+        calls = self._callbacks(self.keyboards.weather_format_menu())
+        self.assertIn("set:wfmt:text", calls)
+        self.assertIn("set:wfmt:image", calls)
+
+    def test_not_shown_for_other_user(self):
+        """Администратор правит чужие настройки — вид сводки выбирает сам владелец."""
+        self.features.apply({"weather_image": True})
+        calls = self._callbacks(
+            self.keyboards.settings_menu({"settings": {}}, target="42")
+        )
+        self.assertNotIn("set:wformat", calls)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

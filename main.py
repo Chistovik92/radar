@@ -29,6 +29,13 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.5", [
+        "🖼 <b>Вид сводки погоды</b> — текстом или картинкой, выбирает "
+        "каждый пользователь сам в «Оповещениях».",
+        "🌙 <b>Тихие часы</b> настраиваются там же.",
+        "🧠 <b>Управление ИИ</b> собрано в один раздел: провайдер, сравнение, "
+        "модели и ключи.",
+    ]),
     ("4.5.4", [
         "🔁 <b>Бот снова поднимается сам</b> после остановки и перезагрузки "
         "сервера — прежняя политика оставляла его выключенным молча.",
@@ -175,6 +182,7 @@ async def setup_commands() -> None:
         BotCommand(command="menu", description="Главное меню"),
         BotCommand(command="partner", description="Партнёрский проект"),
         BotCommand(command="panel", description="Веб-панель"),
+        BotCommand(command="digest", description="Новостные подборки"),
         BotCommand(command="help", description="Справка"),
         BotCommand(command="id", description="Мой ID и роль"),
         BotCommand(command="cancel", description="Отменить ввод"),

@@ -82,9 +82,10 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
             InlineKeyboardButton(text="🔑 Ключи доступа", callback_data="key:list"),
         ])
+        # Всё, что касается ИИ, — за одним входом: раньше проверка провайдеров
+        # открывалась и отсюда, и из раздела ключей.
         rows.append([
-            InlineKeyboardButton(text="🧪 Проверка ИИ", callback_data="bench:menu"),
-            InlineKeyboardButton(text="🤖 Провайдер ИИ", callback_data="prov:menu"),
+            InlineKeyboardButton(text="🧠 Управление ИИ", callback_data="ai:menu")
         ])
         rows.append([
             InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
@@ -166,12 +167,45 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
                 text=f"🌤 Погода: {weather_label(user)}", callback_data="set:weather"
             )]
         )
+        if features.enabled("weather_image"):
+            picture = user.get("weather_format") != "text"
+            rows.append([InlineKeyboardButton(
+                text=f"🖼 Вид погоды: {'картинка' if picture else 'текст'}",
+                callback_data="set:wformat",
+            )])
+        if features.enabled("quiet_hours"):
+            from .quiet import quiet_summary
+
+            rows.append([InlineKeyboardButton(
+                text=f"🌙 Тихие часы: {quiet_summary(user)}",
+                callback_data="set:quiet",
+            )])
         rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     else:
         rows.append(
             [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{target}")]
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ai_menu() -> InlineKeyboardMarkup:
+    """Единый раздел управления ИИ."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 Провайдер разбора", callback_data="prov:menu")],
+        [InlineKeyboardButton(text="🧪 Сравнить провайдеров", callback_data="bench:menu")],
+        [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
+        [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],
+        [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
+    ])
+
+
+def weather_format_menu() -> InlineKeyboardMarkup:
+    """Вид сводки погоды: текст или картинка."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Текстом", callback_data="set:wfmt:text")],
+        [InlineKeyboardButton(text="🖼 Картинкой", callback_data="set:wfmt:image")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
+    ])
 
 
 def weather_menu(target: str = "") -> InlineKeyboardMarkup:

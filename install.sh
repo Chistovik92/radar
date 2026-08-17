@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.5.4 — автономный установщик.
+# Система «Радар» v4.5.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.5.4"
+VERSION="4.5.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1290,6 +1290,13 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.5", [
+        "🖼 <b>Вид сводки погоды</b> — текстом или картинкой, выбирает "
+        "каждый пользователь сам в «Оповещениях».",
+        "🌙 <b>Тихие часы</b> настраиваются там же.",
+        "🧠 <b>Управление ИИ</b> собрано в один раздел: провайдер, сравнение, "
+        "модели и ключи.",
+    ]),
     ("4.5.4", [
         "🔁 <b>Бот снова поднимается сам</b> после остановки и перезагрузки "
         "сервера — прежняя политика оставляла его выключенным молча.",
@@ -1436,6 +1443,7 @@ async def setup_commands() -> None:
         BotCommand(command="menu", description="Главное меню"),
         BotCommand(command="partner", description="Партнёрский проект"),
         BotCommand(command="panel", description="Веб-панель"),
+        BotCommand(command="digest", description="Новостные подборки"),
         BotCommand(command="help", description="Справка"),
         BotCommand(command="id", description="Мой ID и роль"),
         BotCommand(command="cancel", description="Отменить ввод"),
@@ -1562,7 +1570,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.5.4"
+__version__ = "4.5.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -12348,9 +12356,10 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
             InlineKeyboardButton(text="🔑 Ключи доступа", callback_data="key:list"),
         ])
+        # Всё, что касается ИИ, — за одним входом: раньше проверка провайдеров
+        # открывалась и отсюда, и из раздела ключей.
         rows.append([
-            InlineKeyboardButton(text="🧪 Проверка ИИ", callback_data="bench:menu"),
-            InlineKeyboardButton(text="🤖 Провайдер ИИ", callback_data="prov:menu"),
+            InlineKeyboardButton(text="🧠 Управление ИИ", callback_data="ai:menu")
         ])
         rows.append([
             InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
@@ -12432,12 +12441,45 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
                 text=f"🌤 Погода: {weather_label(user)}", callback_data="set:weather"
             )]
         )
+        if features.enabled("weather_image"):
+            picture = user.get("weather_format") != "text"
+            rows.append([InlineKeyboardButton(
+                text=f"🖼 Вид погоды: {'картинка' if picture else 'текст'}",
+                callback_data="set:wformat",
+            )])
+        if features.enabled("quiet_hours"):
+            from .quiet import quiet_summary
+
+            rows.append([InlineKeyboardButton(
+                text=f"🌙 Тихие часы: {quiet_summary(user)}",
+                callback_data="set:quiet",
+            )])
         rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     else:
         rows.append(
             [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{target}")]
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ai_menu() -> InlineKeyboardMarkup:
+    """Единый раздел управления ИИ."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 Провайдер разбора", callback_data="prov:menu")],
+        [InlineKeyboardButton(text="🧪 Сравнить провайдеров", callback_data="bench:menu")],
+        [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
+        [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],
+        [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
+    ])
+
+
+def weather_format_menu() -> InlineKeyboardMarkup:
+    """Вид сводки погоды: текст или картинка."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Текстом", callback_data="set:wfmt:text")],
+        [InlineKeyboardButton(text="🖼 Картинкой", callback_data="set:wfmt:image")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
+    ])
 
 
 def weather_menu(target: str = "") -> InlineKeyboardMarkup:
@@ -13746,7 +13788,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import keyboards, roles, storage
+from .. import features, keyboards, roles, storage
 from ..matching import CATEGORY_TITLES
 from ..states import Form
 from ..tg import back_kb, safe_edit, send_html
@@ -13978,6 +14020,97 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         await message.answer(
             f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
         )
+
+
+# --------------------------------------------------------------------------
+#  Вид сводки погоды и тихие часы
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data == "set:wformat")
+async def weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
+    if not features.enabled("weather_image"):
+        await call.answer("Погода картинкой отключена.", show_alert=True)
+        return
+
+    await call.answer()
+    current = "текстом" if user.get("weather_format") == "text" else "картинкой"
+    await safe_edit(
+        call,
+        f"🖼 <b>Вид сводки погоды</b>\nСейчас: <b>{current}</b>\n\n"
+        "Картинка нагляднее, но не прогрузится при ограничениях мобильного "
+        "интернета — а это ровно тот случай, ради которого система "
+        "и существует. Текст дойдёт всегда.",
+        keyboards.weather_format_menu(),
+    )
+
+
+@router.callback_query(F.data.startswith("set:wfmt:"))
+async def set_weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
+    value = call.data.split(":")[2]
+    if value not in ("text", "image"):
+        await call.answer()
+        return
+
+    user["weather_format"] = value
+    await storage.save(call.from_user.id)
+    await call.answer("Текстом" if value == "text" else "Картинкой")
+    await safe_edit(call, "⚙️ <b>Оповещения</b>", keyboards.settings_menu(user))
+
+
+@router.callback_query(F.data == "set:quiet")
+async def ask_quiet(call: CallbackQuery, state: FSMContext) -> None:
+    if not features.enabled("quiet_hours"):
+        await call.answer("Тихие часы отключены.", show_alert=True)
+        return
+
+    await call.answer()
+    await state.set_state(Form.quiet_hours)
+    await safe_edit(
+        call,
+        "🌙 <b>Тихие часы</b>\n\n"
+        "Пришлите интервал, например <code>23:00-07:00</code>.\n"
+        "«-» отключит тихие часы.\n\n"
+        "<b>Военные угрозы и МЧС проходят всегда</b> — придерживаются "
+        "только ЖКХ и погода.\n\n<i>/cancel — отмена.</i>",
+        back_kb("menu:settings", "Отмена"),
+    )
+
+
+@router.message(Form.quiet_hours)
+async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) -> None:
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+
+    if text == "-":
+        user["quiet_from"] = ""
+        user["quiet_to"] = ""
+        await storage.save(message.from_user.id)
+        await state.clear()
+        await message.answer(
+            "✅ Тихие часы отключены.", reply_markup=keyboards.settings_menu(user)
+        )
+        return
+
+    match = re.fullmatch(
+        r"\s*([01]?\d|2[0-3]):([0-5]\d)\s*[-–—]\s*([01]?\d|2[0-3]):([0-5]\d)\s*", text
+    )
+    if not match:
+        await message.answer(
+            "❌ Формат: <code>23:00-07:00</code>. «-» отключит. /cancel — отмена."
+        )
+        return
+
+    user["quiet_from"] = f"{int(match.group(1)):02d}:{match.group(2)}"
+    user["quiet_to"] = f"{int(match.group(3)):02d}:{match.group(4)}"
+    await storage.save(message.from_user.id)
+    await state.clear()
+
+    await message.answer(
+        f"✅ Тихие часы: <b>{user['quiet_from']} — {user['quiet_to']}</b>\n"
+        "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
+        reply_markup=keyboards.settings_menu(user),
+    )
 RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
 cat > "radar/handlers/sources.py" <<'RADAR_FILE_59'
@@ -15981,10 +16114,7 @@ def _groups_menu() -> InlineKeyboardMarkup:
                 callback_data=f"key:group:{group}",
             )
         ])
-    rows.append([
-        InlineKeyboardButton(text="🧪 Сравнить провайдеров ИИ", callback_data="bench:menu")
-    ])
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -16161,7 +16291,7 @@ def _bench_menu() -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="📊 Последний отчёт", callback_data="bench:last")
         ])
-    rows.append([InlineKeyboardButton(text="◀️ К ключам", callback_data="key:list")])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению ИИ", callback_data="ai:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -16270,7 +16400,7 @@ async def bench_run(call: CallbackQuery, role: str) -> None:
         "<i>Провайдер для разбора новостей задаётся переменной "
         "GEMINI_MODEL_ANALYSIS; смена провайдера по умолчанию появится "
         "в версии 4.3.</i>",
-        back_kb("bench:menu", "◀️ Назад"),
+        back_kb("ai:menu", "◀️ К управлению ИИ"),
     )
 
 
@@ -16427,6 +16557,94 @@ async def backup_download(call: CallbackQuery, role: str) -> None:
         FSInputFile(str(latest.path)),
         caption=f"💾 {esc(latest.name)}\n{latest.when} · {latest.size_human}",
         reply_markup=_backup_menu(),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Единый раздел управления ИИ
+# --------------------------------------------------------------------------
+
+def _ai_overview() -> str:
+    from .. import provider
+
+    active = provider.PROVIDERS.get(provider.current())
+    report = ai.models_report()
+    snapshot = ai.limiter.snapshot()
+    left = int(snapshot.get("limit_day", 0)) - int(snapshot.get("used_today", 0))
+
+    lines = [
+        "🧠 <b>Управление ИИ</b>",
+        "",
+        f"<b>Разбор новостей:</b> {esc(active.title if active else 'не выбран')}",
+        f"<b>Ассистент:</b> Google Gemini "
+        f"<i>(только он умеет искать в интернете)</i>",
+        "",
+        f"Модель ассистента: <code>{esc(report.get('assistant') or '—')}</code>",
+        f"Модель разбора: <code>{esc(report.get('analysis') or '—')}</code>",
+        f"Запросов сегодня: {snapshot.get('used_today', 0)} из "
+        f"{snapshot.get('limit_day', 0)} <i>(осталось {max(0, left)})</i>",
+    ]
+    if snapshot.get("paused"):
+        lines.append("")
+        lines.append("⚠️ <i>Фоновый разбор приостановлен: превышена квота.</i>")
+    return "\n".join(lines)
+
+
+@router.message(Command("ai_admin"))
+async def cmd_ai_admin(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Управление ИИ доступно суперадминистратору.")
+        return
+    from .. import keyboards
+
+    await message.answer(_ai_overview(), reply_markup=keyboards.ai_menu())
+
+
+@router.callback_query(F.data == "ai:menu")
+async def ai_menu(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    from .. import keyboards
+
+    await state.clear()
+    await call.answer()
+    await safe_edit(call, _ai_overview(), keyboards.ai_menu())
+
+
+@router.callback_query(F.data == "ai:models")
+async def ai_models(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    from .. import keyboards
+
+    await call.answer("Запрашиваю список моделей…")
+    await ai.discover_models()
+    report = ai.models_report()
+
+    available = [name for name in report.get("available", []) if "gemini" in name]
+    lines = [
+        "📊 <b>Модели Gemini</b>",
+        "",
+        f"Ассистент: <code>{esc(report.get('assistant') or '—')}</code>",
+        f"Разбор: <code>{esc(report.get('analysis') or '—')}</code>",
+        "",
+        f"<b>Доступно ключу: {len(available)}</b>",
+    ]
+    lines += [f"• <code>{esc(name)}</code>" for name in available[:30]]
+    if len(available) > 30:
+        lines.append(f"<i>…и ещё {len(available) - 30}</i>")
+    lines.append("")
+    lines.append(
+        "Закрепить: <code>/setmodel имя</code> — ассистент, "
+        "<code>/setmodel имя analysis</code> — разбор."
+    )
+
+    for chunk in split_text("\n".join(lines)):
+        await send_html(call.message.chat.id, chunk)
+    await send_html(
+        call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
 RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
@@ -16864,7 +17082,7 @@ def _provider_menu() -> InlineKeyboardMarkup:
     rows.append([
         InlineKeyboardButton(text="🔄 Проверить доступ и баланс", callback_data="prov:check")
     ])
-    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению ИИ", callback_data="ai:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

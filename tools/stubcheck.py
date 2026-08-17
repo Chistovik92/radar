@@ -92,6 +92,28 @@ class Dispatcher(Router):
         return router
 
 
+class _Button:
+    """Подобие InlineKeyboardButton: хранит текст и данные обратного вызова."""
+
+    def __init__(self, text: str = "", callback_data: str | None = None,
+                 url: str | None = None, **extra: Any) -> None:
+        self.text = text
+        self.callback_data = callback_data
+        self.url = url
+        for key, value in extra.items():
+            setattr(self, key, value)
+
+
+class _Markup:
+    """Подобие InlineKeyboardMarkup."""
+
+    def __init__(self, inline_keyboard=None, keyboard=None, **extra: Any) -> None:
+        self.inline_keyboard = inline_keyboard or []
+        self.keyboard = keyboard or []
+        for key, value in extra.items():
+            setattr(self, key, value)
+
+
 def install() -> None:
     module("dotenv", load_dotenv=lambda *a, **k: None)
 
@@ -140,7 +162,10 @@ def install() -> None:
     module("aiogram.fsm.storage.memory", MemoryStorage=Any)
     module(
         "aiogram.types",
-        CallbackQuery=Any, InlineKeyboardButton=Any, InlineKeyboardMarkup=Any,
+        # Клавиатуры — настоящие структуры данных: тесты проверяют состав
+        # кнопок, а на заглушке этого не сделать.
+        CallbackQuery=Any,
+        InlineKeyboardButton=_Button, InlineKeyboardMarkup=_Markup,
         FSInputFile=Any,
         KeyboardButton=Any, ReplyKeyboardMarkup=Any, BufferedInputFile=Any,
         KeyboardButtonRequestUsers=Any, ReplyKeyboardRemove=Any,

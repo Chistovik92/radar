@@ -431,7 +431,7 @@ def _provider_menu() -> InlineKeyboardMarkup:
     rows.append([
         InlineKeyboardButton(text="🔄 Проверить доступ и баланс", callback_data="prov:check")
     ])
-    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению ИИ", callback_data="ai:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

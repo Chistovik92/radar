@@ -49,10 +49,7 @@ def _groups_menu() -> InlineKeyboardMarkup:
                 callback_data=f"key:group:{group}",
             )
         ])
-    rows.append([
-        InlineKeyboardButton(text="🧪 Сравнить провайдеров ИИ", callback_data="bench:menu")
-    ])
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -229,7 +226,7 @@ def _bench_menu() -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="📊 Последний отчёт", callback_data="bench:last")
         ])
-    rows.append([InlineKeyboardButton(text="◀️ К ключам", callback_data="key:list")])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению ИИ", callback_data="ai:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -338,7 +335,7 @@ async def bench_run(call: CallbackQuery, role: str) -> None:
         "<i>Провайдер для разбора новостей задаётся переменной "
         "GEMINI_MODEL_ANALYSIS; смена провайдера по умолчанию появится "
         "в версии 4.3.</i>",
-        back_kb("bench:menu", "◀️ Назад"),
+        back_kb("ai:menu", "◀️ К управлению ИИ"),
     )
 
 
@@ -495,4 +492,92 @@ async def backup_download(call: CallbackQuery, role: str) -> None:
         FSInputFile(str(latest.path)),
         caption=f"💾 {esc(latest.name)}\n{latest.when} · {latest.size_human}",
         reply_markup=_backup_menu(),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Единый раздел управления ИИ
+# --------------------------------------------------------------------------
+
+def _ai_overview() -> str:
+    from .. import provider
+
+    active = provider.PROVIDERS.get(provider.current())
+    report = ai.models_report()
+    snapshot = ai.limiter.snapshot()
+    left = int(snapshot.get("limit_day", 0)) - int(snapshot.get("used_today", 0))
+
+    lines = [
+        "🧠 <b>Управление ИИ</b>",
+        "",
+        f"<b>Разбор новостей:</b> {esc(active.title if active else 'не выбран')}",
+        f"<b>Ассистент:</b> Google Gemini "
+        f"<i>(только он умеет искать в интернете)</i>",
+        "",
+        f"Модель ассистента: <code>{esc(report.get('assistant') or '—')}</code>",
+        f"Модель разбора: <code>{esc(report.get('analysis') or '—')}</code>",
+        f"Запросов сегодня: {snapshot.get('used_today', 0)} из "
+        f"{snapshot.get('limit_day', 0)} <i>(осталось {max(0, left)})</i>",
+    ]
+    if snapshot.get("paused"):
+        lines.append("")
+        lines.append("⚠️ <i>Фоновый разбор приостановлен: превышена квота.</i>")
+    return "\n".join(lines)
+
+
+@router.message(Command("ai_admin"))
+async def cmd_ai_admin(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Управление ИИ доступно суперадминистратору.")
+        return
+    from .. import keyboards
+
+    await message.answer(_ai_overview(), reply_markup=keyboards.ai_menu())
+
+
+@router.callback_query(F.data == "ai:menu")
+async def ai_menu(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    from .. import keyboards
+
+    await state.clear()
+    await call.answer()
+    await safe_edit(call, _ai_overview(), keyboards.ai_menu())
+
+
+@router.callback_query(F.data == "ai:models")
+async def ai_models(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    from .. import keyboards
+
+    await call.answer("Запрашиваю список моделей…")
+    await ai.discover_models()
+    report = ai.models_report()
+
+    available = [name for name in report.get("available", []) if "gemini" in name]
+    lines = [
+        "📊 <b>Модели Gemini</b>",
+        "",
+        f"Ассистент: <code>{esc(report.get('assistant') or '—')}</code>",
+        f"Разбор: <code>{esc(report.get('analysis') or '—')}</code>",
+        "",
+        f"<b>Доступно ключу: {len(available)}</b>",
+    ]
+    lines += [f"• <code>{esc(name)}</code>" for name in available[:30]]
+    if len(available) > 30:
+        lines.append(f"<i>…и ещё {len(available) - 30}</i>")
+    lines.append("")
+    lines.append(
+        "Закрепить: <code>/setmodel имя</code> — ассистент, "
+        "<code>/setmodel имя analysis</code> — разбор."
+    )
+
+    for chunk in split_text("\n".join(lines)):
+        await send_html(call.message.chat.id, chunk)
+    await send_html(
+        call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
