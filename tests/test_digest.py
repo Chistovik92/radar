@@ -121,6 +121,59 @@ class TestSubscription(unittest.TestCase):
         self.assertEqual(restored.topics, ["city"])
 
 
+class TestComplimentaryAccess(unittest.TestCase):
+    """Администрации платная часть открыта без оплаты — для поиска ошибок."""
+
+    def test_admin_gets_all_topics(self):
+        for role in ("admin", "superadmin"):
+            with self.subTest(role=role):
+                subscription = digest.subscription_of({"role": role, "digest": {}})
+                self.assertTrue(subscription.complimentary)
+                self.assertTrue(subscription.active)
+                self.assertEqual(subscription.limit, len(digest.TOPICS))
+
+    def test_user_and_moderator_stay_limited(self):
+        for role in ("user", "moderator"):
+            with self.subTest(role=role):
+                subscription = digest.subscription_of({"role": role, "digest": {}})
+                self.assertFalse(subscription.complimentary)
+                self.assertFalse(subscription.active)
+                self.assertEqual(subscription.limit, digest.FREE_TOPICS)
+
+    def test_admin_selects_every_topic(self):
+        subscription = digest.subscription_of({"role": "admin", "digest": {}})
+        for topic in digest.TOPICS:
+            enabled, reason = subscription.toggle(topic.key)
+            self.assertTrue(enabled, f"{topic.key}: {reason}")
+        self.assertEqual(len(subscription.allowed_topics()), len(digest.TOPICS))
+
+    def test_complimentary_is_not_paid(self):
+        """Служебный доступ не выдаёт себя за оплаченную подписку."""
+        subscription = digest.subscription_of({"role": "superadmin", "digest": {}})
+        self.assertFalse(subscription.paid)
+        self.assertEqual(subscription.days_left, 0)
+
+    def test_complimentary_not_stored(self):
+        """Флаг не попадает в базу: понижение роли обязано закрывать доступ."""
+        subscription = digest.subscription_of({"role": "admin", "digest": {}})
+        self.assertNotIn("complimentary", subscription.to_dict())
+        demoted = digest.subscription_of(
+            {"role": "user", "digest": subscription.to_dict()}
+        )
+        self.assertFalse(demoted.active)
+
+    def test_payment_on_top_of_complimentary(self):
+        """Админ может протестировать оплату — extend не падает на пустой дате."""
+        subscription = digest.subscription_of({"role": "admin", "digest": {}})
+        subscription.extend(30)
+        self.assertTrue(subscription.paid)
+        self.assertEqual(subscription.days_left, 30)
+
+    def test_role_argument_wins_over_record(self):
+        subscription = digest.subscription_of({"role": "user", "digest": {}}, role="admin")
+        self.assertTrue(subscription.complimentary)
+
+
 class TestSchedule(unittest.TestCase):
     def setUp(self):
         self.subscription = digest.Subscription(topics=["city"], times=["08:30"])

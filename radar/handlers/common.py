@@ -110,10 +110,19 @@ async def cmd_help(message: Message, role: str) -> None:
         lines.append("/quota — расход квоты Gemini")
     if roles.is_admin(role):
         lines.append("/stats — статистика системы - /models — модели Gemini")
+        lines.append("/digest — новостные подборки - /sos — тревожная кнопка")
+        lines.append("/media — скачать видео по ссылке - /panel — веб-панель")
     if roles.is_superadmin(role):
         lines.append(
             "/features — возможности системы\n"
             "/logs — журналы - /logtail — последние строки - /logclear — очистить"
+        )
+        lines.append(
+            "/perf — время цикла и ресурсы - /bench — сравнение ИИ-провайдеров"
+        )
+        lines.append(
+            "/keys — ключи и настройки - /provider — выбор провайдера\n"
+            "/network — сеть и прокси - /backup — резервная копия"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
 

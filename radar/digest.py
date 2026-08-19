@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
+from . import roles
 from .textutils import esc, esc_attr
 
 log = logging.getLogger("radar.digest")
@@ -121,6 +122,11 @@ class Subscription:
     paid_until: str = ""            # ISO-дата окончания; пусто — бесплатно
     last_sent: str = ""             # метка последней отправки
 
+    # Служебный доступ администрации: все тематики без оплаты. В базе не
+    # хранится — вычисляется по роли при каждом обращении, иначе понижение
+    # роли оставило бы человеку открытую подписку навсегда.
+    complimentary: bool = field(default=False, compare=False)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "Subscription":
         data = data or {}
@@ -140,8 +146,8 @@ class Subscription:
         }
 
     @property
-    def active(self) -> bool:
-        """Оплачена ли подписка на сегодня."""
+    def paid(self) -> bool:
+        """Оплачена ли подписка на сегодня. Служебный доступ здесь не в счёт."""
         if not self.paid_until:
             return False
         try:
@@ -151,8 +157,14 @@ class Subscription:
         return until.date() >= datetime.now(timezone.utc).date()
 
     @property
+    def active(self) -> bool:
+        """Открыты ли все тематики — по оплате или по служебному доступу."""
+        return self.paid or self.complimentary
+
+    @property
     def days_left(self) -> int:
-        if not self.active:
+        """Остаток оплаченных дней. У служебного доступа срока нет — ноль."""
+        if not self.paid:
             return 0
         until = datetime.fromisoformat(self.paid_until)
         return max(0, (until.date() - datetime.now(timezone.utc).date()).days)
@@ -185,14 +197,28 @@ class Subscription:
 
     def extend(self, days: int) -> None:
         """Продлевает подписку, не теряя остаток."""
+        # Именно paid: у администратора paid_until пуст, и fromisoformat("")
+        # уронил бы обработку платежа.
         base = datetime.now(timezone.utc)
-        if self.active:
+        if self.paid:
             base = datetime.fromisoformat(self.paid_until)
         self.paid_until = (base + timedelta(days=days)).isoformat()
 
 
-def subscription_of(user: dict[str, Any]) -> Subscription:
-    return Subscription.from_dict(user.get("digest"))
+def free_for_role(role: str | None) -> bool:
+    """Кому подборки положены без оплаты.
+
+    Администрация должна видеть платную часть целиком: иначе ошибку в
+    доставке двенадцати тематик обнаружит первым не разработчик, а тот,
+    кто заплатил.
+    """
+    return roles.is_admin(role)
+
+
+def subscription_of(user: dict[str, Any], role: str | None = None) -> Subscription:
+    subscription = Subscription.from_dict(user.get("digest"))
+    subscription.complimentary = free_for_role(role or user.get("role"))
+    return subscription
 
 
 def store_subscription(user: dict[str, Any], subscription: Subscription) -> None:
@@ -302,7 +328,13 @@ def describe(subscription: Subscription) -> str:
     """Состояние подписки для меню."""
     lines = ["📰 <b>Новостные подборки</b>", ""]
 
-    if subscription.active:
+    if subscription.complimentary:
+        lines.append(
+            "🛠 <b>Служебный доступ</b> — все тематики открыты без оплаты."
+        )
+        if subscription.paid:
+            lines.append(f"Оплачено дней сверх того: <b>{subscription.days_left}</b>")
+    elif subscription.paid:
         lines.append(f"✅ Подписка активна, осталось дней: <b>{subscription.days_left}</b>")
     else:
         lines.append(

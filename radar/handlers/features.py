@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -21,6 +23,7 @@ from ..db import repo
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
+log = logging.getLogger("radar.handlers.features")
 router = Router(name="features")
 
 
@@ -123,5 +126,21 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     value = not features.enabled(flag.key)
     features.set_local(flag.key, value)
     await repo.set_feature(flag.key, value, call.from_user.id)
-    await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
+
+    if flag.key == "maintenance":
+        # Тумблер, останавливающий рассылку оповещений, не должен выглядеть
+        # как остальные: последствия видны не сразу, а по тишине.
+        await call.answer(
+            "🛠 Работы начаты: оповещения остановлены, "
+            "бот отвечает всем, кроме вас."
+            if value else
+            "✅ Работы завершены: цикл возобновлён.",
+            show_alert=True,
+        )
+        log.warning(
+            "Режим обслуживания %s пользователем %s",
+            "включён" if value else "выключен", call.from_user.id,
+        )
+    else:
+        await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))

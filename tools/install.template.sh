@@ -465,6 +465,7 @@ make_snapshot() {
     if tar -czf "$archive" -C "$APP_DIR" $items 2>>"$LOG_FILE"; then
         spinner_stop
         ROLLBACK_SNAPSHOT="$archive"
+        SNAPSHOT_READY=true
         printf '%s\n' "$PREVIOUS_VERSION" > "$dir/.last-version"
         ok "Снимок: $(basename "$archive") ($(du -h "$archive" | cut -f1))"
         rm -f "$APP_DIR/data/postgres-dump.sql" 2>/dev/null || true
@@ -568,7 +569,31 @@ offer_rollback() {    # offer_rollback <причина>
     esac
 }
 
-trap 'die "Установка прервана (строка $LINENO)"' ERR
+# Обрыв установки после того, как файлы уже перезаписаны. Обычный die здесь
+# оставляет систему в полуобновлённом виде: старая версия затёрта, новая
+# не поднялась, а снимок лежит рядом — и человек о нём не знает.
+# До make_snapshot ведёт себя как die: откатываться ещё не на что.
+SNAPSHOT_READY=false
+
+die_or_rollback() {   # die_or_rollback <сообщение>
+    # Ловушку снимаем сразу: do_rollback внутри сам вызывает docker и tar,
+    # и любая их ошибка иначе вернулась бы сюда же — бесконечным кругом.
+    trap - ERR
+    [ "${DYING:-false}" = true ] && exit 1
+    DYING=true
+
+    printf "\n%s✗ %s%s\n" "$C_RED" "$*" "$C_RESET" >&2
+    log_raw "ERROR $*"
+    [ -n "$LOG_FILE" ] && printf "  Полный лог: %s\n" "$LOG_FILE" >&2
+
+    if [ "$SNAPSHOT_READY" != true ]; then
+        exit 1
+    fi
+    offer_rollback "$*" || true
+    exit 1
+}
+
+trap 'die_or_rollback "Установка прервана (строка $LINENO)"' ERR
 
 # Оформление намеренно без центрирования и рамок: ширина кириллицы
 # в printf считается в байтах, а локаль в контейнере может быть не UTF-8 —
@@ -1326,7 +1351,7 @@ info "Часовой пояс: $TZ_VALUE"
 
 # Пароль с символом $ ломает подстановку переменных в Docker Compose
 if grep -qE '^DB_PASSWORD=.*\$' .env 2>/dev/null; then
-    die "DB_PASSWORD содержит символ \$ — Compose примет его за переменную. Смените пароль в .env"
+    die_or_rollback "DB_PASSWORD содержит символ \$ — Compose примет его за переменную. Смените пароль в .env"
 fi
 
 info "Останавливаю прежние контейнеры"
@@ -1353,7 +1378,7 @@ if [ "$(get_env_value DB_BACKEND)" = "postgres" ] &&
    [ -d "$APP_DIR/data/postgres" ] &&
    [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
     info "Проверяю пароль существующей базы"
-    run $COMPOSE up -d postgres || die "Не удалось запустить PostgreSQL"
+    run $COMPOSE up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
 
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
@@ -1404,7 +1429,7 @@ if [ "$(get_env_value DB_BACKEND)" = "postgres" ] &&
                 chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
                 ;;
             *)
-                die "Верните прежний пароль в .env и запустите установщик заново"
+                die_or_rollback "Верните прежний пароль в .env и запустите установщик заново"
                 ;;
         esac
     fi
@@ -1419,7 +1444,7 @@ if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
     info "База данных: PostgreSQL (отдельный контейнер)"
     mkdir -p "$APP_DIR/data/postgres"
     chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
-    run $COMPOSE $COMPOSE_ARGS up -d postgres || die "Не удалось запустить PostgreSQL"
+    run $COMPOSE $COMPOSE_ARGS up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
         sleep 2
@@ -1519,7 +1544,7 @@ fi
 
 step "Запуск бота"
 
-run $COMPOSE $COMPOSE_ARGS up -d || die "Не удалось запустить контейнеры"
+run $COMPOSE $COMPOSE_ARGS up -d || die_or_rollback "Не удалось запустить контейнеры"
 
 # Первый запуск включает миграции Alembic, перенос данных и геокодирование —
 # на слабом железе это занимает минуты, а не секунды.

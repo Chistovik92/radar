@@ -16,7 +16,7 @@ from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from . import storage
+from . import features, roles, storage
 
 log = logging.getLogger("radar.access")
 
@@ -25,6 +25,7 @@ class AccessMiddleware(BaseMiddleware):
 
     def __init__(self) -> None:
         self._notified: dict[int, float] = {}
+        self._maintenance_notified: dict[int, float] = {}
 
     async def __call__(
         self,
@@ -83,6 +84,29 @@ class AccessMiddleware(BaseMiddleware):
         if user.username and record.get("username") != user.username:
             record["username"] = user.username
 
+        role = record.get("role", "user")
+
+        # Режим обслуживания. Суперадминистратор проходит: иначе он не сможет
+        # выключить режим из самого бота и останется без единственного пульта.
+        if features.enabled("maintenance") and not roles.is_superadmin(role):
+            now = time.monotonic()
+            if now - self._maintenance_notified.get(user.id, 0) > 300:
+                self._maintenance_notified[user.id] = now
+                try:
+                    if isinstance(event, Message):
+                        await event.answer(
+                            "🛠 <b>Идут технические работы</b>\n\n"
+                            "Оповещения временно приостановлены. "
+                            "Бот сообщит, когда работа возобновится."
+                        )
+                    elif isinstance(event, CallbackQuery):
+                        await event.answer(
+                            "🛠 Идут технические работы.", show_alert=True
+                        )
+                except TelegramForbiddenError:
+                    pass
+            return None
+
         data["user"] = record
-        data["role"] = record.get("role", "user")
+        data["role"] = role
         return await handler(event, data)

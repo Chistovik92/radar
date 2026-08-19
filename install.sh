@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.5.5 — автономный установщик.
+# Система «Радар» v4.5.7 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.5.5"
+VERSION="4.5.7"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -465,6 +465,7 @@ make_snapshot() {
     if tar -czf "$archive" -C "$APP_DIR" $items 2>>"$LOG_FILE"; then
         spinner_stop
         ROLLBACK_SNAPSHOT="$archive"
+        SNAPSHOT_READY=true
         printf '%s\n' "$PREVIOUS_VERSION" > "$dir/.last-version"
         ok "Снимок: $(basename "$archive") ($(du -h "$archive" | cut -f1))"
         rm -f "$APP_DIR/data/postgres-dump.sql" 2>/dev/null || true
@@ -568,7 +569,31 @@ offer_rollback() {    # offer_rollback <причина>
     esac
 }
 
-trap 'die "Установка прервана (строка $LINENO)"' ERR
+# Обрыв установки после того, как файлы уже перезаписаны. Обычный die здесь
+# оставляет систему в полуобновлённом виде: старая версия затёрта, новая
+# не поднялась, а снимок лежит рядом — и человек о нём не знает.
+# До make_snapshot ведёт себя как die: откатываться ещё не на что.
+SNAPSHOT_READY=false
+
+die_or_rollback() {   # die_or_rollback <сообщение>
+    # Ловушку снимаем сразу: do_rollback внутри сам вызывает docker и tar,
+    # и любая их ошибка иначе вернулась бы сюда же — бесконечным кругом.
+    trap - ERR
+    [ "${DYING:-false}" = true ] && exit 1
+    DYING=true
+
+    printf "\n%s✗ %s%s\n" "$C_RED" "$*" "$C_RESET" >&2
+    log_raw "ERROR $*"
+    [ -n "$LOG_FILE" ] && printf "  Полный лог: %s\n" "$LOG_FILE" >&2
+
+    if [ "$SNAPSHOT_READY" != true ]; then
+        exit 1
+    fi
+    offer_rollback "$*" || true
+    exit 1
+}
+
+trap 'die_or_rollback "Установка прервана (строка $LINENO)"' ERR
 
 # Оформление намеренно без центрирования и рамок: ширина кириллицы
 # в printf считается в байтах, а локаль в контейнере может быть не UTF-8 —
@@ -997,7 +1022,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=69
+FILE_COUNT=71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1290,6 +1315,25 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.7", [
+        "🛟 <b>Сорванная установка больше не оставляет систему на полпути.</b> "
+        "Раньше откат предлагался только при провале сборки; теперь любой "
+        "обрыв после перезаписи файлов предлагает восстановиться из снимка.",
+        "⏱ <b>Команда /perf</b> — куда уходит время цикла: сбор источников, "
+        "разбор ИИ, рассылка, запись в базу. Плюс память и нагрузка. "
+        "Чтобы оптимизировать по замерам, а не по догадке.",
+        "📋 <b>Справка /help пополнилась</b> — раньше она перечисляла восемь "
+        "команд из двадцати восьми.",
+    ]),
+    ("4.5.6", [
+        "🛠 <b>Режим обслуживания заработал.</b> Раньше переключатель был, "
+        "а действия за ним не стояло: бот продолжал рассылать. Теперь "
+        "фоновый цикл останавливается, остальные видят «идут работы», "
+        "суперадминистратор проходит и может выключить режим из бота.",
+        "🧪 <b>Администрации подборки открыты целиком</b> — все двенадцать "
+        "тематик без оплаты, чтобы ошибку в доставке первым нашёл не тот, "
+        "кто заплатил.",
+    ]),
     ("4.5.5", [
         "🖼 <b>Вид сводки погоды</b> — текстом или картинкой, выбирает "
         "каждый пользователь сам в «Оповещениях».",
@@ -1570,7 +1614,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.5.5"
+__version__ = "4.5.7"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -5885,6 +5929,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
+from . import roles
 from .textutils import esc, esc_attr
 
 log = logging.getLogger("radar.digest")
@@ -5983,6 +6028,11 @@ class Subscription:
     paid_until: str = ""            # ISO-дата окончания; пусто — бесплатно
     last_sent: str = ""             # метка последней отправки
 
+    # Служебный доступ администрации: все тематики без оплаты. В базе не
+    # хранится — вычисляется по роли при каждом обращении, иначе понижение
+    # роли оставило бы человеку открытую подписку навсегда.
+    complimentary: bool = field(default=False, compare=False)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "Subscription":
         data = data or {}
@@ -6002,8 +6052,8 @@ class Subscription:
         }
 
     @property
-    def active(self) -> bool:
-        """Оплачена ли подписка на сегодня."""
+    def paid(self) -> bool:
+        """Оплачена ли подписка на сегодня. Служебный доступ здесь не в счёт."""
         if not self.paid_until:
             return False
         try:
@@ -6013,8 +6063,14 @@ class Subscription:
         return until.date() >= datetime.now(timezone.utc).date()
 
     @property
+    def active(self) -> bool:
+        """Открыты ли все тематики — по оплате или по служебному доступу."""
+        return self.paid or self.complimentary
+
+    @property
     def days_left(self) -> int:
-        if not self.active:
+        """Остаток оплаченных дней. У служебного доступа срока нет — ноль."""
+        if not self.paid:
             return 0
         until = datetime.fromisoformat(self.paid_until)
         return max(0, (until.date() - datetime.now(timezone.utc).date()).days)
@@ -6047,14 +6103,28 @@ class Subscription:
 
     def extend(self, days: int) -> None:
         """Продлевает подписку, не теряя остаток."""
+        # Именно paid: у администратора paid_until пуст, и fromisoformat("")
+        # уронил бы обработку платежа.
         base = datetime.now(timezone.utc)
-        if self.active:
+        if self.paid:
             base = datetime.fromisoformat(self.paid_until)
         self.paid_until = (base + timedelta(days=days)).isoformat()
 
 
-def subscription_of(user: dict[str, Any]) -> Subscription:
-    return Subscription.from_dict(user.get("digest"))
+def free_for_role(role: str | None) -> bool:
+    """Кому подборки положены без оплаты.
+
+    Администрация должна видеть платную часть целиком: иначе ошибку в
+    доставке двенадцати тематик обнаружит первым не разработчик, а тот,
+    кто заплатил.
+    """
+    return roles.is_admin(role)
+
+
+def subscription_of(user: dict[str, Any], role: str | None = None) -> Subscription:
+    subscription = Subscription.from_dict(user.get("digest"))
+    subscription.complimentary = free_for_role(role or user.get("role"))
+    return subscription
 
 
 def store_subscription(user: dict[str, Any], subscription: Subscription) -> None:
@@ -6164,7 +6234,13 @@ def describe(subscription: Subscription) -> str:
     """Состояние подписки для меню."""
     lines = ["📰 <b>Новостные подборки</b>", ""]
 
-    if subscription.active:
+    if subscription.complimentary:
+        lines.append(
+            "🛠 <b>Служебный доступ</b> — все тематики открыты без оплаты."
+        )
+        if subscription.paid:
+            lines.append(f"Оплачено дней сверх того: <b>{subscription.days_left}</b>")
+    elif subscription.paid:
         lines.append(f"✅ Подписка активна, осталось дней: <b>{subscription.days_left}</b>")
     else:
         lines.append(
@@ -6393,8 +6469,139 @@ def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
 def held_count() -> int:
     return len(_held)
 RADAR_FILE_24
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/profiling.py"
+cat > "radar/profiling.py" <<'RADAR_FILE_25'
+"""Замер стадий цикла мониторинга и ресурсов контейнера.
+
+Оптимизировать наугад — тратить время не там. Модуль отвечает на один
+вопрос: куда уходят секунды одного прохода. Отдельно считаются сбор
+источников, разбор ИИ и рассылка, потому что лечатся они по-разному:
+сбор упирается в сеть, разбор — во внешний сервис, рассылка — в лимиты
+Telegram.
+
+Замер обязан быть дешевле того, что он измеряет: хранятся только
+скользящие суммы по стадиям и последние проходы, ничего не пишется на
+диск и не уходит в базу. Память ограничена сверху числом стадий.
+
+Показания снимаются с /proc, без psutil: лишняя зависимость ради двух
+файлов на слабом железе не окупается.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Iterator
+
+log = logging.getLogger("radar.profiling")
+
+HISTORY = 20              # сколько последних проходов помним
+STAGES = ("sources", "vk", "ai", "dispatch", "digest", "save")
+
+
+@dataclass
+class Stage:
+    """Накопленные показания одной стадии."""
+
+    calls: int = 0
+    total: float = 0.0
+    worst: float = 0.0
+    recent: list[float] = field(default_factory=list)
+
+    def add(self, seconds: float) -> None:
+        self.calls += 1
+        self.total += seconds
+        self.worst = max(self.worst, seconds)
+        self.recent.append(seconds)
+        del self.recent[:-HISTORY]
+
+    @property
+    def average(self) -> float:
+        return self.total / self.calls if self.calls else 0.0
+
+    @property
+    def last(self) -> float:
+        return self.recent[-1] if self.recent else 0.0
+
+
+_stages: dict[str, Stage] = {}
+_started_at = time.monotonic()
+
+
+@contextmanager
+def measure(stage: str) -> Iterator[None]:
+    """Замеряет блок. Ошибку не глотает, но время всё равно записывает.
+
+    Провалившаяся стадия — тоже показание: обращение к недоступному
+    сервису, висящее до таймаута, и есть та самая потерянная минута.
+    """
+    began = time.perf_counter()
+    try:
+        yield
+    finally:
+        _stages.setdefault(stage, Stage()).add(time.perf_counter() - began)
+
+
+def reset() -> None:
+    global _started_at
+    _stages.clear()
+    _started_at = time.monotonic()
+
+
+def uptime() -> float:
+    return time.monotonic() - _started_at
+
+
+def snapshot() -> dict[str, Stage]:
+    """Копия показаний в порядке стадий цикла."""
+    ordered = {name: _stages[name] for name in STAGES if name in _stages}
+    for name, stage in _stages.items():      # стадии вне списка — в конец
+        ordered.setdefault(name, stage)
+    return ordered
+
+
+# --- ресурсы --------------------------------------------------------------
+
+def memory_mb() -> float:
+    """Занятая процессом память, МиБ. Ноль, если /proc недоступен."""
+    try:
+        with open("/proc/self/statm", encoding="ascii") as handle:
+            pages = int(handle.read().split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0.0
+    return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+
+
+def cpu_seconds() -> float:
+    """Процессорное время процесса. Ноль, если недоступно."""
+    try:
+        times = os.times()
+    except OSError:
+        return 0.0
+    return times.user + times.system
+
+
+def load_average() -> tuple[float, float, float]:
+    try:
+        return os.getloadavg()
+    except (OSError, AttributeError):
+        return (0.0, 0.0, 0.0)
+
+
+def cpu_count() -> int:
+    return os.cpu_count() or 1
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_25'
+cat > "radar/backup.py" <<'RADAR_FILE_26'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -6617,9 +6824,9 @@ def summary() -> str:
         "<code>bash install.sh --rollback</code></i>"
     )
     return "\n".join(lines)
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_26'
+cat > "radar/weather_image.py" <<'RADAR_FILE_27'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -6830,9 +7037,9 @@ def _strip_tags(text: str) -> str:
     import re
 
     return re.sub(r"<[^>]+>", "", text or "").strip()
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_27'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_28'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -6847,9 +7054,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_28'
+cat > "radar/web/auth.py" <<'RADAR_FILE_29'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -7031,9 +7238,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_29'
+cat > "radar/web/audit.py" <<'RADAR_FILE_30'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -7100,9 +7307,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_30'
+cat > "radar/web/panel.py" <<'RADAR_FILE_31'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -7554,9 +7761,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_31'
+cat > "radar/web/backup.py" <<'RADAR_FILE_32'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -7599,9 +7806,9 @@ def body() -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_32'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_33'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -7634,9 +7841,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_33'
+cat > "radar/db/models.py" <<'RADAR_FILE_34'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -7879,9 +8086,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_34'
+cat > "radar/db/engine.py" <<'RADAR_FILE_35'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -8395,9 +8602,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_35'
+cat > "radar/db/repo.py" <<'RADAR_FILE_36'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -8926,9 +9133,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_36'
+cat > "radar/db/importer.py" <<'RADAR_FILE_37'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -9103,9 +9310,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_37'
+cat > "radar/doctor.py" <<'RADAR_FILE_38'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -9581,9 +9788,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_37
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_38'
+cat > "migrations/env.py" <<'RADAR_FILE_39'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -9643,9 +9850,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_39'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_40'
 """${message}
 
 Revision ID: ${up_revision}
@@ -9670,9 +9877,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_40'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_41'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -9839,9 +10046,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_41'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_42'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -9867,9 +10074,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_42'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_43'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -9994,9 +10201,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_43'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_44'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -10260,9 +10467,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_43
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_44'
+cat > "radar/storage.py" <<'RADAR_FILE_45'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -10447,9 +10654,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_44
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_45'
+cat > "radar/exporting.py" <<'RADAR_FILE_46'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -10655,9 +10862,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_45
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_46'
+cat > "radar/ai.py" <<'RADAR_FILE_47'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -11361,9 +11568,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_46
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_47'
+cat > "radar/geocode.py" <<'RADAR_FILE_48'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -11555,9 +11762,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_47
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_48'
+cat > "radar/weather.py" <<'RADAR_FILE_49'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -11889,9 +12096,9 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
-RADAR_FILE_48
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_49'
+cat > "radar/sources.py" <<'RADAR_FILE_50'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -12150,9 +12357,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_49
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_50'
+cat > "radar/tg.py" <<'RADAR_FILE_51'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -12269,9 +12476,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_50
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_51'
+cat > "radar/keyboards.py" <<'RADAR_FILE_52'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -12639,9 +12846,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_51
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_52'
+cat > "radar/states.py" <<'RADAR_FILE_53'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -12671,9 +12878,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_52
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_53'
+cat > "radar/middlewares.py" <<'RADAR_FILE_54'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -12692,7 +12899,7 @@ from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from . import storage
+from . import features, roles, storage
 
 log = logging.getLogger("radar.access")
 
@@ -12701,6 +12908,7 @@ class AccessMiddleware(BaseMiddleware):
 
     def __init__(self) -> None:
         self._notified: dict[int, float] = {}
+        self._maintenance_notified: dict[int, float] = {}
 
     async def __call__(
         self,
@@ -12759,12 +12967,35 @@ class AccessMiddleware(BaseMiddleware):
         if user.username and record.get("username") != user.username:
             record["username"] = user.username
 
+        role = record.get("role", "user")
+
+        # Режим обслуживания. Суперадминистратор проходит: иначе он не сможет
+        # выключить режим из самого бота и останется без единственного пульта.
+        if features.enabled("maintenance") and not roles.is_superadmin(role):
+            now = time.monotonic()
+            if now - self._maintenance_notified.get(user.id, 0) > 300:
+                self._maintenance_notified[user.id] = now
+                try:
+                    if isinstance(event, Message):
+                        await event.answer(
+                            "🛠 <b>Идут технические работы</b>\n\n"
+                            "Оповещения временно приостановлены. "
+                            "Бот сообщит, когда работа возобновится."
+                        )
+                    elif isinstance(event, CallbackQuery):
+                        await event.answer(
+                            "🛠 Идут технические работы.", show_alert=True
+                        )
+                except TelegramForbiddenError:
+                    pass
+            return None
+
         data["user"] = record
-        data["role"] = record.get("role", "user")
+        data["role"] = role
         return await handler(event, data)
-RADAR_FILE_53
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_54'
+cat > "radar/monitor.py" <<'RADAR_FILE_55'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -12789,6 +13020,7 @@ from . import (
     digest,
     features,
     geocode,
+    profiling,
     quiet,
     secrets,
     sos,
@@ -13022,6 +13254,12 @@ async def send_digests(now: datetime) -> None:
     if not features.enabled("digest") or not _digest_pool:
         return
 
+    with profiling.measure("digest"):
+        await _send_digests_inner(now)
+
+
+async def _send_digests_inner(now: datetime) -> None:
+    """Собственно рассылка. Вынесена, чтобы замер не оборачивал холостые проходы."""
     delivered = 0
     for uid, user in list(storage.users().items()):
         subscription = digest.subscription_of(user)
@@ -13116,28 +13354,30 @@ async def repeat_sos() -> None:
 
 
 async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None:
-    items = await sources.collect(
-        session,
-        storage.channels(),
-        storage.rss_feeds(),
-        seen,
-        config.MSG_PER_SOURCE,
-        warmup=warmup,
-    )
+    with profiling.measure("sources"):
+        items = await sources.collect(
+            session,
+            storage.channels(),
+            storage.rss_feeds(),
+            seen,
+            config.MSG_PER_SOURCE,
+            warmup=warmup,
+        )
     # ВКонтакте читается тем же циклом: сообщества добавляются как источники,
     # а разбор дальше общий для всех типов.
     if features.enabled("source_vk"):
         vk_token = secrets.get("VK_SERVICE_TOKEN")
         groups = list(storage.vk_groups())
         if vk_token and groups:
-            for group in groups:
-                fetched = await sources.fetch_vk(
-                    session, group, vk_token, config.MSG_PER_SOURCE
-                )
-                for entry in fetched:
-                    if seen.add(entry.text):
-                        items.append(entry)
-                await asyncio.sleep(0.4)
+            with profiling.measure("vk"):
+                for group in groups:
+                    fetched = await sources.fetch_vk(
+                        session, group, vk_token, config.MSG_PER_SOURCE
+                    )
+                    for entry in fetched:
+                        if seen.add(entry.text):
+                            items.append(entry)
+                    await asyncio.sleep(0.4)
         elif groups and not vk_token:
             log.info("Источники VK включены, но VK_SERVICE_TOKEN не задан")
 
@@ -13152,9 +13392,10 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     analyses: list[Analysis] = []
     if items:
         try:
-            parsed = await ai.analyze_batch(
-                [(item.text, item.source, item.link) for item in items]
-            )
+            with profiling.measure("ai"):
+                parsed = await ai.analyze_batch(
+                    [(item.text, item.source, item.link) for item in items]
+                )
         except Exception:  # noqa: BLE001
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []
@@ -13172,14 +13413,16 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     now_ts = int(time.time())
     now = datetime.now()
     changed = False
-    for uid, user in list(storage.users().items()):
-        try:
-            if await dispatch_user(session, uid, user, analyses, now_ts, now):
-                changed = True
-        except Exception:  # noqa: BLE001
-            log.exception("Ошибка рассылки пользователю %s", uid)
+    with profiling.measure("dispatch"):
+        for uid, user in list(storage.users().items()):
+            try:
+                if await dispatch_user(session, uid, user, analyses, now_ts, now):
+                    changed = True
+            except Exception:  # noqa: BLE001
+                log.exception("Ошибка рассылки пользователю %s", uid)
     if changed:
-        await storage.save()
+        with profiling.measure("save"):
+            await storage.save()
 
 
 async def run() -> None:
@@ -13193,8 +13436,28 @@ async def run() -> None:
 
         await cycle(session, warmup=True)
 
+        paused = False
         while True:
             started = time.monotonic()
+
+            # Режим обслуживания: опрос источников и рассылки остановлены,
+            # но цикл продолжает крутиться вхолостую — чтобы выход из режима
+            # не требовал перезапуска контейнера. SOS не трогаем: он идёт
+            # напрямую по нажатию кнопки, а не отсюда.
+            if features.enabled("maintenance"):
+                if not paused:
+                    log.warning("Режим обслуживания: фоновый цикл остановлен")
+                    paused = True
+                await asyncio.sleep(15.0)
+                continue
+            if paused:
+                log.info("Режим обслуживания снят: цикл возобновлён")
+                paused = False
+                # Первый проход после паузы — прогревочный: за время работ
+                # источники накопили сообщения, и рассылать их скопом уже
+                # поздно, событие в прошлом тревогой не является.
+                await cycle(session, warmup=True)
+
             try:
                 now_moment = datetime.now()
                 await repeat_sos()
@@ -13208,9 +13471,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_54
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_55'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_56'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -13232,6 +13495,7 @@ from . import (
     logs,
     media,
     network,
+    perf,
     settings,
     settings_admin,
     sos,
@@ -13249,6 +13513,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(perf.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Ссылки перехватываем до свободного диалога с моделью
@@ -13258,9 +13523,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_55
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_56'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_57'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -13373,10 +13638,19 @@ async def cmd_help(message: Message, role: str) -> None:
         lines.append("/quota — расход квоты Gemini")
     if roles.is_admin(role):
         lines.append("/stats — статистика системы - /models — модели Gemini")
+        lines.append("/digest — новостные подборки - /sos — тревожная кнопка")
+        lines.append("/media — скачать видео по ссылке - /panel — веб-панель")
     if roles.is_superadmin(role):
         lines.append(
             "/features — возможности системы\n"
             "/logs — журналы - /logtail — последние строки - /logclear — очистить"
+        )
+        lines.append(
+            "/perf — время цикла и ресурсы - /bench — сравнение ИИ-провайдеров"
+        )
+        lines.append(
+            "/keys — ключи и настройки - /provider — выбор провайдера\n"
+            "/network — сеть и прокси - /backup — резервная копия"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
@@ -13601,9 +13875,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_56
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_57'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_58'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -13767,9 +14041,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 weather.render(data, cluster_title(cluster)),
                 markup,
             )
-RADAR_FILE_57
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_58'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_59'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -14111,9 +14385,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_58
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_59'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_60'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -14548,9 +14822,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_59
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_60'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_61'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -14917,9 +15191,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_60
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_61'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_62'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -14934,6 +15208,8 @@ cat > "radar/handlers/features.py" <<'RADAR_FILE_61'
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -14943,6 +15219,7 @@ from ..db import repo
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
+log = logging.getLogger("radar.handlers.features")
 router = Router(name="features")
 
 
@@ -15045,11 +15322,27 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     value = not features.enabled(flag.key)
     features.set_local(flag.key, value)
     await repo.set_feature(flag.key, value, call.from_user.id)
-    await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
+
+    if flag.key == "maintenance":
+        # Тумблер, останавливающий рассылку оповещений, не должен выглядеть
+        # как остальные: последствия видны не сразу, а по тишине.
+        await call.answer(
+            "🛠 Работы начаты: оповещения остановлены, "
+            "бот отвечает всем, кроме вас."
+            if value else
+            "✅ Работы завершены: цикл возобновлён.",
+            show_alert=True,
+        )
+        log.warning(
+            "Режим обслуживания %s пользователем %s",
+            "включён" if value else "выключен", call.from_user.id,
+        )
+    else:
+        await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_61
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_62'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_63'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -15337,9 +15630,144 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_62
+RADAR_FILE_63
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_64'
+"""Отчёт о том, куда уходит время цикла. Только суперадминистратору.
+
+Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
+одноплатнике порядок стадий обычно один и тот же — сеть, потом ИИ, —
+но проверять это следует на конкретной машине, а не на общих словах.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from .. import config, profiling, roles
+from ..tg import back_kb, safe_edit
+
+router = Router(name="perf")
+
+TITLES = {
+    "sources": "Сбор источников",
+    "vk": "ВКонтакте",
+    "ai": "Разбор ИИ",
+    "dispatch": "Рассылка оповещений",
+    "digest": "Рассылка подборок",
+    "save": "Запись в базу",
+}
+
+
+def _duration(seconds: float) -> str:
+    if seconds >= 60:
+        return f"{int(seconds // 60)} мин {seconds % 60:.0f} с"
+    if seconds >= 1:
+        return f"{seconds:.1f} с"
+    return f"{seconds * 1000:.0f} мс"
+
+
+def _uptime(seconds: float) -> str:
+    hours, remainder = divmod(int(seconds), 3600)
+    if hours >= 24:
+        return f"{hours // 24} сут {hours % 24} ч"
+    return f"{hours} ч {remainder // 60} мин"
+
+
+def _menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="perf:show")],
+        [InlineKeyboardButton(text="🧹 Сбросить счётчики", callback_data="perf:reset")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:main")],
+    ])
+
+
+def _report() -> str:
+    stages = profiling.snapshot()
+    lines = ["⏱ <b>Время цикла по стадиям</b>", ""]
+
+    if not stages:
+        lines.append("Замеров пока нет — цикл ещё не отработал ни разу.")
+    else:
+        # Доля считается от суммы стадий, а не от интервала опроса: между
+        # проходами бот спит, и включать сон в проценты бессмысленно.
+        total = sum(stage.total for stage in stages.values()) or 1.0
+        for key, stage in stages.items():
+            title = TITLES.get(key, key)
+            share = stage.total / total * 100
+            lines.append(
+                f"<b>{title}</b> — {share:.0f}%\n"
+                f"  среднее {_duration(stage.average)}"
+                f" · худшее {_duration(stage.worst)}"
+                f" · последнее {_duration(stage.last)}"
+                f" · вызовов {stage.calls}"
+            )
+        lines.append("")
+        lines.append(f"Суммарно в стадиях: <b>{_duration(total)}</b>")
+
+    memory = profiling.memory_mb()
+    cores = profiling.cpu_count()
+    one, five, fifteen = profiling.load_average()
+
+    lines.append("")
+    lines.append("💻 <b>Ресурсы</b>")
+    if memory:
+        lines.append(f"Память процесса: <b>{memory:.0f} МиБ</b>")
+    lines.append(f"Процессорное время: <b>{_duration(profiling.cpu_seconds())}</b>")
+    if one or five or fifteen:
+        # Нагрузка выше числа ядер означает очередь готовых задач —
+        # на четырёхъядерном RK3318 тревожен порог около 4.
+        lines.append(
+            f"Средняя нагрузка: <b>{one:.2f}</b> / {five:.2f} / {fifteen:.2f}"
+            f" (ядер: {cores})"
+        )
+    lines.append(f"Наблюдение идёт: <b>{_uptime(profiling.uptime())}</b>")
+    lines.append(f"Интервал опроса: <b>{config.POLL_INTERVAL} с</b>")
+
+    lines.append("")
+    lines.append(
+        "<i>Проценты показывают, что именно оптимизировать. Сбор источников "
+        "и разбор ИИ упираются в сеть и внешний сервис, а не в скорость кода.</i>"
+    )
+    return "\n".join(lines)
+
+
+@router.message(Command("perf"))
+async def cmd_perf(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Замеры доступны суперадминистратору.")
+        return
+    await message.answer(_report(), reply_markup=_menu())
+
+
+@router.callback_query(F.data == "perf:show")
+async def perf_show(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, _report(), _menu())
+
+
+@router.callback_query(F.data == "perf:reset")
+async def perf_reset(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    profiling.reset()
+    await call.answer("Счётчики сброшены.")
+    await safe_edit(call, _report(), _menu())
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_63'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_65'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -15745,9 +16173,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_63
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_64'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_66'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -16060,9 +16488,9 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_64
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_65'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_67'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -16646,9 +17074,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_65
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_66'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_68'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -17169,9 +17597,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_66
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_67'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_69'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -17528,9 +17956,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_67
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_68'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_70'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -17675,7 +18103,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_68
+RADAR_FILE_70
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -18005,7 +18433,7 @@ info "Часовой пояс: $TZ_VALUE"
 
 # Пароль с символом $ ломает подстановку переменных в Docker Compose
 if grep -qE '^DB_PASSWORD=.*\$' .env 2>/dev/null; then
-    die "DB_PASSWORD содержит символ \$ — Compose примет его за переменную. Смените пароль в .env"
+    die_or_rollback "DB_PASSWORD содержит символ \$ — Compose примет его за переменную. Смените пароль в .env"
 fi
 
 info "Останавливаю прежние контейнеры"
@@ -18032,7 +18460,7 @@ if [ "$(get_env_value DB_BACKEND)" = "postgres" ] &&
    [ -d "$APP_DIR/data/postgres" ] &&
    [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
     info "Проверяю пароль существующей базы"
-    run $COMPOSE up -d postgres || die "Не удалось запустить PostgreSQL"
+    run $COMPOSE up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
 
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
@@ -18083,7 +18511,7 @@ if [ "$(get_env_value DB_BACKEND)" = "postgres" ] &&
                 chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
                 ;;
             *)
-                die "Верните прежний пароль в .env и запустите установщик заново"
+                die_or_rollback "Верните прежний пароль в .env и запустите установщик заново"
                 ;;
         esac
     fi
@@ -18098,7 +18526,7 @@ if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
     info "База данных: PostgreSQL (отдельный контейнер)"
     mkdir -p "$APP_DIR/data/postgres"
     chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
-    run $COMPOSE $COMPOSE_ARGS up -d postgres || die "Не удалось запустить PostgreSQL"
+    run $COMPOSE $COMPOSE_ARGS up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
         sleep 2
@@ -18198,7 +18626,7 @@ fi
 
 step "Запуск бота"
 
-run $COMPOSE $COMPOSE_ARGS up -d || die "Не удалось запустить контейнеры"
+run $COMPOSE $COMPOSE_ARGS up -d || die_or_rollback "Не удалось запустить контейнеры"
 
 # Первый запуск включает миграции Alembic, перенос данных и геокодирование —
 # на слабом железе это занимает минуты, а не секунды.

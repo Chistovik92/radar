@@ -22,6 +22,7 @@ from . import (
     digest,
     features,
     geocode,
+    profiling,
     quiet,
     secrets,
     sos,
@@ -255,6 +256,12 @@ async def send_digests(now: datetime) -> None:
     if not features.enabled("digest") or not _digest_pool:
         return
 
+    with profiling.measure("digest"):
+        await _send_digests_inner(now)
+
+
+async def _send_digests_inner(now: datetime) -> None:
+    """Собственно рассылка. Вынесена, чтобы замер не оборачивал холостые проходы."""
     delivered = 0
     for uid, user in list(storage.users().items()):
         subscription = digest.subscription_of(user)
@@ -349,28 +356,30 @@ async def repeat_sos() -> None:
 
 
 async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None:
-    items = await sources.collect(
-        session,
-        storage.channels(),
-        storage.rss_feeds(),
-        seen,
-        config.MSG_PER_SOURCE,
-        warmup=warmup,
-    )
+    with profiling.measure("sources"):
+        items = await sources.collect(
+            session,
+            storage.channels(),
+            storage.rss_feeds(),
+            seen,
+            config.MSG_PER_SOURCE,
+            warmup=warmup,
+        )
     # ВКонтакте читается тем же циклом: сообщества добавляются как источники,
     # а разбор дальше общий для всех типов.
     if features.enabled("source_vk"):
         vk_token = secrets.get("VK_SERVICE_TOKEN")
         groups = list(storage.vk_groups())
         if vk_token and groups:
-            for group in groups:
-                fetched = await sources.fetch_vk(
-                    session, group, vk_token, config.MSG_PER_SOURCE
-                )
-                for entry in fetched:
-                    if seen.add(entry.text):
-                        items.append(entry)
-                await asyncio.sleep(0.4)
+            with profiling.measure("vk"):
+                for group in groups:
+                    fetched = await sources.fetch_vk(
+                        session, group, vk_token, config.MSG_PER_SOURCE
+                    )
+                    for entry in fetched:
+                        if seen.add(entry.text):
+                            items.append(entry)
+                    await asyncio.sleep(0.4)
         elif groups and not vk_token:
             log.info("Источники VK включены, но VK_SERVICE_TOKEN не задан")
 
@@ -385,9 +394,10 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     analyses: list[Analysis] = []
     if items:
         try:
-            parsed = await ai.analyze_batch(
-                [(item.text, item.source, item.link) for item in items]
-            )
+            with profiling.measure("ai"):
+                parsed = await ai.analyze_batch(
+                    [(item.text, item.source, item.link) for item in items]
+                )
         except Exception:  # noqa: BLE001
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []
@@ -405,14 +415,16 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     now_ts = int(time.time())
     now = datetime.now()
     changed = False
-    for uid, user in list(storage.users().items()):
-        try:
-            if await dispatch_user(session, uid, user, analyses, now_ts, now):
-                changed = True
-        except Exception:  # noqa: BLE001
-            log.exception("Ошибка рассылки пользователю %s", uid)
+    with profiling.measure("dispatch"):
+        for uid, user in list(storage.users().items()):
+            try:
+                if await dispatch_user(session, uid, user, analyses, now_ts, now):
+                    changed = True
+            except Exception:  # noqa: BLE001
+                log.exception("Ошибка рассылки пользователю %s", uid)
     if changed:
-        await storage.save()
+        with profiling.measure("save"):
+            await storage.save()
 
 
 async def run() -> None:
@@ -426,8 +438,28 @@ async def run() -> None:
 
         await cycle(session, warmup=True)
 
+        paused = False
         while True:
             started = time.monotonic()
+
+            # Режим обслуживания: опрос источников и рассылки остановлены,
+            # но цикл продолжает крутиться вхолостую — чтобы выход из режима
+            # не требовал перезапуска контейнера. SOS не трогаем: он идёт
+            # напрямую по нажатию кнопки, а не отсюда.
+            if features.enabled("maintenance"):
+                if not paused:
+                    log.warning("Режим обслуживания: фоновый цикл остановлен")
+                    paused = True
+                await asyncio.sleep(15.0)
+                continue
+            if paused:
+                log.info("Режим обслуживания снят: цикл возобновлён")
+                paused = False
+                # Первый проход после паузы — прогревочный: за время работ
+                # источники накопили сообщения, и рассылать их скопом уже
+                # поздно, событие в прошлом тревогой не является.
+                await cycle(session, warmup=True)
+
             try:
                 now_moment = datetime.now()
                 await repeat_sos()

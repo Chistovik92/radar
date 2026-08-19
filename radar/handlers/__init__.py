@@ -19,6 +19,7 @@ from . import (
     logs,
     media,
     network,
+    perf,
     settings,
     settings_admin,
     sos,
@@ -36,6 +37,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(perf.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Ссылки перехватываем до свободного диалога с моделью
