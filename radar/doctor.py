@@ -307,9 +307,15 @@ async def check_import_file() -> None:
 
     users = len(data["users"])
     locations = sum(len(item["locs"]) for item in data["users"].values())
-    report.add("Данные прежней версии", OK,
-               f"готово к переносу: пользователей {users}, локаций {locations}, "
-               f"источников {len(data['channels'])}")
+    # Предупреждение, а не «ок»: с 4.6.1 этот файл уже не переносится,
+    # и человеку важно узнать об этом до, а не после запуска.
+    report.add(
+        "Данные прежней версии", WARN,
+        f"найден db.json: пользователей {users}, локаций {locations}, "
+        f"источников {len(data['channels'])}",
+        "Перенос из db.json прекращён с 4.6.1. Обновитесь сначала до 4.6.0, "
+        "дайте боту запуститься, затем переходите на текущую версию",
+    )
 
 
 async def check_telegram() -> None:

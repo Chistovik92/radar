@@ -701,3 +701,41 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
+
+
+DIGEST_SYSTEM = (
+    "Ты редактор новостной рассылки. Из списка коротких новостей одной "
+    "темы сделай связную сводку на русском языке: 2-4 предложения, живо "
+    "и по делу, без вводных вроде «в этом выпуске». Объединяй сообщения "
+    "об одном событии. Не выдумывай фактов, которых нет в исходных "
+    "новостях, и не добавляй оценок. Верни только текст сводки."
+)
+
+
+async def summarize_topic(title: str, entries: Sequence[str]) -> str:
+    """Пересказывает новости одной тематики одним запросом.
+
+    Один вызов на тематику, а не на новость: пересказ каждой новости
+    отдельно кратно поднял бы расход квоты, а выигрыш в читаемости даёт
+    именно объединение — сводка вместо списка обрывков.
+
+    priority=False: подборки не срочные, и при нехватке квоты они обязаны
+    уступить место оповещениям об опасности. Пустая строка означает
+    «пересказа нет» — вызывающий покажет исходный список.
+    """
+    if not ENABLED or not entries:
+        return ""
+
+    listing = "\n".join(f"- {text[:400]}" for text in entries[:12])
+    try:
+        return (await generate(
+            f"Тема: {title}\n\nНовости:\n{listing}",
+            system=DIGEST_SYSTEM,
+            max_tokens=400,
+            temperature=0.5,
+            role=ANALYSIS,
+            priority=False,
+        )).strip()
+    except Exception as exc:  # noqa: BLE001
+        log.info("Пересказ темы «%s» не получился: %s", title, exc)
+        return ""

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.6.0 — автономный установщик.
+# Система «Радар» v4.6.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.6.0"
+VERSION="4.6.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -141,12 +141,109 @@ overall() {
     return 0
 }
 
+# Анимация возможна только при живом терминале. При `curl … | bash`, в CI
+# и при перенаправлении в файл его нет, и «бегущие» полосы превратились бы
+# в мусор из escape-последовательностей посреди лога. Поэтому всё, что
+# движется, спрашивает разрешения у этой переменной.
+HAS_TTY=false
+[ -t 1 ] && [ -z "${NO_ANIMATION:-}" ] && HAS_TTY=true
+
+SPIN_CHARS='|/-\\'
+SPIN_PID=""
+STEP_STARTED=0
+STEP_TITLE=""
+STEP_TIMES=""          # накопленный отчёт: «название<TAB>секунды»
+INSTALL_STARTED=$(date +%s)
+
+server_time() { date "+%H:%M:%S"; }
+
+human_time() {         # human_time <секунд>
+    local total=$1
+    if [ "$total" -ge 60 ]; then
+        printf "%d мин %02d с" $((total / 60)) $((total % 60))
+    else
+        printf "%d с" "$total"
+    fi
+}
+
+# Полоса этапа. Крутится, пока идёт длинная операция, и стирает себя за собой.
+spinner_start() {      # spinner_start <подпись>
+    [ "$HAS_TTY" = true ] || return 0
+    local caption="$1"
+    (
+        local frame=0 width=22 position=0 direction=1
+        while :; do
+            local bar="" index=0
+            while [ "$index" -lt "$width" ]; do
+                if [ "$index" -eq "$position" ]; then bar="$bar#"; else bar="$bar."; fi
+                index=$((index + 1))
+            done
+            printf "\r  %s%s%s [%s] %s" \
+                "$C_CYAN" "${SPIN_CHARS:frame:1}" "$C_RESET" "$bar" "$caption"
+            frame=$(( (frame + 1) % 4 ))
+            position=$((position + direction))
+            [ "$position" -ge $((width - 1)) ] && direction=-1
+            [ "$position" -le 0 ] && direction=1
+            sleep 0.12
+        done
+    ) &
+    SPIN_PID=$!
+    # Отключаем уведомление оболочки о завершении фоновой задачи: иначе
+    # в конце этапа посреди вывода появляется «Terminated».
+    disown "$SPIN_PID" 2>/dev/null || true
+}
+
+spinner_stop() {
+    [ -n "$SPIN_PID" ] || return 0
+    kill "$SPIN_PID" 2>/dev/null || true
+    wait "$SPIN_PID" 2>/dev/null || true
+    SPIN_PID=""
+    # Стираем строку целиком: остатки полосы иначе перемешаются с отчётом.
+    printf "\r%s\r" "$(repeat ' ' "$COLS")"
+}
+
+# Полосу нельзя оставить крутиться, если установка оборвалась.
+trap 'spinner_stop' EXIT
+
+step_finish() {
+    [ -n "$STEP_TITLE" ] || return 0
+    spinner_stop
+    local spent=$(( $(date +%s) - STEP_STARTED ))
+    printf "  %s└%s %sзавершено за %s%s\n" \
+        "$C_DIM" "$C_RESET" "$C_DIM" "$(human_time "$spent")" "$C_RESET"
+    STEP_TIMES="${STEP_TIMES}${STEP_TITLE}\t${spent}\n"
+    log_raw "TIME  шаг «$STEP_TITLE»: ${spent} с"
+    STEP_TITLE=""
+}
+
 step()  {
+    step_finish
     STEP_CURRENT=$((STEP_CURRENT + 1))
-    printf "\n%s[%d/%d]%s %s%s%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
-        "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+    STEP_STARTED=$(date +%s)
+    STEP_TITLE="$*"
+    printf "\n%s[%d/%d]%s %s%s%s %s(%s)%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
+        "$C_RESET" "$C_BOLD" "$*" "$C_RESET" "$C_DIM" "$(server_time)" "$C_RESET"
     overall
-    log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* ==="
+    log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* (время сервера $(server_time)) ==="
+}
+
+# Итоговая таблица: где именно ушло время. На слабом одноплатнике сборка
+# образа занимает больше, чем всё остальное вместе, и это надо видеть.
+timing_report() {
+    step_finish
+    local total=$(( $(date +%s) - INSTALL_STARTED ))
+    printf "\n%sЗатраченное время%s\n" "$C_BOLD" "$C_RESET"
+    # Без выравнивания колонкой: printf считает ширину в байтах, а кириллица
+    # занимает по два — таблица разъехалась бы ровно на русских названиях.
+    printf "%b" "$STEP_TIMES" | while IFS="$(printf '\t')" read -r name spent; do
+        [ -n "$name" ] || continue
+        printf "  %s%s%s — %s\n" "$C_DIM" "$name" "$C_RESET" "$(human_time "$spent")"
+    done
+    line
+    printf "  %sВСЕГО%s — %s%s%s\n" "$C_BOLD" "$C_RESET" \
+        "$C_BOLD" "$(human_time "$total")" "$C_RESET"
+    printf "  %sвремя на сервере: %s%s\n" "$C_DIM" "$(date "+%d.%m.%Y %H:%M:%S %Z")" "$C_RESET"
+    log_raw "TIME  установка заняла ${total} с"
 }
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
 ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; log_raw "OK    $*"; }
@@ -158,6 +255,28 @@ die()  {
     [ -n "$LOG_FILE" ] && printf "  Полный лог: %s\n" "$LOG_FILE" >&2
     exit 1
 }
+# То же, что run, но с бегущей полосой и отчётом о затраченном времени.
+# Для операций, которые заметно длятся: apt, сборка образа, запуск стека.
+run_slow() {   # run_slow <подпись> <команда...>
+    local caption="$1"; shift
+    local started status=0
+    started=$(date +%s)
+    spinner_start "$caption"
+    run "$@" || status=$?
+    spinner_stop
+    local spent=$(( $(date +%s) - started ))
+    if [ "$status" -eq 0 ]; then
+        printf "  %s✓%s %s %s(%s)%s\n" "$C_GREEN" "$C_RESET" "$caption" \
+            "$C_DIM" "$(human_time "$spent")" "$C_RESET"
+        log_raw "OK    $caption — $(human_time "$spent")"
+    else
+        printf "  %s✗%s %s %s(%s)%s\n" "$C_RED" "$C_RESET" "$caption" \
+            "$C_DIM" "$(human_time "$spent")" "$C_RESET"
+        log_raw "FAIL  $caption — код $status"
+    fi
+    return $status
+}
+
 run()  {  # выполнить команду, весь вывод — только в лог
     # Код возврата снимается через `|| status=$?`, а не отдельной строкой:
     # обработчик ERR срабатывает при ненулевом коде даже когда errexit выключен,
@@ -798,7 +917,7 @@ elif [ "$(id -u)" != "0" ]; then
     UPD_DONE=2
 elif command -v apt-get >/dev/null 2>&1; then
     upd_step "список пакетов"
-    if run apt-get update; then
+    if run_slow "Список пакетов" apt-get update; then
         upd_finish "список пакетов обновлён"
         ok "Список пакетов актуален"
     else
@@ -1022,7 +1141,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=72
+FILE_COUNT=75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1318,6 +1437,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.6.1", [
+        "🎮 <b>Шесть новых тематик подборок:</b> IT и игры, наука и техника, "
+        "спорт, хобби и авто, кино и сериалы, деньги и рынки. У каждой свои "
+        "ленты — городские каналы про игры и спорт не пишут.",
+        "📝 <b>Пересказы вместо списка обрывков.</b> ИИ сжимает новости темы "
+        "в связную сводку, под ней — нумерованные ссылки на источники.",
+        "🔗 <b>Сокращение ссылок</b> — служебное, команды /short и /shorts.",
+        "🏠 <b>Кнопка «В главное меню» больше не дублируется</b> под каждым "
+        "сообщением серии, а в разделе «О системе» она вернулась: раньше "
+        "её вытесняла партнёрская кнопка.",
+        "⏱ <b>Установщик отчитывается по времени</b> каждого этапа "
+        "и показывает время на сервере.",
+    ]),
     ("4.6.0", [
         "🌅 <b>Погода картинкой перерисована.</b> Фон меняется по времени "
         "суток в точке вашей локации — ночь, рассвет, день, закат. "
@@ -1534,12 +1666,14 @@ async def prepare_database() -> None:
         log.info("Схема базы создана (%d таблиц)", tables)
     else:
         log.info("Схема базы актуальна (%d таблиц)", tables)
-    if await importer.is_empty():
-        log.info("База пуста — переношу данные прежней версии")
-        counters = await importer.run()
-        log.info(
-            "Перенос завершён: пользователей %d, локаций %d",
-            counters.get("users", 0), counters.get("locations", 0),
+    if await importer.is_empty() and importer.legacy_present():
+        # Импортёр db.json удалён в 4.6.1. Молча стартовать с пустой базой
+        # нельзя: человек решит, что данные потеряны, а они лежат рядом.
+        log.error(
+            "Рядом лежит data/db.json от версии 3.x, но перенос из него "
+            "прекращён с 4.6.1. Обновитесь сначала до 4.6.0 — она перенесёт "
+            "данные, — и только потом на эту версию. Подробности в README, "
+            "раздел «Обновление с прежних версий»."
         )
     await storage.load()
     features.apply(await repo.load_features())
@@ -1637,7 +1771,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.6.0"
+__version__ = "4.6.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3187,6 +3321,14 @@ FLAGS: tuple[Flag, ...] = (
     Flag("digest", "Новостные подборки",
          "Утренняя и вечерняя сводка по выбранным тематикам, одно сообщение.",
          group="Новости", since="4.4", default=False),
+    Flag("digest_summaries", "Пересказы подборок",
+         "ИИ сжимает новости тематики в связную сводку — один запрос "
+         "на тематику. Без него подборка выходит списком.",
+         group="Подборки", since="4.6.1", default=False),
+    Flag("link_shortener", "Сокращение ссылок",
+         "Короткие ссылки на источники в подборках. Нужен адрес "
+         "SHORT_BASE_URL. Заводить ссылки может только суперадминистратор.",
+         group="Подборки", since="4.6.1", default=False),
     Flag("digest_paid", "Платная подписка на подборки",
          "Оплата через Telegram Stars. Цены задаёт суперадминистратор.",
          group="Новости", since="4.4", default=False),
@@ -3711,6 +3853,121 @@ def rss_for(cities: list[str]) -> list[str]:
         if preset and preset.key != "federal":
             result.extend(preset.rss)
     return list(dict.fromkeys(result))
+
+
+# --------------------------------------------------------------------------
+#  Тематические источники (с 4.6.1)
+# --------------------------------------------------------------------------
+#
+# Городские каналы про игры, науку или спорт не пишут — эти тематики
+# кормятся отдельными лентами. Наборы общие для всех городов и включаются
+# по тематикам, на которые подписан человек, а не по его местоположению.
+#
+# Подключаются только те наборы, чьи тематики кому-то нужны: опрашивать
+# ленту про кино, когда на неё никто не подписан, — впустую тратить
+# запросы на слабом сервере.
+
+@dataclass
+class ThematicPreset:
+    """Источники одной тематики подборок."""
+
+    topic: str                                   # ключ из digest.TOPICS
+    title: str
+    channels: list[str] = field(default_factory=list)
+    rss: list[str] = field(default_factory=list)
+    vk: list[str] = field(default_factory=list)
+    note: str = ""
+
+
+THEMATIC: tuple[ThematicPreset, ...] = (
+    ThematicPreset(
+        topic="it",
+        title="IT и игры",
+        channels=["ixbtgames", "ixbtnocomments", "makarenkoff_games"],
+        rss=[
+            "https://www.ixbt.com/export/news.rss",
+            "https://3dnews.ru/news/rss/",
+            "https://habr.com/ru/rss/news/?fl=ru",
+        ],
+        vk=["makarenkoff_games"],
+        note="Каналы ixbt дают и игры, и железо; makarenkoff_games "
+             "продублирован в VK — заодно проверка источника ВКонтакте.",
+    ),
+    ThematicPreset(
+        topic="science",
+        title="Наука и техника",
+        rss=[
+            "https://nplus1.ru/rss",
+            "https://naked-science.ru/feed",
+        ],
+    ),
+    ThematicPreset(
+        topic="sport",
+        title="Спорт",
+        rss=[
+            "https://www.sports.ru/rss/all_news.xml",
+            "https://matchtv.ru/rss",
+        ],
+    ),
+    ThematicPreset(
+        topic="hobby",
+        title="Хобби и авто",
+        rss=[
+            "https://www.drive2.ru/export/rss/",
+            "https://motor.ru/exports/rss.xml",
+        ],
+    ),
+    ThematicPreset(
+        topic="cinema",
+        title="Кино и сериалы",
+        rss=[
+            "https://www.kinopoisk.ru/media/rss/",
+            "https://dtf.ru/rss/all",
+        ],
+    ),
+    ThematicPreset(
+        topic="finance",
+        title="Деньги и рынки",
+        rss=[
+            "https://www.rbc.ru/v10/ajax/rss/feed/economics",
+            "https://quote.rbc.ru/v10/ajax/rss/feed",
+        ],
+    ),
+)
+
+BY_TOPIC = {preset.topic: preset for preset in THEMATIC}
+
+
+def thematic_for(topics: list[str]) -> ThematicPreset | None:
+    """Набор для одной тематики. None, если тематика городская."""
+    for key in topics:
+        preset = BY_TOPIC.get(key)
+        if preset:
+            return preset
+    return None
+
+
+def thematic_sources(topics: set[str]) -> tuple[list[str], list[str], list[str]]:
+    """Каналы, ленты и группы VK для набора тематик.
+
+    Возвращает только то, что нужно перечисленным тематикам: опрос лент,
+    на которые никто не подписан, — лишняя нагрузка без адресата.
+    """
+    channels: list[str] = []
+    feeds: list[str] = []
+    groups: list[str] = []
+    for key in topics:
+        preset = BY_TOPIC.get(key)
+        if not preset:
+            continue
+        channels.extend(preset.channels)
+        feeds.extend(preset.rss)
+        groups.extend(preset.vk)
+    return (
+        list(dict.fromkeys(channels)),
+        list(dict.fromkeys(feeds)),
+        list(dict.fromkeys(groups)),
+    )
 RADAR_FILE_15
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourcecheck.py"
 cat > "radar/sourcecheck.py" <<'RADAR_FILE_16'
@@ -4735,6 +4992,17 @@ SETTINGS: tuple[Setting, ...] = (
             "Например socks5://singbox:1080.", "Сеть", restart=True, secret=False),
     Setting("MEDIA_COOKIES", "Файл cookies",
             "Путь к cookies.txt для закрытых площадок.", "Медиа", secret=False),
+
+    # --- сокращение ссылок ---
+    Setting("SHORT_BASE_URL", "Адрес для коротких ссылок",
+            "Адрес, на котором открыта веб-панель, например https://example.ru. "
+            "Пока не задан, сокращение отключено.",
+            "Ссылки", secret=False),
+    Setting("SHORT_SALT", "Соль коротких кодов",
+            "Любая строка. Разводит коды разных экземпляров «Радара», "
+            "чтобы они не совпадали. Менять после запуска нельзя: "
+            "уже разосланные ссылки перестанут открываться.",
+            "Ссылки"),
 )
 
 BY_KEY = {item.key: item for item in SETTINGS}
@@ -6024,6 +6292,36 @@ TOPICS: tuple[Topic, ...] = (
     Topic("federal", "Федеральное", "🇷🇺",
           "Значимые общероссийские новости кратко.",
           ("правительств", "госдум", "президент", "минист", "федеральн")),
+
+    # Ниже — тематики, не привязанные к городу. Они кормятся отдельными
+    # лентами из presets.THEMATIC: городские источники такого не публикуют,
+    # и без своих лент разделы стояли бы пустыми.
+    Topic("it", "IT и игры", "🎮",
+          "Игры для PC, PlayStation, Xbox, техника, софт, ИИ.",
+          ("игр", "гейм", "playstation", "xbox", "nintendo", "steam",
+           "консол", "видеокарт", "процессор", "смартфон", "нейросет",
+           "искусственный интеллект", "приложени", "обновлени игры",
+           "разработчик", "релиз игры", "патч", "киберспорт")),
+    Topic("science", "Наука и техника", "🔬",
+          "Исследования, космос, медицина, изобретения.",
+          ("учён", "исследовани", "космос", "спутник", "ракет", "нау",
+           "открыти", "эксперимент", "вакцин", "телескоп", "физик")),
+    Topic("sport", "Спорт", "⚽️",
+          "Матчи, турниры, результаты, спортсмены.",
+          ("матч", "турнир", "чемпионат", "сборн", "футбол", "хоккей",
+           "баскетбол", "олимп", "гол", "спортсмен", "тренер", "лиг")),
+    Topic("hobby", "Хобби и авто", "🚗",
+          "Автомобили, рукоделие, сад, рыбалка, путешествия.",
+          ("автомобил", "машин", "рыбалк", "охот", "сад", "огород",
+           "рукодел", "путешестви", "турист", "велосипед", "мотоцикл")),
+    Topic("cinema", "Кино и сериалы", "🎬",
+          "Премьеры, трейлеры, стриминги.",
+          ("фильм", "сериал", "премьер", "трейлер", "кино", "режиссёр",
+           "актёр", "сезон", "экраниз", "стриминг")),
+    Topic("finance", "Деньги и рынки", "📈",
+          "Курсы, вклады, налоги, крупные сделки.",
+          ("курс", "рубл", "доллар", "инфляц", "ставк", "вклад", "налог",
+           "биржа", "акци", "ипотек", "криптовалют")),
 )
 
 BY_KEY = {topic.key: topic for topic in TOPICS}
@@ -6217,8 +6515,44 @@ def group(entries: Iterable[Entry], topics: Iterable[str]) -> dict[str, list[Ent
     return grouped
 
 
+async def build_async(entries: Iterable[Entry], subscription: Subscription,
+                      now: datetime, city: str = "",
+                      summaries: dict[str, str] | None = None) -> str:
+    """То же, что build, но с готовыми пересказами тематик."""
+    return build(entries, subscription, now, city, summaries)
+
+
+async def summaries_for(entries: Iterable[Entry],
+                        subscription: Subscription) -> dict[str, str]:
+    """Пересказ по каждой тематике — один запрос к модели на тематику.
+
+    Пересказывать каждую новость отдельно было бы кратно дороже по квоте,
+    а выигрыш даёт именно объединение: связная сводка вместо списка
+    обрывков. Если модель недоступна, словарь остаётся пустым и подборка
+    выходит списком, как раньше.
+    """
+    from . import ai, features
+
+    if not features.enabled("digest_summaries"):
+        return {}
+
+    grouped = group(entries, subscription.allowed_topics())
+    result: dict[str, str] = {}
+    for key, items in grouped.items():
+        topic = BY_KEY.get(key)
+        if topic is None or len(items) < 2:
+            continue                     # одну новость пересказывать незачем
+        text = await ai.summarize_topic(
+            topic.title, [item.summary for item in items[:12]]
+        )
+        if text:
+            result[key] = text
+    return result
+
+
 def build(entries: Iterable[Entry], subscription: Subscription,
-          now: datetime, city: str = "") -> str:
+          now: datetime, city: str = "",
+          summaries: dict[str, str] | None = None) -> str:
     """Собирает одно сообщение из всех тематик подписки."""
     grouped = group(entries, subscription.allowed_topics())
     if not grouped:
@@ -6235,6 +6569,23 @@ def build(entries: Iterable[Entry], subscription: Subscription,
             continue
         topic = BY_KEY[key]
         lines.append(f"{topic.icon} <b>{esc(topic.title)}</b>")
+
+        recap = (summaries or {}).get(key, "").strip()
+        if recap:
+            # Пересказ заменяет список, но источники всё равно перечисляем
+            # ниже: сводка без возможности проверить — слухи, а не новости.
+            lines.append(esc(recap))
+            links = [entry.link for entry in items[:MAX_ITEMS_PER_TOPIC]
+                     if entry.link]
+            if links:
+                shown = " · ".join(
+                    f'<a href="{esc_attr(link)}">[{number}]</a>'
+                    for number, link in enumerate(links, 1)
+                )
+                lines.append(f"<i>Источники: {shown}</i>")
+            lines.append("")
+            continue
+
         for entry in items[:MAX_ITEMS_PER_TOPIC]:
             text = entry.summary.strip()
             if entry.link:
@@ -6755,8 +7106,113 @@ def beaufort(speed: float | None) -> str:
         return "сильный"
     return "штормовой"
 RADAR_FILE_26
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/shortener.py"
+cat > "radar/shortener.py" <<'RADAR_FILE_27'
+"""Сокращение ссылок.
+
+Служебный сервис, не публичный. Сокращаются два вида ссылок:
+
+* автоматически — источники в новостных подборках, чтобы длинный адрес
+  не съедал строку;
+* вручную — суперадминистратором через `/short <адрес>`.
+
+Открывать сокращение всем пользователям намеренно не стали. Публичный
+сокращатель — приманка для фишинга и спама: через неделю домен попадает
+в списки Safe Browsing, и вместе с ним перестают открываться ссылки
+в оповещениях об опасности. Риск ложится не на сервис, а на всё, что
+живёт на том же домене.
+
+Хранилище — тот же слой, что у остальных данных. Код детерминированный:
+одна и та же ссылка всегда даёт один короткий адрес, поэтому повторное
+сокращение не плодит записи.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+from urllib.parse import urlparse
+
+from . import config, secrets
+
+log = logging.getLogger("radar.shortener")
+
+# Алфавит без похожих знаков: ноль и «O», единица и «l» в переписанном
+# от руки адресе неразличимы, а короткие ссылки диктуют голосом.
+ALPHABET = "23456789abcdefghijkmnpqrstuvwxyz"
+CODE_LENGTH = 6
+
+# Схемы, которые разрешено сокращать. Без ограничения короткая ссылка
+# может увести на javascript: или file: — то есть стать оружием.
+ALLOWED_SCHEMES = ("http", "https")
+
+_MAX_URL = 2000
+
+
+def base_url() -> str:
+    """Адрес, на котором отдаются короткие ссылки.
+
+    Задаётся администратором в SHORT_BASE_URL. Пока адрес не задан,
+    сокращение отключено: выдавать ссылку, которая никуда не ведёт,
+    хуже, чем не сокращать вовсе.
+    """
+    value = (secrets.get("SHORT_BASE_URL") or "").strip().rstrip("/")
+    return value
+
+
+def enabled() -> bool:
+    return bool(base_url())
+
+
+def valid(url: str) -> bool:
+    """Пригодна ли ссылка к сокращению."""
+    if not url or len(url) > _MAX_URL:
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return False
+    return parsed.scheme in ALLOWED_SCHEMES and bool(parsed.netloc)
+
+
+def code_for(url: str) -> str:
+    """Детерминированный код ссылки.
+
+    Хэш, а не счётчик: одна новость может попасть в несколько подборок,
+    и повторное сокращение обязано дать тот же адрес, не создавая записей.
+    Подмешивается локальная соль, иначе код чужой ссылки на другом
+    экземпляре «Радара» совпал бы с нашим.
+    """
+    salt = (secrets.get("SHORT_SALT") or config.VERSION).encode("utf-8")
+    digest = hashlib.blake2s(url.strip().encode("utf-8"), key=salt[:32],
+                             digest_size=8).digest()
+    number = int.from_bytes(digest, "big")
+    code = ""
+    for _ in range(CODE_LENGTH):
+        number, position = divmod(number, len(ALPHABET))
+        code += ALPHABET[position]
+    return code
+
+
+def short_url(code: str) -> str:
+    return f"{base_url()}/s/{code}"
+
+
+_CODE_RE = re.compile(r"^[" + ALPHABET + r"]{1,16}$")
+
+
+def valid_code(code: str) -> bool:
+    return bool(_CODE_RE.match(code or ""))
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_27'
+cat > "radar/backup.py" <<'RADAR_FILE_28'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -6979,9 +7435,9 @@ def summary() -> str:
         "<code>bash install.sh --rollback</code></i>"
     )
     return "\n".join(lines)
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_28'
+cat > "radar/weather_image.py" <<'RADAR_FILE_29'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -7380,9 +7836,9 @@ def _strip_tags(text: str) -> str:
         elif not inside:
             result.append(char)
     return "".join(result).strip()
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_29'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_30'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -7397,9 +7853,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_30'
+cat > "radar/web/auth.py" <<'RADAR_FILE_31'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -7581,9 +8037,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_31'
+cat > "radar/web/audit.py" <<'RADAR_FILE_32'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -7650,9 +8106,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_32'
+cat > "radar/web/panel.py" <<'RADAR_FILE_33'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -7676,7 +8132,7 @@ import html
 import logging
 from typing import Any
 
-from .. import config, features, roles, storage
+from .. import config, features, roles, shortener, storage
 from . import auth
 
 log = logging.getLogger("radar.web")
@@ -8060,6 +8516,23 @@ async def create_app() -> Any:
     async def health(_request):
         return web.json_response({"status": "ok", "version": config.VERSION})
 
+    async def follow(request):
+        """Переход по короткой ссылке.
+
+        Единственный маршрут панели без авторизации — иначе ссылка была бы
+        бесполезна. Поэтому он ничего не показывает и ничего не принимает:
+        только ищет код и перенаправляет.
+        """
+        from ..db import repo
+
+        code = request.match_info.get("code", "")
+        if not shortener.valid_code(code):
+            raise web.HTTPNotFound(text="Ссылка не найдена")
+        target = await repo.resolve_short_link(code)
+        if not target:
+            raise web.HTTPNotFound(text="Ссылка не найдена")
+        raise web.HTTPFound(target)
+
     application.add_routes([
         web.get("/login", login),
         web.get("/auth", authenticate),
@@ -8074,6 +8547,7 @@ async def create_app() -> Any:
         web.get("/backup/create", backup_create),
         web.get("/backup/download", backup_download),
         web.get("/health", health),
+        web.get("/s/{code}", follow),
     ])
     return application
 
@@ -8104,9 +8578,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_33'
+cat > "radar/web/backup.py" <<'RADAR_FILE_34'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -8149,9 +8623,9 @@ def body() -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_34'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_35'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -8184,9 +8658,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_35'
+cat > "radar/db/models.py" <<'RADAR_FILE_36'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -8429,9 +8903,34 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_35
+
+
+class ShortLink(Base):
+    """Короткие ссылки (с 4.6.1).
+
+    Код — первичный ключ и он детерминированный: одна и та же ссылка даёт
+    один код, поэтому повторное сокращение не плодит записей, а переходы
+    по уже разосланным ссылкам продолжают работать после перезапуска.
+
+    Счётчик переходов нужен не ради статистики как таковой, а чтобы видеть,
+    читают ли вообще источники в подборках.
+    """
+
+    __tablename__ = "short_links"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    url: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[int] = mapped_column(BigIntType, default=0)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    last_hit: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_36'
+cat > "radar/db/engine.py" <<'RADAR_FILE_37'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -8945,9 +9444,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_37'
+cat > "radar/db/repo.py" <<'RADAR_FILE_38'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -8986,7 +9485,7 @@ from ..matching import CATEGORY_TITLES
 from ..roles import SUPERADMIN, USER
 from .engine import session
 from ..identity import parse as parse_identity
-from .models import Delivery, Event, Feature, Location, Meta, Source, User
+from .models import Delivery, Event, Feature, Location, Meta, ShortLink, Source, User
 
 log = logging.getLogger("radar.repo")
 
@@ -9476,9 +9975,52 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_37
+
+
+# --------------------------------------------------------------------------
+#  Короткие ссылки (с 4.6.1)
+# --------------------------------------------------------------------------
+
+async def save_short_link(code: str, url: str, created_by: int = 0) -> None:
+    """Запоминает ссылку. Повтор не считается ошибкой: код детерминированный,
+    и одна и та же ссылка из двух подборок обязана дать один адрес."""
+    async with session() as active:
+        row = await active.get(ShortLink, code)
+        if row is None:
+            active.add(ShortLink(code=code, url=url, created_by=created_by))
+        elif row.url != url:
+            # Совпадение кодов у разных ссылок теоретически возможно.
+            # Молча перезаписать нельзя: разосланные ссылки увели бы не туда.
+            log.warning("Код %s уже занят другой ссылкой — сокращение отменено", code)
+            return
+        await active.commit()
+
+
+async def resolve_short_link(code: str) -> str | None:
+    """Отдаёт адрес и считает переход."""
+    async with session() as active:
+        row = await active.get(ShortLink, code)
+        if row is None:
+            return None
+        row.hits += 1
+        row.last_hit = datetime.now(timezone.utc)
+        await active.commit()
+        return row.url
+
+
+async def short_link_stats(limit: int = 20) -> list[dict[str, Any]]:
+    async with session() as active:
+        result = await active.execute(
+            select(ShortLink).order_by(ShortLink.created_at.desc()).limit(limit)
+        )
+        return [
+            {"code": row.code, "url": row.url, "hits": row.hits,
+             "created_at": row.created_at}
+            for row in result.scalars()
+        ]
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_38'
+cat > "radar/db/importer.py" <<'RADAR_FILE_39'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -9606,56 +10148,30 @@ async def is_empty() -> bool:
     return not users
 
 
+def legacy_present(path: str | None = None) -> bool:
+    """Лежит ли рядом файл базы от версии 3.x.
+
+    Перенос из него прекращён в 4.6.1, но обнаружить файл всё равно нужно:
+    иначе бот молча стартует с пустой базой, и человек решит, что данные
+    потеряны, хотя они лежат в соседнем файле.
+    """
+    return os.path.exists(path or config.DATA_FILE)
+
+
 async def run(path: str | None = None) -> dict[str, int]:
-    """Переносит JSON в базу. Возвращает счётчики перенесённого."""
-    source = path or config.DATA_FILE
-    raw: dict[str, Any] = {}
+    """Перенос из db.json удалён в 4.6.1.
 
-    if os.path.exists(source):
-        try:
-            with open(source, "r", encoding="utf-8") as handle:
-                loaded = json.load(handle)
-            raw = loaded if isinstance(loaded, dict) else {}
-            log.info("Найден файл прежней версии: %s", source)
-        except (OSError, json.JSONDecodeError) as exc:
-            log.error("Файл %s не прочитан (%s) — начинаю с пустой базы", source, exc)
-            raw = {}
-    else:
-        log.info("Файла %s нет — создаю базу с нуля", source)
-
-    data = _normalize(raw)
-
-    await repo.save_users(data["users"])
-    await repo.sync_sources(data["channels"], data["rss"], data["vk"], data["pending"])
-
-    for key, value in (data["meta"] or {}).items():
-        await repo.set_meta(str(key), value if isinstance(value, (dict, list)) else {"value": value})
-
-    counters = {
-        "users": len(data["users"]),
-        "locations": sum(len(item["locs"]) for item in data["users"].values()),
-        "channels": len(data["channels"]),
-        "rss": len(data["rss"]),
-        "pending": len(data["pending"]),
-    }
-    await repo.set_meta(MARKER, {"done": True, **counters})
-
-    if os.path.exists(source):
-        backup = f"{source}.migrated"
-        try:
-            os.replace(source, backup)
-            log.info("Исходный файл сохранён как %s", backup)
-        except OSError as exc:
-            log.warning("Не удалось переименовать %s: %s", source, exc)
-
-    log.info(
-        "Перенос завершён: пользователей %d, локаций %d, каналов %d, лент %d",
-        counters["users"], counters["locations"], counters["channels"], counters["rss"],
+    Оставлена заглушка, а не выкинута функция целиком: её зовут диагностика
+    и старые сценарии, и внятная ошибка полезнее AttributeError.
+    """
+    raise RuntimeError(
+        "Перенос из data/db.json прекращён с версии 4.6.1. "
+        "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
+        "и только затем на текущую версию."
     )
-    return counters
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_39'
+cat > "radar/doctor.py" <<'RADAR_FILE_40'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -9965,9 +10481,15 @@ async def check_import_file() -> None:
 
     users = len(data["users"])
     locations = sum(len(item["locs"]) for item in data["users"].values())
-    report.add("Данные прежней версии", OK,
-               f"готово к переносу: пользователей {users}, локаций {locations}, "
-               f"источников {len(data['channels'])}")
+    # Предупреждение, а не «ок»: с 4.6.1 этот файл уже не переносится,
+    # и человеку важно узнать об этом до, а не после запуска.
+    report.add(
+        "Данные прежней версии", WARN,
+        f"найден db.json: пользователей {users}, локаций {locations}, "
+        f"источников {len(data['channels'])}",
+        "Перенос из db.json прекращён с 4.6.1. Обновитесь сначала до 4.6.0, "
+        "дайте боту запуститься, затем переходите на текущую версию",
+    )
 
 
 async def check_telegram() -> None:
@@ -10131,9 +10653,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_40'
+cat > "migrations/env.py" <<'RADAR_FILE_41'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -10193,9 +10715,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_41'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_42'
 """${message}
 
 Revision ID: ${up_revision}
@@ -10220,9 +10742,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_42'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_43'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -10389,9 +10911,51 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_42
+RADAR_FILE_43
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_44'
+"""Короткие ссылки.
+
+Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
+и вручную, и жить она должна дольше события, из которого пришла.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "0002_short_links"
+down_revision = "0001_initial"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "short_links",
+        sa.Column("code", sa.String(length=16), nullable=False),
+        sa.Column("url", sa.Text(), nullable=False),
+        sa.Column("created_by", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("hits", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.Column("last_hit", sa.DateTime(timezone=True), nullable=True),
+        sa.PrimaryKeyConstraint("code"),
+    )
+
+
+def downgrade() -> None:
+    op.drop_table("short_links")
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_43'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_45'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -10417,9 +10981,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_43
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_44'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_46'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -10544,9 +11108,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_44
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_45'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_47'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -10810,9 +11374,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_45
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_46'
+cat > "radar/storage.py" <<'RADAR_FILE_48'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -10997,9 +11561,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_46
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_47'
+cat > "radar/exporting.py" <<'RADAR_FILE_49'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -11205,9 +11769,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_47
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_48'
+cat > "radar/ai.py" <<'RADAR_FILE_50'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -11911,9 +12475,47 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_48
+
+
+DIGEST_SYSTEM = (
+    "Ты редактор новостной рассылки. Из списка коротких новостей одной "
+    "темы сделай связную сводку на русском языке: 2-4 предложения, живо "
+    "и по делу, без вводных вроде «в этом выпуске». Объединяй сообщения "
+    "об одном событии. Не выдумывай фактов, которых нет в исходных "
+    "новостях, и не добавляй оценок. Верни только текст сводки."
+)
+
+
+async def summarize_topic(title: str, entries: Sequence[str]) -> str:
+    """Пересказывает новости одной тематики одним запросом.
+
+    Один вызов на тематику, а не на новость: пересказ каждой новости
+    отдельно кратно поднял бы расход квоты, а выигрыш в читаемости даёт
+    именно объединение — сводка вместо списка обрывков.
+
+    priority=False: подборки не срочные, и при нехватке квоты они обязаны
+    уступить место оповещениям об опасности. Пустая строка означает
+    «пересказа нет» — вызывающий покажет исходный список.
+    """
+    if not ENABLED or not entries:
+        return ""
+
+    listing = "\n".join(f"- {text[:400]}" for text in entries[:12])
+    try:
+        return (await generate(
+            f"Тема: {title}\n\nНовости:\n{listing}",
+            system=DIGEST_SYSTEM,
+            max_tokens=400,
+            temperature=0.5,
+            role=ANALYSIS,
+            priority=False,
+        )).strip()
+    except Exception as exc:  # noqa: BLE001
+        log.info("Пересказ темы «%s» не получился: %s", title, exc)
+        return ""
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_49'
+cat > "radar/geocode.py" <<'RADAR_FILE_51'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -12105,9 +12707,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_49
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_50'
+cat > "radar/weather.py" <<'RADAR_FILE_52'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -12506,9 +13108,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title), markup)
-RADAR_FILE_50
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_51'
+cat > "radar/sources.py" <<'RADAR_FILE_53'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -12767,9 +13369,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_51
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_52'
+cat > "radar/tg.py" <<'RADAR_FILE_54'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -12886,9 +13488,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_52
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_53'
+cat > "radar/keyboards.py" <<'RADAR_FILE_55'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -13003,6 +13605,20 @@ def promo_row() -> list[InlineKeyboardButton]:
 def promo_only() -> InlineKeyboardMarkup | None:
     row = promo_row()
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
+
+
+def promo_with_back(target: str = "menu:main") -> InlineKeyboardMarkup:
+    """Возврат в меню и партнёрская ссылка рядом.
+
+    Раньше промо-кнопка вытесняла возврат целиком: из раздела «О системе»
+    выйти было нечем, кроме как заново звать меню. Возврат обязателен,
+    промо — нет, поэтому первый стоит всегда, второй добавляется.
+    """
+    rows = [[InlineKeyboardButton(text="🏠 В главное меню", callback_data=target)]]
+    row = promo_row()
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # Подписи закреплённых кнопок. Reply-кнопки не умеют открывать ссылки напрямую,
@@ -13269,9 +13885,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_53
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_54'
+cat > "radar/states.py" <<'RADAR_FILE_56'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -13301,9 +13917,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_54
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_55'
+cat > "radar/middlewares.py" <<'RADAR_FILE_57'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -13416,9 +14032,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = role
         return await handler(event, data)
-RADAR_FILE_55
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_56'
+cat > "radar/monitor.py" <<'RADAR_FILE_58'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -13443,7 +14059,9 @@ from . import (
     digest,
     features,
     geocode,
+    presets,
     profiling,
+    shortener,
     quiet,
     secrets,
     sos,
@@ -13547,6 +14165,10 @@ async def dispatch_user(
     categories = {name for item in analyses for name in item.categories}
 
     sent = 0
+    # Сначала отбираем, потом шлём: кнопка «В главное меню» нужна одна,
+    # под последним сообщением серии. Раньше она висела под каждым, и при
+    # трёх совпавших локациях экран превращался в лестницу из кнопок.
+    outgoing: list[str] = []
     for _kind, text in messages:
         # Повтор того же события по той же локации не отправляем
         if features.enabled("antispam"):
@@ -13559,7 +14181,11 @@ async def dispatch_user(
             quiet.hold(uid, text)
             continue
 
-        if await send_html(uid, text, back_kb()):
+        outgoing.append(text)
+
+    for index, text in enumerate(outgoing):
+        last = index == len(outgoing) - 1
+        if await send_html(uid, text, back_kb() if last else None):
             sent += 1
         await asyncio.sleep(0.3)
 
@@ -13668,7 +14294,8 @@ async def _send_digests_inner(now: datetime) -> None:
 
         locations = user.get("locs") or []
         city = str(locations[0].get("city") or "") if locations else ""
-        text = digest.build(_digest_pool, subscription, now, city)
+        summaries = await digest.summaries_for(_digest_pool, subscription)
+        text = digest.build(_digest_pool, subscription, now, city, summaries)
         if not text:
             continue
 
@@ -13701,10 +14328,37 @@ def collect_digest(analyses: list[Analysis]) -> None:
                 link=item.link,
             )
         )
+    asyncio.create_task(_shorten_pool_links())
     del _digest_pool[:-300]
 
 
 _digest_pool: list["digest.Entry"] = []
+
+
+async def _shorten_pool_links() -> None:
+    """Заменяет ссылки в накопленном материале короткими.
+
+    Отдельной задачей, а не внутри разбора: обращение к базе не должно
+    задерживать цикл, а если сокращение не удалось, подборка обязана уйти
+    с исходными ссылками — длинная ссылка лучше отсутствующей.
+    """
+    if not features.enabled("link_shortener") or not shortener.enabled():
+        return
+
+    from .db import repo
+
+    for entry in _digest_pool:
+        if not entry.link or entry.link.startswith(shortener.base_url()):
+            continue
+        if not shortener.valid(entry.link):
+            continue
+        code = shortener.code_for(entry.link)
+        try:
+            await repo.save_short_link(code, entry.link)
+        except Exception:  # noqa: BLE001
+            log.debug("Сокращение ссылки не удалось, оставляю исходную")
+            continue
+        entry.link = shortener.short_url(code)
 
 
 async def release_held(now: datetime) -> None:
@@ -13712,8 +14366,10 @@ async def release_held(now: datetime) -> None:
     if not features.enabled("quiet_hours") or not quiet.held_count():
         return
     for uid, user in list(storage.users().items()):
-        for text in quiet.release(uid, user, now):
-            await send_html(uid, text, back_kb())
+        held = list(quiet.release(uid, user, now))
+        for index, text in enumerate(held):
+            last = index == len(held) - 1
+            await send_html(uid, text, back_kb() if last else None)
             await asyncio.sleep(0.2)
 
 
@@ -13752,12 +14408,43 @@ async def repeat_sos() -> None:
             )
 
 
+async def subscribed_topics() -> set[str]:
+    """Тематики, на которые кто-то подписан прямо сейчас.
+
+    Опрашивать ленту про кино, когда её никто не читает, — впустую жечь
+    запросы на слабом сервере. Набор пересчитывается каждый цикл: он
+    дешёвый, а подписки меняются.
+    """
+    if not features.enabled("digest"):
+        return set()
+    wanted: set[str] = set()
+    for user in storage.users().values():
+        subscription = digest.subscription_of(user)
+        wanted.update(subscription.allowed_topics())
+    return wanted
+
+
 async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None:
+    channels = list(storage.channels())
+    feeds = list(storage.rss_feeds())
+    vk_extra: list[str] = []
+
+    # Тематические ленты (игры, спорт, наука и прочее) добавляются к городским
+    # источникам, а не заменяют их: городская часть системы важнее и должна
+    # работать, даже если тематические ленты недоступны.
+    thematic_channels, thematic_feeds, vk_extra = presets.thematic_sources(
+        await subscribed_topics()
+    )
+    channels.extend(thematic_channels)
+    feeds.extend(thematic_feeds)
+    channels = list(dict.fromkeys(channels))
+    feeds = list(dict.fromkeys(feeds))
+
     with profiling.measure("sources"):
         items = await sources.collect(
             session,
-            storage.channels(),
-            storage.rss_feeds(),
+            channels,
+            feeds,
             seen,
             config.MSG_PER_SOURCE,
             warmup=warmup,
@@ -13766,7 +14453,7 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     # а разбор дальше общий для всех типов.
     if features.enabled("source_vk"):
         vk_token = secrets.get("VK_SERVICE_TOKEN")
-        groups = list(storage.vk_groups())
+        groups = list(dict.fromkeys(list(storage.vk_groups()) + vk_extra))
         if vk_token and groups:
             with profiling.measure("vk"):
                 for group in groups:
@@ -13870,9 +14557,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_56
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_57'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_59'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -13896,6 +14583,7 @@ from . import (
     network,
     perf,
     settings,
+    shortlink,
     settings_admin,
     sos,
     sources,
@@ -13913,6 +14601,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(network.router)
     dp.include_router(logs.router)
     dp.include_router(perf.router)
+    dp.include_router(shortlink.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Ссылки перехватываем до свободного диалога с моделью
@@ -13922,9 +14611,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_57
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_58'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_60'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -14125,7 +14814,7 @@ async def menu_about(call: CallbackQuery) -> None:
     ]
     if config.PROMO_ENABLED and config.PROMO_TEXT:
         parts += ["", "———", "", config.PROMO_TEXT]
-    await safe_edit(call, "\n".join(parts), keyboards.promo_only() or back_kb())
+    await safe_edit(call, "\n".join(parts), keyboards.promo_with_back())
 
 
 def _quota_line() -> str:
@@ -14274,9 +14963,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_58
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_59'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_61'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -14442,9 +15131,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_59
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_60'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_62'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -14797,9 +15486,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_60
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_61'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_63'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -15234,9 +15923,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_61
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_62'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_64'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -15603,9 +16292,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_62
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_63'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_65'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -15752,9 +16441,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_63
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_64'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_66'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -16042,9 +16731,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_64
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_65'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_67'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -16177,9 +16866,118 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_65
+RADAR_FILE_67
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_68'
+"""Сокращение ссылок — суперадминистратору.
+
+Публичным сервис намеренно не сделан: короткая ссылка, которую может
+завести кто угодно, притягивает фишинг и спам, а расплачивается за это
+домен — вместе со всем, что на нём живёт, включая ссылки в оповещениях
+об опасности.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import Router
+from aiogram.filters import Command
+from aiogram.types import Message
+
+from .. import roles, shortener
+from ..db import repo
+from ..textutils import esc
+from ..tg import back_kb
+
+log = logging.getLogger("radar.handlers.shortlink")
+router = Router(name="shortlink")
+
+
+@router.message(Command("short"))
+async def cmd_short(message: Message, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Сокращение ссылок доступно суперадминистратору.")
+        return
+
+    if not shortener.enabled():
+        await message.answer(
+            "🔗 <b>Сокращение ссылок не настроено</b>\n\n"
+            "Задайте <code>SHORT_BASE_URL</code> в разделе ключей — адрес, "
+            "на котором открыта веб-панель. Например: "
+            "<code>https://example.ru</code>\n\n"
+            "Пока адрес не задан, сокращение отключено: короткая ссылка "
+            "в никуда хуже длинной рабочей.",
+            reply_markup=back_kb(),
+        )
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            "Укажите ссылку: <code>/short https://пример.рф/страница</code>",
+            reply_markup=back_kb(),
+        )
+        return
+
+    url = parts[1].strip()
+    if not shortener.valid(url):
+        await message.answer(
+            "Это не похоже на ссылку. Нужен полный адрес со схемой "
+            "<code>http://</code> или <code>https://</code>.",
+            reply_markup=back_kb(),
+        )
+        return
+
+    code = shortener.code_for(url)
+    try:
+        await repo.save_short_link(code, url, message.from_user.id)
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось сохранить короткую ссылку")
+        await message.answer("Не удалось сохранить ссылку — смотрите журнал.")
+        return
+
+    short = shortener.short_url(code)
+    await message.answer(
+        f"🔗 <code>{esc(short)}</code>\n\n<i>{esc(url[:200])}</i>",
+        reply_markup=back_kb(),
+    )
+
+
+@router.message(Command("shorts"))
+async def cmd_shorts(message: Message, role: str) -> None:
+    """Последние сокращения и число переходов."""
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Доступно суперадминистратору.")
+        return
+
+    try:
+        rows = await repo.short_link_stats(15)
+    except Exception:  # noqa: BLE001
+        log.exception("Статистика ссылок недоступна")
+        await message.answer("Статистика недоступна — смотрите журнал.")
+        return
+
+    if not rows:
+        await message.answer("Сокращённых ссылок пока нет.", reply_markup=back_kb())
+        return
+
+    lines = ["🔗 <b>Последние ссылки</b>", ""]
+    for row in rows:
+        lines.append(
+            f"<code>{esc(row['code'])}</code> — переходов: {row['hits']}\n"
+            f"  <i>{esc(str(row['url'])[:90])}</i>"
+        )
+    await message.answer("\n".join(lines), reply_markup=back_kb())
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_66'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_69'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -16585,9 +17383,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_66
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_67'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_70'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -16900,9 +17698,9 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_67
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_68'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_71'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -17486,9 +18284,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_68
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_69'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_72'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -18009,9 +18807,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_69
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_73'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -18368,9 +19166,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_70
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_71'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_74'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -18515,7 +19313,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_71
+RADAR_FILE_74
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -18854,7 +19652,7 @@ run docker rm -f "$CONTAINER_NAME" || true   # наследие версий 3.x
 
 info "Собираю образ (первый раз это занимает 5–15 минут)"
 spinner_start "сборка образа…"
-if ! run $COMPOSE build $NO_CACHE_FLAG; then
+if ! run_slow "Сборка образа" $COMPOSE build $NO_CACHE_FLAG; then
     spinner_stop
     trap - ERR
     fail "Сборка образа не удалась"
@@ -18872,7 +19670,8 @@ if [ "$(get_env_value DB_BACKEND)" = "postgres" ] &&
    [ -d "$APP_DIR/data/postgres" ] &&
    [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
     info "Проверяю пароль существующей базы"
-    run $COMPOSE up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
+    run_slow "Запуск PostgreSQL" $COMPOSE up -d postgres \
+        || die_or_rollback "Не удалось запустить PostgreSQL"
 
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
@@ -18938,7 +19737,8 @@ if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
     info "База данных: PostgreSQL (отдельный контейнер)"
     mkdir -p "$APP_DIR/data/postgres"
     chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
-    run $COMPOSE $COMPOSE_ARGS up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
+    run_slow "Запуск PostgreSQL" $COMPOSE $COMPOSE_ARGS up -d postgres \
+        || die_or_rollback "Не удалось запустить PostgreSQL"
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
         sleep 2
@@ -19038,7 +19838,8 @@ fi
 
 step "Запуск бота"
 
-run $COMPOSE $COMPOSE_ARGS up -d || die_or_rollback "Не удалось запустить контейнеры"
+run_slow "Запуск контейнеров" $COMPOSE $COMPOSE_ARGS up -d \
+    || die_or_rollback "Не удалось запустить контейнеры"
 
 # Первый запуск включает миграции Alembic, перенос данных и геокодирование —
 # на слабом железе это занимает минуты, а не секунды.
@@ -19108,6 +19909,8 @@ docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Схема базы актуаль
 
 trap - ERR
 ELAPSED=$(( $(date +%s) - START_TS ))
+echo
+timing_report
 echo
 line
 printf "  %s✓ Система «Радар» v%s запущена%s   %s(%d мин %d с)%s\n" \

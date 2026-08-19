@@ -114,6 +114,20 @@ def promo_only() -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
 
 
+def promo_with_back(target: str = "menu:main") -> InlineKeyboardMarkup:
+    """Возврат в меню и партнёрская ссылка рядом.
+
+    Раньше промо-кнопка вытесняла возврат целиком: из раздела «О системе»
+    выйти было нечем, кроме как заново звать меню. Возврат обязателен,
+    промо — нет, поэтому первый стоит всегда, второй добавляется.
+    """
+    rows = [[InlineKeyboardButton(text="🏠 В главное меню", callback_data=target)]]
+    row = promo_row()
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # Подписи закреплённых кнопок. Reply-кнопки не умеют открывать ссылки напрямую,
 # поэтому «HydraSite» присылает сообщение с обычной inline-кнопкой-ссылкой.
 BTN_MENU = "☰ Меню"

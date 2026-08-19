@@ -34,8 +34,29 @@ from radar.web import auth  # noqa: E402
 # ==========================================================================
 
 class TestTopics(unittest.TestCase):
-    def test_twelve_topics(self):
-        self.assertEqual(len(digest.TOPICS), 12)
+    def test_city_topics_present(self):
+        """Городские тематики — ядро системы, они обязаны быть все."""
+        keys = {item.key for item in digest.TOPICS}
+        for key in ("city", "incidents", "utilities", "transport", "health",
+                    "education", "social", "economy", "culture",
+                    "weather_nature", "region", "federal"):
+            self.assertIn(key, keys)
+
+    def test_thematic_topics_have_sources(self):
+        """Тематика без своих лент осталась бы пустой — платить за замок,
+        за которым ничего нет, человек не должен."""
+        from radar import presets
+
+        city_keys = {"city", "incidents", "utilities", "transport", "health",
+                     "education", "social", "economy", "culture",
+                     "weather_nature", "region", "federal"}
+        for topic in digest.TOPICS:
+            if topic.key in city_keys:
+                continue
+            with self.subTest(topic=topic.key):
+                preset = presets.BY_TOPIC.get(topic.key)
+                self.assertIsNotNone(preset, f"{topic.key}: нет источников")
+                self.assertTrue(preset.channels or preset.rss or preset.vk)
 
     def test_keys_unique(self):
         keys = [item.key for item in digest.TOPICS]
@@ -172,6 +193,50 @@ class TestComplimentaryAccess(unittest.TestCase):
     def test_role_argument_wins_over_record(self):
         subscription = digest.subscription_of({"role": "user", "digest": {}}, role="admin")
         self.assertTrue(subscription.complimentary)
+
+
+class TestSummaries(unittest.TestCase):
+    """Пересказ заменяет список, но источники обязаны остаться."""
+
+    def setUp(self):
+        self.subscription = digest.Subscription(topics=["utilities"])
+        self.subscription.complimentary = True
+        self.entries = [
+            digest.Entry(topic="utilities", summary="Отключили воду на Чапаева",
+                         source="ЖКХ", link="https://example.ru/1"),
+            digest.Entry(topic="utilities", summary="Ремонт продлится до вечера",
+                         source="ЖКХ", link="https://example.ru/2"),
+        ]
+
+    def build(self, summaries=None):
+        return digest.build(self.entries, self.subscription,
+                            datetime(2026, 8, 19, 9, 0), "Саратов", summaries)
+
+    def test_without_summary_lists_items(self):
+        text = self.build()
+        self.assertIn("Отключили воду", text)
+        self.assertIn("Ремонт продлится", text)
+
+    def test_summary_replaces_list(self):
+        text = self.build({"utilities": "Воду отключили, ремонт до вечера."})
+        self.assertIn("Воду отключили, ремонт до вечера.", text)
+        self.assertNotIn("Ремонт продлится", text)
+
+    def test_summary_keeps_sources(self):
+        """Сводка без возможности проверить — слухи, а не новости."""
+        text = self.build({"utilities": "Воду отключили."})
+        self.assertIn("Источники", text)
+        self.assertIn("https://example.ru/1", text)
+        self.assertIn("https://example.ru/2", text)
+
+    def test_empty_summary_falls_back_to_list(self):
+        text = self.build({"utilities": "   "})
+        self.assertIn("Отключили воду", text)
+
+    def test_summary_for_other_topic_ignored(self):
+        text = self.build({"culture": "Что-то про театр"})
+        self.assertIn("Отключили воду", text)
+        self.assertNotIn("театр", text)
 
 
 class TestSchedule(unittest.TestCase):

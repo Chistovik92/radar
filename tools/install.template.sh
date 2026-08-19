@@ -141,12 +141,109 @@ overall() {
     return 0
 }
 
+# Анимация возможна только при живом терминале. При `curl … | bash`, в CI
+# и при перенаправлении в файл его нет, и «бегущие» полосы превратились бы
+# в мусор из escape-последовательностей посреди лога. Поэтому всё, что
+# движется, спрашивает разрешения у этой переменной.
+HAS_TTY=false
+[ -t 1 ] && [ -z "${NO_ANIMATION:-}" ] && HAS_TTY=true
+
+SPIN_CHARS='|/-\\'
+SPIN_PID=""
+STEP_STARTED=0
+STEP_TITLE=""
+STEP_TIMES=""          # накопленный отчёт: «название<TAB>секунды»
+INSTALL_STARTED=$(date +%s)
+
+server_time() { date "+%H:%M:%S"; }
+
+human_time() {         # human_time <секунд>
+    local total=$1
+    if [ "$total" -ge 60 ]; then
+        printf "%d мин %02d с" $((total / 60)) $((total % 60))
+    else
+        printf "%d с" "$total"
+    fi
+}
+
+# Полоса этапа. Крутится, пока идёт длинная операция, и стирает себя за собой.
+spinner_start() {      # spinner_start <подпись>
+    [ "$HAS_TTY" = true ] || return 0
+    local caption="$1"
+    (
+        local frame=0 width=22 position=0 direction=1
+        while :; do
+            local bar="" index=0
+            while [ "$index" -lt "$width" ]; do
+                if [ "$index" -eq "$position" ]; then bar="$bar#"; else bar="$bar."; fi
+                index=$((index + 1))
+            done
+            printf "\r  %s%s%s [%s] %s" \
+                "$C_CYAN" "${SPIN_CHARS:frame:1}" "$C_RESET" "$bar" "$caption"
+            frame=$(( (frame + 1) % 4 ))
+            position=$((position + direction))
+            [ "$position" -ge $((width - 1)) ] && direction=-1
+            [ "$position" -le 0 ] && direction=1
+            sleep 0.12
+        done
+    ) &
+    SPIN_PID=$!
+    # Отключаем уведомление оболочки о завершении фоновой задачи: иначе
+    # в конце этапа посреди вывода появляется «Terminated».
+    disown "$SPIN_PID" 2>/dev/null || true
+}
+
+spinner_stop() {
+    [ -n "$SPIN_PID" ] || return 0
+    kill "$SPIN_PID" 2>/dev/null || true
+    wait "$SPIN_PID" 2>/dev/null || true
+    SPIN_PID=""
+    # Стираем строку целиком: остатки полосы иначе перемешаются с отчётом.
+    printf "\r%s\r" "$(repeat ' ' "$COLS")"
+}
+
+# Полосу нельзя оставить крутиться, если установка оборвалась.
+trap 'spinner_stop' EXIT
+
+step_finish() {
+    [ -n "$STEP_TITLE" ] || return 0
+    spinner_stop
+    local spent=$(( $(date +%s) - STEP_STARTED ))
+    printf "  %s└%s %sзавершено за %s%s\n" \
+        "$C_DIM" "$C_RESET" "$C_DIM" "$(human_time "$spent")" "$C_RESET"
+    STEP_TIMES="${STEP_TIMES}${STEP_TITLE}\t${spent}\n"
+    log_raw "TIME  шаг «$STEP_TITLE»: ${spent} с"
+    STEP_TITLE=""
+}
+
 step()  {
+    step_finish
     STEP_CURRENT=$((STEP_CURRENT + 1))
-    printf "\n%s[%d/%d]%s %s%s%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
-        "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+    STEP_STARTED=$(date +%s)
+    STEP_TITLE="$*"
+    printf "\n%s[%d/%d]%s %s%s%s %s(%s)%s\n" "$C_BLUE" "$STEP_CURRENT" "$STEP_TOTAL" \
+        "$C_RESET" "$C_BOLD" "$*" "$C_RESET" "$C_DIM" "$(server_time)" "$C_RESET"
     overall
-    log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* ==="
+    log_raw "=== ШАГ $STEP_CURRENT/$STEP_TOTAL: $* (время сервера $(server_time)) ==="
+}
+
+# Итоговая таблица: где именно ушло время. На слабом одноплатнике сборка
+# образа занимает больше, чем всё остальное вместе, и это надо видеть.
+timing_report() {
+    step_finish
+    local total=$(( $(date +%s) - INSTALL_STARTED ))
+    printf "\n%sЗатраченное время%s\n" "$C_BOLD" "$C_RESET"
+    # Без выравнивания колонкой: printf считает ширину в байтах, а кириллица
+    # занимает по два — таблица разъехалась бы ровно на русских названиях.
+    printf "%b" "$STEP_TIMES" | while IFS="$(printf '\t')" read -r name spent; do
+        [ -n "$name" ] || continue
+        printf "  %s%s%s — %s\n" "$C_DIM" "$name" "$C_RESET" "$(human_time "$spent")"
+    done
+    line
+    printf "  %sВСЕГО%s — %s%s%s\n" "$C_BOLD" "$C_RESET" \
+        "$C_BOLD" "$(human_time "$total")" "$C_RESET"
+    printf "  %sвремя на сервере: %s%s\n" "$C_DIM" "$(date "+%d.%m.%Y %H:%M:%S %Z")" "$C_RESET"
+    log_raw "TIME  установка заняла ${total} с"
 }
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
 ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; log_raw "OK    $*"; }
@@ -158,6 +255,28 @@ die()  {
     [ -n "$LOG_FILE" ] && printf "  Полный лог: %s\n" "$LOG_FILE" >&2
     exit 1
 }
+# То же, что run, но с бегущей полосой и отчётом о затраченном времени.
+# Для операций, которые заметно длятся: apt, сборка образа, запуск стека.
+run_slow() {   # run_slow <подпись> <команда...>
+    local caption="$1"; shift
+    local started status=0
+    started=$(date +%s)
+    spinner_start "$caption"
+    run "$@" || status=$?
+    spinner_stop
+    local spent=$(( $(date +%s) - started ))
+    if [ "$status" -eq 0 ]; then
+        printf "  %s✓%s %s %s(%s)%s\n" "$C_GREEN" "$C_RESET" "$caption" \
+            "$C_DIM" "$(human_time "$spent")" "$C_RESET"
+        log_raw "OK    $caption — $(human_time "$spent")"
+    else
+        printf "  %s✗%s %s %s(%s)%s\n" "$C_RED" "$C_RESET" "$caption" \
+            "$C_DIM" "$(human_time "$spent")" "$C_RESET"
+        log_raw "FAIL  $caption — код $status"
+    fi
+    return $status
+}
+
 run()  {  # выполнить команду, весь вывод — только в лог
     # Код возврата снимается через `|| status=$?`, а не отдельной строкой:
     # обработчик ERR срабатывает при ненулевом коде даже когда errexit выключен,
@@ -798,7 +917,7 @@ elif [ "$(id -u)" != "0" ]; then
     UPD_DONE=2
 elif command -v apt-get >/dev/null 2>&1; then
     upd_step "список пакетов"
-    if run apt-get update; then
+    if run_slow "Список пакетов" apt-get update; then
         upd_finish "список пакетов обновлён"
         ok "Список пакетов актуален"
     else
@@ -1360,7 +1479,7 @@ run docker rm -f "$CONTAINER_NAME" || true   # наследие версий 3.x
 
 info "Собираю образ (первый раз это занимает 5–15 минут)"
 spinner_start "сборка образа…"
-if ! run $COMPOSE build $NO_CACHE_FLAG; then
+if ! run_slow "Сборка образа" $COMPOSE build $NO_CACHE_FLAG; then
     spinner_stop
     trap - ERR
     fail "Сборка образа не удалась"
@@ -1378,7 +1497,8 @@ if [ "$(get_env_value DB_BACKEND)" = "postgres" ] &&
    [ -d "$APP_DIR/data/postgres" ] &&
    [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ]; then
     info "Проверяю пароль существующей базы"
-    run $COMPOSE up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
+    run_slow "Запуск PostgreSQL" $COMPOSE up -d postgres \
+        || die_or_rollback "Не удалось запустить PostgreSQL"
 
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
@@ -1444,7 +1564,8 @@ if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
     info "База данных: PostgreSQL (отдельный контейнер)"
     mkdir -p "$APP_DIR/data/postgres"
     chown -R 999:999 "$APP_DIR/data/postgres" 2>/dev/null || true
-    run $COMPOSE $COMPOSE_ARGS up -d postgres || die_or_rollback "Не удалось запустить PostgreSQL"
+    run_slow "Запуск PostgreSQL" $COMPOSE $COMPOSE_ARGS up -d postgres \
+        || die_or_rollback "Не удалось запустить PostgreSQL"
     for _ in $(seq 1 45); do
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
         sleep 2
@@ -1544,7 +1665,8 @@ fi
 
 step "Запуск бота"
 
-run $COMPOSE $COMPOSE_ARGS up -d || die_or_rollback "Не удалось запустить контейнеры"
+run_slow "Запуск контейнеров" $COMPOSE $COMPOSE_ARGS up -d \
+    || die_or_rollback "Не удалось запустить контейнеры"
 
 # Первый запуск включает миграции Alembic, перенос данных и геокодирование —
 # на слабом железе это занимает минуты, а не секунды.
@@ -1614,6 +1736,8 @@ docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Схема базы актуаль
 
 trap - ERR
 ELAPSED=$(( $(date +%s) - START_TS ))
+echo
+timing_report
 echo
 line
 printf "  %s✓ Система «Радар» v%s запущена%s   %s(%d мин %d с)%s\n" \

@@ -125,50 +125,24 @@ async def is_empty() -> bool:
     return not users
 
 
+def legacy_present(path: str | None = None) -> bool:
+    """Лежит ли рядом файл базы от версии 3.x.
+
+    Перенос из него прекращён в 4.6.1, но обнаружить файл всё равно нужно:
+    иначе бот молча стартует с пустой базой, и человек решит, что данные
+    потеряны, хотя они лежат в соседнем файле.
+    """
+    return os.path.exists(path or config.DATA_FILE)
+
+
 async def run(path: str | None = None) -> dict[str, int]:
-    """Переносит JSON в базу. Возвращает счётчики перенесённого."""
-    source = path or config.DATA_FILE
-    raw: dict[str, Any] = {}
+    """Перенос из db.json удалён в 4.6.1.
 
-    if os.path.exists(source):
-        try:
-            with open(source, "r", encoding="utf-8") as handle:
-                loaded = json.load(handle)
-            raw = loaded if isinstance(loaded, dict) else {}
-            log.info("Найден файл прежней версии: %s", source)
-        except (OSError, json.JSONDecodeError) as exc:
-            log.error("Файл %s не прочитан (%s) — начинаю с пустой базы", source, exc)
-            raw = {}
-    else:
-        log.info("Файла %s нет — создаю базу с нуля", source)
-
-    data = _normalize(raw)
-
-    await repo.save_users(data["users"])
-    await repo.sync_sources(data["channels"], data["rss"], data["vk"], data["pending"])
-
-    for key, value in (data["meta"] or {}).items():
-        await repo.set_meta(str(key), value if isinstance(value, (dict, list)) else {"value": value})
-
-    counters = {
-        "users": len(data["users"]),
-        "locations": sum(len(item["locs"]) for item in data["users"].values()),
-        "channels": len(data["channels"]),
-        "rss": len(data["rss"]),
-        "pending": len(data["pending"]),
-    }
-    await repo.set_meta(MARKER, {"done": True, **counters})
-
-    if os.path.exists(source):
-        backup = f"{source}.migrated"
-        try:
-            os.replace(source, backup)
-            log.info("Исходный файл сохранён как %s", backup)
-        except OSError as exc:
-            log.warning("Не удалось переименовать %s: %s", source, exc)
-
-    log.info(
-        "Перенос завершён: пользователей %d, локаций %d, каналов %d, лент %d",
-        counters["users"], counters["locations"], counters["channels"], counters["rss"],
+    Оставлена заглушка, а не выкинута функция целиком: её зовут диагностика
+    и старые сценарии, и внятная ошибка полезнее AttributeError.
+    """
+    raise RuntimeError(
+        "Перенос из data/db.json прекращён с версии 4.6.1. "
+        "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
+        "и только затем на текущую версию."
     )
-    return counters

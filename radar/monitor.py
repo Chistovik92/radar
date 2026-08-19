@@ -22,7 +22,9 @@ from . import (
     digest,
     features,
     geocode,
+    presets,
     profiling,
+    shortener,
     quiet,
     secrets,
     sos,
@@ -126,6 +128,10 @@ async def dispatch_user(
     categories = {name for item in analyses for name in item.categories}
 
     sent = 0
+    # Сначала отбираем, потом шлём: кнопка «В главное меню» нужна одна,
+    # под последним сообщением серии. Раньше она висела под каждым, и при
+    # трёх совпавших локациях экран превращался в лестницу из кнопок.
+    outgoing: list[str] = []
     for _kind, text in messages:
         # Повтор того же события по той же локации не отправляем
         if features.enabled("antispam"):
@@ -138,7 +144,11 @@ async def dispatch_user(
             quiet.hold(uid, text)
             continue
 
-        if await send_html(uid, text, back_kb()):
+        outgoing.append(text)
+
+    for index, text in enumerate(outgoing):
+        last = index == len(outgoing) - 1
+        if await send_html(uid, text, back_kb() if last else None):
             sent += 1
         await asyncio.sleep(0.3)
 
@@ -247,7 +257,8 @@ async def _send_digests_inner(now: datetime) -> None:
 
         locations = user.get("locs") or []
         city = str(locations[0].get("city") or "") if locations else ""
-        text = digest.build(_digest_pool, subscription, now, city)
+        summaries = await digest.summaries_for(_digest_pool, subscription)
+        text = digest.build(_digest_pool, subscription, now, city, summaries)
         if not text:
             continue
 
@@ -280,10 +291,37 @@ def collect_digest(analyses: list[Analysis]) -> None:
                 link=item.link,
             )
         )
+    asyncio.create_task(_shorten_pool_links())
     del _digest_pool[:-300]
 
 
 _digest_pool: list["digest.Entry"] = []
+
+
+async def _shorten_pool_links() -> None:
+    """Заменяет ссылки в накопленном материале короткими.
+
+    Отдельной задачей, а не внутри разбора: обращение к базе не должно
+    задерживать цикл, а если сокращение не удалось, подборка обязана уйти
+    с исходными ссылками — длинная ссылка лучше отсутствующей.
+    """
+    if not features.enabled("link_shortener") or not shortener.enabled():
+        return
+
+    from .db import repo
+
+    for entry in _digest_pool:
+        if not entry.link or entry.link.startswith(shortener.base_url()):
+            continue
+        if not shortener.valid(entry.link):
+            continue
+        code = shortener.code_for(entry.link)
+        try:
+            await repo.save_short_link(code, entry.link)
+        except Exception:  # noqa: BLE001
+            log.debug("Сокращение ссылки не удалось, оставляю исходную")
+            continue
+        entry.link = shortener.short_url(code)
 
 
 async def release_held(now: datetime) -> None:
@@ -291,8 +329,10 @@ async def release_held(now: datetime) -> None:
     if not features.enabled("quiet_hours") or not quiet.held_count():
         return
     for uid, user in list(storage.users().items()):
-        for text in quiet.release(uid, user, now):
-            await send_html(uid, text, back_kb())
+        held = list(quiet.release(uid, user, now))
+        for index, text in enumerate(held):
+            last = index == len(held) - 1
+            await send_html(uid, text, back_kb() if last else None)
             await asyncio.sleep(0.2)
 
 
@@ -331,12 +371,43 @@ async def repeat_sos() -> None:
             )
 
 
+async def subscribed_topics() -> set[str]:
+    """Тематики, на которые кто-то подписан прямо сейчас.
+
+    Опрашивать ленту про кино, когда её никто не читает, — впустую жечь
+    запросы на слабом сервере. Набор пересчитывается каждый цикл: он
+    дешёвый, а подписки меняются.
+    """
+    if not features.enabled("digest"):
+        return set()
+    wanted: set[str] = set()
+    for user in storage.users().values():
+        subscription = digest.subscription_of(user)
+        wanted.update(subscription.allowed_topics())
+    return wanted
+
+
 async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None:
+    channels = list(storage.channels())
+    feeds = list(storage.rss_feeds())
+    vk_extra: list[str] = []
+
+    # Тематические ленты (игры, спорт, наука и прочее) добавляются к городским
+    # источникам, а не заменяют их: городская часть системы важнее и должна
+    # работать, даже если тематические ленты недоступны.
+    thematic_channels, thematic_feeds, vk_extra = presets.thematic_sources(
+        await subscribed_topics()
+    )
+    channels.extend(thematic_channels)
+    feeds.extend(thematic_feeds)
+    channels = list(dict.fromkeys(channels))
+    feeds = list(dict.fromkeys(feeds))
+
     with profiling.measure("sources"):
         items = await sources.collect(
             session,
-            storage.channels(),
-            storage.rss_feeds(),
+            channels,
+            feeds,
             seen,
             config.MSG_PER_SOURCE,
             warmup=warmup,
@@ -345,7 +416,7 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     # а разбор дальше общий для всех типов.
     if features.enabled("source_vk"):
         vk_token = secrets.get("VK_SERVICE_TOKEN")
-        groups = list(storage.vk_groups())
+        groups = list(dict.fromkeys(list(storage.vk_groups()) + vk_extra))
         if vk_token and groups:
             with profiling.measure("vk"):
                 for group in groups:

@@ -89,6 +89,36 @@ TOPICS: tuple[Topic, ...] = (
     Topic("federal", "Федеральное", "🇷🇺",
           "Значимые общероссийские новости кратко.",
           ("правительств", "госдум", "президент", "минист", "федеральн")),
+
+    # Ниже — тематики, не привязанные к городу. Они кормятся отдельными
+    # лентами из presets.THEMATIC: городские источники такого не публикуют,
+    # и без своих лент разделы стояли бы пустыми.
+    Topic("it", "IT и игры", "🎮",
+          "Игры для PC, PlayStation, Xbox, техника, софт, ИИ.",
+          ("игр", "гейм", "playstation", "xbox", "nintendo", "steam",
+           "консол", "видеокарт", "процессор", "смартфон", "нейросет",
+           "искусственный интеллект", "приложени", "обновлени игры",
+           "разработчик", "релиз игры", "патч", "киберспорт")),
+    Topic("science", "Наука и техника", "🔬",
+          "Исследования, космос, медицина, изобретения.",
+          ("учён", "исследовани", "космос", "спутник", "ракет", "нау",
+           "открыти", "эксперимент", "вакцин", "телескоп", "физик")),
+    Topic("sport", "Спорт", "⚽️",
+          "Матчи, турниры, результаты, спортсмены.",
+          ("матч", "турнир", "чемпионат", "сборн", "футбол", "хоккей",
+           "баскетбол", "олимп", "гол", "спортсмен", "тренер", "лиг")),
+    Topic("hobby", "Хобби и авто", "🚗",
+          "Автомобили, рукоделие, сад, рыбалка, путешествия.",
+          ("автомобил", "машин", "рыбалк", "охот", "сад", "огород",
+           "рукодел", "путешестви", "турист", "велосипед", "мотоцикл")),
+    Topic("cinema", "Кино и сериалы", "🎬",
+          "Премьеры, трейлеры, стриминги.",
+          ("фильм", "сериал", "премьер", "трейлер", "кино", "режиссёр",
+           "актёр", "сезон", "экраниз", "стриминг")),
+    Topic("finance", "Деньги и рынки", "📈",
+          "Курсы, вклады, налоги, крупные сделки.",
+          ("курс", "рубл", "доллар", "инфляц", "ставк", "вклад", "налог",
+           "биржа", "акци", "ипотек", "криптовалют")),
 )
 
 BY_KEY = {topic.key: topic for topic in TOPICS}
@@ -282,8 +312,44 @@ def group(entries: Iterable[Entry], topics: Iterable[str]) -> dict[str, list[Ent
     return grouped
 
 
+async def build_async(entries: Iterable[Entry], subscription: Subscription,
+                      now: datetime, city: str = "",
+                      summaries: dict[str, str] | None = None) -> str:
+    """То же, что build, но с готовыми пересказами тематик."""
+    return build(entries, subscription, now, city, summaries)
+
+
+async def summaries_for(entries: Iterable[Entry],
+                        subscription: Subscription) -> dict[str, str]:
+    """Пересказ по каждой тематике — один запрос к модели на тематику.
+
+    Пересказывать каждую новость отдельно было бы кратно дороже по квоте,
+    а выигрыш даёт именно объединение: связная сводка вместо списка
+    обрывков. Если модель недоступна, словарь остаётся пустым и подборка
+    выходит списком, как раньше.
+    """
+    from . import ai, features
+
+    if not features.enabled("digest_summaries"):
+        return {}
+
+    grouped = group(entries, subscription.allowed_topics())
+    result: dict[str, str] = {}
+    for key, items in grouped.items():
+        topic = BY_KEY.get(key)
+        if topic is None or len(items) < 2:
+            continue                     # одну новость пересказывать незачем
+        text = await ai.summarize_topic(
+            topic.title, [item.summary for item in items[:12]]
+        )
+        if text:
+            result[key] = text
+    return result
+
+
 def build(entries: Iterable[Entry], subscription: Subscription,
-          now: datetime, city: str = "") -> str:
+          now: datetime, city: str = "",
+          summaries: dict[str, str] | None = None) -> str:
     """Собирает одно сообщение из всех тематик подписки."""
     grouped = group(entries, subscription.allowed_topics())
     if not grouped:
@@ -300,6 +366,23 @@ def build(entries: Iterable[Entry], subscription: Subscription,
             continue
         topic = BY_KEY[key]
         lines.append(f"{topic.icon} <b>{esc(topic.title)}</b>")
+
+        recap = (summaries or {}).get(key, "").strip()
+        if recap:
+            # Пересказ заменяет список, но источники всё равно перечисляем
+            # ниже: сводка без возможности проверить — слухи, а не новости.
+            lines.append(esc(recap))
+            links = [entry.link for entry in items[:MAX_ITEMS_PER_TOPIC]
+                     if entry.link]
+            if links:
+                shown = " · ".join(
+                    f'<a href="{esc_attr(link)}">[{number}]</a>'
+                    for number, link in enumerate(links, 1)
+                )
+                lines.append(f"<i>Источники: {shown}</i>")
+            lines.append("")
+            continue
+
         for entry in items[:MAX_ITEMS_PER_TOPIC]:
             text = entry.summary.strip()
             if entry.link:

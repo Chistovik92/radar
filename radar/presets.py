@@ -175,3 +175,118 @@ def rss_for(cities: list[str]) -> list[str]:
         if preset and preset.key != "federal":
             result.extend(preset.rss)
     return list(dict.fromkeys(result))
+
+
+# --------------------------------------------------------------------------
+#  Тематические источники (с 4.6.1)
+# --------------------------------------------------------------------------
+#
+# Городские каналы про игры, науку или спорт не пишут — эти тематики
+# кормятся отдельными лентами. Наборы общие для всех городов и включаются
+# по тематикам, на которые подписан человек, а не по его местоположению.
+#
+# Подключаются только те наборы, чьи тематики кому-то нужны: опрашивать
+# ленту про кино, когда на неё никто не подписан, — впустую тратить
+# запросы на слабом сервере.
+
+@dataclass
+class ThematicPreset:
+    """Источники одной тематики подборок."""
+
+    topic: str                                   # ключ из digest.TOPICS
+    title: str
+    channels: list[str] = field(default_factory=list)
+    rss: list[str] = field(default_factory=list)
+    vk: list[str] = field(default_factory=list)
+    note: str = ""
+
+
+THEMATIC: tuple[ThematicPreset, ...] = (
+    ThematicPreset(
+        topic="it",
+        title="IT и игры",
+        channels=["ixbtgames", "ixbtnocomments", "makarenkoff_games"],
+        rss=[
+            "https://www.ixbt.com/export/news.rss",
+            "https://3dnews.ru/news/rss/",
+            "https://habr.com/ru/rss/news/?fl=ru",
+        ],
+        vk=["makarenkoff_games"],
+        note="Каналы ixbt дают и игры, и железо; makarenkoff_games "
+             "продублирован в VK — заодно проверка источника ВКонтакте.",
+    ),
+    ThematicPreset(
+        topic="science",
+        title="Наука и техника",
+        rss=[
+            "https://nplus1.ru/rss",
+            "https://naked-science.ru/feed",
+        ],
+    ),
+    ThematicPreset(
+        topic="sport",
+        title="Спорт",
+        rss=[
+            "https://www.sports.ru/rss/all_news.xml",
+            "https://matchtv.ru/rss",
+        ],
+    ),
+    ThematicPreset(
+        topic="hobby",
+        title="Хобби и авто",
+        rss=[
+            "https://www.drive2.ru/export/rss/",
+            "https://motor.ru/exports/rss.xml",
+        ],
+    ),
+    ThematicPreset(
+        topic="cinema",
+        title="Кино и сериалы",
+        rss=[
+            "https://www.kinopoisk.ru/media/rss/",
+            "https://dtf.ru/rss/all",
+        ],
+    ),
+    ThematicPreset(
+        topic="finance",
+        title="Деньги и рынки",
+        rss=[
+            "https://www.rbc.ru/v10/ajax/rss/feed/economics",
+            "https://quote.rbc.ru/v10/ajax/rss/feed",
+        ],
+    ),
+)
+
+BY_TOPIC = {preset.topic: preset for preset in THEMATIC}
+
+
+def thematic_for(topics: list[str]) -> ThematicPreset | None:
+    """Набор для одной тематики. None, если тематика городская."""
+    for key in topics:
+        preset = BY_TOPIC.get(key)
+        if preset:
+            return preset
+    return None
+
+
+def thematic_sources(topics: set[str]) -> tuple[list[str], list[str], list[str]]:
+    """Каналы, ленты и группы VK для набора тематик.
+
+    Возвращает только то, что нужно перечисленным тематикам: опрос лент,
+    на которые никто не подписан, — лишняя нагрузка без адресата.
+    """
+    channels: list[str] = []
+    feeds: list[str] = []
+    groups: list[str] = []
+    for key in topics:
+        preset = BY_TOPIC.get(key)
+        if not preset:
+            continue
+        channels.extend(preset.channels)
+        feeds.extend(preset.rss)
+        groups.extend(preset.vk)
+    return (
+        list(dict.fromkeys(channels)),
+        list(dict.fromkeys(feeds)),
+        list(dict.fromkeys(groups)),
+    )

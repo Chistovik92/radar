@@ -240,3 +240,28 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class ShortLink(Base):
+    """Короткие ссылки (с 4.6.1).
+
+    Код — первичный ключ и он детерминированный: одна и та же ссылка даёт
+    один код, поэтому повторное сокращение не плодит записей, а переходы
+    по уже разосланным ссылкам продолжают работать после перезапуска.
+
+    Счётчик переходов нужен не ради статистики как таковой, а чтобы видеть,
+    читают ли вообще источники в подборках.
+    """
+
+    __tablename__ = "short_links"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    url: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[int] = mapped_column(BigIntType, default=0)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    last_hit: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

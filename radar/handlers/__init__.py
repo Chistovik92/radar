@@ -21,6 +21,7 @@ from . import (
     network,
     perf,
     settings,
+    shortlink,
     settings_admin,
     sos,
     sources,
@@ -38,6 +39,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(network.router)
     dp.include_router(logs.router)
     dp.include_router(perf.router)
+    dp.include_router(shortlink.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Ссылки перехватываем до свободного диалога с моделью

@@ -36,7 +36,7 @@ from ..matching import CATEGORY_TITLES
 from ..roles import SUPERADMIN, USER
 from .engine import session
 from ..identity import parse as parse_identity
-from .models import Delivery, Event, Feature, Location, Meta, Source, User
+from .models import Delivery, Event, Feature, Location, Meta, ShortLink, Source, User
 
 log = logging.getLogger("radar.repo")
 
@@ -526,3 +526,46 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
+
+
+# --------------------------------------------------------------------------
+#  Короткие ссылки (с 4.6.1)
+# --------------------------------------------------------------------------
+
+async def save_short_link(code: str, url: str, created_by: int = 0) -> None:
+    """Запоминает ссылку. Повтор не считается ошибкой: код детерминированный,
+    и одна и та же ссылка из двух подборок обязана дать один адрес."""
+    async with session() as active:
+        row = await active.get(ShortLink, code)
+        if row is None:
+            active.add(ShortLink(code=code, url=url, created_by=created_by))
+        elif row.url != url:
+            # Совпадение кодов у разных ссылок теоретически возможно.
+            # Молча перезаписать нельзя: разосланные ссылки увели бы не туда.
+            log.warning("Код %s уже занят другой ссылкой — сокращение отменено", code)
+            return
+        await active.commit()
+
+
+async def resolve_short_link(code: str) -> str | None:
+    """Отдаёт адрес и считает переход."""
+    async with session() as active:
+        row = await active.get(ShortLink, code)
+        if row is None:
+            return None
+        row.hits += 1
+        row.last_hit = datetime.now(timezone.utc)
+        await active.commit()
+        return row.url
+
+
+async def short_link_stats(limit: int = 20) -> list[dict[str, Any]]:
+    async with session() as active:
+        result = await active.execute(
+            select(ShortLink).order_by(ShortLink.created_at.desc()).limit(limit)
+        )
+        return [
+            {"code": row.code, "url": row.url, "hits": row.hits,
+             "created_at": row.created_at}
+            for row in result.scalars()
+        ]

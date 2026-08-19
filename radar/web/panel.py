@@ -21,7 +21,7 @@ import html
 import logging
 from typing import Any
 
-from .. import config, features, roles, storage
+from .. import config, features, roles, shortener, storage
 from . import auth
 
 log = logging.getLogger("radar.web")
@@ -405,6 +405,23 @@ async def create_app() -> Any:
     async def health(_request):
         return web.json_response({"status": "ok", "version": config.VERSION})
 
+    async def follow(request):
+        """Переход по короткой ссылке.
+
+        Единственный маршрут панели без авторизации — иначе ссылка была бы
+        бесполезна. Поэтому он ничего не показывает и ничего не принимает:
+        только ищет код и перенаправляет.
+        """
+        from ..db import repo
+
+        code = request.match_info.get("code", "")
+        if not shortener.valid_code(code):
+            raise web.HTTPNotFound(text="Ссылка не найдена")
+        target = await repo.resolve_short_link(code)
+        if not target:
+            raise web.HTTPNotFound(text="Ссылка не найдена")
+        raise web.HTTPFound(target)
+
     application.add_routes([
         web.get("/login", login),
         web.get("/auth", authenticate),
@@ -419,6 +436,7 @@ async def create_app() -> Any:
         web.get("/backup/create", backup_create),
         web.get("/backup/download", backup_download),
         web.get("/health", health),
+        web.get("/s/{code}", follow),
     ])
     return application
 

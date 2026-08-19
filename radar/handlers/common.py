@@ -198,7 +198,7 @@ async def menu_about(call: CallbackQuery) -> None:
     ]
     if config.PROMO_ENABLED and config.PROMO_TEXT:
         parts += ["", "———", "", config.PROMO_TEXT]
-    await safe_edit(call, "\n".join(parts), keyboards.promo_only() or back_kb())
+    await safe_edit(call, "\n".join(parts), keyboards.promo_with_back())
 
 
 def _quota_line() -> str:
