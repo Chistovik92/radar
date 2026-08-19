@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 import aiohttp
 
@@ -329,3 +330,51 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
+
+
+async def deliver(
+    chat_id: int | str,
+    data: Weather,
+    title: str,
+    markup: Any = None,
+    user: dict[str, Any] | None = None,
+) -> None:
+    """Отправить сводку в том виде, который выбрал пользователь.
+
+    Единая точка выдачи. Раньше выбор между картинкой и текстом жил только
+    в фоновой рассылке, а кнопка «Обновить погоду» слала текст всегда —
+    настройка «Вид погоды: картинка» при ручном запросе просто не работала.
+    Любое новое место, откуда уходит погода, должно звать эту функцию,
+    а не render() напрямую.
+
+    Текст остаётся запасным вариантом на всех отказах: нет Pillow, не
+    отрисовалось, не ушло в Telegram. Молчания быть не должно.
+    """
+    from . import features
+    from .tg import send_html
+
+    picture = None
+    wants_picture = (user or {}).get("weather_format") != "text"
+    if wants_picture and features.enabled("weather_image"):
+        from . import weather_image
+
+        picture = weather_image.render(data, title)
+
+    if picture is None:
+        await send_html(chat_id, render(data, title), markup)
+        return
+
+    from aiogram.types import BufferedInputFile
+
+    from .tg import bot
+
+    try:
+        await bot.send_photo(
+            int(chat_id),
+            BufferedInputFile(picture, filename="weather.png"),
+            caption=title,
+            reply_markup=markup,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("Картинка погоды не ушла, отправляю текстом")
+        await send_html(chat_id, render(data, title), markup)

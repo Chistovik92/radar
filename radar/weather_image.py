@@ -61,7 +61,15 @@ def _font(size: int, bold: bool = False):
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+
+    # Встроенный шрифт Pillow растровый и кириллицу не покрывает: сводка
+    # вышла бы из квадратиков. Возвращаем None — вызывающий откатится
+    # на текст, который читается всегда.
+    log.warning(
+        "TTF-шрифт не найден, погода картинкой недоступна — отправляю текстом. "
+        "Установите fonts-dejavu-core в образ."
+    )
+    return None
 
 
 def _temperature_color(value: float) -> tuple[int, int, int]:
@@ -92,6 +100,8 @@ def render(weather: Any, title: str = "") -> bytes | None:
         head = _font(30, bold=True)
         normal = _font(24)
         small = _font(20)
+        if None in (big, head, normal, small):
+            return None
 
         # Заголовок: название локации без разметки
         clean_title = _strip_tags(title) or "Погода"

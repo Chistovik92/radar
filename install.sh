@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.5.7 — автономный установщик.
+# Система «Радар» v4.5.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.5.7"
+VERSION="4.5.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1060,8 +1060,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 # ffmpeg нужен для склейки видео и звука выше 720p. Он заметно увеличивает
 # образ (~150 МБ); если загрузка видео не нужна, его можно убрать.
+# fonts-dejavu-core — для погоды картинкой: в python:3.11-slim шрифтов нет
+# вообще, а встроенный шрифт Pillow кириллицу не покрывает и растровый,
+# отчего сводка выходила нечитаемой. Пакет весит около 2 МБ.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata ca-certificates ffmpeg \
+ && apt-get install -y --no-install-recommends tzdata ca-certificates ffmpeg fonts-dejavu-core \
  && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
  && echo $TZ > /etc/timezone \
  && rm -rf /var/lib/apt/lists/*
@@ -1315,6 +1318,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.5.8", [
+        "🖼 <b>Погода картинкой наконец работает.</b> Настройка была, "
+        "показывала «картинка», а сводка приходила текстом: выбор вида "
+        "учитывался только в рассылке по расписанию, а кнопка «Обновить "
+        "погоду» слала текст всегда. Теперь обе выдачи идут через одну точку.",
+        "🔤 <b>В образ добавлены шрифты.</b> Без них картинка либо не "
+        "рисовалась, либо вышла бы из квадратиков вместо кириллицы.",
+    ]),
     ("4.5.7", [
         "🛟 <b>Сорванная установка больше не оставляет систему на полпути.</b> "
         "Раньше откат предлагался только при провале сборки; теперь любой "
@@ -1614,7 +1625,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.5.7"
+__version__ = "4.5.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6890,7 +6901,15 @@ def _font(size: int, bold: bool = False):
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+
+    # Встроенный шрифт Pillow растровый и кириллицу не покрывает: сводка
+    # вышла бы из квадратиков. Возвращаем None — вызывающий откатится
+    # на текст, который читается всегда.
+    log.warning(
+        "TTF-шрифт не найден, погода картинкой недоступна — отправляю текстом. "
+        "Установите fonts-dejavu-core в образ."
+    )
+    return None
 
 
 def _temperature_color(value: float) -> tuple[int, int, int]:
@@ -6921,6 +6940,8 @@ def render(weather: Any, title: str = "") -> bytes | None:
         head = _font(30, bold=True)
         normal = _font(24)
         small = _font(20)
+        if None in (big, head, normal, small):
+            return None
 
         # Заголовок: название локации без разметки
         clean_title = _strip_tags(title) or "Погода"
@@ -11787,6 +11808,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 import aiohttp
 
@@ -12096,6 +12118,54 @@ def render(weather: Weather, title: str = "") -> str:
 async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
     """Совместимость: получить и сразу оформить."""
     return render(await fetch(session, lat, lon))
+
+
+async def deliver(
+    chat_id: int | str,
+    data: Weather,
+    title: str,
+    markup: Any = None,
+    user: dict[str, Any] | None = None,
+) -> None:
+    """Отправить сводку в том виде, который выбрал пользователь.
+
+    Единая точка выдачи. Раньше выбор между картинкой и текстом жил только
+    в фоновой рассылке, а кнопка «Обновить погоду» слала текст всегда —
+    настройка «Вид погоды: картинка» при ручном запросе просто не работала.
+    Любое новое место, откуда уходит погода, должно звать эту функцию,
+    а не render() напрямую.
+
+    Текст остаётся запасным вариантом на всех отказах: нет Pillow, не
+    отрисовалось, не ушло в Telegram. Молчания быть не должно.
+    """
+    from . import features
+    from .tg import send_html
+
+    picture = None
+    wants_picture = (user or {}).get("weather_format") != "text"
+    if wants_picture and features.enabled("weather_image"):
+        from . import weather_image
+
+        picture = weather_image.render(data, title)
+
+    if picture is None:
+        await send_html(chat_id, render(data, title), markup)
+        return
+
+    from aiogram.types import BufferedInputFile
+
+    from .tg import bot
+
+    try:
+        await bot.send_photo(
+            int(chat_id),
+            BufferedInputFile(picture, filename="weather.png"),
+            caption=title,
+            reply_markup=markup,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("Картинка погоды не ушла, отправляю текстом")
+        await send_html(chat_id, render(data, title), markup)
 RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
 cat > "radar/sources.py" <<'RADAR_FILE_50'
@@ -13147,31 +13217,7 @@ async def dispatch_user(
             lat, lon = cluster_center(cluster)
             data = await weather.fetch(session, lat, lon)
             markup = back_kb() if index == len(clusters) - 1 else None
-            title = cluster_title(cluster)
-
-            picture = None
-            if features.enabled("weather_image") and user.get("weather_format") != "text":
-                from . import weather_image
-
-                picture = weather_image.render(data, title)
-
-            if picture is not None:
-                from aiogram.types import BufferedInputFile
-
-                from .tg import bot
-
-                try:
-                    await bot.send_photo(
-                        int(uid),
-                        BufferedInputFile(picture, filename="weather.png"),
-                        caption=title,
-                        reply_markup=markup,
-                    )
-                except Exception:  # noqa: BLE001
-                    # Картинка не ушла — текст всё равно должен дойти
-                    await send_html(uid, weather.render(data, title), markup)
-            else:
-                await send_html(uid, weather.render(data, title), markup)
+            await weather.deliver(uid, data, cluster_title(cluster), markup, user)
             sent += 1
             await asyncio.sleep(0.2)
         user["last_weather"] = now_ts
@@ -14036,10 +14082,12 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
             lat, lon = cluster_center(cluster)
             data = await weather.fetch(session, lat, lon)
             markup = back_kb() if index == len(clusters) - 1 else None
-            await send_html(
+            await weather.deliver(
                 call.message.chat.id,
-                weather.render(data, cluster_title(cluster)),
+                data,
+                cluster_title(cluster),
                 markup,
+                user,
             )
 RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"

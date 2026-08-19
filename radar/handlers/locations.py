@@ -156,8 +156,10 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
             lat, lon = cluster_center(cluster)
             data = await weather.fetch(session, lat, lon)
             markup = back_kb() if index == len(clusters) - 1 else None
-            await send_html(
+            await weather.deliver(
                 call.message.chat.id,
-                weather.render(data, cluster_title(cluster)),
+                data,
+                cluster_title(cluster),
                 markup,
+                user,
             )

@@ -149,31 +149,7 @@ async def dispatch_user(
             lat, lon = cluster_center(cluster)
             data = await weather.fetch(session, lat, lon)
             markup = back_kb() if index == len(clusters) - 1 else None
-            title = cluster_title(cluster)
-
-            picture = None
-            if features.enabled("weather_image") and user.get("weather_format") != "text":
-                from . import weather_image
-
-                picture = weather_image.render(data, title)
-
-            if picture is not None:
-                from aiogram.types import BufferedInputFile
-
-                from .tg import bot
-
-                try:
-                    await bot.send_photo(
-                        int(uid),
-                        BufferedInputFile(picture, filename="weather.png"),
-                        caption=title,
-                        reply_markup=markup,
-                    )
-                except Exception:  # noqa: BLE001
-                    # Картинка не ушла — текст всё равно должен дойти
-                    await send_html(uid, weather.render(data, title), markup)
-            else:
-                await send_html(uid, weather.render(data, title), markup)
+            await weather.deliver(uid, data, cluster_title(cluster), markup, user)
             sent += 1
             await asyncio.sleep(0.2)
         user["last_weather"] = now_ts

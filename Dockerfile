@@ -8,8 +8,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 # ffmpeg нужен для склейки видео и звука выше 720p. Он заметно увеличивает
 # образ (~150 МБ); если загрузка видео не нужна, его можно убрать.
+# fonts-dejavu-core — для погоды картинкой: в python:3.11-slim шрифтов нет
+# вообще, а встроенный шрифт Pillow кириллицу не покрывает и растровый,
+# отчего сводка выходила нечитаемой. Пакет весит около 2 МБ.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata ca-certificates ffmpeg \
+ && apt-get install -y --no-install-recommends tzdata ca-certificates ffmpeg fonts-dejavu-core \
  && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
  && echo $TZ > /etc/timezone \
  && rm -rf /var/lib/apt/lists/*
