@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.5.8 — автономный установщик.
+# Система «Радар» v4.6.0 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.5.8"
+VERSION="4.6.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1022,7 +1022,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=71
+FILE_COUNT=72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1318,6 +1318,18 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.6.0", [
+        "🌅 <b>Погода картинкой перерисована.</b> Фон меняется по времени "
+        "суток в точке вашей локации — ночь, рассвет, день, закат. "
+        "Считается по местному времени и местному восходу, а не по часам "
+        "сервера.",
+        "🧭 <b>Ветер со стрелкой.</b> Направление, скорость, порывы и "
+        "словесная оценка силы. Стрелка показывает, куда дует.",
+        "🌙 <b>Луна с фазой</b> и долей освещённого диска — когда её видно.",
+        "🖼 <b>Администрация может включить картинку всем разом.</b> "
+        "Личный выбор при этом сохраняется и вернётся, когда общую "
+        "настройку снимут.",
+    ]),
     ("4.5.8", [
         "🖼 <b>Погода картинкой наконец работает.</b> Настройка была, "
         "показывала «картинка», а сводка приходила текстом: выбор вида "
@@ -1625,7 +1637,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.5.8"
+__version__ = "4.6.0"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3155,9 +3167,15 @@ FLAGS: tuple[Flag, ...] = (
     Flag("whitelist_notice", "Примечание о «белых списках»",
          "Пояснение об ограничениях мобильного интернета.", group="Подача", since="3.3"),
     Flag("weather_image", "Погода картинкой",
-         "Отрисованная сводка вместо текста. Требует Pillow; без него "
-         "автоматически используется текст.",
+         "Разрешает отрисованную сводку. Каждый выбирает вид сам "
+         "в настройках. Требует Pillow и шрифтов; без них автоматически "
+         "используется текст.",
          group="Подача", since="4.4", default=False),
+    Flag("weather_image_all", "Погода картинкой всем",
+         "Картинка для всех, без личного выбора. Нужен включённый "
+         "«Погода картинкой». Осторожно: при слабом мобильном интернете "
+         "картинка может не прогрузиться там, где текст дошёл бы.",
+         group="Подача", since="4.6", default=False),
     Flag("quiet_hours", "Тихие часы",
          "Несрочное придерживается до утра. Военные угрозы и МЧС проходят всегда.",
          group="Подача", since="4.4", default=False),
@@ -6611,8 +6629,134 @@ def load_average() -> tuple[float, float, float]:
 def cpu_count() -> int:
     return os.cpu_count() or 1
 RADAR_FILE_25
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/astro.py"
+cat > "radar/astro.py" <<'RADAR_FILE_26'
+"""Фаза луны и роза ветров.
+
+Расчёты вынесены отдельно: они чистые, не зависят ни от сети, ни от
+Pillow, и потому проверяются тестами без заглушек.
+
+Фаза считается по среднему синодическому месяцу от известного новолуния.
+Точность такого приближения — около суток на горизонте десятилетий, чего
+для картинки с погодой более чем достаточно; астрономическая библиотека
+ради подписи «растущая луна» в образ не тянется.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+# Новолуние 6 января 2000, 18:14 UTC — общепринятая опорная точка.
+_NEW_MOON = datetime(2000, 1, 6, 18, 14, tzinfo=timezone.utc)
+SYNODIC = 29.530588853          # средний синодический месяц, суток
+
+
+@dataclass(frozen=True)
+class Moon:
+    """Состояние луны на момент времени."""
+
+    age: float                  # возраст в сутках от новолуния
+    phase: float                # 0.0 — новолуние, 0.5 — полнолуние
+    illumination: float         # доля освещённого диска, 0…1
+    name: str                   # название фазы по-русски
+    waxing: bool                # растёт ли
+
+
+PHASES = (
+    (0.02, "новолуние"),
+    (0.24, "растущий серп"),
+    (0.27, "первая четверть"),
+    (0.48, "растущая луна"),
+    (0.52, "полнолуние"),
+    (0.73, "убывающая луна"),
+    (0.77, "последняя четверть"),
+    (0.98, "убывающий серп"),
+    (1.01, "новолуние"),
+)
+
+
+def moon(moment: datetime | None = None) -> Moon:
+    """Фаза луны на указанный момент (по умолчанию — сейчас)."""
+    if moment is None:
+        moment = datetime.now(timezone.utc)
+    elif moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+
+    days = (moment - _NEW_MOON).total_seconds() / 86400.0
+    age = days % SYNODIC
+    phase = age / SYNODIC
+
+    # Освещённость меняется по косинусу: ноль в новолуние, единица в полнолуние.
+    from math import cos, pi
+
+    illumination = (1 - cos(2 * pi * phase)) / 2
+
+    name = PHASES[-1][1]
+    for edge, title in PHASES:
+        if phase < edge:
+            name = title
+            break
+
+    return Moon(
+        age=age,
+        phase=phase,
+        illumination=illumination,
+        name=name,
+        waxing=phase < 0.5,
+    )
+
+
+# --- ветер ----------------------------------------------------------------
+
+ROSE = (
+    "северный", "северо-восточный", "восточный", "юго-восточный",
+    "южный", "юго-западный", "западный", "северо-западный",
+)
+ROSE_SHORT = ("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
+
+
+def wind_sector(degrees: float | None) -> int | None:
+    """Номер сектора розы ветров, 0 — север. None, если направления нет."""
+    if degrees is None:
+        return None
+    return int((degrees % 360) / 45 + 0.5) % 8
+
+
+def wind_name(degrees: float | None) -> str:
+    sector = wind_sector(degrees)
+    return ROSE[sector] if sector is not None else ""
+
+
+def wind_short(degrees: float | None) -> str:
+    sector = wind_sector(degrees)
+    return ROSE_SHORT[sector] if sector is not None else ""
+
+
+def beaufort(speed: float | None) -> str:
+    """Словесная оценка силы ветра в м/с — понятнее голой цифры."""
+    if speed is None:
+        return ""
+    if speed < 1.5:
+        return "штиль"
+    if speed < 3.3:
+        return "лёгкий"
+    if speed < 7.9:
+        return "умеренный"
+    if speed < 13.8:
+        return "свежий"
+    if speed < 20.7:
+        return "сильный"
+    return "штормовой"
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_26'
+cat > "radar/backup.py" <<'RADAR_FILE_27'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -6835,19 +6979,24 @@ def summary() -> str:
         "<code>bash install.sh --rollback</code></i>"
     )
     return "\n".join(lines)
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_27'
+cat > "radar/weather_image.py" <<'RADAR_FILE_28'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
-намеренно: она заметно утяжеляет образ, а текстовая сводка остаётся полноценной
-заменой. Если Pillow нет, функция честно возвращает None, и бот отправляет
-текст — без ошибок и без молчания.
+намеренно: она заметно утяжеляет образ, а текстовая сводка остаётся
+полноценной заменой. Если Pillow или шрифтов нет, функция честно возвращает
+None, и бот отправляет текст — без ошибок и без молчания.
 
 Отдельная причина держать текст основным: картинка не прогрузится при
 ограничениях мобильного интернета, а это ровно тот сценарий, ради которого
 система и существует.
+
+Оформление: крупная температура слева, состояние неба и ветер под ней,
+почасовая лента внизу. Фон меняется по времени суток в той точке, где
+стоит локация, — не по часам сервера: человек в другом часовом поясе
+должен видеть своё небо.
 """
 
 # --------------------------------------------------------------------------
@@ -6862,19 +7011,54 @@ import io
 import logging
 from typing import Any
 
+from . import astro
+
 log = logging.getLogger("radar.weather_image")
 
 WIDTH = 900
-HEIGHT = 560
-MARGIN = 40
+HEIGHT = 620
+MARGIN = 44
 
-BACKGROUND = (24, 28, 38)
-PANEL = (33, 39, 52)
-TEXT = (236, 240, 247)
-MUTED = (146, 156, 175)
-ACCENT = (94, 168, 255)
-WARM = (255, 176, 92)
-COLD = (120, 190, 255)
+# Фон по времени суток: (верх, низ, подпись). Градиент задаёт настроение
+# без единой картинки в образе — нарисовать полосами дешевле, чем тащить
+# ассеты и следить за их лицензиями.
+SKIES = {
+    "night": ((22, 26, 54), (44, 44, 92), "ночь"),
+    "dawn":  ((72, 62, 116), (214, 130, 116), "рассвет"),
+    "day":   ((58, 120, 200), (128, 186, 236), "день"),
+    "dusk":  ((54, 52, 108), (196, 110, 108), "закат"),
+}
+
+# Дневное небо светлое, ночное тёмное — один набор цветов текста не подходит
+# обоим: белые подписи на голубом фоне сливаются, и почасовая лента
+# становится нечитаемой ровно там, где на неё и смотрят.
+PALETTES = {
+    "light": {
+        "text": (18, 34, 62),
+        "muted": (58, 84, 124),
+        "warm": (198, 106, 20),
+        "cold": (26, 96, 168),
+        "rain": (24, 104, 180),
+        "panel_mix": (255, 255, 255),
+        "panel_ratio": 0.42,
+    },
+    "dark": {
+        "text": (255, 255, 255),
+        "muted": (183, 192, 214),
+        "warm": (255, 186, 92),
+        "cold": (140, 200, 255),
+        "rain": (128, 190, 255),
+        # Панель именно затемняется: на закатном градиенте низ светло-розовый,
+        # и осветлённая плашка оставляла белые подписи почти нечитаемыми.
+        "panel_mix": (16, 18, 38),
+        "panel_ratio": 0.45,
+    },
+}
+
+
+def palette_for(sky: str) -> dict:
+    """Светлая тема только для дневного неба — остальные достаточно тёмные."""
+    return PALETTES["light" if sky == "day" else "dark"]
 
 
 def available() -> bool:
@@ -6888,8 +7072,7 @@ def available() -> bool:
 def _font(size: int, bold: bool = False):
     from PIL import ImageFont
 
-    # Шрифты в образе не гарантированы: перебираем известные пути,
-    # в крайнем случае берём встроенный.
+    # Шрифты в образе не гарантированы: перебираем известные пути.
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -6912,13 +7095,139 @@ def _font(size: int, bold: bool = False):
     return None
 
 
-def _temperature_color(value: float) -> tuple[int, int, int]:
+def _temperature_color(value: float, colors: dict) -> tuple[int, int, int]:
     if value >= 20:
-        return WARM
+        return colors["warm"]
     if value <= 0:
-        return COLD
-    return ACCENT
+        return colors["cold"]
+    return colors["text"]
 
+
+def _blend(first, second, ratio: float):
+    return tuple(
+        int(first[index] + (second[index] - first[index]) * ratio) for index in range(3)
+    )
+
+
+# --- время суток ----------------------------------------------------------
+
+def _minutes(value: str) -> int | None:
+    """«20:31» -> 1231. None, если разобрать нечем."""
+    try:
+        hours, minutes = value.split(":")[:2]
+        return int(hours) * 60 + int(minutes)
+    except (ValueError, AttributeError):
+        return None
+
+
+def sky_for(weather: Any) -> str:
+    """Какое небо рисовать: ночь, рассвет, день или закат.
+
+    Считается по местному времени локации и её же восходу с закатом —
+    поэтому картинка совпадает с тем, что человек видит в окно.
+    Если данных о времени нет, опираемся на признак is_day от сервиса.
+    """
+    now = _minutes(getattr(weather, "local_time", "") or "")
+    sunrise = _minutes(getattr(weather, "sunrise", "") or "")
+    sunset = _minutes(getattr(weather, "sunset", "") or "")
+
+    if now is None or sunrise is None or sunset is None:
+        return "day" if getattr(weather, "is_day", True) else "night"
+
+    # Час вокруг восхода и заката — переходное небо.
+    edge = 60
+    if abs(now - sunrise) <= edge:
+        return "dawn"
+    if abs(now - sunset) <= edge:
+        return "dusk"
+    if sunrise < now < sunset:
+        return "day"
+    return "night"
+
+
+def _gradient(draw, top_color, bottom_color) -> None:
+    """Вертикальная заливка построчно — без numpy и лишних зависимостей."""
+    for y in range(HEIGHT):
+        ratio = y / max(1, HEIGHT - 1)
+        draw.line([(0, y), (WIDTH, y)], fill=_blend(top_color, bottom_color, ratio))
+
+
+# --- луна -----------------------------------------------------------------
+
+def _draw_moon(draw, cx: int, cy: int, radius: int, moon) -> None:
+    """Луна с текущей фазой.
+
+    Терминатор рисуется эллипсом поверх диска: ширина эллипса задаётся
+    освещённостью, сторона — тем, растёт луна или убывает. Приём старый
+    и даёт узнаваемый серп без единой картинки в образе.
+    """
+    disc = (236, 238, 248)
+    dark = (34, 38, 68)
+
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=disc)
+
+    if moon.illumination > 0.98:
+        return                                   # полнолуние — диск целиком
+    if moon.illumination < 0.02:
+        draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=dark)
+        return                                   # новолуние — диска не видно
+
+    # Половина диска всегда в тени. Растущая луна освещена справа.
+    if moon.waxing:
+        draw.pieslice([cx - radius, cy - radius, cx + radius, cy + radius],
+                      90, 270, fill=dark)
+    else:
+        draw.pieslice([cx - radius, cy - radius, cx + radius, cy + radius],
+                      270, 90, fill=dark)
+
+    # Терминатор: до четверти эллипс доедает свет, после — возвращает его
+    half = max(1, int(radius * abs(1 - 2 * moon.illumination)))
+    box = [cx - half, cy - radius, cx + half, cy + radius]
+    draw.ellipse(box, fill=dark if moon.illumination < 0.5 else disc)
+
+
+def _draw_sun(draw, cx: int, cy: int, radius: int) -> None:
+    from math import cos, radians, sin
+
+    for degree in range(0, 360, 30):
+        angle = radians(degree)
+        draw.line(
+            [(cx + cos(angle) * (radius + 10), cy + sin(angle) * (radius + 10)),
+             (cx + cos(angle) * (radius + 26), cy + sin(angle) * (radius + 26))],
+            fill=(255, 226, 148), width=4,
+        )
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
+                 fill=(255, 214, 102))
+
+
+# --- ветер ----------------------------------------------------------------
+
+def _draw_wind_arrow(draw, cx: int, cy: int, size: int, degrees: float,
+                     color) -> None:
+    """Стрелка, показывающая, КУДА дует ветер.
+
+    Метеорологическое направление задаёт, откуда ветер, поэтому стрелка
+    поворачивается на 180 градусов: человеку понятнее, куда понесёт дым.
+    """
+    from math import cos, radians, sin
+
+    angle = radians((degrees + 180) % 360)
+    # Экранные координаты: ось Y направлена вниз, ноль — на север.
+    dx, dy = sin(angle), -cos(angle)
+    px, py = -dy, dx                             # перпендикуляр
+
+    tip = (cx + dx * size, cy + dy * size)
+    tail = (cx - dx * size, cy - dy * size)
+    left = (tip[0] - dx * size * 0.9 + px * size * 0.55,
+            tip[1] - dy * size * 0.9 + py * size * 0.55)
+    right = (tip[0] - dx * size * 0.9 - px * size * 0.55,
+             tip[1] - dy * size * 0.9 - py * size * 0.55)
+
+    draw.line([tail, tip], fill=color, width=3)
+    draw.polygon([tip, left, right], fill=color)
+
+
+# --- сборка ---------------------------------------------------------------
 
 def render(weather: Any, title: str = "") -> bytes | None:
     """Возвращает PNG или None, если рисовать нечем."""
@@ -6933,134 +7242,147 @@ def render(weather: Any, title: str = "") -> bytes | None:
         return None
 
     try:
-        image = Image.new("RGB", (WIDTH, HEIGHT), BACKGROUND)
-        draw = ImageDraw.Draw(image)
-
-        big = _font(96, bold=True)
+        big = _font(104, bold=True)
         head = _font(30, bold=True)
         normal = _font(24)
         small = _font(20)
-        if None in (big, head, normal, small):
+        tiny = _font(17)
+        if None in (big, head, normal, small, tiny):
             return None
+
+        sky = sky_for(weather)
+        top_color, bottom_color, sky_name = SKIES[sky]
+        colors = palette_for(sky)
+        text, muted = colors["text"], colors["muted"]
+
+        image = Image.new("RGB", (WIDTH, HEIGHT), top_color)
+        draw = ImageDraw.Draw(image)
+        _gradient(draw, top_color, bottom_color)
 
         # Заголовок: название локации без разметки
         clean_title = _strip_tags(title) or "Погода"
-        draw.text((MARGIN, MARGIN - 10), clean_title[:48], font=head, fill=TEXT)
+        draw.text((MARGIN, MARGIN - 12), clean_title[:46], font=head, fill=text)
 
-        # Текущая температура
+        stamp = getattr(weather, "local_time", "") or ""
+        if stamp:
+            draw.text((MARGIN, MARGIN + 28), f"{stamp} · {sky_name}",
+                      font=tiny, fill=muted)
+
+        # Крупная температура
         temperature = weather.temp if weather.temp is not None else 0.0
-        draw.text(
-            (MARGIN, MARGIN + 40),
-            f"{round(temperature):+d}°".replace("+", ""),
-            font=big,
-            fill=_temperature_color(temperature),
-        )
+        draw.text((MARGIN - 6, MARGIN + 62), f"{round(temperature):d}°",
+                  font=big, fill=_temperature_color(temperature, colors))
 
-        from .weather import describe as describe_code
+        cursor = MARGIN + 190
+        if weather.feels is not None:
+            draw.text((MARGIN, cursor), f"ощущается как {round(weather.feels):d}°",
+                      font=normal, fill=muted)
+            cursor += 38
 
-        name, _icon = describe_code(weather.code, weather.is_day)
-        draw.text((MARGIN + 230, MARGIN + 70), name.capitalize(), font=normal, fill=TEXT)
+        name, _icon = _describe(weather)
+        if name:
+            draw.text((MARGIN, cursor), name.capitalize(), font=normal, fill=text)
+            cursor += 40
+
+        # Ветер: стрелка, скорость, откуда дует, словесная оценка силы
+        if weather.wind is not None:
+            arrow_x = MARGIN + 14
+            _draw_wind_arrow(draw, arrow_x, cursor + 13, 14,
+                             float(weather.wind_dir or 0), text)
+            parts = [f"{weather.wind:.0f} м/с"]
+            direction = astro.wind_name(weather.wind_dir)
+            if direction:
+                parts.append(direction)
+            force = astro.beaufort(weather.wind)
+            if force:
+                parts.append(force)
+            draw.text((arrow_x + 30, cursor), ", ".join(parts), font=small, fill=text)
+            cursor += 32
+            if weather.gusts is not None and weather.gusts > (weather.wind or 0) + 2:
+                draw.text((arrow_x + 30, cursor),
+                          f"порывы до {weather.gusts:.0f} м/с", font=tiny, fill=muted)
+                cursor += 28
 
         details = []
-        if weather.feels is not None and weather.temp is not None:
-            if abs(weather.feels - weather.temp) >= 1:
-                details.append(f"ощущается {round(weather.feels):+d}°".replace("+", ""))
-        if weather.wind is not None:
-            details.append(f"ветер {weather.wind:.0f} м/с")
         if weather.humidity is not None:
             details.append(f"влажность {weather.humidity}%")
+        if weather.pressure is not None:
+            details.append(f"{weather.pressure * 0.75006:.0f} мм рт. ст.")
         if details:
-            draw.text(
-                (MARGIN + 230, MARGIN + 108),
-                " · ".join(details), font=small, fill=MUTED,
-            )
+            draw.text((MARGIN, cursor), " · ".join(details), font=tiny, fill=muted)
 
-        # График по часам
-        hours = list(weather.hourly)[:8]
-        if hours:
-            _draw_hourly(draw, hours, top=MARGIN + 180)
-
-        # Прогноз по дням
-        days = list(weather.daily)[:3]
-        if days:
-            _draw_daily(draw, days, top=HEIGHT - 130, font=normal, small=small)
+        # Светило: ночью и в сумерках — луна с фазой, днём — солнце
+        if sky == "day":
+            _draw_sun(draw, WIDTH - 160, 186, 58)
+        else:
+            moon = astro.moon()
+            _draw_moon(draw, WIDTH - 160, 186, 62, moon)
+            _centered(draw, f"{moon.name}, {moon.illumination * 100:.0f}%",
+                      WIDTH - 160, 262, tiny, muted)
 
         if weather.sunrise and weather.sunset:
-            draw.text(
-                (MARGIN, HEIGHT - 40),
-                f"Восход {weather.sunrise}    Закат {weather.sunset}",
-                font=small, fill=MUTED,
-            )
+            _centered(draw, f"↑ {weather.sunrise}   ↓ {weather.sunset}",
+                      WIDTH - 160, 296, small, text)
+
+        panel = _blend(bottom_color, colors["panel_mix"], colors["panel_ratio"])
+        _draw_hourly(draw, weather.hourly[:8], HEIGHT - 150, normal, small,
+                     panel, colors)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
         return buffer.getvalue()
     except Exception:  # noqa: BLE001
-        log.warning("Не удалось нарисовать погоду", exc_info=True)
+        log.exception("Не удалось нарисовать погоду — отправлю текстом")
         return None
 
 
-def _draw_hourly(draw, hours, top: int) -> None:
-    from PIL import ImageDraw  # noqa: F401
+def _centered(draw, text: str, cx: int, y: int, font, fill) -> None:
+    width = draw.textlength(text, font=font)
+    draw.text((cx - width / 2, y), text, font=font, fill=fill)
 
-    left = MARGIN
-    right = WIDTH - MARGIN
-    height = 150
-    step = (right - left) / max(1, len(hours) - 1) if len(hours) > 1 else 0
 
-    values = [item.temp for item in hours]
-    low, high = min(values), max(values)
-    span = max(1.0, high - low)
+def _describe(weather: Any) -> tuple[str, str]:
+    from .weather import describe
+
+    return describe(getattr(weather, "code", None), getattr(weather, "is_day", True))
+
+
+def _draw_hourly(draw, hours, top: int, font, small, panel, colors) -> None:
+    """Почасовая лента: время, температура, вероятность осадков."""
+    if not hours:
+        return
 
     draw.rounded_rectangle(
-        [left - 15, top - 20, right + 15, top + height + 45], 14, fill=PANEL
+        [MARGIN - 16, top - 22, WIDTH - MARGIN + 16, HEIGHT - MARGIN + 10],
+        radius=26, fill=panel,
     )
 
-    points = []
+    step = (WIDTH - 2 * MARGIN) / len(hours)
     for index, item in enumerate(hours):
-        x = left + step * index
-        y = top + height - (item.temp - low) / span * height
-        points.append((x, y))
-
-    if len(points) > 1:
-        draw.line(points, fill=ACCENT, width=3, joint="curve")
-
-    label = _font(18)
-    for (x, y), item in zip(points, hours):
-        draw.ellipse([x - 5, y - 5, x + 5, y + 5], fill=_temperature_color(item.temp))
-        draw.text(
-            (x - 18, y - 32),
-            f"{round(item.temp):+d}°".replace("+", ""),
-            font=label, fill=TEXT,
-        )
-        draw.text((x - 16, top + height + 14), item.label, font=label, fill=MUTED)
+        x = int(MARGIN + step * index + step / 2)
+        _centered(draw, "сейчас" if index == 0 else item.label, x, top, small,
+                  colors["muted"])
+        _centered(draw, f"{round(item.temp):d}°", x, top + 30, font,
+                  _temperature_color(item.temp, colors))
         if item.probability >= 20:
-            draw.text(
-                (x - 16, top + height + 34),
-                f"{item.probability}%", font=_font(15), fill=COLD,
-            )
-
-
-def _draw_daily(draw, days, top: int, font, small) -> None:
-    left = MARGIN
-    column = (WIDTH - 2 * MARGIN) / max(1, len(days))
-    for index, day in enumerate(days):
-        x = left + column * index
-        draw.text((x, top), day.label, font=small, fill=MUTED)
-        draw.text(
-            (x, top + 26),
-            f"{round(day.high):+d}° … {round(day.low):+d}°".replace("+", ""),
-            font=font, fill=TEXT,
-        )
+            _centered(draw, f"{item.probability}%", x, top + 66, small,
+                      colors["rain"])
 
 
 def _strip_tags(text: str) -> str:
-    import re
-
-    return re.sub(r"<[^>]+>", "", text or "").strip()
-RADAR_FILE_27
+    result = []
+    inside = False
+    for char in text:
+        if char == "<":
+            inside = True
+        elif char == ">":
+            inside = False
+        elif not inside:
+            result.append(char)
+    return "".join(result).strip()
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_28'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_29'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -7075,9 +7397,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_29'
+cat > "radar/web/auth.py" <<'RADAR_FILE_30'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -7259,9 +7581,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_30'
+cat > "radar/web/audit.py" <<'RADAR_FILE_31'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -7328,9 +7650,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_31'
+cat > "radar/web/panel.py" <<'RADAR_FILE_32'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -7782,9 +8104,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_32'
+cat > "radar/web/backup.py" <<'RADAR_FILE_33'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -7827,9 +8149,9 @@ def body() -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_33'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_34'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -7862,9 +8184,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_34'
+cat > "radar/db/models.py" <<'RADAR_FILE_35'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -8107,9 +8429,9 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_35'
+cat > "radar/db/engine.py" <<'RADAR_FILE_36'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -8623,9 +8945,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_36'
+cat > "radar/db/repo.py" <<'RADAR_FILE_37'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -9154,9 +9476,9 @@ async def set_feature(key: str, enabled_value: bool, changed_by: int | str = 0) 
         else:
             row.enabled = enabled_value
             row.changed_by = actor
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_37'
+cat > "radar/db/importer.py" <<'RADAR_FILE_38'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -9331,9 +9653,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         counters["users"], counters["locations"], counters["channels"], counters["rss"],
     )
     return counters
-RADAR_FILE_37
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_38'
+cat > "radar/doctor.py" <<'RADAR_FILE_39'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -9809,9 +10131,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_39'
+cat > "migrations/env.py" <<'RADAR_FILE_40'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -9871,9 +10193,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_40'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_41'
 """${message}
 
 Revision ID: ${up_revision}
@@ -9898,9 +10220,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_41'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_42'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -10067,9 +10389,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_42'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_43'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -10095,9 +10417,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_43'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_44'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -10222,9 +10544,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_43
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_44'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_45'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -10488,9 +10810,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_44
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_45'
+cat > "radar/storage.py" <<'RADAR_FILE_46'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -10675,9 +10997,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_45
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_46'
+cat > "radar/exporting.py" <<'RADAR_FILE_47'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -10883,9 +11205,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_46
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_47'
+cat > "radar/ai.py" <<'RADAR_FILE_48'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -11589,9 +11911,9 @@ async def assistant(history: list[types.Content], question: str) -> str:
         priority=True,
         search=True,
     )
-RADAR_FILE_47
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_48'
+cat > "radar/geocode.py" <<'RADAR_FILE_49'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -11783,9 +12105,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_48
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_49'
+cat > "radar/weather.py" <<'RADAR_FILE_50'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -11887,8 +12209,13 @@ class Weather:
     pressure: float | None = None
     code: int | None = None
     is_day: bool = True
+    # Направление, откуда дует, в градусах: 0 — северный ветер.
+    wind_dir: int | None = None
     sunrise: str = ""
     sunset: str = ""
+    # Местное время локации на момент запроса, "ЧЧ:ММ". Нужно картинке:
+    # фон рисуется по времени там, где стоит локация, а не на сервере.
+    local_time: str = ""
     hourly: list[Hour] = field(default_factory=list)
     daily: list[Day] = field(default_factory=list)
 
@@ -11907,7 +12234,8 @@ async def fetch(
         "latitude": f"{lat}",
         "longitude": f"{lon}",
         "current": "temperature_2m,apparent_temperature,relative_humidity_2m,"
-                   "wind_speed_10m,wind_gusts_10m,surface_pressure,weather_code,is_day",
+                   "wind_speed_10m,wind_gusts_10m,wind_direction_10m,"
+                   "surface_pressure,weather_code,is_day",
         "hourly": "temperature_2m,precipitation_probability,weather_code,is_day",
         "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,"
                  "weather_code,sunrise,sunset",
@@ -11940,7 +12268,11 @@ def parse(data: dict, hours: int = 8) -> Weather:
         pressure=_number(current.get("surface_pressure")),
         code=_integer(current.get("weather_code")),
         is_day=bool(current.get("is_day", 1)),
+        wind_dir=_integer(current.get("wind_direction_10m")),
     )
+    stamp = str(current.get("time") or "")
+    if "T" in stamp:
+        weather.local_time = stamp.split("T")[1][:5]
 
     hourly = data.get("hourly") or {}
     times = hourly.get("time") or []
@@ -12142,11 +12474,19 @@ async def deliver(
     from .tg import send_html
 
     picture = None
-    wants_picture = (user or {}).get("weather_format") != "text"
-    if wants_picture and features.enabled("weather_image"):
-        from . import weather_image
+    if features.enabled("weather_image"):
+        # Глобальное принуждение перекрывает личный выбор: администрация
+        # может включить картинку всем разом, не трогая настройки людей.
+        # Личный выбор при этом сохраняется и вернётся, когда флаг снимут.
+        if features.enabled("weather_image_all"):
+            wants_picture = True
+        else:
+            wants_picture = (user or {}).get("weather_format") != "text"
 
-        picture = weather_image.render(data, title)
+        if wants_picture:
+            from . import weather_image
+
+            picture = weather_image.render(data, title)
 
     if picture is None:
         await send_html(chat_id, render(data, title), markup)
@@ -12166,9 +12506,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title), markup)
-RADAR_FILE_49
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_50'
+cat > "radar/sources.py" <<'RADAR_FILE_51'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -12427,9 +12767,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_50
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_51'
+cat > "radar/tg.py" <<'RADAR_FILE_52'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -12546,9 +12886,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_51
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_52'
+cat > "radar/keyboards.py" <<'RADAR_FILE_53'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -12719,9 +13059,15 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
             )]
         )
         if features.enabled("weather_image"):
-            picture = user.get("weather_format") != "text"
+            if features.enabled("weather_image_all"):
+                # Выбор перекрыт администрацией — кнопка не должна показывать
+                # «текст», когда всё равно придёт картинка.
+                label = "картинка (для всех)"
+            else:
+                picture = user.get("weather_format") != "text"
+                label = "картинка" if picture else "текст"
             rows.append([InlineKeyboardButton(
-                text=f"🖼 Вид погоды: {'картинка' if picture else 'текст'}",
+                text=f"🖼 Вид погоды: {label}",
                 callback_data="set:wformat",
             )])
         if features.enabled("quiet_hours"):
@@ -12747,6 +13093,13 @@ def ai_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
         [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],
         [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
+    ])
+
+
+def back_to_settings() -> InlineKeyboardMarkup:
+    """Только возврат — когда выбирать нечего."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
     ])
 
 
@@ -12916,9 +13269,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_52
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_53'
+cat > "radar/states.py" <<'RADAR_FILE_54'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -12948,9 +13301,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_53
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_54'
+cat > "radar/middlewares.py" <<'RADAR_FILE_55'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -13063,9 +13416,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = role
         return await handler(event, data)
-RADAR_FILE_54
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_55'
+cat > "radar/monitor.py" <<'RADAR_FILE_56'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -13517,9 +13870,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_55
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_56'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_57'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -13569,9 +13922,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_56
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_57'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_58'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -13921,9 +14274,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_57
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_58'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_59'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -14089,9 +14442,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_58
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_59'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_60'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -14355,6 +14708,17 @@ async def weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
         return
 
     await call.answer()
+    if features.enabled("weather_image_all"):
+        await safe_edit(
+            call,
+            "🖼 <b>Вид сводки погоды</b>\nСейчас: <b>картинкой</b> — "
+            "так настроено для всех.\n\n"
+            "Личный выбор временно недоступен. Когда администрация снимет "
+            "общую настройку, ваш прежний выбор вернётся.",
+            keyboards.back_to_settings(),
+        )
+        return
+
     current = "текстом" if user.get("weather_format") == "text" else "картинкой"
     await safe_edit(
         call,
@@ -14433,9 +14797,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_59
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_60'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_61'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -14870,9 +15234,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_60
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_61'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_62'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -15239,9 +15603,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_61
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_62'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_63'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -15388,9 +15752,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_62
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_63'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_64'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -15678,9 +16042,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_63
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_64'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_65'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -15813,9 +16177,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_64
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_65'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_66'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -16221,9 +16585,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_65
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_66'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_67'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -16536,9 +16900,9 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_66
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_67'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_68'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -17122,9 +17486,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_67
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_68'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_69'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -17645,9 +18009,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_69'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_70'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -18004,9 +18368,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_71'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -18151,7 +18515,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_70
+RADAR_FILE_71
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

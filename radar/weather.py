@@ -99,8 +99,13 @@ class Weather:
     pressure: float | None = None
     code: int | None = None
     is_day: bool = True
+    # Направление, откуда дует, в градусах: 0 — северный ветер.
+    wind_dir: int | None = None
     sunrise: str = ""
     sunset: str = ""
+    # Местное время локации на момент запроса, "ЧЧ:ММ". Нужно картинке:
+    # фон рисуется по времени там, где стоит локация, а не на сервере.
+    local_time: str = ""
     hourly: list[Hour] = field(default_factory=list)
     daily: list[Day] = field(default_factory=list)
 
@@ -119,7 +124,8 @@ async def fetch(
         "latitude": f"{lat}",
         "longitude": f"{lon}",
         "current": "temperature_2m,apparent_temperature,relative_humidity_2m,"
-                   "wind_speed_10m,wind_gusts_10m,surface_pressure,weather_code,is_day",
+                   "wind_speed_10m,wind_gusts_10m,wind_direction_10m,"
+                   "surface_pressure,weather_code,is_day",
         "hourly": "temperature_2m,precipitation_probability,weather_code,is_day",
         "daily": "temperature_2m_min,temperature_2m_max,precipitation_probability_max,"
                  "weather_code,sunrise,sunset",
@@ -152,7 +158,11 @@ def parse(data: dict, hours: int = 8) -> Weather:
         pressure=_number(current.get("surface_pressure")),
         code=_integer(current.get("weather_code")),
         is_day=bool(current.get("is_day", 1)),
+        wind_dir=_integer(current.get("wind_direction_10m")),
     )
+    stamp = str(current.get("time") or "")
+    if "T" in stamp:
+        weather.local_time = stamp.split("T")[1][:5]
 
     hourly = data.get("hourly") or {}
     times = hourly.get("time") or []
@@ -354,11 +364,19 @@ async def deliver(
     from .tg import send_html
 
     picture = None
-    wants_picture = (user or {}).get("weather_format") != "text"
-    if wants_picture and features.enabled("weather_image"):
-        from . import weather_image
+    if features.enabled("weather_image"):
+        # Глобальное принуждение перекрывает личный выбор: администрация
+        # может включить картинку всем разом, не трогая настройки людей.
+        # Личный выбор при этом сохраняется и вернётся, когда флаг снимут.
+        if features.enabled("weather_image_all"):
+            wants_picture = True
+        else:
+            wants_picture = (user or {}).get("weather_format") != "text"
 
-        picture = weather_image.render(data, title)
+        if wants_picture:
+            from . import weather_image
+
+            picture = weather_image.render(data, title)
 
     if picture is None:
         await send_html(chat_id, render(data, title), markup)

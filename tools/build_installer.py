@@ -52,6 +52,7 @@ MANIFEST = [
     "radar/digest.py",
     "radar/quiet.py",
     "radar/profiling.py",
+    "radar/astro.py",
     "radar/backup.py",
     "radar/weather_image.py",
     "radar/web/__init__.py",

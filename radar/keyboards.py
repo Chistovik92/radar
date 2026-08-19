@@ -168,9 +168,15 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
             )]
         )
         if features.enabled("weather_image"):
-            picture = user.get("weather_format") != "text"
+            if features.enabled("weather_image_all"):
+                # Выбор перекрыт администрацией — кнопка не должна показывать
+                # «текст», когда всё равно придёт картинка.
+                label = "картинка (для всех)"
+            else:
+                picture = user.get("weather_format") != "text"
+                label = "картинка" if picture else "текст"
             rows.append([InlineKeyboardButton(
-                text=f"🖼 Вид погоды: {'картинка' if picture else 'текст'}",
+                text=f"🖼 Вид погоды: {label}",
                 callback_data="set:wformat",
             )])
         if features.enabled("quiet_hours"):
@@ -196,6 +202,13 @@ def ai_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
         [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],
         [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
+    ])
+
+
+def back_to_settings() -> InlineKeyboardMarkup:
+    """Только возврат — когда выбирать нечего."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
     ])
 
 

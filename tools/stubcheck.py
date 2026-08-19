@@ -238,7 +238,7 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.media", "radar.secrets", "radar.aibench", "radar.proxy", "radar.provider", "radar.digest", "radar.quiet", "radar.backup", "radar.profiling",
+        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.media", "radar.secrets", "radar.aibench", "radar.proxy", "radar.provider", "radar.digest", "radar.quiet", "radar.backup", "radar.profiling", "radar.astro",
         "radar.weather_image", "radar.web.auth", "radar.web.audit", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",

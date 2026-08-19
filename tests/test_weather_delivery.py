@@ -104,6 +104,40 @@ class TestDeliver(unittest.TestCase):
                                 {"weather_format": "image"}))
         self.assertEqual(len(self.sent_html), 1)
 
+    def test_global_override_forces_picture(self):
+        """Администрация включила картинку всем — личный выбор перекрыт."""
+        features.set_local("weather_image_all", True)
+        try:
+            self._deliver({"weather_format": "text"})
+        finally:
+            features.set_local("weather_image_all", False)
+        self.assertEqual(len(self.sent_photo), 1)
+        self.assertEqual(self.sent_html, [])
+
+    def test_global_override_needs_base_flag(self):
+        """Без «Погода картинкой» принуждение ничего не включает."""
+        features.set_local("weather_image", False)
+        features.set_local("weather_image_all", True)
+        try:
+            self._deliver({"weather_format": "image"})
+        finally:
+            features.set_local("weather_image_all", False)
+        self.assertEqual(self.sent_photo, [])
+        self.assertEqual(len(self.sent_html), 1)
+
+    def test_personal_choice_survives_override(self):
+        """Выбор человека не стирается: он вернётся, когда флаг снимут."""
+        user = {"weather_format": "text"}
+        features.set_local("weather_image_all", True)
+        try:
+            self._deliver(user)
+        finally:
+            features.set_local("weather_image_all", False)
+        self.assertEqual(user["weather_format"], "text")
+        self.sent_photo.clear()
+        self._deliver(user)
+        self.assertEqual(self.sent_photo, [])
+
     def test_no_user_record(self):
         self._deliver(None)
         self.assertEqual(len(self.sent_photo), 1)

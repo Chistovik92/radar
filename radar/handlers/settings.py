@@ -261,6 +261,17 @@ async def weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
         return
 
     await call.answer()
+    if features.enabled("weather_image_all"):
+        await safe_edit(
+            call,
+            "🖼 <b>Вид сводки погоды</b>\nСейчас: <b>картинкой</b> — "
+            "так настроено для всех.\n\n"
+            "Личный выбор временно недоступен. Когда администрация снимет "
+            "общую настройку, ваш прежний выбор вернётся.",
+            keyboards.back_to_settings(),
+        )
+        return
+
     current = "текстом" if user.get("weather_format") == "text" else "картинкой"
     await safe_edit(
         call,
