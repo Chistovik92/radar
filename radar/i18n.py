@@ -98,6 +98,49 @@ EN_STRINGS: dict[str, str] = {
     "media.quota.buy": "⭐️ Unlimited for a month",
     "media.too_big": "The file is larger than the limit.",
 
+    # --- подборки ---
+    "digest.title": "📰 News digests",
+    "digest.topics": "Topics",
+    "digest.times": "Delivery times",
+    "digest.free": "Free plan: one topic",
+    "digest.paid": "Subscription active, days left",
+    "digest.buy": "⭐️ Subscribe",
+    "digest.sources": "Sources",
+
+    # --- погода ---
+    "weather.feels": "feels like",
+    "weather.wind": "wind",
+    "weather.humidity": "humidity",
+    "weather.sunrise": "sunrise",
+    "weather.sunset": "sunset",
+    "weather.now": "now",
+    "weather.today": "today",
+    "weather.tomorrow": "tomorrow",
+
+    # --- SOS ---
+    "sos.title": "🆘 SOS",
+    "sos.contacts": "Trusted contacts",
+    "sos.send": "🆘 Send an alert",
+    "sos.stop": "✅ Cancel the alert",
+    "sos.sent": "Alert sent to your contacts.",
+    "sos.no_contacts": "Add at least one trusted contact first.",
+
+    # --- журнал ---
+    "history.title": "📖 History",
+    "history.empty": "Nothing was sent to you in the last 30 days.",
+    "history.note": (
+        "That does not mean the bot was idle: it means nothing happened "
+        "near your locations."
+    ),
+    "history.trimmed": "Showing the most recent entries.",
+
+    # --- настройки ---
+    "settings.title": "⚙️ Notifications",
+    "settings.prompt": "Choose which events to receive and the weather mode.",
+    "settings.quiet": "Quiet hours",
+    "settings.weather_mode": "Weather mode",
+    "settings.weather_view": "Weather view",
+
     # --- общее ---
     "common.cancelled": "✅ Cancelled.",
     "common.only_superadmin": "⛔️ Superadministrator only.",

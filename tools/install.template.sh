@@ -182,6 +182,19 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            migrate_ask)         value="Move this installation to another server? [y/N]" ;;
+            action_title)        value="What are we doing?" ;;
+            action_main)         value="Install the latest code (main) — default" ;;
+            action_release)      value="Install a specific release" ;;
+            action_backup)       value="Only make a full backup and exit" ;;
+            action_migrate)      value="Move to another server" ;;
+            action_choice)       value="Choice" ;;
+            versions_loading)    value="Fetching the list of releases…" ;;
+            versions_pick)       value="Number or tag" ;;
+            versions_fallback_main) value="Continuing with the latest code from main" ;;
+            version_selected)    value="Selected:" ;;
+            backup_before)       value="Full backup before installing" ;;
+            backup_done)         value="Backup saved:" ;;
             versions_title)      value="Available versions" ;;
             versions_main)       value="latest code, may be unreleased" ;;
             versions_failed)     value="Could not fetch the list of releases from GitHub" ;;
@@ -238,6 +251,19 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            migrate_ask)         value="Переехать с этой установки на другой сервер? [д/Н]" ;;
+            action_title)        value="Что делаем?" ;;
+            action_main)         value="Поставить последний код (main) — по умолчанию" ;;
+            action_release)      value="Поставить конкретный релиз" ;;
+            action_backup)       value="Только снять полную копию и выйти" ;;
+            action_migrate)      value="Переехать на другой сервер" ;;
+            action_choice)       value="Выбор" ;;
+            versions_loading)    value="Получаю список релизов…" ;;
+            versions_pick)       value="Номер или тег" ;;
+            versions_fallback_main) value="Продолжаю с последним кодом из main" ;;
+            version_selected)    value="Выбрано:" ;;
+            backup_before)       value="Полная копия перед установкой" ;;
+            backup_done)         value="Копия сохранена:" ;;
             versions_title)      value="Доступные версии" ;;
             versions_main)       value="последний код, возможно без релиза" ;;
             versions_failed)     value="Не удалось получить список релизов с GitHub" ;;
@@ -294,22 +320,31 @@ ask_language() {
     # Проверяем ИМЕННО /dev/tty, а не stdin. При установке одной строкой
     # (`curl … | bash`) на stdin висит сам скрипт, поэтому `[ -t 0 ]`
     # всегда ложно — из-за этого вопрос не задавался никогда, хотя
-    # терминал у человека был. Читать ответ всё равно нужно из /dev/tty,
-    # значит и проверять доступность надо его.
-    [ -e /dev/tty ] && [ -r /dev/tty ] || return 0
+    # терминал у человека был.
+    #
+    # И проверяем открытием, а не наличием: в контейнерах файл /dev/tty
+    # существует, но открыть его нельзя («No such device or address»),
+    # и проверка -e пропускала дальше — вопрос печатался, а чтение
+    # тут же падало с ошибкой посреди установки.
+    ( : < /dev/tty ) 2>/dev/null || return 0
 
     local stored=""
     if [ -f "$APP_DIR/.env" ]; then
         stored="$(grep -E '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
     fi
 
-    printf "\n  %sChoose language / Выберите язык%s\n" "$C_BOLD" "$C_RESET"
+    # Значения через :- намеренно: функция должна работать, даже если её
+    # позовут раньше блока с цветами. Вопрос о языке — не то место, где
+    # установка имеет право упасть.
+    printf "\n  %sChoose language / Выберите язык%s\n" \
+        "${C_BOLD:-}" "${C_RESET:-}"
     printf "    1) Русский%s\n" "$([ "$stored" = "ru" ] && printf ' ✓' || true)"
     printf "    2) English%s\n" "$([ "$stored" = "en" ] && printf ' ✓' || true)"
 
     local default_choice="1"
     [ "$stored" = "en" ] && default_choice="2"
-    printf "  %sВыбор / Choice [%s]:%s " "$C_DIM" "$default_choice" "$C_RESET"
+    printf "  %sВыбор / Choice [%s]:%s " \
+        "${C_DIM:-}" "$default_choice" "${C_RESET:-}"
 
     local answer=""
     # Таймаут: при запуске из cron или чужого скрипта терминал может
@@ -328,11 +363,6 @@ ask_language() {
 }
 
 COLS=$( (tput cols 2>/dev/null || echo 72) )
-
-# Спрашиваем язык до всего остального: режимы --versions, --migrate
-# и --restore выходят раньше основного пути, и если спросить позже,
-# их вывод останется на русском независимо от выбора.
-ask_language
 [ "$COLS" -gt 78 ] && COLS=78
 [ "$COLS" -lt 48 ] && COLS=48
 
@@ -344,6 +374,96 @@ else
     C_RESET=""; C_DIM=""; C_BOLD=""; C_CYAN=""; C_GREEN=""
     C_YELLOW=""; C_RED=""; C_BLUE=""
 fi
+
+# Спрашиваем язык здесь: после определения цветов (иначе при set -u
+# скрипт падал с «C_BOLD: unbound variable» — ровно это и случилось
+# в 4.7.3.2), но до всех режимов: --versions, --migrate и --restore
+# выходят раньше основного пути, и их вывод должен быть на выбранном языке.
+ask_language
+
+# --------------------------------------------------------------------------
+#  Что делаем (с 4.7.3.3)
+# --------------------------------------------------------------------------
+#
+# Раньше всё это существовало только флагами: чтобы поставить релиз,
+# переехать или снять копию, надо было знать про --version, --migrate
+# и --backup. Человек, запустивший установщик одной строкой, о них
+# не догадывался. Теперь те же действия предлагаются вопросом.
+#
+# Вопрос задаётся только при живом терминале и только если действие
+# не задано флагом: автоматический запуск обязан работать по-прежнему.
+
+ask_action() {
+    ( : < /dev/tty ) 2>/dev/null || return 0
+    [ -n "$TARGET_VERSION" ] && return 0
+    [ "$MIGRATE_OUT" = true ] && return 0
+    [ "$BACKUP_ONLY" = true ] && return 0
+    [ -n "$RESTORE_FROM$RESTORE_URL" ] && return 0
+    [ "$LIST_VERSIONS" = true ] && return 0
+    [ "$ROLLBACK_ONLY" = true ] && return 0
+    [ "$FULL_RESET" = true ] && return 0
+
+    printf "\n  %s%s%s\n" "${C_BOLD:-}" "$(t action_title)" "${C_RESET:-}"
+    printf "    1) %s\n" "$(t action_main)"
+    printf "    2) %s\n" "$(t action_release)"
+    printf "    3) %s\n" "$(t action_backup)"
+    printf "    4) %s\n" "$(t action_migrate)"
+    printf "  %s%s [1]:%s " "${C_DIM:-}" "$(t action_choice)" "${C_RESET:-}"
+
+    local answer=""
+    read -r -t 120 answer < /dev/tty || answer="1"
+    : "${answer:=1}"
+    printf "\n"
+
+    case "$answer" in
+        2) choose_release ;;
+        3) BACKUP_ONLY=true ;;
+        4) MIGRATE_OUT=true ;;
+        *) : ;;   # main — как и было
+    esac
+}
+
+choose_release() {
+    printf "  %s\n" "$(t versions_loading)"
+    local versions
+    versions="$(fetch_versions)"
+    if [ -z "$versions" ]; then
+        warn "$(t versions_failed)"
+        printf "  %s\n\n" "$(t versions_fallback_main)"
+        return 0
+    fi
+
+    printf "\n"
+    local index=1
+    printf '%s\n' "$versions" | head -15 | while read -r tag; do
+        [ -n "$tag" ] && printf "    %s%2d)%s %s\n" \
+            "${C_CYAN:-}" "$index" "${C_RESET:-}" "$tag"
+        index=$((index + 1))
+    done
+    printf "  %s%s:%s " "${C_DIM:-}" "$(t versions_pick)" "${C_RESET:-}"
+
+    local pick=""
+    read -r -t 120 pick < /dev/tty || pick=""
+    printf "\n"
+    [ -z "$pick" ] && return 0
+
+    local chosen=""
+    case "$pick" in
+        # Можно ввести и номер, и сам тег: человек видит перед собой список
+        # с номерами, но привычнее бывает набрать «v4.6.1».
+        ''|*[!0-9]*) chosen="$pick" ;;
+        *) chosen="$(printf '%s\n' "$versions" | sed -n "${pick}p")" ;;
+    esac
+
+    if [ -z "$chosen" ]; then
+        warn "$(t version_unknown) $pick"
+        return 0
+    fi
+    TARGET_VERSION="$chosen"
+    ok "$(t version_selected) $TARGET_VERSION"
+}
+
+ask_action
 
 STEP_CURRENT=0
 STEP_TOTAL=9
@@ -1699,6 +1819,22 @@ step "$(t step_deploy)"
 # Снимок делается до перезаписи: после неё вернуть прежнюю версию уже нечем
 make_snapshot
 
+# Плюс полная копия — та же, что снимает --backup. Снимок годится для
+# отката на этой машине, но переносимой копии из него не сделать: в нём
+# нет манифеста и дампа в переносимом виде. Раз уж мы всё равно трогаем
+# установку, копия должна остаться такая, которую можно увезти на другую
+# машину — это ровно тот случай, когда она понадобится срочно.
+if [ -d "$APP_DIR/radar" ]; then
+    info "$(t backup_before)"
+    if make_backup "перед установкой"; then
+        ok "$(t backup_done) $(basename "$BACKUP_PATH")"
+    else
+        # Не прерываем установку: снимок уже снят, откат возможен.
+        # Но сказать об этом надо — человек рассчитывает на копию.
+        warn "Полную копию снять не удалось, откат из снимка остаётся доступен"
+    fi
+fi
+
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 @@FILES@@
@@ -2388,6 +2524,47 @@ echo
 printf "  %sЖурнал установки: %s%s\n" "$C_DIM" "$LOG_FILE" "$C_RESET"
 echo
 log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED} с ==="
+
+# Предложение переехать. Спрашиваем в конце, а не в начале: до установки
+# человек ещё не знает, работает ли новая версия, и решать про переезд
+# рано. Копия к этому моменту уже снята — остаётся только раздать её.
+if ( : < /dev/tty ) 2>/dev/null && [ "$MIGRATE_OUT" != true ]; then
+    printf "  %s%s%s " "${C_DIM:-}" "$(t migrate_ask)" "${C_RESET:-}"
+    migrate_answer=""
+    read -r -t 60 migrate_answer < /dev/tty || migrate_answer="n"
+    printf "\n"
+    case "$migrate_answer" in
+        y|Y|д|Д|yes|да)
+            SERVE_PORT="${MIGRATE_PORT:-8899}"
+            SERVE_MINUTES="${MIGRATE_MINUTES:-30}"
+            SERVE_TOKEN=""
+            # Свежая копия уже есть — снимаем ещё одну только если её нет
+            # (например, установка была первой и снимать было нечего).
+            if [ -z "${BACKUP_PATH:-}" ] || [ ! -f "$BACKUP_PATH" ]; then
+                make_backup "переезд" || die "$(t migrate_backup_failed)"
+            fi
+            if serve_migration "$BACKUP_PATH" "$SERVE_PORT" "$SERVE_MINUTES"; then
+                ADDRESS="$(detect_address)"
+                LINK="http://$ADDRESS:$SERVE_PORT/$SERVE_TOKEN"
+                line
+                printf "  %s%s%s\n\n" "${C_BOLD:-}" "$(t migrate_ready)" "${C_RESET:-}"
+                printf "  %s%s%s\n\n" "${C_CYAN:-}" \
+                    "sudo bash -c \"\$(curl -fsSL $INSTALLER_URL)\" -- --restore-url=$LINK" \
+                    "${C_RESET:-}"
+                line
+                printf "  %s\n" "$(t migrate_note_once)"
+                printf "  %s\n" "$(t migrate_note_time "$SERVE_MINUTES")"
+                printf "  %s\n" "$(t migrate_note_port "$SERVE_PORT")"
+                printf "  %s\n\n" "$(t migrate_note_secret)"
+                printf "  %s\n" "$(t migrate_note_stop)"
+                printf "    cd %s && docker compose down\n\n" "$APP_DIR"
+            else
+                warn "$(t migrate_serve_failed)"
+            fi
+            ;;
+        *) : ;;
+    esac
+fi
 
 if [ "$SHOW_LOGS" = true ]; then
     docker logs -f "$CONTAINER_NAME"

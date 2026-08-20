@@ -22,7 +22,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-from .. import features
+from .. import features, i18n
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -38,24 +38,33 @@ LIMIT = 20
 from ..matching import CATEGORY_ICONS as ICONS  # noqa: E402
 
 
-async def _render(user_id: int) -> str:
+async def _render(user_id: int, lang: str = "ru") -> str:
     from ..db import repo
 
     try:
         events = await repo.history(user_id, days=DAYS, limit=LIMIT)
     except Exception:  # noqa: BLE001
         log.exception("История событий недоступна")
-        return "📖 <b>Журнал</b>\n\nИсторию сейчас не получить — попробуйте позже."
-
-    if not events:
-        return (
-            "📖 <b>Журнал</b>\n\n"
-            f"За последние {DAYS} дней вам ничего не приходило.\n\n"
-            "<i>Это не значит, что бот молчал зря: значит, рядом с вашими "
-            "локациями ничего не случилось.</i>"
+        title = i18n.t("history.title", lang, "📖 Журнал")
+        return f"<b>{title}</b>\n\n" + i18n.t(
+            "common.error", lang,
+            "Историю сейчас не получить — попробуйте позже.",
         )
 
-    lines = [f"📖 <b>Журнал</b> — последние {DAYS} дней", ""]
+    title = i18n.t("history.title", lang, "📖 Журнал")
+    if not events:
+        empty = i18n.t(
+            "history.empty", lang,
+            f"За последние {DAYS} дней вам ничего не приходило.",
+        )
+        note = i18n.t(
+            "history.note", lang,
+            "Это не значит, что бот молчал зря: значит, рядом с вашими "
+            "локациями ничего не случилось.",
+        )
+        return f"<b>{title}</b>\n\n{empty}\n\n<i>{note}</i>"
+
+    lines = [f"<b>{title}</b> — {DAYS}", ""]
     for event in events:
         # У события список категорий, не одна: берём первую известную,
         # чтобы значок соответствовал сути, а не порядку в списке.
@@ -67,23 +76,25 @@ async def _render(user_id: int) -> str:
 
     if len(events) >= LIMIT:
         lines.append("")
-        lines.append(f"<i>Показаны последние {LIMIT} записей.</i>")
+        lines.append("<i>" + i18n.t(
+            "history.trimmed", lang, f"Показаны последние {LIMIT} записей.",
+        ) + "</i>")
     return "\n".join(lines)
 
 
 @router.message(Command("history"))
-async def cmd_history(message: Message) -> None:
+async def cmd_history(message: Message, user: dict) -> None:
     if not features.enabled("history"):
         await message.answer("Журнал событий сейчас отключён.")
         return
-    await message.answer(await _render(message.from_user.id),
+    await message.answer(await _render(message.from_user.id, i18n.language_of(user)),
                          reply_markup=back_kb())
 
 
 @router.callback_query(F.data == "menu:history")
-async def menu_history(call: CallbackQuery) -> None:
+async def menu_history(call: CallbackQuery, user: dict) -> None:
     if not features.enabled("history"):
         await call.answer("Журнал событий отключён.", show_alert=True)
         return
     await call.answer()
-    await safe_edit(call, await _render(call.from_user.id), back_kb())
+    await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
