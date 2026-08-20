@@ -288,24 +288,51 @@ detect_language
 # раньше. Без терминала (curl | bash в конвейере) вопрос пропускаем:
 # ждать ответа там некому, установка просто зависла бы.
 ask_language() {
+    # Язык задан флагом или переменной — не переспрашиваем.
     [ -n "${RADAR_LANG:-}" ] && return 0
-    [ -f "$APP_DIR/.env" ] && grep -q '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null && return 0
-    [ -t 0 ] || return 0
+
+    # Проверяем ИМЕННО /dev/tty, а не stdin. При установке одной строкой
+    # (`curl … | bash`) на stdin висит сам скрипт, поэтому `[ -t 0 ]`
+    # всегда ложно — из-за этого вопрос не задавался никогда, хотя
+    # терминал у человека был. Читать ответ всё равно нужно из /dev/tty,
+    # значит и проверять доступность надо его.
+    [ -e /dev/tty ] && [ -r /dev/tty ] || return 0
+
+    local stored=""
+    if [ -f "$APP_DIR/.env" ]; then
+        stored="$(grep -E '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+    fi
 
     printf "\n  %sChoose language / Выберите язык%s\n" "$C_BOLD" "$C_RESET"
-    printf "    1) Русский\n"
-    printf "    2) English\n"
-    printf "  %sВыбор [1]:%s " "$C_DIM" "$C_RESET"
+    printf "    1) Русский%s\n" "$([ "$stored" = "ru" ] && printf ' ✓' || true)"
+    printf "    2) English%s\n" "$([ "$stored" = "en" ] && printf ' ✓' || true)"
+
+    local default_choice="1"
+    [ "$stored" = "en" ] && default_choice="2"
+    printf "  %sВыбор / Choice [%s]:%s " "$C_DIM" "$default_choice" "$C_RESET"
+
     local answer=""
-    read -r answer < /dev/tty || answer="1"
+    # Таймаут: при запуске из cron или чужого скрипта терминал может
+    # существовать, но отвечать будет некому — молча ждать вечно нельзя.
+    if ! read -r -t 60 answer < /dev/tty; then
+        answer="$default_choice"
+        printf "\n"
+    fi
+    : "${answer:=$default_choice}"
+
     case "$answer" in
-        2) LANG_CODE="en" ;;
+        2|en|EN|english|English) LANG_CODE="en" ;;
         *) LANG_CODE="ru" ;;
     esac
     printf "\n"
 }
 
 COLS=$( (tput cols 2>/dev/null || echo 72) )
+
+# Спрашиваем язык до всего остального: режимы --versions, --migrate
+# и --restore выходят раньше основного пути, и если спросить позже,
+# их вывод останется на русском независимо от выбора.
+ask_language
 [ "$COLS" -gt 78 ] && COLS=78
 [ "$COLS" -lt 48 ] && COLS=48
 
@@ -951,7 +978,6 @@ banner
 #  Шаг 1. Каталог и лог
 # --------------------------------------------------------------------------
 
-ask_language
 remember_language
 step "$(t step_prepare)"
 

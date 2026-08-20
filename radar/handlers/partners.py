@@ -32,7 +32,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import features, partners, promo, roles
+from .. import features, i18n, partners, promo, roles
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -46,7 +46,7 @@ class AddProject(StatesGroup):
     description = State()
 
 
-def _list_keyboard(projects) -> InlineKeyboardMarkup:
+def _list_keyboard(projects, lang: str = i18n.DEFAULT) -> InlineKeyboardMarkup:
     rows = []
     for project in projects:
         # Кнопка-ссылка ведёт наружу сразу: лишний переход через бота
@@ -56,37 +56,41 @@ def _list_keyboard(projects) -> InlineKeyboardMarkup:
         )])
         if features.enabled("promo_codes") and project.has_promo:
             rows.append([InlineKeyboardButton(
-                text="🎁 Получить промокод",
+                text=i18n.t("partners.promo", lang, "🎁 Получить промокод"),
                 callback_data=f"prj:promo:{project.slug}",
             )])
     # Кнопки управления здесь нет намеренно: правка разделов собрана
     # в одном месте — в меню «Управление». Раздел для читателя остаётся
     # только списком проектов.
     rows.append([InlineKeyboardButton(
-        text="🏠 В главное меню", callback_data="menu:main",
+        text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+        callback_data="menu:main",
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _render() -> tuple[str, InlineKeyboardMarkup]:
+async def _render(lang: str = i18n.DEFAULT) -> tuple[str, InlineKeyboardMarkup]:
     projects = partners.visible_projects(await partners.load())
-    if not projects:
-        return (
-            "🤝 <b>Партнёрские проекты</b>\n\nСписок пока пуст.",
-            _list_keyboard([]),
-        )
+    title = i18n.t("menu.partners", lang, "🤝 Партнёрские проекты")
 
-    lines = ["🤝 <b>Партнёрские проекты</b>", ""]
+    if not projects:
+        empty = i18n.t("partners.empty", lang, "Список пока пуст.")
+        return f"<b>{title}</b>\n\n{empty}", _list_keyboard([], lang)
+
+    lines = [f"<b>{title}</b>", ""]
     for project in projects:
         lines.append(f"{project.icon} <b>{esc(project.title)}</b>")
         if project.description:
-            lines.append(esc(project.description))
+            # Описание пишет суперадминистратор по-русски: для английского
+            # интерфейса переводим на лету, с кэшем. Не переведётся —
+            # покажем как есть, это лучше пустого места.
+            lines.append(esc(await i18n.translate(project.description, lang)))
         lines.append("")
-    return "\n".join(lines).strip(), _list_keyboard(projects)
+    return "\n".join(lines).strip(), _list_keyboard(projects, lang)
 
 
 @router.message(Command("partner", "vpn", "partners"))
-async def cmd_partners(message: Message) -> None:
+async def cmd_partners(message: Message, user: dict) -> None:
     if not features.enabled("partners"):
         # Пока раздел выключен, работает прежняя одиночная кнопка —
         # обновление не должно отнимать у людей то, что уже было.
@@ -94,14 +98,14 @@ async def cmd_partners(message: Message) -> None:
 
         await button_promo(message)
         return
-    text, markup = await _render()
+    text, markup = await _render(i18n.language_of(user))
     await message.answer(text, reply_markup=markup, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "menu:partners")
-async def menu_partners(call: CallbackQuery) -> None:
+async def menu_partners(call: CallbackQuery, user: dict) -> None:
     await call.answer()
-    text, markup = await _render()
+    text, markup = await _render(i18n.language_of(user))
     await safe_edit(call, text, markup)
 
 
@@ -284,7 +288,7 @@ def _make_slug(title: str, taken: set[str]) -> str:
 # --- выдача промокодов ----------------------------------------------------
 
 @router.callback_query(F.data.startswith("prj:promo:"))
-async def give_promo(call: CallbackQuery) -> None:
+async def give_promo(call: CallbackQuery, user: dict) -> None:
     """Выдать промокод. Повторное нажатие возвращает тот же код."""
     if not features.enabled("promo_codes"):
         await call.answer("Промокоды сейчас не выдаются.", show_alert=True)
@@ -309,6 +313,7 @@ async def give_promo(call: CallbackQuery) -> None:
         return
 
     await call.answer()
+    lang = i18n.language_of(user)
     lines = [
         f"🎁 <b>Промокод — {esc(project.title)}</b>",
         "",
@@ -317,7 +322,7 @@ async def give_promo(call: CallbackQuery) -> None:
         f"Выдан: <b>{issued.date}</b>",
     ]
     if project.promo_terms:
-        lines.extend(["", esc(project.promo_terms)])
+        lines.extend(["", esc(await i18n.translate(project.promo_terms, lang))])
     lines.extend([
         "",
         "<i>Код закреплён за вами: повторное нажатие покажет его же.</i>",

@@ -79,6 +79,14 @@ EN_STRINGS: dict[str, str] = {
         "and Wi-Fi usually keep working. For urgent contact use calls and SMS."
     ),
     "alert.not_official": "This system does not replace official warning channels.",
+    "alert.read_source": "Read the source",
+    "alert.no_ai": "(no AI)",
+
+    # --- партнёрские проекты ---
+    "partners.empty": "The list is empty for now.",
+    "partners.promo": "🎁 Get a promo code",
+    "partners.promo.issued": "Issued",
+    "partners.promo.kept": "The code is yours: pressing again shows the same one.",
 
     # --- медиа ---
     "media.title": "🎬 Video download",
@@ -127,3 +135,86 @@ def t(key: str, lang: str, fallback: str) -> str:
     if normalize(lang) == EN:
         return EN_STRINGS.get(key, fallback)
     return fallback
+
+
+# --------------------------------------------------------------------------
+#  Перевод пользовательского содержимого (с 4.7.3.2)
+# --------------------------------------------------------------------------
+#
+# Описания партнёрских проектов, условия промокодов, тексты оповещений
+# из городских каналов — всё это пишут люди по-русски, и в словарь их
+# не положить: они меняются без пересборки.
+#
+# Такие тексты переводит модель, по запросу и с кэшем. Решения, которые
+# здесь важны:
+#
+#   * кэш обязателен. Без него каждое открытие раздела стоило бы запроса
+#     к модели, а описания меняются раз в месяц — платить за это квотой,
+#     которая нужна оповещениям об опасности, нельзя;
+#   * при недоступности модели возвращается исходный текст, а не заглушка
+#     и не пустота: русское описание английскому читателю понятнее, чем
+#     «перевод недоступен»;
+#   * оповещения об опасности НЕ переводятся на лету. Они срочные, а
+#     обращение к модели добавляет секунды и может не вернуться вовсе.
+#     Для них переводится каркас — заголовки и пояснения из словаря выше, —
+#     а текст первоисточника идёт как есть. Лучше понятная наполовину
+#     тревога сейчас, чем полностью переведённая через минуту.
+
+_CACHE: dict[tuple[str, str], str] = {}
+_CACHE_LIMIT = 500
+
+TRANSLATE_SYSTEM = (
+    "You are a translator. Translate the given text to {target}. "
+    "Keep the meaning exactly, keep any HTML tags and links unchanged, "
+    "keep the tone. Return only the translation, nothing else."
+)
+
+
+def cache_key(text: str, lang: str) -> tuple[str, str]:
+    return (text.strip()[:400], normalize(lang))
+
+
+async def translate(text: str, lang: str) -> str:
+    """Перевести текст, написанный человеком. Ошибка — вернуть как есть."""
+    text = (text or "").strip()
+    lang = normalize(lang)
+    if not text or lang == DEFAULT:
+        return text
+
+    key = cache_key(text, lang)
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    from . import ai
+
+    if not getattr(ai, "ENABLED", False):
+        return text
+
+    try:
+        result = (await ai.generate(
+            text[:1500],
+            system=TRANSLATE_SYSTEM.format(target="English"),
+            max_tokens=600,
+            temperature=0.2,
+            role=ai.ANALYSIS,
+            priority=False,        # перевод уступает квоту оповещениям
+        )).strip()
+    except Exception as exc:  # noqa: BLE001
+        log.info("Перевод не удался, отдаю исходный текст: %s", exc)
+        return text
+
+    if not result:
+        return text
+
+    if len(_CACHE) >= _CACHE_LIMIT:
+        # Простое усечение вместо LRU: записей мало, обращения редкие,
+        # и сложный вытеснитель здесь дороже пользы.
+        _CACHE.clear()
+    _CACHE[key] = result
+    return result
+
+
+def forget_translations() -> None:
+    """Сбросить кэш — после правки описаний и в тестах."""
+    _CACHE.clear()

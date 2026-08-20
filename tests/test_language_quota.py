@@ -104,6 +104,95 @@ class TestMenuTranslation(unittest.TestCase):
         self.assertEqual(len(self.labels("en")), len(self.labels("ru")))
 
 
+class TestContentTranslation(unittest.TestCase):
+    """Тексты, которые пишет человек, переводятся моделью — с кэшем."""
+
+    def setUp(self):
+        i18n.forget_translations()
+
+    def run_async(self, coro):
+        import asyncio
+
+        return asyncio.run(coro)
+
+    def test_russian_returns_original(self):
+        """Для русского обращаться к модели незачем."""
+        self.assertEqual(
+            self.run_async(i18n.translate("Текст", "ru")), "Текст"
+        )
+
+    def test_empty_returns_empty(self):
+        self.assertEqual(self.run_async(i18n.translate("", "en")), "")
+
+    def test_without_ai_returns_original(self):
+        """Модель недоступна — русский текст понятнее заглушки."""
+        from unittest import mock
+        from radar import ai
+
+        with mock.patch.object(ai, "ENABLED", False):
+            self.assertEqual(
+                self.run_async(i18n.translate("Описание", "en")), "Описание"
+            )
+
+    def test_failure_returns_original(self):
+        from unittest import mock
+        from radar import ai
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("сервис недоступен")
+
+        with mock.patch.object(ai, "ENABLED", True), \
+             mock.patch.object(ai, "generate", side_effect=boom):
+            self.assertEqual(
+                self.run_async(i18n.translate("Описание", "en")), "Описание"
+            )
+
+    def test_cache_prevents_second_request(self):
+        """Описания меняются раз в месяц — платить квотой за каждый показ
+        нельзя, она нужна оповещениям."""
+        from unittest import mock
+        from radar import ai
+
+        calls = {"count": 0}
+
+        async def fake(*args, **kwargs):
+            calls["count"] += 1
+            return "Description"
+
+        with mock.patch.object(ai, "ENABLED", True), \
+             mock.patch.object(ai, "generate", side_effect=fake):
+            first = self.run_async(i18n.translate("Описание", "en"))
+            second = self.run_async(i18n.translate("Описание", "en"))
+
+        self.assertEqual(first, "Description")
+        self.assertEqual(second, "Description")
+        self.assertEqual(calls["count"], 1)
+
+    def test_cache_is_bounded(self):
+        for index in range(i18n._CACHE_LIMIT + 10):
+            i18n._CACHE[(f"текст{index}", "en")] = "x"
+            if len(i18n._CACHE) >= i18n._CACHE_LIMIT:
+                i18n._CACHE.clear()
+        self.assertLess(len(i18n._CACHE), i18n._CACHE_LIMIT)
+
+
+class TestAlertFrame(unittest.TestCase):
+    """Каркас оповещения переводится, текст первоисточника — нет."""
+
+    def test_header_translated(self):
+        from radar.matching import format_locations_header
+
+        header = format_locations_header([{"name": "Чапаева, 12"}], "", "en")
+        self.assertIn("Matched locations", header)
+        self.assertIn("Чапаева, 12", header)
+
+    def test_header_russian_by_default(self):
+        from radar.matching import format_locations_header
+
+        self.assertIn("Совпавшие локации",
+                      format_locations_header([{"name": "Чапаева, 12"}]))
+
+
 class TestQuota(unittest.TestCase):
     def setUp(self):
         self.today = mediaquota.today()

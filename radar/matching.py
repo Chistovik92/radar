@@ -377,10 +377,26 @@ def _loc_label(loc: dict[str, Any]) -> str:
     return esc(loc.get("name") or "локация")
 
 
-def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "") -> str:
+def _label(key: str, russian: str, lang: str = "ru") -> str:
+    """Строка каркаса оповещения на нужном языке.
+
+    Переводится ТОЛЬКО каркас — заголовки и пояснения. Текст самого
+    сообщения из городского канала идёт как есть: обращение к модели
+    ради перевода добавило бы секунды к срочному оповещению и могло бы
+    не вернуться вовсе. Понятная наполовину тревога сейчас лучше
+    полностью переведённой через минуту.
+    """
+    from . import i18n
+
+    return i18n.t(key, lang, russian)
+
+
+def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "",
+                            lang: str = "ru") -> str:
     names = ", ".join(_loc_label(loc) for loc in locations)
     suffix = f" <i>({note})</i>" if note else ""
-    return f"📍 <b>Совпавшие локации:</b> {names}{suffix}"
+    title = _label("alert.matched", "Совпавшие локации", lang)
+    return f"📍 <b>{title}:</b> {names}{suffix}"
 
 
 def _source_label(analysis: Analysis) -> str:
@@ -406,14 +422,18 @@ def build_city_alert(
     locations: Sequence[dict[str, Any]],
     events: Sequence[Analysis],
     whitelist_notice: bool = False,
+    lang: str = "ru",
 ) -> str:
     """Одно сообщение на город: военные и другие общегородские угрозы."""
     titles = {analysis.title() for analysis in events}
-    head = f"🚨 <b>ОПАСНОСТЬ — {esc(city or 'город')}</b>"
+    danger = _label("alert.danger", "ОПАСНОСТЬ", lang)
+    head = f"🚨 <b>{danger} — {esc(city or 'город')}</b>"
     lines = [
         head,
         f"<b>{esc(' / '.join(sorted(titles)))}</b>",
-        format_locations_header(locations, "весь город"),
+        format_locations_header(
+            locations, _label("alert.citywide", "весь город", lang), lang
+        ),
         "",
     ]
     lines.extend(_event_line(analysis) for analysis in events)

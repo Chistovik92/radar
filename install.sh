@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.3.1 — автономный установщик.
+# Система «Радар» v4.7.3.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.3.1"
+VERSION="4.7.3.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -288,24 +288,51 @@ detect_language
 # раньше. Без терминала (curl | bash в конвейере) вопрос пропускаем:
 # ждать ответа там некому, установка просто зависла бы.
 ask_language() {
+    # Язык задан флагом или переменной — не переспрашиваем.
     [ -n "${RADAR_LANG:-}" ] && return 0
-    [ -f "$APP_DIR/.env" ] && grep -q '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null && return 0
-    [ -t 0 ] || return 0
+
+    # Проверяем ИМЕННО /dev/tty, а не stdin. При установке одной строкой
+    # (`curl … | bash`) на stdin висит сам скрипт, поэтому `[ -t 0 ]`
+    # всегда ложно — из-за этого вопрос не задавался никогда, хотя
+    # терминал у человека был. Читать ответ всё равно нужно из /dev/tty,
+    # значит и проверять доступность надо его.
+    [ -e /dev/tty ] && [ -r /dev/tty ] || return 0
+
+    local stored=""
+    if [ -f "$APP_DIR/.env" ]; then
+        stored="$(grep -E '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+    fi
 
     printf "\n  %sChoose language / Выберите язык%s\n" "$C_BOLD" "$C_RESET"
-    printf "    1) Русский\n"
-    printf "    2) English\n"
-    printf "  %sВыбор [1]:%s " "$C_DIM" "$C_RESET"
+    printf "    1) Русский%s\n" "$([ "$stored" = "ru" ] && printf ' ✓' || true)"
+    printf "    2) English%s\n" "$([ "$stored" = "en" ] && printf ' ✓' || true)"
+
+    local default_choice="1"
+    [ "$stored" = "en" ] && default_choice="2"
+    printf "  %sВыбор / Choice [%s]:%s " "$C_DIM" "$default_choice" "$C_RESET"
+
     local answer=""
-    read -r answer < /dev/tty || answer="1"
+    # Таймаут: при запуске из cron или чужого скрипта терминал может
+    # существовать, но отвечать будет некому — молча ждать вечно нельзя.
+    if ! read -r -t 60 answer < /dev/tty; then
+        answer="$default_choice"
+        printf "\n"
+    fi
+    : "${answer:=$default_choice}"
+
     case "$answer" in
-        2) LANG_CODE="en" ;;
+        2|en|EN|english|English) LANG_CODE="en" ;;
         *) LANG_CODE="ru" ;;
     esac
     printf "\n"
 }
 
 COLS=$( (tput cols 2>/dev/null || echo 72) )
+
+# Спрашиваем язык до всего остального: режимы --versions, --migrate
+# и --restore выходят раньше основного пути, и если спросить позже,
+# их вывод останется на русском независимо от выбора.
+ask_language
 [ "$COLS" -gt 78 ] && COLS=78
 [ "$COLS" -lt 48 ] && COLS=48
 
@@ -951,7 +978,6 @@ banner
 #  Шаг 1. Каталог и лог
 # --------------------------------------------------------------------------
 
-ask_language
 remember_language
 step "$(t step_prepare)"
 
@@ -1972,6 +1998,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.3.2", [
+        "🗣 <b>Установщик снова спрашивает язык.</b> Проверка терминала "
+        "была неверной: при установке одной строкой вопрос не задавался "
+        "никогда, хотя терминал у человека был.",
+        "🔤 <b>Переводятся и тексты, которые пишут руками</b> — описания "
+        "партнёрских проектов и условия промокодов. С кэшем, чтобы "
+        "не тратить квоту, нужную оповещениям.",
+        "🚨 <b>Каркас оповещений переведён.</b> Заголовки и пояснения — "
+        "на выбранном языке; текст из городского канала идёт как есть, "
+        "чтобы тревога не ждала перевода.",
+    ]),
     ("4.7.3.1", [
         "🌍 <b>Меню переведено.</b> При английском языке кнопки оставались "
         "русскими: меню собиралось без учёта выбранного языка.",
@@ -2398,7 +2435,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.3.1"
+__version__ = "4.7.3.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3555,10 +3592,26 @@ def _loc_label(loc: dict[str, Any]) -> str:
     return esc(loc.get("name") or "локация")
 
 
-def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "") -> str:
+def _label(key: str, russian: str, lang: str = "ru") -> str:
+    """Строка каркаса оповещения на нужном языке.
+
+    Переводится ТОЛЬКО каркас — заголовки и пояснения. Текст самого
+    сообщения из городского канала идёт как есть: обращение к модели
+    ради перевода добавило бы секунды к срочному оповещению и могло бы
+    не вернуться вовсе. Понятная наполовину тревога сейчас лучше
+    полностью переведённой через минуту.
+    """
+    from . import i18n
+
+    return i18n.t(key, lang, russian)
+
+
+def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "",
+                            lang: str = "ru") -> str:
     names = ", ".join(_loc_label(loc) for loc in locations)
     suffix = f" <i>({note})</i>" if note else ""
-    return f"📍 <b>Совпавшие локации:</b> {names}{suffix}"
+    title = _label("alert.matched", "Совпавшие локации", lang)
+    return f"📍 <b>{title}:</b> {names}{suffix}"
 
 
 def _source_label(analysis: Analysis) -> str:
@@ -3584,14 +3637,18 @@ def build_city_alert(
     locations: Sequence[dict[str, Any]],
     events: Sequence[Analysis],
     whitelist_notice: bool = False,
+    lang: str = "ru",
 ) -> str:
     """Одно сообщение на город: военные и другие общегородские угрозы."""
     titles = {analysis.title() for analysis in events}
-    head = f"🚨 <b>ОПАСНОСТЬ — {esc(city or 'город')}</b>"
+    danger = _label("alert.danger", "ОПАСНОСТЬ", lang)
+    head = f"🚨 <b>{danger} — {esc(city or 'город')}</b>"
     lines = [
         head,
         f"<b>{esc(' / '.join(sorted(titles)))}</b>",
-        format_locations_header(locations, "весь город"),
+        format_locations_header(
+            locations, _label("alert.citywide", "весь город", lang), lang
+        ),
         "",
     ]
     lines.extend(_event_line(analysis) for analysis in events)
@@ -8432,6 +8489,14 @@ EN_STRINGS: dict[str, str] = {
         "and Wi-Fi usually keep working. For urgent contact use calls and SMS."
     ),
     "alert.not_official": "This system does not replace official warning channels.",
+    "alert.read_source": "Read the source",
+    "alert.no_ai": "(no AI)",
+
+    # --- партнёрские проекты ---
+    "partners.empty": "The list is empty for now.",
+    "partners.promo": "🎁 Get a promo code",
+    "partners.promo.issued": "Issued",
+    "partners.promo.kept": "The code is yours: pressing again shows the same one.",
 
     # --- медиа ---
     "media.title": "🎬 Video download",
@@ -8480,6 +8545,89 @@ def t(key: str, lang: str, fallback: str) -> str:
     if normalize(lang) == EN:
         return EN_STRINGS.get(key, fallback)
     return fallback
+
+
+# --------------------------------------------------------------------------
+#  Перевод пользовательского содержимого (с 4.7.3.2)
+# --------------------------------------------------------------------------
+#
+# Описания партнёрских проектов, условия промокодов, тексты оповещений
+# из городских каналов — всё это пишут люди по-русски, и в словарь их
+# не положить: они меняются без пересборки.
+#
+# Такие тексты переводит модель, по запросу и с кэшем. Решения, которые
+# здесь важны:
+#
+#   * кэш обязателен. Без него каждое открытие раздела стоило бы запроса
+#     к модели, а описания меняются раз в месяц — платить за это квотой,
+#     которая нужна оповещениям об опасности, нельзя;
+#   * при недоступности модели возвращается исходный текст, а не заглушка
+#     и не пустота: русское описание английскому читателю понятнее, чем
+#     «перевод недоступен»;
+#   * оповещения об опасности НЕ переводятся на лету. Они срочные, а
+#     обращение к модели добавляет секунды и может не вернуться вовсе.
+#     Для них переводится каркас — заголовки и пояснения из словаря выше, —
+#     а текст первоисточника идёт как есть. Лучше понятная наполовину
+#     тревога сейчас, чем полностью переведённая через минуту.
+
+_CACHE: dict[tuple[str, str], str] = {}
+_CACHE_LIMIT = 500
+
+TRANSLATE_SYSTEM = (
+    "You are a translator. Translate the given text to {target}. "
+    "Keep the meaning exactly, keep any HTML tags and links unchanged, "
+    "keep the tone. Return only the translation, nothing else."
+)
+
+
+def cache_key(text: str, lang: str) -> tuple[str, str]:
+    return (text.strip()[:400], normalize(lang))
+
+
+async def translate(text: str, lang: str) -> str:
+    """Перевести текст, написанный человеком. Ошибка — вернуть как есть."""
+    text = (text or "").strip()
+    lang = normalize(lang)
+    if not text or lang == DEFAULT:
+        return text
+
+    key = cache_key(text, lang)
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    from . import ai
+
+    if not getattr(ai, "ENABLED", False):
+        return text
+
+    try:
+        result = (await ai.generate(
+            text[:1500],
+            system=TRANSLATE_SYSTEM.format(target="English"),
+            max_tokens=600,
+            temperature=0.2,
+            role=ai.ANALYSIS,
+            priority=False,        # перевод уступает квоту оповещениям
+        )).strip()
+    except Exception as exc:  # noqa: BLE001
+        log.info("Перевод не удался, отдаю исходный текст: %s", exc)
+        return text
+
+    if not result:
+        return text
+
+    if len(_CACHE) >= _CACHE_LIMIT:
+        # Простое усечение вместо LRU: записей мало, обращения редкие,
+        # и сложный вытеснитель здесь дороже пользы.
+        _CACHE.clear()
+    _CACHE[key] = result
+    return result
+
+
+def forget_translations() -> None:
+    """Сбросить кэш — после правки описаний и в тестах."""
+    _CACHE.clear()
 RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mediaquota.py"
 cat > "radar/mediaquota.py" <<'RADAR_FILE_31'
@@ -18819,7 +18967,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import features, partners, promo, roles
+from .. import features, i18n, partners, promo, roles
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -18833,7 +18981,7 @@ class AddProject(StatesGroup):
     description = State()
 
 
-def _list_keyboard(projects) -> InlineKeyboardMarkup:
+def _list_keyboard(projects, lang: str = i18n.DEFAULT) -> InlineKeyboardMarkup:
     rows = []
     for project in projects:
         # Кнопка-ссылка ведёт наружу сразу: лишний переход через бота
@@ -18843,37 +18991,41 @@ def _list_keyboard(projects) -> InlineKeyboardMarkup:
         )])
         if features.enabled("promo_codes") and project.has_promo:
             rows.append([InlineKeyboardButton(
-                text="🎁 Получить промокод",
+                text=i18n.t("partners.promo", lang, "🎁 Получить промокод"),
                 callback_data=f"prj:promo:{project.slug}",
             )])
     # Кнопки управления здесь нет намеренно: правка разделов собрана
     # в одном месте — в меню «Управление». Раздел для читателя остаётся
     # только списком проектов.
     rows.append([InlineKeyboardButton(
-        text="🏠 В главное меню", callback_data="menu:main",
+        text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+        callback_data="menu:main",
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _render() -> tuple[str, InlineKeyboardMarkup]:
+async def _render(lang: str = i18n.DEFAULT) -> tuple[str, InlineKeyboardMarkup]:
     projects = partners.visible_projects(await partners.load())
-    if not projects:
-        return (
-            "🤝 <b>Партнёрские проекты</b>\n\nСписок пока пуст.",
-            _list_keyboard([]),
-        )
+    title = i18n.t("menu.partners", lang, "🤝 Партнёрские проекты")
 
-    lines = ["🤝 <b>Партнёрские проекты</b>", ""]
+    if not projects:
+        empty = i18n.t("partners.empty", lang, "Список пока пуст.")
+        return f"<b>{title}</b>\n\n{empty}", _list_keyboard([], lang)
+
+    lines = [f"<b>{title}</b>", ""]
     for project in projects:
         lines.append(f"{project.icon} <b>{esc(project.title)}</b>")
         if project.description:
-            lines.append(esc(project.description))
+            # Описание пишет суперадминистратор по-русски: для английского
+            # интерфейса переводим на лету, с кэшем. Не переведётся —
+            # покажем как есть, это лучше пустого места.
+            lines.append(esc(await i18n.translate(project.description, lang)))
         lines.append("")
-    return "\n".join(lines).strip(), _list_keyboard(projects)
+    return "\n".join(lines).strip(), _list_keyboard(projects, lang)
 
 
 @router.message(Command("partner", "vpn", "partners"))
-async def cmd_partners(message: Message) -> None:
+async def cmd_partners(message: Message, user: dict) -> None:
     if not features.enabled("partners"):
         # Пока раздел выключен, работает прежняя одиночная кнопка —
         # обновление не должно отнимать у людей то, что уже было.
@@ -18881,14 +19033,14 @@ async def cmd_partners(message: Message) -> None:
 
         await button_promo(message)
         return
-    text, markup = await _render()
+    text, markup = await _render(i18n.language_of(user))
     await message.answer(text, reply_markup=markup, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "menu:partners")
-async def menu_partners(call: CallbackQuery) -> None:
+async def menu_partners(call: CallbackQuery, user: dict) -> None:
     await call.answer()
-    text, markup = await _render()
+    text, markup = await _render(i18n.language_of(user))
     await safe_edit(call, text, markup)
 
 
@@ -19071,7 +19223,7 @@ def _make_slug(title: str, taken: set[str]) -> str:
 # --- выдача промокодов ----------------------------------------------------
 
 @router.callback_query(F.data.startswith("prj:promo:"))
-async def give_promo(call: CallbackQuery) -> None:
+async def give_promo(call: CallbackQuery, user: dict) -> None:
     """Выдать промокод. Повторное нажатие возвращает тот же код."""
     if not features.enabled("promo_codes"):
         await call.answer("Промокоды сейчас не выдаются.", show_alert=True)
@@ -19096,6 +19248,7 @@ async def give_promo(call: CallbackQuery) -> None:
         return
 
     await call.answer()
+    lang = i18n.language_of(user)
     lines = [
         f"🎁 <b>Промокод — {esc(project.title)}</b>",
         "",
@@ -19104,7 +19257,7 @@ async def give_promo(call: CallbackQuery) -> None:
         f"Выдан: <b>{issued.date}</b>",
     ]
     if project.promo_terms:
-        lines.extend(["", esc(project.promo_terms)])
+        lines.extend(["", esc(await i18n.translate(project.promo_terms, lang))])
     lines.extend([
         "",
         "<i>Код закреплён за вами: повторное нажатие покажет его же.</i>",
