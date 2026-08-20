@@ -65,6 +65,8 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
+        if features.enabled("partners"):
+            links.append(("/partners", "Партнёры", "partners"))
     return links
 
 
@@ -176,6 +178,60 @@ def _sources_body() -> str:
         + block("RSS-ленты", list(storage.rss_feeds()))
         + block("Сообщества VK", list(storage.vk_groups()))
         + block("В очереди модерации", list(storage.pending()))
+    )
+
+
+async def _partners_body() -> str:
+    """Партнёрские проекты и выдача промокодов.
+
+    Панель повторяет то, что доступно в боте, а не расширяет права:
+    раздел открыт суперадминистратору, как и правка в боте.
+    """
+    from .. import partners
+
+    try:
+        projects = partners.order_projects(await partners.load())
+    except Exception as exc:  # noqa: BLE001
+        return f'<div class="card bad">Список недоступен: {html.escape(str(exc))}</div>'
+
+    if not projects:
+        return '<div class="card">Проектов пока нет. Добавьте их в боте.</div>'
+
+    rows = []
+    for project in projects:
+        state = "виден" if project.visible else "скрыт"
+        kind = partners.KIND_TITLES.get(project.promo_kind, "—")
+        issued = ""
+        if project.has_promo and features.enabled("promo_codes"):
+            try:
+                from ..db import repo
+
+                count = await repo.promo_count(project.slug)
+                issued = (
+                    f'<a href="/partners/export?slug={html.escape(project.slug)}">'
+                    f"выгрузить ({count})</a>"
+                )
+            except Exception:  # noqa: BLE001
+                issued = '<span class="muted">недоступно</span>'
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(project.icon)} {html.escape(project.title)}</td>"
+            f'<td><a href="{html.escape(project.url)}" rel="noopener noreferrer" '
+            f'target="_blank">{html.escape(project.url[:48])}</a></td>'
+            f"<td>{state}</td><td>{project.clicks}</td>"
+            f"<td>{html.escape(kind)}</td><td>{issued}</td>"
+            "</tr>"
+        )
+
+    return (
+        '<div class="card"><table>'
+        "<tr><th>Проект</th><th>Ссылка</th><th>Показ</th><th>Переходы</th>"
+        "<th>Промокод</th><th>Коды</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+        '<p class="muted">Правка проектов и настройка промокодов — в боте, '
+        "раздел «Управление». Выгрузка содержит только код и дату выдачи, "
+        "без идентификаторов пользователей.</p>"
     )
 
 
@@ -355,6 +411,33 @@ async def create_app() -> Any:
         )
 
     @owner_only
+    async def partners_page(_request, session):
+        body = await _partners_body()
+        return web.Response(
+            text=_layout("Партнёры", body, "partners",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @owner_only
+    async def partners_export(request, _session):
+        """Выгрузка кодов файлом. Отдаём то же, что и бот, — код и дату."""
+        from .. import promo
+
+        slug = request.query.get("slug", "")
+        if not slug or len(slug) > 32:
+            raise web.HTTPBadRequest(text="Не указан проект")
+        rows = await promo.export_for_partner(slug)
+        payload = promo.render_csv(rows)
+        return web.Response(
+            body=payload.encode("utf-8"),
+            content_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="promo-{slug}.csv"',
+            },
+        )
+
+    @owner_only
     async def features_page(_request, session):
         return web.Response(
             text=_layout("Возможности", _features_body(), "features",
@@ -437,6 +520,8 @@ async def create_app() -> Any:
         web.get("/backup/download", backup_download),
         web.get("/health", health),
         web.get("/s/{code}", follow),
+        web.get("/partners", partners_page),
+        web.get("/partners/export", partners_export),
     ])
     return application
 

@@ -265,3 +265,30 @@ class ShortLink(Base):
     last_hit: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class PromoCode(Base):
+    """Выданные промокоды (с 4.7).
+
+    Пара «проект + пользователь» уникальна: правило «один код на человека
+    на проект» держится схемой, а не только кодом приложения — так его
+    нельзя обойти гонкой из двух одновременных нажатий.
+
+    Код не выводится из идентификатора пользователя: партнёру отдаётся
+    выгрузка кодов с датами, и по ней не должно быть возможности
+    восстановить, кто есть кто.
+    """
+
+    __tablename__ = "promo_codes"
+    __table_args__ = (
+        UniqueConstraint("project", "user_key", name="uq_promo_project_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True, autoincrement=True)
+    project: Mapped[str] = mapped_column(String(32), index=True)
+    user_key: Mapped[str] = mapped_column(String(64), index=True)
+    code: Mapped[str] = mapped_column(String(64), index=True)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )

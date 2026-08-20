@@ -36,7 +36,7 @@ from ..matching import CATEGORY_TITLES
 from ..roles import SUPERADMIN, USER
 from .engine import session
 from ..identity import parse as parse_identity
-from .models import Delivery, Event, Feature, Location, Meta, ShortLink, Source, User
+from .models import Delivery, Event, Feature, Location, Meta, PromoCode, ShortLink, Source, User
 
 log = logging.getLogger("radar.repo")
 
@@ -569,3 +569,62 @@ async def short_link_stats(limit: int = 20) -> list[dict[str, Any]]:
              "created_at": row.created_at}
             for row in result.scalars()
         ]
+
+
+# --------------------------------------------------------------------------
+#  Промокоды (с 4.7)
+# --------------------------------------------------------------------------
+
+async def promo_for_user(project: str, user_key: str) -> dict[str, Any] | None:
+    """Уже выданный код. None — человек за кодом ещё не приходил."""
+    async with session() as active:
+        result = await active.execute(
+            select(PromoCode).where(
+                PromoCode.project == project, PromoCode.user_key == str(user_key)
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        return {"code": row.code, "issued_at": row.issued_at, "shared": row.shared}
+
+
+async def promo_code_taken(code: str) -> bool:
+    async with session() as active:
+        result = await active.execute(
+            select(PromoCode.id).where(PromoCode.code == code).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+
+async def save_promo(project: str, user_key: str, code: str,
+                     issued_at: datetime, shared: bool = False) -> None:
+    async with session() as active:
+        active.add(PromoCode(
+            project=project, user_key=str(user_key), code=code,
+            shared=shared, issued_at=issued_at,
+        ))
+        await active.commit()
+
+
+async def promo_list(project: str) -> list[dict[str, Any]]:
+    """Все коды проекта. Идентификаторы наружу не отдаём — только код и дату."""
+    async with session() as active:
+        result = await active.execute(
+            select(PromoCode)
+            .where(PromoCode.project == project)
+            .order_by(PromoCode.issued_at.desc())
+        )
+        return [
+            {"code": row.code, "issued_at": row.issued_at}
+            for row in result.scalars()
+        ]
+
+
+async def promo_count(project: str) -> int:
+    async with session() as active:
+        result = await active.execute(
+            select(func.count()).select_from(PromoCode)
+            .where(PromoCode.project == project)
+        )
+        return int(result.scalar_one() or 0)

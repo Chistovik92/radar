@@ -36,6 +36,18 @@ log = logging.getLogger("radar.partners")
 MAX_PROJECTS = 20
 MAX_TITLE = 48
 MAX_DESCRIPTION = 300
+MAX_TERMS = 600
+
+# Режимы промокода
+NONE = "none"
+SHARED = "shared"
+UNIQUE = "unique"
+KINDS = (NONE, SHARED, UNIQUE)
+KIND_TITLES = {
+    NONE: "нет промокода",
+    SHARED: "один код на всех",
+    UNIQUE: "свой код каждому",
+}
 
 # Ссылка ведёт наружу, и по ней пойдут люди, которым бот сообщает
 # об опасности. Схемы кроме http(s) и telegram-ссылок не принимаем.
@@ -57,12 +69,31 @@ class Project:
     visible: bool = True
     clicks: int = 0
 
+    # --- промокоды (с 4.7) ---
+    # Три режима. NONE — у проекта промокода нет.
+    # SHARED — код один на всех (партнёр раздал одну строку); закрепляем
+    #   за человеком дату получения, потому что срок считается от неё.
+    # UNIQUE — код генерируется каждому свой; партнёру отдаётся выгрузка
+    #   кодов с датами, без наших идентификаторов.
+    promo_kind: str = "none"
+    promo_value: str = ""            # для SHARED — сама строка кода
+    promo_prefix: str = ""           # для UNIQUE — приставка вида HYDRA
+    promo_terms: str = ""            # условия, пишет суперадминистратор
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "slug": self.slug, "title": self.title, "url": self.url,
             "description": self.description, "icon": self.icon,
             "order": self.order, "visible": self.visible, "clicks": self.clicks,
+            "promo_kind": self.promo_kind, "promo_value": self.promo_value,
+            "promo_prefix": self.promo_prefix, "promo_terms": self.promo_terms,
         }
+
+    @property
+    def has_promo(self) -> bool:
+        if self.promo_kind == SHARED:
+            return bool(self.promo_value)
+        return self.promo_kind == UNIQUE
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "Project | None":
@@ -87,7 +118,16 @@ class Project:
             order=_as_int(raw.get("order"), 100),
             visible=bool(raw.get("visible", True)),
             clicks=max(0, _as_int(raw.get("clicks"), 0)),
+            promo_kind=_as_kind(raw.get("promo_kind")),
+            promo_value=str(raw.get("promo_value") or "")[:64].strip(),
+            promo_prefix=str(raw.get("promo_prefix") or "")[:12].strip().upper(),
+            promo_terms=str(raw.get("promo_terms") or "")[:MAX_TERMS],
         )
+
+
+def _as_kind(value: Any) -> str:
+    kind = str(value or NONE).strip().lower()
+    return kind if kind in KINDS else NONE
 
 
 def _as_int(value: Any, default: int) -> int:

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.6.5 — автономный установщик.
+# Система «Радар» v4.7.0 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.6.5"
+VERSION="4.7.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1128,7 +1128,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=77
+FILE_COUNT=79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1424,6 +1424,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.0", [
+        "🎁 <b>Промокоды партнёрских проектов.</b> Кнопка «Получить "
+        "промокод» в разделе проектов: код выдаётся один раз и "
+        "закрепляется за вами — повторное нажатие покажет его же.",
+        "⚙️ <b>Два режима на выбор.</b> Один код на всех, где дата "
+        "получения у каждого своя, или свой код каждому. Условия "
+        "и описание задаёт суперадминистратор.",
+        "📥 <b>Выгрузка для партнёра</b> — только код и дата выдачи. "
+        "Идентификаторов пользователей в файле нет, и по коду они "
+        "не восстанавливаются.",
+        "🖥 <b>То же самое в веб-панели</b> — раздел «Партнёры» со списком "
+        "проектов, переходами и выгрузкой кодов.",
+    ]),
     ("4.6.5", [
         "🧭 <b>Всё управление собрано в одном месте.</b> Настройки разделов "
         "больше не живут внутри самих разделов: правка партнёрских проектов "
@@ -1791,7 +1804,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.6.5"
+__version__ = "4.7.0"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3403,8 +3416,11 @@ FLAGS: tuple[Flag, ...] = (
          aliases=("promo",)),
     Flag("promo_button", "Кнопка партнёра", "Закреплённая кнопка проекта в меню.",
          group="Партнёры", since="3.3"),
-    Flag("promo_codes", "Промокоды", "Персональные коды для партнёрских проектов.",
-         group="Партнёры", since="4.4", default=False),
+    Flag("promo_codes", "Промокоды",
+         "Выдача промокодов партнёрских проектов: один код на человека "
+         "на проект, повтор возвращает прежний. Режим и условия задаются "
+         "в разделе управления.",
+         group="Партнёры", since="4.7", default=False),
 
     # --- администрирование ---
     Flag("web_panel", "Веб-панель",
@@ -7310,6 +7326,18 @@ log = logging.getLogger("radar.partners")
 MAX_PROJECTS = 20
 MAX_TITLE = 48
 MAX_DESCRIPTION = 300
+MAX_TERMS = 600
+
+# Режимы промокода
+NONE = "none"
+SHARED = "shared"
+UNIQUE = "unique"
+KINDS = (NONE, SHARED, UNIQUE)
+KIND_TITLES = {
+    NONE: "нет промокода",
+    SHARED: "один код на всех",
+    UNIQUE: "свой код каждому",
+}
 
 # Ссылка ведёт наружу, и по ней пойдут люди, которым бот сообщает
 # об опасности. Схемы кроме http(s) и telegram-ссылок не принимаем.
@@ -7331,12 +7359,31 @@ class Project:
     visible: bool = True
     clicks: int = 0
 
+    # --- промокоды (с 4.7) ---
+    # Три режима. NONE — у проекта промокода нет.
+    # SHARED — код один на всех (партнёр раздал одну строку); закрепляем
+    #   за человеком дату получения, потому что срок считается от неё.
+    # UNIQUE — код генерируется каждому свой; партнёру отдаётся выгрузка
+    #   кодов с датами, без наших идентификаторов.
+    promo_kind: str = "none"
+    promo_value: str = ""            # для SHARED — сама строка кода
+    promo_prefix: str = ""           # для UNIQUE — приставка вида HYDRA
+    promo_terms: str = ""            # условия, пишет суперадминистратор
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "slug": self.slug, "title": self.title, "url": self.url,
             "description": self.description, "icon": self.icon,
             "order": self.order, "visible": self.visible, "clicks": self.clicks,
+            "promo_kind": self.promo_kind, "promo_value": self.promo_value,
+            "promo_prefix": self.promo_prefix, "promo_terms": self.promo_terms,
         }
+
+    @property
+    def has_promo(self) -> bool:
+        if self.promo_kind == SHARED:
+            return bool(self.promo_value)
+        return self.promo_kind == UNIQUE
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "Project | None":
@@ -7361,7 +7408,16 @@ class Project:
             order=_as_int(raw.get("order"), 100),
             visible=bool(raw.get("visible", True)),
             clicks=max(0, _as_int(raw.get("clicks"), 0)),
+            promo_kind=_as_kind(raw.get("promo_kind")),
+            promo_value=str(raw.get("promo_value") or "")[:64].strip(),
+            promo_prefix=str(raw.get("promo_prefix") or "")[:12].strip().upper(),
+            promo_terms=str(raw.get("promo_terms") or "")[:MAX_TERMS],
         )
+
+
+def _as_kind(value: Any) -> str:
+    kind = str(value or NONE).strip().lower()
+    return kind if kind in KINDS else NONE
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -7533,8 +7589,138 @@ async def remember_click(slug: str) -> None:
                 log.debug("Счётчик переходов не сохранился")
             return
 RADAR_FILE_28
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/promo.py"
+cat > "radar/promo.py" <<'RADAR_FILE_29'
+"""Промокоды партнёрских проектов.
+
+Правило одно и жёсткое: **один код на человека на проект**. Повторное
+нажатие возвращает уже выданный код, а не новый. Иначе выдача превращается
+в бесконечный источник кодов, и партнёр справедливо перестанет их принимать.
+
+Два режима, потому что партнёры работают по-разному:
+
+* один код на всех — партнёр дал одну строку. Сам код у всех одинаковый,
+  но дата получения у каждого своя: срок действия считается от неё,
+  а не от того дня, когда код придумали;
+* свой код каждому — код генерируется здесь. Партнёру отдаётся выгрузка
+  «код и дата выдачи», **без наших идентификаторов**: ему нужно проверять
+  коды, а не знать, кто из наших людей за каким пришёл.
+
+Выгрузка намеренно не содержит user_id ни в каком виде — в том числе
+не выводится из кода. Код случайный, а не производный от идентификатора:
+иначе партнёр смог бы сопоставить коды с людьми, а обещание
+«без привязки» оказалось бы неправдой.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import secrets as _random
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from . import partners
+
+log = logging.getLogger("radar.promo")
+
+# Без похожих знаков: код диктуют голосом и переписывают руками.
+ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+CODE_LENGTH = 8
+MAX_ATTEMPTS = 12
+
+
+@dataclass
+class Issued:
+    """Выданный код."""
+
+    code: str
+    project: str
+    issued_at: datetime
+    shared: bool = False
+
+    @property
+    def date(self) -> str:
+        return self.issued_at.strftime("%d.%m.%Y")
+
+
+def generate(prefix: str = "") -> str:
+    """Случайный код. Приставка помогает партнёру отличить свои коды."""
+    body = "".join(_random.choice(ALPHABET) for _ in range(CODE_LENGTH))
+    clean = "".join(char for char in (prefix or "").upper() if char.isalnum())[:8]
+    return f"{clean}-{body}" if clean else body
+
+
+async def issue(project: partners.Project, user_key: str) -> Issued | None:
+    """Выдать код человеку. Повтор возвращает прежний.
+
+    None означает «у проекта нет промокода» — вызывающий не должен был
+    предлагать кнопку, но проверить дешевле, чем доверять.
+    """
+    if not project.has_promo:
+        return None
+
+    from .db import repo
+
+    existing = await repo.promo_for_user(project.slug, user_key)
+    if existing is not None:
+        return Issued(
+            code=existing["code"],
+            project=project.slug,
+            issued_at=existing["issued_at"],
+            shared=project.promo_kind == partners.SHARED,
+        )
+
+    now = datetime.now(timezone.utc)
+
+    if project.promo_kind == partners.SHARED:
+        # Код общий, но запись всё равно личная: дата получения у каждого
+        # своя, и именно от неё считается срок.
+        code = project.promo_value.strip()
+        await repo.save_promo(project.slug, user_key, code, now, shared=True)
+        return Issued(code=code, project=project.slug, issued_at=now, shared=True)
+
+    # Уникальный: подбираем свободный код. Совпадение маловероятно, но
+    # выдать двум людям один код хуже, чем сделать лишний запрос.
+    for _ in range(MAX_ATTEMPTS):
+        code = generate(project.promo_prefix)
+        if await repo.promo_code_taken(code):
+            continue
+        await repo.save_promo(project.slug, user_key, code, now, shared=False)
+        return Issued(code=code, project=project.slug, issued_at=now)
+
+    log.error("Не удалось подобрать свободный промокод для «%s»", project.slug)
+    return None
+
+
+async def export_for_partner(slug: str) -> list[dict[str, str]]:
+    """Выгрузка для партнёра: код и дата выдачи, без наших идентификаторов.
+
+    Это обещание, а не оформление: партнёру нужно проверять коды, а не
+    знать, кто из наших людей за каким пришёл.
+    """
+    from .db import repo
+
+    rows = await repo.promo_list(slug)
+    return [
+        {"code": row["code"], "issued": row["issued_at"].strftime("%Y-%m-%d")}
+        for row in rows
+    ]
+
+
+def render_csv(rows: list[dict[str, str]]) -> str:
+    """CSV для передачи партнёру. Заголовок — чтобы файл читался без пояснений."""
+    lines = ["code,issued"]
+    lines.extend(f"{row['code']},{row['issued']}" for row in rows)
+    return "\n".join(lines) + "\n"
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_29'
+cat > "radar/backup.py" <<'RADAR_FILE_30'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -7757,9 +7943,9 @@ def summary() -> str:
         "<code>bash install.sh --rollback</code></i>"
     )
     return "\n".join(lines)
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_30'
+cat > "radar/weather_image.py" <<'RADAR_FILE_31'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -8158,9 +8344,9 @@ def _strip_tags(text: str) -> str:
         elif not inside:
             result.append(char)
     return "".join(result).strip()
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_31'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_32'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -8175,9 +8361,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_32'
+cat > "radar/web/auth.py" <<'RADAR_FILE_33'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -8359,9 +8545,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_33'
+cat > "radar/web/audit.py" <<'RADAR_FILE_34'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -8428,9 +8614,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_34'
+cat > "radar/web/panel.py" <<'RADAR_FILE_35'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -8498,6 +8684,8 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
+        if features.enabled("partners"):
+            links.append(("/partners", "Партнёры", "partners"))
     return links
 
 
@@ -8609,6 +8797,60 @@ def _sources_body() -> str:
         + block("RSS-ленты", list(storage.rss_feeds()))
         + block("Сообщества VK", list(storage.vk_groups()))
         + block("В очереди модерации", list(storage.pending()))
+    )
+
+
+async def _partners_body() -> str:
+    """Партнёрские проекты и выдача промокодов.
+
+    Панель повторяет то, что доступно в боте, а не расширяет права:
+    раздел открыт суперадминистратору, как и правка в боте.
+    """
+    from .. import partners
+
+    try:
+        projects = partners.order_projects(await partners.load())
+    except Exception as exc:  # noqa: BLE001
+        return f'<div class="card bad">Список недоступен: {html.escape(str(exc))}</div>'
+
+    if not projects:
+        return '<div class="card">Проектов пока нет. Добавьте их в боте.</div>'
+
+    rows = []
+    for project in projects:
+        state = "виден" if project.visible else "скрыт"
+        kind = partners.KIND_TITLES.get(project.promo_kind, "—")
+        issued = ""
+        if project.has_promo and features.enabled("promo_codes"):
+            try:
+                from ..db import repo
+
+                count = await repo.promo_count(project.slug)
+                issued = (
+                    f'<a href="/partners/export?slug={html.escape(project.slug)}">'
+                    f"выгрузить ({count})</a>"
+                )
+            except Exception:  # noqa: BLE001
+                issued = '<span class="muted">недоступно</span>'
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(project.icon)} {html.escape(project.title)}</td>"
+            f'<td><a href="{html.escape(project.url)}" rel="noopener noreferrer" '
+            f'target="_blank">{html.escape(project.url[:48])}</a></td>'
+            f"<td>{state}</td><td>{project.clicks}</td>"
+            f"<td>{html.escape(kind)}</td><td>{issued}</td>"
+            "</tr>"
+        )
+
+    return (
+        '<div class="card"><table>'
+        "<tr><th>Проект</th><th>Ссылка</th><th>Показ</th><th>Переходы</th>"
+        "<th>Промокод</th><th>Коды</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+        '<p class="muted">Правка проектов и настройка промокодов — в боте, '
+        "раздел «Управление». Выгрузка содержит только код и дату выдачи, "
+        "без идентификаторов пользователей.</p>"
     )
 
 
@@ -8788,6 +9030,33 @@ async def create_app() -> Any:
         )
 
     @owner_only
+    async def partners_page(_request, session):
+        body = await _partners_body()
+        return web.Response(
+            text=_layout("Партнёры", body, "partners",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @owner_only
+    async def partners_export(request, _session):
+        """Выгрузка кодов файлом. Отдаём то же, что и бот, — код и дату."""
+        from .. import promo
+
+        slug = request.query.get("slug", "")
+        if not slug or len(slug) > 32:
+            raise web.HTTPBadRequest(text="Не указан проект")
+        rows = await promo.export_for_partner(slug)
+        payload = promo.render_csv(rows)
+        return web.Response(
+            body=payload.encode("utf-8"),
+            content_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="promo-{slug}.csv"',
+            },
+        )
+
+    @owner_only
     async def features_page(_request, session):
         return web.Response(
             text=_layout("Возможности", _features_body(), "features",
@@ -8870,6 +9139,8 @@ async def create_app() -> Any:
         web.get("/backup/download", backup_download),
         web.get("/health", health),
         web.get("/s/{code}", follow),
+        web.get("/partners", partners_page),
+        web.get("/partners/export", partners_export),
     ])
     return application
 
@@ -8900,9 +9171,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_35'
+cat > "radar/web/backup.py" <<'RADAR_FILE_36'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -8945,9 +9216,9 @@ def body() -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_36'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_37'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -8980,9 +9251,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_37'
+cat > "radar/db/models.py" <<'RADAR_FILE_38'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -9250,9 +9521,36 @@ class ShortLink(Base):
     last_hit: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-RADAR_FILE_37
+
+
+class PromoCode(Base):
+    """Выданные промокоды (с 4.7).
+
+    Пара «проект + пользователь» уникальна: правило «один код на человека
+    на проект» держится схемой, а не только кодом приложения — так его
+    нельзя обойти гонкой из двух одновременных нажатий.
+
+    Код не выводится из идентификатора пользователя: партнёру отдаётся
+    выгрузка кодов с датами, и по ней не должно быть возможности
+    восстановить, кто есть кто.
+    """
+
+    __tablename__ = "promo_codes"
+    __table_args__ = (
+        UniqueConstraint("project", "user_key", name="uq_promo_project_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True, autoincrement=True)
+    project: Mapped[str] = mapped_column(String(32), index=True)
+    user_key: Mapped[str] = mapped_column(String(64), index=True)
+    code: Mapped[str] = mapped_column(String(64), index=True)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_38'
+cat > "radar/db/engine.py" <<'RADAR_FILE_39'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -9766,9 +10064,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_39'
+cat > "radar/db/repo.py" <<'RADAR_FILE_40'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -9807,7 +10105,7 @@ from ..matching import CATEGORY_TITLES
 from ..roles import SUPERADMIN, USER
 from .engine import session
 from ..identity import parse as parse_identity
-from .models import Delivery, Event, Feature, Location, Meta, ShortLink, Source, User
+from .models import Delivery, Event, Feature, Location, Meta, PromoCode, ShortLink, Source, User
 
 log = logging.getLogger("radar.repo")
 
@@ -10340,9 +10638,68 @@ async def short_link_stats(limit: int = 20) -> list[dict[str, Any]]:
              "created_at": row.created_at}
             for row in result.scalars()
         ]
-RADAR_FILE_39
+
+
+# --------------------------------------------------------------------------
+#  Промокоды (с 4.7)
+# --------------------------------------------------------------------------
+
+async def promo_for_user(project: str, user_key: str) -> dict[str, Any] | None:
+    """Уже выданный код. None — человек за кодом ещё не приходил."""
+    async with session() as active:
+        result = await active.execute(
+            select(PromoCode).where(
+                PromoCode.project == project, PromoCode.user_key == str(user_key)
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        return {"code": row.code, "issued_at": row.issued_at, "shared": row.shared}
+
+
+async def promo_code_taken(code: str) -> bool:
+    async with session() as active:
+        result = await active.execute(
+            select(PromoCode.id).where(PromoCode.code == code).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+
+async def save_promo(project: str, user_key: str, code: str,
+                     issued_at: datetime, shared: bool = False) -> None:
+    async with session() as active:
+        active.add(PromoCode(
+            project=project, user_key=str(user_key), code=code,
+            shared=shared, issued_at=issued_at,
+        ))
+        await active.commit()
+
+
+async def promo_list(project: str) -> list[dict[str, Any]]:
+    """Все коды проекта. Идентификаторы наружу не отдаём — только код и дату."""
+    async with session() as active:
+        result = await active.execute(
+            select(PromoCode)
+            .where(PromoCode.project == project)
+            .order_by(PromoCode.issued_at.desc())
+        )
+        return [
+            {"code": row.code, "issued_at": row.issued_at}
+            for row in result.scalars()
+        ]
+
+
+async def promo_count(project: str) -> int:
+    async with session() as active:
+        result = await active.execute(
+            select(func.count()).select_from(PromoCode)
+            .where(PromoCode.project == project)
+        )
+        return int(result.scalar_one() or 0)
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_40'
+cat > "radar/db/importer.py" <<'RADAR_FILE_41'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -10491,9 +10848,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_41'
+cat > "radar/doctor.py" <<'RADAR_FILE_42'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -10975,9 +11332,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_42'
+cat > "migrations/env.py" <<'RADAR_FILE_43'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -11037,9 +11394,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_43'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_44'
 """${message}
 
 Revision ID: ${up_revision}
@@ -11064,9 +11421,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_43
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_44'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_45'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -11233,9 +11590,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_44
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_45'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_46'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -11275,9 +11632,59 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_45
+RADAR_FILE_46
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_47'
+"""Промокоды партнёрских проектов.
+
+Уникальность пары «проект + пользователь» задана в схеме, а не только
+в коде: правило «один код на человека на проект» должно держаться даже
+при двух одновременных нажатиях.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "0003_promo_codes"
+down_revision = "0002_short_links"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "promo_codes",
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("project", sa.String(length=32), nullable=False),
+        sa.Column("user_key", sa.String(length=64), nullable=False),
+        sa.Column("code", sa.String(length=64), nullable=False),
+        sa.Column("shared", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.text("now()")),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("project", "user_key", name="uq_promo_project_user"),
+    )
+    op.create_index("ix_promo_codes_project", "promo_codes", ["project"])
+    op.create_index("ix_promo_codes_user_key", "promo_codes", ["user_key"])
+    op.create_index("ix_promo_codes_code", "promo_codes", ["code"])
+
+
+def downgrade() -> None:
+    op.drop_index("ix_promo_codes_code", table_name="promo_codes")
+    op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
+    op.drop_index("ix_promo_codes_project", table_name="promo_codes")
+    op.drop_table("promo_codes")
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_46'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_48'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -11303,9 +11710,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_46
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_47'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_49'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -11430,9 +11837,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_47
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_48'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_50'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -11696,9 +12103,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_48
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_49'
+cat > "radar/storage.py" <<'RADAR_FILE_51'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -11883,9 +12290,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_49
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_50'
+cat > "radar/exporting.py" <<'RADAR_FILE_52'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -12091,9 +12498,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_50
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_51'
+cat > "radar/ai.py" <<'RADAR_FILE_53'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -12835,9 +13242,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_51
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_52'
+cat > "radar/geocode.py" <<'RADAR_FILE_54'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -13029,9 +13436,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_52
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_53'
+cat > "radar/weather.py" <<'RADAR_FILE_55'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -13430,9 +13837,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title), markup)
-RADAR_FILE_53
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_54'
+cat > "radar/sources.py" <<'RADAR_FILE_56'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -13691,9 +14098,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_54
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_55'
+cat > "radar/tg.py" <<'RADAR_FILE_57'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -13810,9 +14217,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_55
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_56'
+cat > "radar/keyboards.py" <<'RADAR_FILE_58'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -14221,9 +14628,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_56
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_57'
+cat > "radar/states.py" <<'RADAR_FILE_59'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -14253,9 +14660,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_57
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_58'
+cat > "radar/middlewares.py" <<'RADAR_FILE_60'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -14368,9 +14775,9 @@ class AccessMiddleware(BaseMiddleware):
         data["user"] = record
         data["role"] = role
         return await handler(event, data)
-RADAR_FILE_58
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_59'
+cat > "radar/monitor.py" <<'RADAR_FILE_61'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -14893,9 +15300,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_59
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_60'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_62'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -14949,9 +15356,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_60
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_61'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_63'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -15301,9 +15708,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_61
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_62'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_64'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -15469,9 +15876,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_62
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_63'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_65'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -15824,9 +16231,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_63
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_64'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_66'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -16261,9 +16668,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_64
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_65'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_67'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -16630,9 +17037,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_65
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_66'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_68'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -16779,9 +17186,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_66
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_67'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_69'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -17069,9 +17476,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_67
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_68'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_70'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -17204,9 +17611,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_68
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_69'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_71'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -17313,9 +17720,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_69
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_72'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -17350,7 +17757,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import features, partners, roles
+from .. import features, partners, promo, roles
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -17372,6 +17779,11 @@ def _list_keyboard(projects) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{project.icon} {project.title}", url=project.url,
         )])
+        if features.enabled("promo_codes") and project.has_promo:
+            rows.append([InlineKeyboardButton(
+                text="🎁 Получить промокод",
+                callback_data=f"prj:promo:{project.slug}",
+            )])
     # Кнопки управления здесь нет намеренно: правка разделов собрана
     # в одном месте — в меню «Управление». Раздел для читателя остаётся
     # только списком проектов.
@@ -17432,6 +17844,10 @@ def _manage_keyboard(projects) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🗑", callback_data=f"prj:del:{project.slug}"),
         ])
     rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="prj:add")])
+    if features.enabled("promo_codes"):
+        rows.append([InlineKeyboardButton(
+            text="🎁 Промокоды", callback_data="prm:list",
+        )])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -17588,9 +18004,297 @@ def _make_slug(title: str, taken: set[str]) -> str:
         slug = f"{base[:28]}-{number}"
         number += 1
     return slug
-RADAR_FILE_70
+
+
+# --- выдача промокодов ----------------------------------------------------
+
+@router.callback_query(F.data.startswith("prj:promo:"))
+async def give_promo(call: CallbackQuery) -> None:
+    """Выдать промокод. Повторное нажатие возвращает тот же код."""
+    if not features.enabled("promo_codes"):
+        await call.answer("Промокоды сейчас не выдаются.", show_alert=True)
+        return
+
+    slug = call.data.split(":", 2)[2]
+    project = await partners.by_slug(slug)
+    if project is None or not project.has_promo:
+        await call.answer("У этого проекта нет промокода.", show_alert=True)
+        return
+
+    try:
+        issued = await promo.issue(project, str(call.from_user.id))
+    except Exception:  # noqa: BLE001
+        log.exception("Выдача промокода не удалась")
+        await call.answer("Не удалось выдать код, попробуйте позже.",
+                          show_alert=True)
+        return
+
+    if issued is None:
+        await call.answer("Код выдать не получилось.", show_alert=True)
+        return
+
+    await call.answer()
+    lines = [
+        f"🎁 <b>Промокод — {esc(project.title)}</b>",
+        "",
+        f"<code>{esc(issued.code)}</code>",
+        "",
+        f"Выдан: <b>{issued.date}</b>",
+    ]
+    if project.promo_terms:
+        lines.extend(["", esc(project.promo_terms)])
+    lines.extend([
+        "",
+        "<i>Код закреплён за вами: повторное нажатие покажет его же.</i>",
+    ])
+    await call.message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{project.icon} {project.title}",
+                                  url=project.url)],
+            [InlineKeyboardButton(text="◀️ К проектам",
+                                  callback_data="menu:partners")],
+        ]),
+    )
+
+
+# --- настройка промокодов -------------------------------------------------
+
+class PromoSetup(StatesGroup):
+    value = State()
+    terms = State()
+
+
+def _promo_keyboard(projects) -> InlineKeyboardMarkup:
+    rows = []
+    for project in projects:
+        mark = "🎁" if project.has_promo else "➖"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {project.title} — {partners.KIND_TITLES[project.promo_kind]}",
+            callback_data=f"prm:pick:{project.slug}",
+        )])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="prj:manage")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "prm:list")
+async def promo_list(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    projects = partners.order_projects(await partners.load())
+    await safe_edit(
+        call,
+        "🎁 <b>Промокоды</b>\n\nВыберите проект, чтобы настроить выдачу.",
+        _promo_keyboard(projects),
+    )
+
+
+def _project_promo_keyboard(project) -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton(text="➖ Нет", callback_data=f"prm:kind:{project.slug}:none"),
+        InlineKeyboardButton(text="1️⃣ Общий", callback_data=f"prm:kind:{project.slug}:shared"),
+        InlineKeyboardButton(text="🎲 Свой", callback_data=f"prm:kind:{project.slug}:unique"),
+    ]]
+    if project.promo_kind == partners.SHARED:
+        rows.append([InlineKeyboardButton(
+            text="✏️ Задать код", callback_data=f"prm:value:{project.slug}")])
+    if project.promo_kind == partners.UNIQUE:
+        rows.append([InlineKeyboardButton(
+            text="✏️ Приставка кода", callback_data=f"prm:value:{project.slug}")])
+    if project.has_promo:
+        rows.append([InlineKeyboardButton(
+            text="📄 Условия", callback_data=f"prm:terms:{project.slug}")])
+        rows.append([InlineKeyboardButton(
+            text="📥 Выгрузка для партнёра", callback_data=f"prm:export:{project.slug}")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="prm:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _project_promo_text(project) -> str:
+    from ..db import repo
+
+    try:
+        issued = await repo.promo_count(project.slug)
+    except Exception:  # noqa: BLE001
+        issued = 0
+
+    lines = [
+        f"🎁 <b>{esc(project.title)}</b>",
+        "",
+        f"Режим: <b>{partners.KIND_TITLES[project.promo_kind]}</b>",
+    ]
+    if project.promo_kind == partners.SHARED:
+        lines.append(f"Код: <code>{esc(project.promo_value or '— не задан —')}</code>")
+        lines.append(
+            "<i>Код у всех одинаковый, но дата получения у каждого своя — "
+            "срок считается от неё.</i>"
+        )
+    elif project.promo_kind == partners.UNIQUE:
+        lines.append(f"Приставка: <code>{esc(project.promo_prefix or '— нет —')}</code>")
+        lines.append(
+            "<i>Каждому выдаётся свой код. Партнёру отдаётся выгрузка "
+            "«код и дата» — без наших идентификаторов.</i>"
+        )
+    if project.promo_terms:
+        lines.extend(["", "Условия:", esc(project.promo_terms)])
+    lines.extend(["", f"Выдано кодов: <b>{issued}</b>"])
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("prm:pick:"))
+async def promo_pick(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    project = await partners.by_slug(call.data.split(":", 2)[2])
+    if project is None:
+        await call.answer("Проект не найден.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, await _project_promo_text(project),
+                    _project_promo_keyboard(project))
+
+
+@router.callback_query(F.data.startswith("prm:kind:"))
+async def promo_kind(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    _, _, slug, kind = call.data.split(":", 3)
+    projects = await partners.load()
+    for project in projects:
+        if project.slug == slug:
+            project.promo_kind = kind if kind in partners.KINDS else partners.NONE
+            await partners.save(projects)
+            await call.answer(partners.KIND_TITLES[project.promo_kind])
+            await safe_edit(call, await _project_promo_text(project),
+                            _project_promo_keyboard(project))
+            return
+    await call.answer("Проект не найден.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("prm:value:"))
+async def promo_value_start(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    slug = call.data.split(":", 2)[2]
+    project = await partners.by_slug(slug)
+    if project is None:
+        await call.answer("Проект не найден.", show_alert=True)
+        return
+    await call.answer()
+    await state.update_data(slug=slug)
+    await state.set_state(PromoSetup.value)
+    if project.promo_kind == partners.SHARED:
+        prompt = ("Пришлите код, который партнёр выдал для всех. "
+                  "Например: <code>RADAR2026</code>")
+    else:
+        prompt = ("Пришлите приставку для генерируемых кодов — по ней партнёр "
+                  "отличит наши коды от чужих. Например: <code>HYDRA</code>\n\n"
+                  "«-» — без приставки.")
+    await safe_edit(call, prompt + "\n\n/cancel — отмена.", back_kb())
+
+
+@router.message(PromoSetup.value)
+async def promo_value_set(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    await state.clear()
+    value = (message.text or "").strip()
+
+    projects = await partners.load()
+    for project in projects:
+        if project.slug != data.get("slug"):
+            continue
+        if project.promo_kind == partners.SHARED:
+            if not value or value == "-":
+                await message.answer("Код не может быть пустым.")
+                return
+            project.promo_value = value[:64]
+        else:
+            project.promo_prefix = "" if value == "-" else "".join(
+                char for char in value.upper() if char.isalnum()
+            )[:12]
+        await partners.save(projects)
+        await message.answer(
+            "✅ Сохранено.",
+            reply_markup=_project_promo_keyboard(project),
+        )
+        return
+    await message.answer("Проект не найден.")
+
+
+@router.callback_query(F.data.startswith("prm:terms:"))
+async def promo_terms_start(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    await state.update_data(slug=call.data.split(":", 2)[2])
+    await state.set_state(PromoSetup.terms)
+    await safe_edit(
+        call,
+        "Пришлите описание промокода: что даёт, до какого срока, "
+        "как применить. Этот текст увидит человек вместе с кодом.\n\n"
+        "«-» — очистить. /cancel — отмена.",
+        back_kb(),
+    )
+
+
+@router.message(PromoSetup.terms)
+async def promo_terms_set(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    await state.clear()
+    text = (message.text or "").strip()
+
+    projects = await partners.load()
+    for project in projects:
+        if project.slug != data.get("slug"):
+            continue
+        project.promo_terms = "" if text == "-" else text[:partners.MAX_TERMS]
+        await partners.save(projects)
+        await message.answer("✅ Условия сохранены.",
+                             reply_markup=_project_promo_keyboard(project))
+        return
+    await message.answer("Проект не найден.")
+
+
+@router.callback_query(F.data.startswith("prm:export:"))
+async def promo_export(call: CallbackQuery, role: str) -> None:
+    """Выгрузка кодов партнёру — только код и дата, без наших идентификаторов."""
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    slug = call.data.split(":", 2)[2]
+    try:
+        rows = await promo.export_for_partner(slug)
+    except Exception:  # noqa: BLE001
+        log.exception("Выгрузка промокодов не удалась")
+        await call.answer("Выгрузка не удалась — смотрите журнал.", show_alert=True)
+        return
+
+    if not rows:
+        await call.answer("Кодов пока не выдано.", show_alert=True)
+        return
+
+    await call.answer()
+    from aiogram.types import BufferedInputFile
+
+    payload = promo.render_csv(rows).encode("utf-8")
+    await call.message.answer_document(
+        BufferedInputFile(payload, filename=f"promo-{slug}.csv"),
+        caption=(
+            f"📥 Коды проекта «{esc(slug)}»: {len(rows)}\n\n"
+            "<i>Только код и дата выдачи. Идентификаторов пользователей "
+            "в файле нет и по коду они не восстанавливаются.</i>"
+        ),
+    )
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_71'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_73'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -17996,9 +18700,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_71
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_72'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_74'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -18311,9 +19015,9 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_72
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_75'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -18897,9 +19601,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_73
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_76'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -19420,9 +20124,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_74
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_77'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -19779,9 +20483,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_75
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_78'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -19926,7 +20630,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_76
+RADAR_FILE_78
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
