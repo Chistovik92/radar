@@ -310,3 +310,29 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
+
+
+@router.callback_query(F.data == "med:menu")
+async def menu_media(call: CallbackQuery, role: str) -> None:
+    """Вход из главного меню. Раньше сюда попадали только командой /media,
+    о которой надо было знать заранее."""
+    if not features.enabled("media_download"):
+        await call.answer("Загрузка видео отключена.", show_alert=True)
+        return
+    if not _allowed(role):
+        await call.answer("Загрузка видео доступна с другой ролью.", show_alert=True)
+        return
+
+    await call.answer()
+    limit = media.size_limit_mb(config.uses_local_api())
+    server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
+    await safe_edit(
+        call,
+        "🎬 <b>Загрузка видео</b>\n\n"
+        "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
+        f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
+        f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
+        "<i>Скачивайте только то, на что у вас есть право: правила площадок "
+        "и авторские права никто не отменял.</i>",
+        back_kb(),
+    )

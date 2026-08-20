@@ -153,7 +153,7 @@ async def dispatch_user(
         await asyncio.sleep(0.3)
 
     changed = False
-    if weather_due(user, now_ts, now):
+    if features.enabled("weather") and weather_due(user, now_ts, now):
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
         for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
@@ -388,8 +388,11 @@ async def subscribed_topics() -> set[str]:
 
 
 async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None:
-    channels = list(storage.channels())
-    feeds = list(storage.rss_feeds())
+    # Флаги источников теперь действительно отключают источник, а не только
+    # значатся в списке возможностей. Выключенный тумблер, который ничего
+    # не делает, хуже отсутствующего: на него надеются.
+    channels = list(storage.channels()) if features.enabled("source_telegram") else []
+    feeds = list(storage.rss_feeds()) if features.enabled("source_rss") else []
     vk_extra: list[str] = []
 
     # Тематические ленты (игры, спорт, наука и прочее) добавляются к городским
@@ -440,11 +443,21 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
 
     analyses: list[Analysis] = []
     if items:
+        payload = [(item.text, item.source, item.link) for item in items]
         try:
-            with profiling.measure("ai"):
-                parsed = await ai.analyze_batch(
-                    [(item.text, item.source, item.link) for item in items]
-                )
+            if features.enabled("ai_analysis"):
+                with profiling.measure("ai"):
+                    parsed = await ai.analyze_batch(payload)
+            else:
+                # Флаг выключен — работаем на эвристике, как и обещано
+                # в описании возможности. Оповещения продолжают приходить,
+                # качество разбора ниже: это осознанный размен, а не отказ.
+                from .matching import heuristic_analysis
+
+                parsed = [
+                    heuristic_analysis(text, source=source, link=link)
+                    for text, source, link in payload
+                ]
         except Exception:  # noqa: BLE001
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []

@@ -47,6 +47,16 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if features.enabled("sos"):
         rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
 
+    # Журнал и загрузка видео жили без входа: журнал не вызывался ниоткуда,
+    # видео открывалось только командой /media, о которой надо было знать.
+    extra = []
+    if features.enabled("history"):
+        extra.append(InlineKeyboardButton(text="📖 Журнал", callback_data="menu:history"))
+    if features.enabled("media_download"):
+        extra.append(InlineKeyboardButton(text="🎬 Скачать видео", callback_data="med:menu"))
+    if extra:
+        rows.append(extra)
+
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text="🧠 ИИ-ассистент", callback_data="menu:ai")])
 

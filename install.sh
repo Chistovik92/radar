@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.1 — автономный установщик.
+# Система «Радар» v4.7.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -23,6 +23,8 @@
 #   --reinstall      принудительная полная переустановка (данные сохраняются)
 #   --reset          полный сброс: копия данных, затем установка с нуля
 #   --backup         только снять резервную копию и выйти
+#   --lang=ru|en     язык установщика (по умолчанию русский)
+#   --restore-url=…  развернуть систему по ссылке со старого сервера
 #   --migrate        собрать всё для переезда на другую машину
 #   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
 #   --rollback       вернуть предыдущую версию из последнего снимка
@@ -42,7 +44,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.1"
+VERSION="4.7.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -59,7 +61,9 @@ BACKUP_PATH=""
 SKIP_UPDATES=false
 MIGRATE_OUT=false
 RESTORE_FROM=""
+RESTORE_URL=""
 RESTORED=false
+INSTALLER_URL="https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
 LOG_FILE=""
 START_TS=$(date +%s)
 
@@ -82,6 +86,8 @@ show_help() {
   --reinstall      принудительная полная переустановка (данные сохраняются)
   --reset          полный сброс: копия данных, затем установка с нуля
   --backup         только снять резервную копию и выйти
+  --lang=ru|en     язык установщика (по умолчанию русский)
+  --restore-url=…  развернуть систему по ссылке со старого сервера
   --migrate        собрать всё для переезда на другую машину
   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
   --rollback       вернуть предыдущую версию из последнего снимка
@@ -102,6 +108,8 @@ for arg in "$@"; do
         --backup)       BACKUP_ONLY=true ;;
         --rollback)     ROLLBACK_ONLY=true ;;
         --migrate)      MIGRATE_OUT=true ;;
+        --lang=*)       RADAR_LANG="${arg#*=}" ;;
+        --restore-url=*) RESTORE_URL="${arg#*=}" ;;
         --restore=*)    RESTORE_FROM="${arg#*=}" ;;
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
@@ -114,6 +122,111 @@ done
 # --------------------------------------------------------------------------
 #  Логирование и оформление
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+#  Язык установщика (с 4.7.2)
+# --------------------------------------------------------------------------
+#
+# Русский по умолчанию. Английский включается флагом --lang=en, переменной
+# RADAR_LANG или наследуется из LANG системы. Выбор запоминается в .env,
+# чтобы при следующем запуске не спрашивать снова.
+#
+# Переведены сообщения, которые человек читает при обычной работе:
+# заголовки шагов, переезд, итоги, подсказки. Внутренние технические
+# строки в журнале остаются на русском — их читает автор, а не пользователь,
+# и переводить их значило бы удваивать поддержку без выигрыша.
+
+LANG_CODE="ru"
+
+detect_language() {
+    local stored=""
+    [ -f "$APP_DIR/.env" ] && stored="$(grep -E '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+    if [ -n "${RADAR_LANG:-}" ]; then
+        LANG_CODE="$RADAR_LANG"
+    elif [ -n "$stored" ]; then
+        LANG_CODE="$stored"
+    elif printf '%s' "${LANG:-}" | grep -qi '^en'; then
+        LANG_CODE="en"
+    fi
+    case "$LANG_CODE" in
+        en|ru) : ;;
+        *) LANG_CODE="ru" ;;
+    esac
+}
+
+# Словарь. Ключ — строка, значения через разделитель, который не встречается
+# в текстах. Ассоциативные массивы не используем: bash 3 их не знает,
+# а установщик должен работать и на старых системах.
+t() {                  # t <ключ> [подстановка]
+    local key="$1" value="" extra="${2:-}"
+    if [ "$LANG_CODE" = "en" ]; then
+        case "$key" in
+            step_migrate)        value="Collecting data for migration" ;;
+            migrate_no_install)  value="Installation not found in $APP_DIR" ;;
+            migrate_backup_failed) value="Could not create the copy" ;;
+            migrate_ready)       value="Run this on the NEW server:" ;;
+            migrate_note_once)   value="The link works ONCE and shuts down right after the download." ;;
+            migrate_note_time)   value="It expires in $extra minutes even if unused." ;;
+            migrate_note_port)   value="Port $extra must be reachable from the new server." ;;
+            migrate_note_secret) value="The copy contains your bot token and passwords — do not share this link." ;;
+            migrate_note_stop)   value="When the new bot answers in Telegram, stop the old one:" ;;
+            migrate_waiting)     value="Waiting for the download… press Ctrl+C to cancel." ;;
+            migrate_serve_failed) value="Could not start the temporary server — falling back to manual copying" ;;
+            migrate_manual)      value="Copy the files by hand:" ;;
+            step_restore)        value="Restoring from a copy" ;;
+            restore_downloading) value="Downloading the copy" ;;
+            restore_download_failed) value="Download failed — is the link still alive?" ;;
+            restore_unpacking)   value="Unpacking the copy" ;;
+            restore_broken)      value="Could not unpack the copy — the file may be damaged" ;;
+            restore_env)         value="Settings restored" ;;
+            restore_no_env)      value="No .env in the copy — settings must be entered again" ;;
+            restore_data)        value="Data files restored" ;;
+            restore_dump)        value="Database dump ready to load" ;;
+            restore_no_dump)     value="No database dump in the copy" ;;
+            restore_continues)   value="A normal installation follows — it will bring the system up on this data" ;;
+            step_integrity)      value="Integrity check after migration" ;;
+            integrity_ok)        value="Data is in place" ;;
+            integrity_failed)    value="Integrity check failed — data may not have transferred" ;;
+            integrity_hint)      value="The copy is intact: restore it again or go back to the old machine" ;;
+            *) value="" ;;
+        esac
+    fi
+    if [ -z "$value" ]; then
+        case "$key" in
+            step_migrate)        value="Сбор данных для переезда" ;;
+            migrate_no_install)  value="Установка не найдена в $APP_DIR" ;;
+            migrate_backup_failed) value="Не удалось собрать копию" ;;
+            migrate_ready)       value="Выполните это на НОВОМ сервере:" ;;
+            migrate_note_once)   value="Ссылка сработает ОДИН раз и сразу погаснет." ;;
+            migrate_note_time)   value="Срок жизни — $extra минут, даже если ею не воспользуются." ;;
+            migrate_note_port)   value="Порт $extra должен быть доступен с нового сервера." ;;
+            migrate_note_secret) value="В копии токен бота и пароли — никому не пересылайте эту ссылку." ;;
+            migrate_note_stop)   value="Когда новый бот ответит в Telegram, остановите старый:" ;;
+            migrate_waiting)     value="Жду скачивания… Ctrl+C — отменить." ;;
+            migrate_serve_failed) value="Временный сервер не запустился — переношу копию вручную" ;;
+            migrate_manual)      value="Скопируйте файлы руками:" ;;
+            step_restore)        value="Разворачивание из копии" ;;
+            restore_downloading) value="Скачиваю копию" ;;
+            restore_download_failed) value="Скачать не удалось — ссылка ещё жива?" ;;
+            restore_unpacking)   value="Распаковываю копию" ;;
+            restore_broken)      value="Не удалось распаковать копию — файл повреждён?" ;;
+            restore_env)         value="Настройки перенесены" ;;
+            restore_no_env)      value="В копии нет .env — параметры придётся ввести заново" ;;
+            restore_data)        value="Файлы данных перенесены" ;;
+            restore_dump)        value="Дамп базы готов к заливке" ;;
+            restore_no_dump)     value="В копии нет дампа базы" ;;
+            restore_continues)   value="Дальше идёт обычная установка — она поднимет систему на этих данных" ;;
+            step_integrity)      value="Проверка целостности после переезда" ;;
+            integrity_ok)        value="Данные на месте" ;;
+            integrity_failed)    value="Проверка целостности не пройдена — данные могли не перенестись" ;;
+            integrity_hint)      value="Копия цела: разверните её заново или вернитесь на старую машину" ;;
+            *) value="$key" ;;
+        esac
+    fi
+    printf '%s' "$value"
+}
+
+detect_language
 
 COLS=$( (tput cols 2>/dev/null || echo 72) )
 [ "$COLS" -gt 78 ] && COLS=78
@@ -431,6 +544,12 @@ make_backup() {       # make_backup <причина>
 # Спрашивается при любом способе установки: и при обновлении поверх,
 # и при переустановке, и на чистой машине. Прежде выбор молча наследовался
 # из старого .env, где строки DB_BACKEND могло не быть вовсе.
+remember_language() {
+    # Запоминаем выбор, чтобы при следующем запуске не спрашивать снова.
+    [ -f "$APP_DIR/.env" ] || return 0
+    set_env_value INSTALLER_LANG "$LANG_CODE"
+}
+
 set_env_value() {     # set_env_value <ключ> <значение>
     local key="$1" value="$2" file="$APP_DIR/.env"
     touch "$file"
@@ -809,9 +928,9 @@ unpack_migration() {   # unpack_migration <архив>
     [ -f "$archive" ] || die "Файл копии не найден: $archive"
 
     staging="$(mktemp -d)"
-    info "Распаковываю копию"
+    info "$(t restore_unpacking)"
     tar -xzf "$archive" -C "$staging" 2>>"$LOG_FILE" \
-        || die "Не удалось распаковать копию — файл повреждён?"
+        || die "$(t restore_broken)"
 
     if [ -f "$staging/manifest.txt" ]; then
         printf "  %sСодержимое копии%s\n" "$C_BOLD" "$C_RESET"
@@ -824,22 +943,22 @@ unpack_migration() {   # unpack_migration <архив>
 
     if [ -f "$staging/env.backup" ]; then
         cp "$staging/env.backup" "$APP_DIR/.env"
-        ok "Настройки перенесены"
+        ok "$(t restore_env)"
     else
-        warn "В копии нет .env — параметры придётся ввести заново"
+        warn "$(t restore_no_env)"
     fi
 
     if [ -d "$staging/data" ]; then
         cp -r "$staging/data/." "$APP_DIR/data/" 2>/dev/null || true
-        ok "Файлы данных перенесены"
+        ok "$(t restore_data)"
     fi
 
     if [ -f "$staging/database.sql" ]; then
         cp "$staging/database.sql" "$APP_DIR/data/migration-database.sql"
         MIGRATION_DUMP="$APP_DIR/data/migration-database.sql"
-        ok "Дамп базы готов к заливке ($(du -h "$MIGRATION_DUMP" | cut -f1))"
+        ok "$(t restore_dump): $(du -h "$MIGRATION_DUMP" | cut -f1)"
     else
-        warn "В копии нет дампа базы"
+        warn "$(t restore_no_dump)"
     fi
 
     rm -rf "$staging"
@@ -847,9 +966,24 @@ unpack_migration() {   # unpack_migration <архив>
 
 MIGRATION_DUMP=""
 
+if [ -n "$RESTORE_URL" ]; then
+    banner
+    step "$(t step_restore)"
+    mkdir -p "$APP_DIR"
+    RESTORE_FROM="$APP_DIR/migration-incoming.tar.gz"
+    info "$(t restore_downloading)"
+    # --fail: сервер отдаёт 404 на просроченную или уже использованную
+    # ссылку, и без этого флага curl сохранил бы страницу ошибки как архив.
+    if ! curl -fsSL --max-time 900 -o "$RESTORE_FROM" "$RESTORE_URL"; then
+        rm -f "$RESTORE_FROM"
+        die "$(t restore_download_failed)"
+    fi
+    ok "$(t restore_downloading): $(du -h "$RESTORE_FROM" | cut -f1)"
+fi
+
 if [ -n "$RESTORE_FROM" ]; then
     banner
-    step "Разворачивание из копии"
+    step "$(t step_restore)"
     mkdir -p "$APP_DIR"
     # Путь может быть относительным — приводим к абсолютному до перехода
     # в каталог установки, иначе файл «потеряется».
@@ -859,36 +993,151 @@ if [ -n "$RESTORE_FROM" ]; then
     esac
     unpack_migration "$RESTORE_FROM"
     RESTORED=true
-    info "Дальше идёт обычная установка — она поднимет систему на этих данных"
+    info "$(t restore_continues)"
 fi
 
+# Раздача копии по временной ссылке.
+#
+# Копия содержит .env: токен бота, пароль базы, ключи API. Отдавать её
+# открытым HTTP означает выложить всё это в сеть, поэтому раздача:
+#   * защищена одноразовым путём со случайным токеном в 32 знака —
+#     подобрать за время жизни ссылки нереально;
+#   * отдаёт файл ОДИН раз и сразу выключается;
+#   * живёт ограниченное время и гасится по таймауту, даже если о ней забыли;
+#   * работает по HTTP без шифрования — поэтому ссылка одноразовая
+#     и короткоживущая, а не «пусть повисит».
+serve_migration() {   # serve_migration <файл> <порт> <минут>
+    local file="$1" port="$2" minutes="$3" token
+    token="$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)"
+    [ -n "$token" ] || die "Не удалось получить случайный токен"
+
+    local runner=""
+    if command -v python3 >/dev/null 2>&1; then
+        runner="python3"
+    elif docker image inspect radar:latest >/dev/null 2>&1; then
+        runner="docker"
+    else
+        return 1
+    fi
+
+    cat > "$APP_DIR/.migrate-serve.py" <<'RADAR_SERVE_EOF'
+"""Одноразовая раздача файла копии.
+
+Отдаёт один файл по секретному пути ровно один раз, затем выключается.
+Всё остальное получает 404 без подсказок: сканеру не за что зацепиться.
+"""
+import http.server
+import os
+import sys
+import threading
+
+PATH = "/" + sys.argv[1]
+FILE = sys.argv[2]
+PORT = int(sys.argv[3])
+TIMEOUT = int(sys.argv[4]) * 60
+
+done = threading.Event()
+
+
+class Once(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != PATH or done.is_set():
+            self.send_error(404)
+            return
+        done.set()
+        size = os.path.getsize(FILE)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/gzip")
+        self.send_header("Content-Length", str(size))
+        self.send_header(
+            "Content-Disposition", 'attachment; filename="radar-migration.tar.gz"'
+        )
+        self.end_headers()
+        with open(FILE, "rb") as handle:
+            while True:
+                chunk = handle.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        threading.Timer(1.0, server.shutdown).start()
+
+    def log_message(self, *_args):
+        pass
+
+
+server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Once)
+threading.Timer(TIMEOUT, server.shutdown).start()
+server.serve_forever()
+RADAR_SERVE_EOF
+
+    if [ "$runner" = "python3" ]; then
+        nohup python3 "$APP_DIR/.migrate-serve.py" \
+            "$token" "$file" "$port" "$minutes" >>"$LOG_FILE" 2>&1 &
+    else
+        nohup docker run --rm -p "$port:$port" \
+            -v "$file:/copy.tar.gz:ro" \
+            -v "$APP_DIR/.migrate-serve.py:/serve.py:ro" \
+            radar:latest python /serve.py "$token" /copy.tar.gz "$port" "$minutes" \
+            >>"$LOG_FILE" 2>&1 &
+    fi
+
+    SERVE_PID=$!
+    sleep 1
+    kill -0 "$SERVE_PID" 2>/dev/null || return 1
+    SERVE_TOKEN="$token"
+    return 0
+}
+
+detect_address() {
+    # Внешний адрес полезнее локального: переезжают обычно между машинами,
+    # а не внутри одной. Если узнать не вышло — отдаём локальный, человек
+    # подставит нужный сам.
+    local address=""
+    address="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+    if [ -z "$address" ]; then
+        address="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    fi
+    printf '%s' "${address:-АДРЕС-СТАРОГО-СЕРВЕРА}"
+}
+
 if [ "$MIGRATE_OUT" = true ]; then
-    [ -d "$APP_DIR" ] || die "Установка не найдена в $APP_DIR"
+    [ -d "$APP_DIR" ] || die "$(t migrate_no_install)"
     cd "$APP_DIR"
     banner
-    step "Сбор данных для переезда"
+    step "$(t step_migrate)"
 
-    make_backup "переезд" || die "Не удалось собрать копию"
+    make_backup "переезд" || die "$(t migrate_backup_failed)"
 
-    line
-    printf "  %sЧто делать дальше%s\n" "$C_BOLD" "$C_RESET"
-    printf "  1. Скопируйте на новую машину два файла:\n"
-    printf "     %s%s%s\n" "$C_CYAN" "$BACKUP_PATH" "$C_RESET"
-    printf "     %sinstall.sh%s\n" "$C_CYAN" "$C_RESET"
-    printf "     Например: scp %s install.sh пользователь@новый-сервер:~/\n" \
-        "$BACKUP_PATH"
-    printf "  2. На новой машине выполните:\n"
-    printf "     %ssudo bash install.sh --restore=%s%s\n" \
-        "$C_CYAN" "$(basename "$BACKUP_PATH")" "$C_RESET"
-    printf "  3. Убедитесь, что новый бот отвечает в Telegram.\n"
-    printf "  4. %sТолько после этого%s остановите старый:\n" "$C_BOLD" "$C_RESET"
-    printf "     cd %s && docker compose down\n" "$APP_DIR"
-    line
-    printf "  %sДва экземпляра с одним токеном мешают друг другу:%s\n" \
-        "$C_YELLOW" "$C_RESET"
-    printf "  пока старый работает, новый будет получать обновления через раз.\n"
-    printf "  Это нормально на время проверки, но задерживаться в таком\n"
-    printf "  состоянии не стоит.\n\n"
+    SERVE_PORT="${MIGRATE_PORT:-8899}"
+    SERVE_MINUTES="${MIGRATE_MINUTES:-30}"
+    SERVE_TOKEN=""
+    SERVE_PID=""
+
+    if serve_migration "$BACKUP_PATH" "$SERVE_PORT" "$SERVE_MINUTES"; then
+        ADDRESS="$(detect_address)"
+        LINK="http://$ADDRESS:$SERVE_PORT/$SERVE_TOKEN"
+
+        line
+        printf "  %s%s%s\n\n" "$C_BOLD" "$(t migrate_ready)" "$C_RESET"
+        printf "  %s%s%s\n\n" "$C_CYAN" \
+            "sudo bash -c \"\$(curl -fsSL $INSTALLER_URL)\" -- --restore-url=$LINK" \
+            "$C_RESET"
+        line
+        printf "  %s\n" "$(t migrate_note_once)"
+        printf "  %s\n" "$(t migrate_note_time "$SERVE_MINUTES")"
+        printf "  %s\n" "$(t migrate_note_port "$SERVE_PORT")"
+        printf "  %s\n\n" "$(t migrate_note_secret)"
+        printf "  %s\n" "$(t migrate_note_stop)"
+        printf "    cd %s && docker compose down\n\n" "$APP_DIR"
+        printf "  %s%s%s\n\n" "$C_DIM" "$(t migrate_waiting)" "$C_RESET"
+        log_raw "MIGRATE ссылка выдана, порт $SERVE_PORT, срок $SERVE_MINUTES мин"
+    else
+        warn "$(t migrate_serve_failed)"
+        printf "\n  %s\n" "$(t migrate_manual)"
+        printf "    scp %s install.sh пользователь@новый-сервер:~/\n" "$BACKUP_PATH"
+        printf "    sudo bash install.sh --restore=%s\n\n" \
+            "$(basename "$BACKUP_PATH")"
+    fi
     timing_report
     exit 0
 fi
@@ -1244,7 +1493,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=79
+FILE_COUNT=80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1540,6 +1789,21 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.2", [
+        "🔗 <b>Переезд одной командой.</b> На старом сервере "
+        "<code>--migrate</code> печатает готовую строку для нового: "
+        "копия скачается по ссылке сама. Ссылка одноразовая и "
+        "короткоживущая — в копии токен бота и пароли.",
+        "🌍 <b>Установщик говорит по-английски</b> — <code>--lang=en</code> "
+        "или системная локаль.",
+        "📖 <b>Журнал событий</b> — кнопка в меню и команда /history. "
+        "Показывает то, что приходило именно вам.",
+        "🎬 <b>Кнопка «Скачать видео»</b> в меню: раньше туда можно было "
+        "попасть только командой, о которой надо было знать.",
+        "🔧 <b>Шесть переключателей перестали врать.</b> Погода, разбор ИИ, "
+        "источники, отбой опасности и журнал теперь действительно "
+        "включаются и выключаются.",
+    ]),
     ("4.7.1", [
         "📦 <b>Переезд на другой сервер двумя командами.</b> "
         "<code>--migrate</code> на старой машине собирает копию, "
@@ -1929,7 +2193,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.1"
+__version__ = "4.7.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3187,6 +3451,17 @@ def _city_of(analysis: Analysis, locations: Sequence[dict[str, Any]], fallback: 
     return normalize_city(city), city or "город"
 
 
+def _all_clear_enabled() -> bool:
+    """Ленивая проверка флага: matching не должен зависеть от features
+    на уровне импорта — модуль используется и в тестах без окружения."""
+    try:
+        from . import features
+
+        return features.enabled("all_clear")
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def plan_alerts(
     locations: Sequence[dict[str, Any]],
     settings: dict[str, Any],
@@ -3225,6 +3500,11 @@ def plan_alerts(
 
         matched = match_locations(analysis, locations)
         if not matched:
+            continue
+
+        if analysis.all_clear and not _all_clear_enabled():
+            # Флаг «Отбой опасности» выключен — сообщений об отбое не шлём.
+            # Раньше флаг значился в списке и ни на что не влиял.
             continue
 
         if analysis.is_city_wide:
@@ -14440,6 +14720,16 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if features.enabled("sos"):
         rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
 
+    # Журнал и загрузка видео жили без входа: журнал не вызывался ниоткуда,
+    # видео открывалось только командой /media, о которой надо было знать.
+    extra = []
+    if features.enabled("history"):
+        extra.append(InlineKeyboardButton(text="📖 Журнал", callback_data="menu:history"))
+    if features.enabled("media_download"):
+        extra.append(InlineKeyboardButton(text="🎬 Скачать видео", callback_data="med:menu"))
+    if extra:
+        rows.append(extra)
+
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text="🧠 ИИ-ассистент", callback_data="menu:ai")])
 
@@ -15104,7 +15394,7 @@ async def dispatch_user(
         await asyncio.sleep(0.3)
 
     changed = False
-    if weather_due(user, now_ts, now):
+    if features.enabled("weather") and weather_due(user, now_ts, now):
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
         for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
@@ -15339,8 +15629,11 @@ async def subscribed_topics() -> set[str]:
 
 
 async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None:
-    channels = list(storage.channels())
-    feeds = list(storage.rss_feeds())
+    # Флаги источников теперь действительно отключают источник, а не только
+    # значатся в списке возможностей. Выключенный тумблер, который ничего
+    # не делает, хуже отсутствующего: на него надеются.
+    channels = list(storage.channels()) if features.enabled("source_telegram") else []
+    feeds = list(storage.rss_feeds()) if features.enabled("source_rss") else []
     vk_extra: list[str] = []
 
     # Тематические ленты (игры, спорт, наука и прочее) добавляются к городским
@@ -15391,11 +15684,21 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
 
     analyses: list[Analysis] = []
     if items:
+        payload = [(item.text, item.source, item.link) for item in items]
         try:
-            with profiling.measure("ai"):
-                parsed = await ai.analyze_batch(
-                    [(item.text, item.source, item.link) for item in items]
-                )
+            if features.enabled("ai_analysis"):
+                with profiling.measure("ai"):
+                    parsed = await ai.analyze_batch(payload)
+            else:
+                # Флаг выключен — работаем на эвристике, как и обещано
+                # в описании возможности. Оповещения продолжают приходить,
+                # качество разбора ниже: это осознанный размен, а не отказ.
+                from .matching import heuristic_analysis
+
+                parsed = [
+                    heuristic_analysis(text, source=source, link=link)
+                    for text, source, link in payload
+                ]
         except Exception:  # noqa: BLE001
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []
@@ -15491,6 +15794,7 @@ from . import (
     common,
     digest,
     features,
+    history,
     locations,
     logs,
     media,
@@ -15515,6 +15819,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(history.router)
     dp.include_router(partners.router)
     dp.include_router(perf.router)
     dp.include_router(shortlink.router)
@@ -18464,8 +18769,100 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
         ),
     )
 RADAR_FILE_72
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
+cat > "radar/handlers/history.py" <<'RADAR_FILE_73'
+"""Журнал событий пользователя.
+
+Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
+ни кнопки, ни команды, ни раздела в панели. Здесь появляется вход.
+
+Показываем только то, что человеку действительно присылали: журнал
+строится по доставкам, а не по всем событиям системы — иначе он увидел
+бы аварии на другом конце города и решил, что бот шлёт лишнее.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, Message
+
+from .. import features
+from ..textutils import esc
+from ..tg import back_kb, safe_edit
+
+log = logging.getLogger("radar.handlers.history")
+router = Router(name="history")
+
+DAYS = 30
+LIMIT = 20
+
+# Значки берём из общего словаря, а не заводим свой: иначе журнал начнёт
+# помечать события не так, как их пометило само оповещение, и человек
+# решит, что это разные события.
+from ..matching import CATEGORY_ICONS as ICONS  # noqa: E402
+
+
+async def _render(user_id: int) -> str:
+    from ..db import repo
+
+    try:
+        events = await repo.history(user_id, days=DAYS, limit=LIMIT)
+    except Exception:  # noqa: BLE001
+        log.exception("История событий недоступна")
+        return "📖 <b>Журнал</b>\n\nИсторию сейчас не получить — попробуйте позже."
+
+    if not events:
+        return (
+            "📖 <b>Журнал</b>\n\n"
+            f"За последние {DAYS} дней вам ничего не приходило.\n\n"
+            "<i>Это не значит, что бот молчал зря: значит, рядом с вашими "
+            "локациями ничего не случилось.</i>"
+        )
+
+    lines = [f"📖 <b>Журнал</b> — последние {DAYS} дней", ""]
+    for event in events:
+        # У события список категорий, не одна: берём первую известную,
+        # чтобы значок соответствовал сути, а не порядку в списке.
+        categories = getattr(event, "categories", None) or []
+        icon = next((ICONS[key] for key in categories if key in ICONS), "•")
+        when = event.created_at.strftime("%d.%m %H:%M")
+        text = (getattr(event, "summary", "") or "").strip()
+        lines.append(f"{icon} <b>{when}</b> — {esc(text[:160])}")
+
+    if len(events) >= LIMIT:
+        lines.append("")
+        lines.append(f"<i>Показаны последние {LIMIT} записей.</i>")
+    return "\n".join(lines)
+
+
+@router.message(Command("history"))
+async def cmd_history(message: Message) -> None:
+    if not features.enabled("history"):
+        await message.answer("Журнал событий сейчас отключён.")
+        return
+    await message.answer(await _render(message.from_user.id),
+                         reply_markup=back_kb())
+
+
+@router.callback_query(F.data == "menu:history")
+async def menu_history(call: CallbackQuery) -> None:
+    if not features.enabled("history"):
+        await call.answer("Журнал событий отключён.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, await _render(call.from_user.id), back_kb())
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_74'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -18871,9 +19268,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_75'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -19186,9 +19583,35 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_74
+
+
+@router.callback_query(F.data == "med:menu")
+async def menu_media(call: CallbackQuery, role: str) -> None:
+    """Вход из главного меню. Раньше сюда попадали только командой /media,
+    о которой надо было знать заранее."""
+    if not features.enabled("media_download"):
+        await call.answer("Загрузка видео отключена.", show_alert=True)
+        return
+    if not _allowed(role):
+        await call.answer("Загрузка видео доступна с другой ролью.", show_alert=True)
+        return
+
+    await call.answer()
+    limit = media.size_limit_mb(config.uses_local_api())
+    server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
+    await safe_edit(
+        call,
+        "🎬 <b>Загрузка видео</b>\n\n"
+        "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
+        f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
+        f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
+        "<i>Скачивайте только то, на что у вас есть право: правила площадок "
+        "и авторские права никто не отменял.</i>",
+        back_kb(),
+    )
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_76'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -19772,9 +20195,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_77'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -20295,9 +20718,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_78'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -20654,9 +21077,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_79'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -20801,7 +21224,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_78
+RADAR_FILE_79
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -21426,7 +21849,7 @@ docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Схема базы актуаль
 # успешном старте выглядит точно так же, как полная, и человек узнает
 # о потере, только когда кто-то пожалуется на пропавшие оповещения.
 if [ "$RESTORED" = true ]; then
-    step "Проверка целостности после переезда"
+    step "$(t step_integrity)"
     if $COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python - <<'RADAR_CHECK_EOF' 2>>"$LOG_FILE"
 import asyncio
 
@@ -21452,10 +21875,10 @@ async def main() -> int:
 raise SystemExit(asyncio.run(main()))
 RADAR_CHECK_EOF
     then
-        ok "Данные на месте"
+        ok "$(t integrity_ok)"
     else
-        warn "Проверка целостности не пройдена — данные могли не перенестись"
-        warn "Копия цела: разверните её заново или вернитесь на старую машину"
+        warn "$(t integrity_failed)"
+        warn "$(t integrity_hint)"
     fi
 fi
 

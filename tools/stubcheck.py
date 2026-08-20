@@ -249,7 +249,7 @@ def main() -> int:
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",
-        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.settings_admin", "radar.handlers.network", "radar.handlers.digest", "radar.handlers.perf", "radar.handlers.shortlink", "radar.handlers.partners", "radar.handlers.assistant",
+        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.settings_admin", "radar.handlers.network", "radar.handlers.digest", "radar.handlers.perf", "radar.handlers.shortlink", "radar.handlers.partners", "radar.handlers.history", "radar.handlers.assistant",
         "radar.platforms", "radar.platforms.base", "radar.platforms.max",
         "main",
     ]

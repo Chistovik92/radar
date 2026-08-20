@@ -478,6 +478,17 @@ def _city_of(analysis: Analysis, locations: Sequence[dict[str, Any]], fallback: 
     return normalize_city(city), city or "город"
 
 
+def _all_clear_enabled() -> bool:
+    """Ленивая проверка флага: matching не должен зависеть от features
+    на уровне импорта — модуль используется и в тестах без окружения."""
+    try:
+        from . import features
+
+        return features.enabled("all_clear")
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def plan_alerts(
     locations: Sequence[dict[str, Any]],
     settings: dict[str, Any],
@@ -516,6 +527,11 @@ def plan_alerts(
 
         matched = match_locations(analysis, locations)
         if not matched:
+            continue
+
+        if analysis.all_clear and not _all_clear_enabled():
+            # Флаг «Отбой опасности» выключен — сообщений об отбое не шлём.
+            # Раньше флаг значился в списке и ни на что не влиял.
             continue
 
         if analysis.is_city_wide:

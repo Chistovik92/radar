@@ -23,6 +23,8 @@
 #   --reinstall      принудительная полная переустановка (данные сохраняются)
 #   --reset          полный сброс: копия данных, затем установка с нуля
 #   --backup         только снять резервную копию и выйти
+#   --lang=ru|en     язык установщика (по умолчанию русский)
+#   --restore-url=…  развернуть систему по ссылке со старого сервера
 #   --migrate        собрать всё для переезда на другую машину
 #   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
 #   --rollback       вернуть предыдущую версию из последнего снимка
@@ -59,7 +61,9 @@ BACKUP_PATH=""
 SKIP_UPDATES=false
 MIGRATE_OUT=false
 RESTORE_FROM=""
+RESTORE_URL=""
 RESTORED=false
+INSTALLER_URL="https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
 LOG_FILE=""
 START_TS=$(date +%s)
 
@@ -82,6 +86,8 @@ show_help() {
   --reinstall      принудительная полная переустановка (данные сохраняются)
   --reset          полный сброс: копия данных, затем установка с нуля
   --backup         только снять резервную копию и выйти
+  --lang=ru|en     язык установщика (по умолчанию русский)
+  --restore-url=…  развернуть систему по ссылке со старого сервера
   --migrate        собрать всё для переезда на другую машину
   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
   --rollback       вернуть предыдущую версию из последнего снимка
@@ -102,6 +108,8 @@ for arg in "$@"; do
         --backup)       BACKUP_ONLY=true ;;
         --rollback)     ROLLBACK_ONLY=true ;;
         --migrate)      MIGRATE_OUT=true ;;
+        --lang=*)       RADAR_LANG="${arg#*=}" ;;
+        --restore-url=*) RESTORE_URL="${arg#*=}" ;;
         --restore=*)    RESTORE_FROM="${arg#*=}" ;;
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
@@ -114,6 +122,111 @@ done
 # --------------------------------------------------------------------------
 #  Логирование и оформление
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+#  Язык установщика (с 4.7.2)
+# --------------------------------------------------------------------------
+#
+# Русский по умолчанию. Английский включается флагом --lang=en, переменной
+# RADAR_LANG или наследуется из LANG системы. Выбор запоминается в .env,
+# чтобы при следующем запуске не спрашивать снова.
+#
+# Переведены сообщения, которые человек читает при обычной работе:
+# заголовки шагов, переезд, итоги, подсказки. Внутренние технические
+# строки в журнале остаются на русском — их читает автор, а не пользователь,
+# и переводить их значило бы удваивать поддержку без выигрыша.
+
+LANG_CODE="ru"
+
+detect_language() {
+    local stored=""
+    [ -f "$APP_DIR/.env" ] && stored="$(grep -E '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+    if [ -n "${RADAR_LANG:-}" ]; then
+        LANG_CODE="$RADAR_LANG"
+    elif [ -n "$stored" ]; then
+        LANG_CODE="$stored"
+    elif printf '%s' "${LANG:-}" | grep -qi '^en'; then
+        LANG_CODE="en"
+    fi
+    case "$LANG_CODE" in
+        en|ru) : ;;
+        *) LANG_CODE="ru" ;;
+    esac
+}
+
+# Словарь. Ключ — строка, значения через разделитель, который не встречается
+# в текстах. Ассоциативные массивы не используем: bash 3 их не знает,
+# а установщик должен работать и на старых системах.
+t() {                  # t <ключ> [подстановка]
+    local key="$1" value="" extra="${2:-}"
+    if [ "$LANG_CODE" = "en" ]; then
+        case "$key" in
+            step_migrate)        value="Collecting data for migration" ;;
+            migrate_no_install)  value="Installation not found in $APP_DIR" ;;
+            migrate_backup_failed) value="Could not create the copy" ;;
+            migrate_ready)       value="Run this on the NEW server:" ;;
+            migrate_note_once)   value="The link works ONCE and shuts down right after the download." ;;
+            migrate_note_time)   value="It expires in $extra minutes even if unused." ;;
+            migrate_note_port)   value="Port $extra must be reachable from the new server." ;;
+            migrate_note_secret) value="The copy contains your bot token and passwords — do not share this link." ;;
+            migrate_note_stop)   value="When the new bot answers in Telegram, stop the old one:" ;;
+            migrate_waiting)     value="Waiting for the download… press Ctrl+C to cancel." ;;
+            migrate_serve_failed) value="Could not start the temporary server — falling back to manual copying" ;;
+            migrate_manual)      value="Copy the files by hand:" ;;
+            step_restore)        value="Restoring from a copy" ;;
+            restore_downloading) value="Downloading the copy" ;;
+            restore_download_failed) value="Download failed — is the link still alive?" ;;
+            restore_unpacking)   value="Unpacking the copy" ;;
+            restore_broken)      value="Could not unpack the copy — the file may be damaged" ;;
+            restore_env)         value="Settings restored" ;;
+            restore_no_env)      value="No .env in the copy — settings must be entered again" ;;
+            restore_data)        value="Data files restored" ;;
+            restore_dump)        value="Database dump ready to load" ;;
+            restore_no_dump)     value="No database dump in the copy" ;;
+            restore_continues)   value="A normal installation follows — it will bring the system up on this data" ;;
+            step_integrity)      value="Integrity check after migration" ;;
+            integrity_ok)        value="Data is in place" ;;
+            integrity_failed)    value="Integrity check failed — data may not have transferred" ;;
+            integrity_hint)      value="The copy is intact: restore it again or go back to the old machine" ;;
+            *) value="" ;;
+        esac
+    fi
+    if [ -z "$value" ]; then
+        case "$key" in
+            step_migrate)        value="Сбор данных для переезда" ;;
+            migrate_no_install)  value="Установка не найдена в $APP_DIR" ;;
+            migrate_backup_failed) value="Не удалось собрать копию" ;;
+            migrate_ready)       value="Выполните это на НОВОМ сервере:" ;;
+            migrate_note_once)   value="Ссылка сработает ОДИН раз и сразу погаснет." ;;
+            migrate_note_time)   value="Срок жизни — $extra минут, даже если ею не воспользуются." ;;
+            migrate_note_port)   value="Порт $extra должен быть доступен с нового сервера." ;;
+            migrate_note_secret) value="В копии токен бота и пароли — никому не пересылайте эту ссылку." ;;
+            migrate_note_stop)   value="Когда новый бот ответит в Telegram, остановите старый:" ;;
+            migrate_waiting)     value="Жду скачивания… Ctrl+C — отменить." ;;
+            migrate_serve_failed) value="Временный сервер не запустился — переношу копию вручную" ;;
+            migrate_manual)      value="Скопируйте файлы руками:" ;;
+            step_restore)        value="Разворачивание из копии" ;;
+            restore_downloading) value="Скачиваю копию" ;;
+            restore_download_failed) value="Скачать не удалось — ссылка ещё жива?" ;;
+            restore_unpacking)   value="Распаковываю копию" ;;
+            restore_broken)      value="Не удалось распаковать копию — файл повреждён?" ;;
+            restore_env)         value="Настройки перенесены" ;;
+            restore_no_env)      value="В копии нет .env — параметры придётся ввести заново" ;;
+            restore_data)        value="Файлы данных перенесены" ;;
+            restore_dump)        value="Дамп базы готов к заливке" ;;
+            restore_no_dump)     value="В копии нет дампа базы" ;;
+            restore_continues)   value="Дальше идёт обычная установка — она поднимет систему на этих данных" ;;
+            step_integrity)      value="Проверка целостности после переезда" ;;
+            integrity_ok)        value="Данные на месте" ;;
+            integrity_failed)    value="Проверка целостности не пройдена — данные могли не перенестись" ;;
+            integrity_hint)      value="Копия цела: разверните её заново или вернитесь на старую машину" ;;
+            *) value="$key" ;;
+        esac
+    fi
+    printf '%s' "$value"
+}
+
+detect_language
 
 COLS=$( (tput cols 2>/dev/null || echo 72) )
 [ "$COLS" -gt 78 ] && COLS=78
@@ -431,6 +544,12 @@ make_backup() {       # make_backup <причина>
 # Спрашивается при любом способе установки: и при обновлении поверх,
 # и при переустановке, и на чистой машине. Прежде выбор молча наследовался
 # из старого .env, где строки DB_BACKEND могло не быть вовсе.
+remember_language() {
+    # Запоминаем выбор, чтобы при следующем запуске не спрашивать снова.
+    [ -f "$APP_DIR/.env" ] || return 0
+    set_env_value INSTALLER_LANG "$LANG_CODE"
+}
+
 set_env_value() {     # set_env_value <ключ> <значение>
     local key="$1" value="$2" file="$APP_DIR/.env"
     touch "$file"
@@ -809,9 +928,9 @@ unpack_migration() {   # unpack_migration <архив>
     [ -f "$archive" ] || die "Файл копии не найден: $archive"
 
     staging="$(mktemp -d)"
-    info "Распаковываю копию"
+    info "$(t restore_unpacking)"
     tar -xzf "$archive" -C "$staging" 2>>"$LOG_FILE" \
-        || die "Не удалось распаковать копию — файл повреждён?"
+        || die "$(t restore_broken)"
 
     if [ -f "$staging/manifest.txt" ]; then
         printf "  %sСодержимое копии%s\n" "$C_BOLD" "$C_RESET"
@@ -824,22 +943,22 @@ unpack_migration() {   # unpack_migration <архив>
 
     if [ -f "$staging/env.backup" ]; then
         cp "$staging/env.backup" "$APP_DIR/.env"
-        ok "Настройки перенесены"
+        ok "$(t restore_env)"
     else
-        warn "В копии нет .env — параметры придётся ввести заново"
+        warn "$(t restore_no_env)"
     fi
 
     if [ -d "$staging/data" ]; then
         cp -r "$staging/data/." "$APP_DIR/data/" 2>/dev/null || true
-        ok "Файлы данных перенесены"
+        ok "$(t restore_data)"
     fi
 
     if [ -f "$staging/database.sql" ]; then
         cp "$staging/database.sql" "$APP_DIR/data/migration-database.sql"
         MIGRATION_DUMP="$APP_DIR/data/migration-database.sql"
-        ok "Дамп базы готов к заливке ($(du -h "$MIGRATION_DUMP" | cut -f1))"
+        ok "$(t restore_dump): $(du -h "$MIGRATION_DUMP" | cut -f1)"
     else
-        warn "В копии нет дампа базы"
+        warn "$(t restore_no_dump)"
     fi
 
     rm -rf "$staging"
@@ -847,9 +966,24 @@ unpack_migration() {   # unpack_migration <архив>
 
 MIGRATION_DUMP=""
 
+if [ -n "$RESTORE_URL" ]; then
+    banner
+    step "$(t step_restore)"
+    mkdir -p "$APP_DIR"
+    RESTORE_FROM="$APP_DIR/migration-incoming.tar.gz"
+    info "$(t restore_downloading)"
+    # --fail: сервер отдаёт 404 на просроченную или уже использованную
+    # ссылку, и без этого флага curl сохранил бы страницу ошибки как архив.
+    if ! curl -fsSL --max-time 900 -o "$RESTORE_FROM" "$RESTORE_URL"; then
+        rm -f "$RESTORE_FROM"
+        die "$(t restore_download_failed)"
+    fi
+    ok "$(t restore_downloading): $(du -h "$RESTORE_FROM" | cut -f1)"
+fi
+
 if [ -n "$RESTORE_FROM" ]; then
     banner
-    step "Разворачивание из копии"
+    step "$(t step_restore)"
     mkdir -p "$APP_DIR"
     # Путь может быть относительным — приводим к абсолютному до перехода
     # в каталог установки, иначе файл «потеряется».
@@ -859,36 +993,151 @@ if [ -n "$RESTORE_FROM" ]; then
     esac
     unpack_migration "$RESTORE_FROM"
     RESTORED=true
-    info "Дальше идёт обычная установка — она поднимет систему на этих данных"
+    info "$(t restore_continues)"
 fi
 
+# Раздача копии по временной ссылке.
+#
+# Копия содержит .env: токен бота, пароль базы, ключи API. Отдавать её
+# открытым HTTP означает выложить всё это в сеть, поэтому раздача:
+#   * защищена одноразовым путём со случайным токеном в 32 знака —
+#     подобрать за время жизни ссылки нереально;
+#   * отдаёт файл ОДИН раз и сразу выключается;
+#   * живёт ограниченное время и гасится по таймауту, даже если о ней забыли;
+#   * работает по HTTP без шифрования — поэтому ссылка одноразовая
+#     и короткоживущая, а не «пусть повисит».
+serve_migration() {   # serve_migration <файл> <порт> <минут>
+    local file="$1" port="$2" minutes="$3" token
+    token="$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)"
+    [ -n "$token" ] || die "Не удалось получить случайный токен"
+
+    local runner=""
+    if command -v python3 >/dev/null 2>&1; then
+        runner="python3"
+    elif docker image inspect radar:latest >/dev/null 2>&1; then
+        runner="docker"
+    else
+        return 1
+    fi
+
+    cat > "$APP_DIR/.migrate-serve.py" <<'RADAR_SERVE_EOF'
+"""Одноразовая раздача файла копии.
+
+Отдаёт один файл по секретному пути ровно один раз, затем выключается.
+Всё остальное получает 404 без подсказок: сканеру не за что зацепиться.
+"""
+import http.server
+import os
+import sys
+import threading
+
+PATH = "/" + sys.argv[1]
+FILE = sys.argv[2]
+PORT = int(sys.argv[3])
+TIMEOUT = int(sys.argv[4]) * 60
+
+done = threading.Event()
+
+
+class Once(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != PATH or done.is_set():
+            self.send_error(404)
+            return
+        done.set()
+        size = os.path.getsize(FILE)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/gzip")
+        self.send_header("Content-Length", str(size))
+        self.send_header(
+            "Content-Disposition", 'attachment; filename="radar-migration.tar.gz"'
+        )
+        self.end_headers()
+        with open(FILE, "rb") as handle:
+            while True:
+                chunk = handle.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        threading.Timer(1.0, server.shutdown).start()
+
+    def log_message(self, *_args):
+        pass
+
+
+server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Once)
+threading.Timer(TIMEOUT, server.shutdown).start()
+server.serve_forever()
+RADAR_SERVE_EOF
+
+    if [ "$runner" = "python3" ]; then
+        nohup python3 "$APP_DIR/.migrate-serve.py" \
+            "$token" "$file" "$port" "$minutes" >>"$LOG_FILE" 2>&1 &
+    else
+        nohup docker run --rm -p "$port:$port" \
+            -v "$file:/copy.tar.gz:ro" \
+            -v "$APP_DIR/.migrate-serve.py:/serve.py:ro" \
+            radar:latest python /serve.py "$token" /copy.tar.gz "$port" "$minutes" \
+            >>"$LOG_FILE" 2>&1 &
+    fi
+
+    SERVE_PID=$!
+    sleep 1
+    kill -0 "$SERVE_PID" 2>/dev/null || return 1
+    SERVE_TOKEN="$token"
+    return 0
+}
+
+detect_address() {
+    # Внешний адрес полезнее локального: переезжают обычно между машинами,
+    # а не внутри одной. Если узнать не вышло — отдаём локальный, человек
+    # подставит нужный сам.
+    local address=""
+    address="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+    if [ -z "$address" ]; then
+        address="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    fi
+    printf '%s' "${address:-АДРЕС-СТАРОГО-СЕРВЕРА}"
+}
+
 if [ "$MIGRATE_OUT" = true ]; then
-    [ -d "$APP_DIR" ] || die "Установка не найдена в $APP_DIR"
+    [ -d "$APP_DIR" ] || die "$(t migrate_no_install)"
     cd "$APP_DIR"
     banner
-    step "Сбор данных для переезда"
+    step "$(t step_migrate)"
 
-    make_backup "переезд" || die "Не удалось собрать копию"
+    make_backup "переезд" || die "$(t migrate_backup_failed)"
 
-    line
-    printf "  %sЧто делать дальше%s\n" "$C_BOLD" "$C_RESET"
-    printf "  1. Скопируйте на новую машину два файла:\n"
-    printf "     %s%s%s\n" "$C_CYAN" "$BACKUP_PATH" "$C_RESET"
-    printf "     %sinstall.sh%s\n" "$C_CYAN" "$C_RESET"
-    printf "     Например: scp %s install.sh пользователь@новый-сервер:~/\n" \
-        "$BACKUP_PATH"
-    printf "  2. На новой машине выполните:\n"
-    printf "     %ssudo bash install.sh --restore=%s%s\n" \
-        "$C_CYAN" "$(basename "$BACKUP_PATH")" "$C_RESET"
-    printf "  3. Убедитесь, что новый бот отвечает в Telegram.\n"
-    printf "  4. %sТолько после этого%s остановите старый:\n" "$C_BOLD" "$C_RESET"
-    printf "     cd %s && docker compose down\n" "$APP_DIR"
-    line
-    printf "  %sДва экземпляра с одним токеном мешают друг другу:%s\n" \
-        "$C_YELLOW" "$C_RESET"
-    printf "  пока старый работает, новый будет получать обновления через раз.\n"
-    printf "  Это нормально на время проверки, но задерживаться в таком\n"
-    printf "  состоянии не стоит.\n\n"
+    SERVE_PORT="${MIGRATE_PORT:-8899}"
+    SERVE_MINUTES="${MIGRATE_MINUTES:-30}"
+    SERVE_TOKEN=""
+    SERVE_PID=""
+
+    if serve_migration "$BACKUP_PATH" "$SERVE_PORT" "$SERVE_MINUTES"; then
+        ADDRESS="$(detect_address)"
+        LINK="http://$ADDRESS:$SERVE_PORT/$SERVE_TOKEN"
+
+        line
+        printf "  %s%s%s\n\n" "$C_BOLD" "$(t migrate_ready)" "$C_RESET"
+        printf "  %s%s%s\n\n" "$C_CYAN" \
+            "sudo bash -c \"\$(curl -fsSL $INSTALLER_URL)\" -- --restore-url=$LINK" \
+            "$C_RESET"
+        line
+        printf "  %s\n" "$(t migrate_note_once)"
+        printf "  %s\n" "$(t migrate_note_time "$SERVE_MINUTES")"
+        printf "  %s\n" "$(t migrate_note_port "$SERVE_PORT")"
+        printf "  %s\n\n" "$(t migrate_note_secret)"
+        printf "  %s\n" "$(t migrate_note_stop)"
+        printf "    cd %s && docker compose down\n\n" "$APP_DIR"
+        printf "  %s%s%s\n\n" "$C_DIM" "$(t migrate_waiting)" "$C_RESET"
+        log_raw "MIGRATE ссылка выдана, порт $SERVE_PORT, срок $SERVE_MINUTES мин"
+    else
+        warn "$(t migrate_serve_failed)"
+        printf "\n  %s\n" "$(t migrate_manual)"
+        printf "    scp %s install.sh пользователь@новый-сервер:~/\n" "$BACKUP_PATH"
+        printf "    sudo bash install.sh --restore=%s\n\n" \
+            "$(basename "$BACKUP_PATH")"
+    fi
     timing_report
     exit 0
 fi
@@ -1868,7 +2117,7 @@ docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Схема базы актуаль
 # успешном старте выглядит точно так же, как полная, и человек узнает
 # о потере, только когда кто-то пожалуется на пропавшие оповещения.
 if [ "$RESTORED" = true ]; then
-    step "Проверка целостности после переезда"
+    step "$(t step_integrity)"
     if $COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python - <<'RADAR_CHECK_EOF' 2>>"$LOG_FILE"
 import asyncio
 
@@ -1894,10 +2143,10 @@ async def main() -> int:
 raise SystemExit(asyncio.run(main()))
 RADAR_CHECK_EOF
     then
-        ok "Данные на месте"
+        ok "$(t integrity_ok)"
     else
-        warn "Проверка целостности не пройдена — данные могли не перенестись"
-        warn "Копия цела: разверните её заново или вернитесь на старую машину"
+        warn "$(t integrity_failed)"
+        warn "$(t integrity_hint)"
     fi
 fi
 
