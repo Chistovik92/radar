@@ -137,6 +137,12 @@ def install() -> None:
     )
     module("aiofiles", open=Any())
 
+    # BeautifulSoup нужен для чтения веб-превью Telegram и RSS. Заглушка
+    # добавлена в 4.6.3: без неё тесты, импортирующие radar.sources,
+    # проходили только там, где bs4 стоял в системе, — на машине разработчика
+    # зелено, в CI восемнадцать ошибок.
+    module("bs4", BeautifulSoup=Any)
+
     module("aiohttp", ClientSession=Any, ClientTimeout=Any)
 
     genai = module("google.genai", Client=Any, types=Any())
@@ -238,7 +244,7 @@ def main() -> int:
     install()
     modules = [
         "radar", "radar.config", "radar.textutils", "radar.roles", "radar.matching",
-        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.media", "radar.secrets", "radar.aibench", "radar.proxy", "radar.provider", "radar.digest", "radar.quiet", "radar.backup", "radar.profiling", "radar.astro", "radar.shortener",
+        "radar.identity", "radar.features", "radar.logs", "radar.presets", "radar.sourcecheck", "radar.sos", "radar.media", "radar.secrets", "radar.aibench", "radar.proxy", "radar.provider", "radar.digest", "radar.quiet", "radar.backup", "radar.profiling", "radar.astro", "radar.shortener", "radar.partners",
         "radar.weather_image", "radar.web.auth", "radar.web.audit", "radar.storage", "radar.exporting", "radar.ratelimit", "radar.ai", "radar.geocode", "radar.weather", "radar.sources",
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",

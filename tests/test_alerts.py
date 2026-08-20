@@ -14,7 +14,17 @@ import sys
 import unittest
 import xml.etree.ElementTree as ET
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+
+import stubcheck  # noqa: E402
+
+# Заглушки ставим здесь, а не полагаемся на соседний тестовый модуль:
+# раньше файл проходил только в общем прогоне, потому что заглушки успевал
+# поставить кто-то другой. В одиночку он падал, и в CI это выглядело
+# восемнадцатью ошибками без видимой причины.
+stubcheck.install()
 
 from radar import presets  # noqa: E402
 from radar.matching import (  # noqa: E402

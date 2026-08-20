@@ -14,7 +14,13 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+
+import stubcheck  # noqa: E402
+
+stubcheck.install()
 
 from radar import exporting, weather  # noqa: E402
 from radar.matching import (  # noqa: E402
