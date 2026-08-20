@@ -16,6 +16,7 @@ from . import (
     digest,
     features,
     history,
+    language,
     locations,
     logs,
     media,
@@ -40,6 +41,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(language.router)
     dp.include_router(history.router)
     dp.include_router(partners.router)
     dp.include_router(perf.router)

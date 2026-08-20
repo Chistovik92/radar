@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.2 — автономный установщик.
+# Система «Радар» v4.7.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -44,7 +44,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.2"
+VERSION="4.7.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -161,6 +161,19 @@ t() {                  # t <ключ> [подстановка]
     local key="$1" value="" extra="${2:-}"
     if [ "$LANG_CODE" = "en" ]; then
         case "$key" in
+            step_prepare)        value="Preparing directory and install log" ;;
+            step_check)          value="Checking system components" ;;
+            step_update)         value="Updating system components" ;;
+            step_previous)       value="Checking previous installation" ;;
+            step_deploy)         value="Deploying project files" ;;
+            step_settings)       value="Configuring parameters" ;;
+            step_build)          value="Building image and starting containers" ;;
+            step_diagnose)       value="Checking the system before start" ;;
+            step_start)          value="Starting the bot" ;;
+            time_report)         value="Time spent" ;;
+            time_total)          value="TOTAL" ;;
+            time_server)         value="server time" ;;
+            done_running)        value="Radar v%s is running" ;;
             step_migrate)        value="Collecting data for migration" ;;
             migrate_no_install)  value="Installation not found in $APP_DIR" ;;
             migrate_backup_failed) value="Could not create the copy" ;;
@@ -193,6 +206,19 @@ t() {                  # t <ключ> [подстановка]
     fi
     if [ -z "$value" ]; then
         case "$key" in
+            step_prepare)        value="Подготовка каталога и журнала установки" ;;
+            step_check)          value="Проверка компонентов системы" ;;
+            step_update)         value="Обновление компонентов системы" ;;
+            step_previous)       value="Проверка предыдущей установки" ;;
+            step_deploy)         value="Развёртывание файлов проекта" ;;
+            step_settings)       value="Настройка параметров" ;;
+            step_build)          value="Сборка образа и запуск контейнеров" ;;
+            step_diagnose)       value="Проверка системы до запуска бота" ;;
+            step_start)          value="Запуск бота" ;;
+            time_report)         value="Затраченное время" ;;
+            time_total)          value="ВСЕГО" ;;
+            time_server)         value="время на сервере" ;;
+            done_running)        value="Система «Радар» v%s запущена" ;;
             step_migrate)        value="Сбор данных для переезда" ;;
             migrate_no_install)  value="Установка не найдена в $APP_DIR" ;;
             migrate_backup_failed) value="Не удалось собрать копию" ;;
@@ -227,6 +253,27 @@ t() {                  # t <ключ> [подстановка]
 }
 
 detect_language
+
+# Спрашиваем язык в начале, если его не задали флагом и не запомнили
+# раньше. Без терминала (curl | bash в конвейере) вопрос пропускаем:
+# ждать ответа там некому, установка просто зависла бы.
+ask_language() {
+    [ -n "${RADAR_LANG:-}" ] && return 0
+    [ -f "$APP_DIR/.env" ] && grep -q '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null && return 0
+    [ -t 0 ] || return 0
+
+    printf "\n  %sChoose language / Выберите язык%s\n" "$C_BOLD" "$C_RESET"
+    printf "    1) Русский\n"
+    printf "    2) English\n"
+    printf "  %sВыбор [1]:%s " "$C_DIM" "$C_RESET"
+    local answer=""
+    read -r answer < /dev/tty || answer="1"
+    case "$answer" in
+        2) LANG_CODE="en" ;;
+        *) LANG_CODE="ru" ;;
+    esac
+    printf "\n"
+}
 
 COLS=$( (tput cols 2>/dev/null || echo 72) )
 [ "$COLS" -gt 78 ] && COLS=78
@@ -329,7 +376,7 @@ step()  {
 timing_report() {
     step_finish
     local total=$(( $(date +%s) - INSTALL_STARTED ))
-    printf "\n%sЗатраченное время%s\n" "$C_BOLD" "$C_RESET"
+    printf "\n%s%s%s\n" "$C_BOLD" "$(t time_report)" "$C_RESET"
     # Без выравнивания колонкой: printf считает ширину в байтах, а кириллица
     # занимает по два — таблица разъехалась бы ровно на русских названиях.
     printf "%b" "$STEP_TIMES" | while IFS="$(printf '\t')" read -r name spent; do
@@ -337,9 +384,9 @@ timing_report() {
         printf "  %s%s%s — %s\n" "$C_DIM" "$name" "$C_RESET" "$(human_time "$spent")"
     done
     line
-    printf "  %sВСЕГО%s — %s%s%s\n" "$C_BOLD" "$C_RESET" \
+    printf "  %s%s%s — %s%s%s\n" "$C_BOLD" "$(t time_total)" "$C_RESET" \
         "$C_BOLD" "$(human_time "$total")" "$C_RESET"
-    printf "  %sвремя на сервере: %s%s\n" "$C_DIM" "$(date "+%d.%m.%Y %H:%M:%S %Z")" "$C_RESET"
+    printf "  %s%s: %s%s\n" "$C_DIM" "$(t time_server)" "$(date "+%d.%m.%Y %H:%M:%S %Z")" "$C_RESET"
     log_raw "TIME  установка заняла ${total} с"
 }
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
@@ -846,7 +893,9 @@ banner
 #  Шаг 1. Каталог и лог
 # --------------------------------------------------------------------------
 
-step "Подготовка каталога и журнала установки"
+ask_language
+remember_language
+step "$(t step_prepare)"
 
 mkdir -p "$APP_DIR/data"
 cd "$APP_DIR"
@@ -1146,7 +1195,7 @@ fi
 #  Шаг 2. Проверка окружения
 # --------------------------------------------------------------------------
 
-step "Проверка компонентов системы"
+step "$(t step_check)"
 
 check_ok=true
 
@@ -1242,7 +1291,7 @@ fi
 #  Шаг 3. Обновление системы
 # --------------------------------------------------------------------------
 
-step "Обновление компонентов системы"
+step "$(t step_update)"
 
 # Шкала общая по шагу, плюс отдельная строка на каждый компонент —
 # так видно и общий ход, и чем именно установщик занят сейчас.
@@ -1325,7 +1374,7 @@ progress "$UPD_TOTAL" "$UPD_TOTAL" "компоненты проверены"
 #  Шаг 4. Диагностика существующей установки
 # --------------------------------------------------------------------------
 
-step "Проверка предыдущей установки"
+step "$(t step_previous)"
 
 MODE="новая установка"
 HEALTHY=false
@@ -1485,7 +1534,7 @@ ok "Режим: $MODE"
 #  Шаг 5. Файлы проекта
 # --------------------------------------------------------------------------
 
-step "Развёртывание файлов проекта"
+step "$(t step_deploy)"
 
 # Снимок делается до перезаписи: после неё вернуть прежнюю версию уже нечем
 make_snapshot
@@ -1493,7 +1542,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=80
+FILE_COUNT=84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1789,6 +1838,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.3", [
+        "🌍 <b>Бот говорит на двух языках.</b> При первом обращении "
+        "спросит, какой выбрать — и у новых, и у тех, кто пользовался "
+        "ботом раньше. Сменить можно в меню кнопкой «Язык».",
+        "💬 <b>Установщик тоже спрашивает язык</b> в самом начале.",
+        "🎬 <b>Загрузка видео открыта всем.</b> Двадцать роликов в сутки "
+        "бесплатно; 10 звёзд снимают дневной предел на месяц.",
+        "ℹ️ <b>Про размер файла честно:</b> 50 МБ — ограничение Telegram, "
+        "подпиской оно не снимается. Обойдём его собственным Bot API "
+        "Server в одном из следующих обновлений.",
+    ]),
     ("4.7.2", [
         "🔗 <b>Переезд одной командой.</b> На старом сервере "
         "<code>--migrate</code> печатает готовую строку для нового: "
@@ -2193,7 +2253,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.2"
+__version__ = "4.7.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -8144,8 +8204,277 @@ def render_csv(rows: list[dict[str, str]]) -> str:
     lines.extend(f"{row['code']},{row['issued']}" for row in rows)
     return "\n".join(lines) + "\n"
 RADAR_FILE_29
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n.py"
+cat > "radar/i18n.py" <<'RADAR_FILE_30'
+"""Язык интерфейса бота.
+
+Русский по умолчанию, английский по выбору. Выбор хранится у пользователя
+и спрашивается один раз: при первом запуске у новых, при первом обращении
+после обновления — у тех, кто пользовался ботом раньше.
+
+Как это устроено и почему именно так:
+
+* строки лежат в одном словаре, а не рядом с кодом. Тексты были разбросаны
+  по модулям, и перевод «по месту» гарантированно оставил бы половину
+  интерфейса на русском — незаметно, потому что каждый отдельный экран
+  выглядел бы переведённым;
+* отсутствующий перевод возвращает русский вариант, а не ключ и не пустоту.
+  Английский появляется постепенно, и человек в худшем случае увидит
+  русскую строку среди английских — это неприятно, но понятно, в отличие
+  от `menu.title.short` посреди сообщения;
+* сообщения об опасности переводятся в первую очередь: если система
+  умеет говорить по-английски, то начинать надо с того, ради чего она
+  существует, а не с настроек.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+log = logging.getLogger("radar.i18n")
+
+RU = "ru"
+EN = "en"
+LANGUAGES = (RU, EN)
+DEFAULT = RU
+
+TITLES = {RU: "🇷🇺 Русский", EN: "🇬🇧 English"}
+
+# Словарь. Ключ — короткое имя строки, значение — перевод на английский.
+# Русский текст живёт в самих вызовах как запасной вариант: так его видно
+# при чтении кода, и ни одна строка не может «потеряться» без перевода.
+EN_STRINGS: dict[str, str] = {
+    # --- выбор языка ---
+    "lang.ask": "Choose your language / Выберите язык",
+    "lang.saved": "Language set to English.",
+    "lang.button": "🌍 Language",
+
+    # --- главное меню ---
+    "menu.locations": "📍 My locations",
+    "menu.weather": "🌤 Weather",
+    "menu.alerts": "⚙️ Notifications",
+    "menu.suggest": "📢 Suggest a source",
+    "menu.invite": "🔗 Invite",
+    "menu.digest": "📰 News digests",
+    "menu.sos": "🆘 SOS",
+    "menu.assistant": "🧠 AI assistant",
+    "menu.manage": "🛠 Management",
+    "menu.about": "ℹ️ About",
+    "menu.history": "📖 History",
+    "menu.media": "🎬 Download video",
+    "menu.partners": "🤝 Partner projects",
+    "menu.home": "🏠 Main menu",
+    "menu.back": "◀️ Back",
+
+    # --- оповещения: самое важное ---
+    "alert.danger": "DANGER",
+    "alert.utility": "Utilities and outages",
+    "alert.all_clear": "All clear",
+    "alert.matched": "Matched locations",
+    "alert.citywide": "citywide",
+    "alert.whitelist.title": "Mobile internet",
+    "alert.whitelist.body": (
+        "During an air threat operators switch to allow-lists: only "
+        "government services, banks, maps and taxi keep working. "
+        "Messengers and social networks may not open. Home wired internet "
+        "and Wi-Fi usually keep working. For urgent contact use calls and SMS."
+    ),
+    "alert.not_official": "This system does not replace official warning channels.",
+
+    # --- медиа ---
+    "media.title": "🎬 Video download",
+    "media.prompt": "Send a link — I will offer quality options and send the file.",
+    "media.limit": "Sending limit",
+    "media.quota.left": "Downloads left today",
+    "media.quota.spent": "Daily limit reached",
+    "media.quota.unlimited": "Unlimited until",
+    "media.quota.buy": "⭐️ Unlimited for a month",
+    "media.too_big": "The file is larger than the limit.",
+
+    # --- общее ---
+    "common.cancelled": "✅ Cancelled.",
+    "common.only_superadmin": "⛔️ Superadministrator only.",
+    "common.error": "Something went wrong — try again later.",
+}
+
+
+def normalize(value: Any) -> str:
+    """Приводит что угодно к коду языка. Неизвестное — русский."""
+    code = str(value or "").strip().lower()[:2]
+    return code if code in LANGUAGES else DEFAULT
+
+
+def language_of(user: dict[str, Any] | None) -> str:
+    return normalize((user or {}).get("lang"))
+
+
+def needs_choice(user: dict[str, Any] | None) -> bool:
+    """Спрашивали ли уже про язык.
+
+    Пустое поле означает «не спрашивали»: и у нового человека, и у того,
+    кто пользовался ботом до появления выбора. Различать их незачем —
+    вопрос одинаковый.
+    """
+    return not (user or {}).get("lang")
+
+
+def t(key: str, lang: str, fallback: str) -> str:
+    """Строка на нужном языке.
+
+    fallback — русский текст, он же значение по умолчанию. Если перевода
+    нет, вернётся он: русская строка среди английских понятнее, чем
+    служебный ключ.
+    """
+    if normalize(lang) == EN:
+        return EN_STRINGS.get(key, fallback)
+    return fallback
+RADAR_FILE_30
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mediaquota.py"
+cat > "radar/mediaquota.py" <<'RADAR_FILE_31'
+"""Квоты загрузки видео.
+
+Загрузка открыта всем, но не безгранично: двадцать роликов в сутки
+бесплатно, дальше — подписка за десять звёзд на месяц.
+
+Почему считаем именно штуки, а не мегабайты: человеку понятно «осталось
+17 из 20», а «осталось 380 МБ» требует прикидывать размер каждого ролика
+заранее. К тому же дорог здесь не трафик, а процессорное время слабого
+одноплатника на перекодирование.
+
+**Предел размера в 50 МБ подпиской не снимается.** Это ограничение
+Telegram Bot API, а не наше решение: бот физически не может отправить
+файл крупнее через api.telegram.org. Обещать за деньги то, чего не можешь
+дать, нельзя — поэтому в описании подписки об этом сказано прямо.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+log = logging.getLogger("radar.mediaquota")
+
+FREE_PER_DAY = 20
+STARS_PRICE = 10
+SUBSCRIPTION_DAYS = 30
+
+
+@dataclass
+class Quota:
+    """Состояние квоты одного человека."""
+
+    used: int = 0
+    day: str = ""
+    paid_until: str = ""
+
+    @property
+    def unlimited(self) -> bool:
+        if not self.paid_until:
+            return False
+        try:
+            until = datetime.fromisoformat(self.paid_until)
+        except ValueError:
+            return False
+        return until.date() >= datetime.now(timezone.utc).date()
+
+    @property
+    def days_left(self) -> int:
+        if not self.unlimited:
+            return 0
+        until = datetime.fromisoformat(self.paid_until)
+        return max(0, (until.date() - datetime.now(timezone.utc).date()).days)
+
+    def left(self, today: str) -> int:
+        """Сколько загрузок осталось сегодня."""
+        if self.unlimited:
+            return FREE_PER_DAY  # число не показывается, важен сам факт
+        if self.day != today:
+            return FREE_PER_DAY
+        return max(0, FREE_PER_DAY - self.used)
+
+    def allowed(self, today: str) -> bool:
+        return self.unlimited or self.left(today) > 0
+
+    def spend(self, today: str) -> None:
+        """Отметить загрузку. У подписки счётчик тоже идёт — для статистики."""
+        if self.day != today:
+            self.day = today
+            self.used = 0
+        self.used += 1
+
+    def extend(self, days: int = SUBSCRIPTION_DAYS) -> None:
+        """Продлить подписку, сохранив остаток прежней."""
+        base = datetime.now(timezone.utc)
+        if self.unlimited:
+            base = datetime.fromisoformat(self.paid_until)
+        self.paid_until = (base + timedelta(days=days)).isoformat()
+
+    def to_dict(self) -> dict[str, object]:
+        return {"used": self.used, "day": self.day, "paid_until": self.paid_until}
+
+    @classmethod
+    def from_dict(cls, raw: dict | None) -> "Quota":
+        raw = raw or {}
+        try:
+            used = int(raw.get("used") or 0)
+        except (TypeError, ValueError):
+            used = 0
+        return cls(
+            used=max(0, used),
+            day=str(raw.get("day") or ""),
+            paid_until=str(raw.get("paid_until") or ""),
+        )
+
+
+def today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def quota_of(user: dict) -> Quota:
+    return Quota.from_dict((user or {}).get("media_quota"))
+
+
+def store_quota(user: dict, quota: Quota) -> None:
+    user["media_quota"] = quota.to_dict()
+
+
+def describe(quota: Quota, lang: str = "ru") -> str:
+    """Текст о состоянии квоты."""
+    from . import i18n
+
+    if quota.unlimited:
+        return i18n.t(
+            "media.quota.unlimited", lang,
+            f"Безлимит активен, осталось дней: {quota.days_left}",
+        )
+    left = quota.left(today())
+    if left <= 0:
+        return i18n.t(
+            "media.quota.spent", lang,
+            f"Дневной предел исчерпан ({FREE_PER_DAY} видео). "
+            "Лимит обновится завтра.",
+        )
+    return i18n.t(
+        "media.quota.left", lang,
+        f"Осталось сегодня: {left} из {FREE_PER_DAY}",
+    )
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_30'
+cat > "radar/backup.py" <<'RADAR_FILE_32'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -8368,9 +8697,9 @@ def summary() -> str:
         "<code>bash install.sh --rollback</code></i>"
     )
     return "\n".join(lines)
-RADAR_FILE_30
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_31'
+cat > "radar/weather_image.py" <<'RADAR_FILE_33'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -8769,9 +9098,9 @@ def _strip_tags(text: str) -> str:
         elif not inside:
             result.append(char)
     return "".join(result).strip()
-RADAR_FILE_31
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_32'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_34'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -8786,9 +9115,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_32
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_33'
+cat > "radar/web/auth.py" <<'RADAR_FILE_35'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -8970,9 +9299,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_33
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_34'
+cat > "radar/web/audit.py" <<'RADAR_FILE_36'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -9039,9 +9368,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_34
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_35'
+cat > "radar/web/panel.py" <<'RADAR_FILE_37'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -9596,9 +9925,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_35
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_36'
+cat > "radar/web/backup.py" <<'RADAR_FILE_38'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -9641,9 +9970,9 @@ def body() -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_36
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_37'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_39'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -9676,9 +10005,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_37
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_38'
+cat > "radar/db/models.py" <<'RADAR_FILE_40'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -9759,6 +10088,8 @@ class User(Base):
     weather_interval: Mapped[int] = mapped_column(Integer, default=0)
     weather_time: Mapped[str] = mapped_column(String(8), default="08:00")
     weather_format: Mapped[str] = mapped_column(String(8), default="text")  # text | image
+    # Язык интерфейса. Пусто — не выбран: спросим при первом обращении.
+    lang: Mapped[str] = mapped_column(String(2), default="")
     last_weather: Mapped[int] = mapped_column(BigIntType, default=0)
     last_fixed_date: Mapped[str] = mapped_column(String(16), default="")
 
@@ -9973,9 +10304,9 @@ class PromoCode(Base):
     issued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-RADAR_FILE_38
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_39'
+cat > "radar/db/engine.py" <<'RADAR_FILE_41'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -10489,9 +10820,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_39
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_40'
+cat > "radar/db/repo.py" <<'RADAR_FILE_42'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -10553,6 +10884,9 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         "weather_interval": 0,
         "weather_time": "08:00",
         "weather_format": "text",
+        # Пусто означает «язык ещё не выбран» — у нового человека
+        # и у того, кто пользовался ботом до появления выбора.
+        "lang": "",
         "last_weather": 0,
         "last_fixed_date": "",
         "quiet_from": "",
@@ -10612,6 +10946,7 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "weather_interval": row.weather_interval,
         "weather_time": row.weather_time,
         "weather_format": row.weather_format,
+        "lang": row.lang or "",
         "last_weather": row.last_weather,
         "last_fixed_date": row.last_fixed_date,
         "quiet_from": row.quiet_from,
@@ -10663,6 +10998,7 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.weather_interval = int(data.get("weather_interval") or 0)
         row.weather_time = data.get("weather_time", "08:00")
         row.weather_format = data.get("weather_format", "text")
+        row.lang = (data.get("lang") or "")[:2]
         row.last_weather = int(data.get("last_weather") or 0)
         row.last_fixed_date = data.get("last_fixed_date", "")
         row.quiet_from = data.get("quiet_from", "")
@@ -11148,9 +11484,9 @@ async def count_sources() -> int:
     async with session() as active:
         result = await active.execute(select(func.count()).select_from(Source))
         return int(result.scalar_one() or 0)
-RADAR_FILE_40
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_41'
+cat > "radar/db/importer.py" <<'RADAR_FILE_43'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -11299,9 +11635,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_41
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_42'
+cat > "radar/doctor.py" <<'RADAR_FILE_44'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -11783,9 +12119,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_42
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_43'
+cat > "migrations/env.py" <<'RADAR_FILE_45'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -11845,9 +12181,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_43
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_44'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_46'
 """${message}
 
 Revision ID: ${up_revision}
@@ -11872,9 +12208,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_44
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_45'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_47'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -12041,9 +12377,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_45
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_46'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_48'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -12083,9 +12419,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_46
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_47'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_49'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -12133,9 +12469,56 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_47
+RADAR_FILE_49
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_50'
+"""Язык интерфейса и квоты загрузки видео.
+
+Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
+«язык не выбран»: при первом обращении после обновления система спросит.
+Заполнять его русским по умолчанию нельзя, иначе выбор никогда не будет
+предложен, а англоязычные останутся с русским интерфейсом навсегда.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "0004_lang_and_media_quota"
+down_revision = "0003_promo_codes"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "users",
+        sa.Column("lang", sa.String(length=2), nullable=False, server_default=""),
+    )
+    op.create_table(
+        "media_quota",
+        sa.Column("user_key", sa.String(length=64), nullable=False),
+        sa.Column("day", sa.String(length=10), nullable=False),
+        sa.Column("used", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("paid_until", sa.String(length=32), nullable=False,
+                  server_default=""),
+        sa.PrimaryKeyConstraint("user_key"),
+    )
+
+
+def downgrade() -> None:
+    op.drop_table("media_quota")
+    op.drop_column("users", "lang")
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_48'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_51'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -12161,9 +12544,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_48
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_49'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_52'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -12288,9 +12671,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_49
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_50'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_53'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -12554,9 +12937,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_50
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_51'
+cat > "radar/storage.py" <<'RADAR_FILE_54'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -12741,9 +13124,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_51
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_52'
+cat > "radar/exporting.py" <<'RADAR_FILE_55'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -12949,9 +13332,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_52
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_53'
+cat > "radar/ai.py" <<'RADAR_FILE_56'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -13693,9 +14076,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_53
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_54'
+cat > "radar/geocode.py" <<'RADAR_FILE_57'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -13887,9 +14270,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_54
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_55'
+cat > "radar/weather.py" <<'RADAR_FILE_58'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -14288,9 +14671,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title), markup)
-RADAR_FILE_55
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_56'
+cat > "radar/sources.py" <<'RADAR_FILE_59'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -14549,9 +14932,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_56
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_57'
+cat > "radar/tg.py" <<'RADAR_FILE_60'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -14668,9 +15051,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_57
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_58'
+cat > "radar/keyboards.py" <<'RADAR_FILE_61'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -14693,7 +15076,7 @@ from aiogram.types import (
 from . import config, features, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
-def main_menu(role: str | None) -> InlineKeyboardMarkup:
+def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
     """Главное меню.
 
     Собрано по назначению, а не по ролям: сначала то, чем пользуются каждый
@@ -14737,7 +15120,10 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if roles.is_moderator(role):
         rows.append([InlineKeyboardButton(text="🛠 Управление", callback_data="menu:manage")])
 
-    rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
+    rows.append([
+        InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about"),
+        InlineKeyboardButton(text="🌍 Язык", callback_data="menu:lang"),
+    ])
 
     promo = promo_row()
     if promo:
@@ -15089,9 +15475,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_58
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_59'
+cat > "radar/states.py" <<'RADAR_FILE_62'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -15121,9 +15507,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_59
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_60'
+cat > "radar/middlewares.py" <<'RADAR_FILE_63'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -15142,9 +15528,13 @@ from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from . import features, roles, storage
+from . import features, i18n, roles, storage
 
 log = logging.getLogger("radar.access")
+
+def _is_language_choice(event: TelegramObject) -> bool:
+    return isinstance(event, CallbackQuery) and str(event.data or "").startswith("lng:")
+
 
 class AccessMiddleware(BaseMiddleware):
     """Пропускает только зарегистрированных; по /start join регистрирует нового."""
@@ -15152,6 +15542,7 @@ class AccessMiddleware(BaseMiddleware):
     def __init__(self) -> None:
         self._notified: dict[int, float] = {}
         self._maintenance_notified: dict[int, float] = {}
+        self._language_asked: dict[int, float] = {}
 
     async def __call__(
         self,
@@ -15235,10 +15626,38 @@ class AccessMiddleware(BaseMiddleware):
 
         data["user"] = record
         data["role"] = role
+
+        # Язык ещё не выбран — спрашиваем один раз и пропускаем дальше.
+        # Пустое поле есть и у нового человека, и у того, кто пользовался
+        # ботом до появления выбора: вопрос для обоих одинаковый.
+        # Сам выбор языка (lng:*) не перехватываем, иначе получилось бы
+        # кольцо: вопрос → нажатие → снова вопрос.
+        if i18n.needs_choice(record) and not _is_language_choice(event):
+            await self._ask_language(event)
+
         return await handler(event, data)
-RADAR_FILE_60
+
+    async def _ask_language(self, event: TelegramObject) -> None:
+        now = time.monotonic()
+        key = getattr(getattr(event, "from_user", None), "id", 0)
+        if now - self._language_asked.get(key, 0) < 3600:
+            return
+        self._language_asked[key] = now
+
+        from .handlers.language import ASK_TEXT, language_keyboard
+
+        try:
+            if isinstance(event, Message):
+                await event.answer(ASK_TEXT, reply_markup=language_keyboard())
+            elif isinstance(event, CallbackQuery) and event.message is not None:
+                await event.message.answer(ASK_TEXT, reply_markup=language_keyboard())
+        except TelegramForbiddenError:
+            pass
+        except Exception:  # noqa: BLE001
+            log.debug("Не удалось спросить про язык")
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_61'
+cat > "radar/monitor.py" <<'RADAR_FILE_64'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -15774,9 +16193,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_61
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_62'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_65'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -15795,6 +16214,7 @@ from . import (
     digest,
     features,
     history,
+    language,
     locations,
     logs,
     media,
@@ -15819,6 +16239,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(language.router)
     dp.include_router(history.router)
     dp.include_router(partners.router)
     dp.include_router(perf.router)
@@ -15832,9 +16253,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_62
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_63'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_66'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -16184,9 +16605,9 @@ async def stats_button(call: CallbackQuery, role: str) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_63
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_64'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_67'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -16352,9 +16773,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_64
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_65'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_68'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -16707,9 +17128,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_65
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_66'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_69'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -17144,9 +17565,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_66
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_67'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_70'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -17513,9 +17934,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_67
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_68'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_71'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -17662,9 +18083,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_68
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_69'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_72'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -17952,9 +18373,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_69
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_73'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -18087,9 +18508,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_70
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_71'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_74'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -18196,9 +18617,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_71
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_72'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_75'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -18768,9 +19189,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_72
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_76'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -18860,9 +19281,101 @@ async def menu_history(call: CallbackQuery) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id), back_kb())
-RADAR_FILE_73
+RADAR_FILE_76
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
+cat > "radar/handlers/language.py" <<'RADAR_FILE_77'
+"""Выбор языка интерфейса.
+
+Спрашиваем один раз: при первом запуске у новых, при первом обращении
+после обновления — у тех, кто пользовался ботом раньше. Признак «не
+спрашивали» — пустое поле `lang`, поэтому обновление автоматически
+ставит вопрос всем существующим пользователям, а не молча оставляет
+их на русском.
+
+Вопрос показывается на обоих языках сразу: человек, который не читает
+по-русски, иначе не понял бы, что от него хотят.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import i18n, keyboards, storage
+
+log = logging.getLogger("radar.handlers.language")
+router = Router(name="language")
+
+ASK_TEXT = (
+    "🌍 <b>Choose your language / Выберите язык</b>\n\n"
+    "You can change it later in the menu.\n"
+    "Изменить можно позже в меню."
+)
+
+
+def language_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=i18n.TITLES[code], callback_data=f"lng:{code}")]
+        for code in i18n.LANGUAGES
+    ])
+
+
+async def ask(message: Message) -> None:
+    await message.answer(ASK_TEXT, reply_markup=language_keyboard())
+
+
+@router.message(Command("language", "lang"))
+async def cmd_language(message: Message) -> None:
+    await ask(message)
+
+
+@router.callback_query(F.data == "menu:lang")
+async def menu_language(call: CallbackQuery) -> None:
+    await call.answer()
+    try:
+        await call.message.edit_text(ASK_TEXT, reply_markup=language_keyboard())
+    except Exception:  # noqa: BLE001
+        await call.message.answer(ASK_TEXT, reply_markup=language_keyboard())
+
+
+@router.callback_query(F.data.startswith("lng:"))
+async def choose(call: CallbackQuery, user: dict, role: str) -> None:
+    code = i18n.normalize(call.data.split(":", 1)[1])
+    user["lang"] = code
+    await storage.save()
+
+    await call.answer(i18n.t("lang.saved", code, "Язык переключён на русский."))
+    greeting = (
+        "Language set to English." if code == i18n.EN
+        else "Язык интерфейса — русский."
+    )
+    try:
+        await call.message.edit_text(
+            greeting, reply_markup=keyboards.main_menu(role, user)
+        )
+    except Exception:  # noqa: BLE001
+        # Сообщение могло устареть — тогда просто присылаем новое,
+        # молчать после нажатия нельзя.
+        await call.message.answer(
+            greeting, reply_markup=keyboards.main_menu(role, user)
+        )
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_78'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -19268,9 +19781,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_74
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_79'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -19302,7 +19815,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, features, media, roles
+from .. import config, features, media, mediaquota, roles, storage
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -19320,9 +19833,14 @@ _PENDING_TTL = 900
 
 
 def _allowed(role: str) -> bool:
-    if not features.enabled("media_download"):
-        return False
-    return roles.at_least(role, config.MEDIA_MIN_ROLE)
+    """Загрузка открыта всем ролям с 4.7.3.
+
+    Раньше она была привилегией: MEDIA_MIN_ROLE отсекал обычных
+    пользователей. Ограничение перенесено с роли на квоту — двадцать
+    роликов в сутки хватает для нормального пользования и не даёт
+    превратить одноплатник в бесплатный перекодировщик.
+    """
+    return features.enabled("media_download")
 
 
 def _cleanup_pending() -> None:
@@ -19424,7 +19942,15 @@ async def drop_request(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("med:get:"))
-async def download(call: CallbackQuery, role: str) -> None:
+async def download(call: CallbackQuery, role: str, user: dict) -> None:
+    quota = mediaquota.quota_of(user)
+    if not quota.allowed(mediaquota.today()):
+        await call.answer(
+            f"Дневной предел исчерпан: {mediaquota.FREE_PER_DAY} видео. "
+            "Лимит обновится завтра.",
+            show_alert=True,
+        )
+        return
     if not _allowed(role):
         await call.answer("Функция недоступна.", show_alert=True)
         return
@@ -19473,6 +19999,12 @@ async def download(call: CallbackQuery, role: str) -> None:
         if not path or not os.path.exists(path):
             await _safe_text(status, "❌ Файл не сформирован.")
             return
+
+        # Квоту тратим здесь: за неудачную загрузку человек платить
+        # не должен, а до этой строки мы доходим только с готовым файлом.
+        quota.spend(mediaquota.today())
+        mediaquota.store_quota(user, quota)
+        await storage.save()
 
         try:
             size = os.path.getsize(path)
@@ -19586,7 +20118,7 @@ async def cmd_media(message: Message, role: str) -> None:
 
 
 @router.callback_query(F.data == "med:menu")
-async def menu_media(call: CallbackQuery, role: str) -> None:
+async def menu_media(call: CallbackQuery, role: str, user: dict) -> None:
     """Вход из главного меню. Раньше сюда попадали только командой /media,
     о которой надо было знать заранее."""
     if not features.enabled("media_download"):
@@ -19599,19 +20131,93 @@ async def menu_media(call: CallbackQuery, role: str) -> None:
     await call.answer()
     limit = media.size_limit_mb(config.uses_local_api())
     server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
+    quota = mediaquota.quota_of(user)
     await safe_edit(
         call,
         "🎬 <b>Загрузка видео</b>\n\n"
         "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
+        f"<b>{mediaquota.describe(quota)}</b>\n"
         f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
         f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
         "<i>Скачивайте только то, на что у вас есть право: правила площадок "
         "и авторские права никто не отменял.</i>",
-        back_kb(),
+        _quota_keyboard(quota),
     )
-RADAR_FILE_75
+
+
+# --------------------------------------------------------------------------
+#  Подписка на безлимит (с 4.7.3)
+# --------------------------------------------------------------------------
+
+def _quota_keyboard(quota) -> InlineKeyboardMarkup:
+    rows = []
+    if not quota.unlimited:
+        rows.append([InlineKeyboardButton(
+            text=f"⭐️ Безлимит на месяц — {mediaquota.STARS_PRICE}",
+            callback_data="med:buy",
+        )])
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню",
+                                      callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "med:buy")
+async def buy_unlimited(call: CallbackQuery, user: dict) -> None:
+    from aiogram.types import LabeledPrice
+
+    quota = mediaquota.quota_of(user)
+    if quota.unlimited:
+        await call.answer(
+            f"Безлимит уже активен, осталось дней: {quota.days_left}",
+            show_alert=True,
+        )
+        return
+
+    await call.answer()
+    try:
+        await call.message.answer_invoice(
+            title=f"Загрузка видео без лимита — {mediaquota.SUBSCRIPTION_DAYS} дней",
+            description=(
+                f"Снимает дневной предел в {mediaquota.FREE_PER_DAY} видео.\n\n"
+                "Предел размера файла в 50 МБ остаётся: это ограничение "
+                "Telegram, а не наше решение, и подпиской оно не снимается."
+            ),
+            payload=f"media:{mediaquota.SUBSCRIPTION_DAYS}",
+            currency="XTR",
+            prices=[LabeledPrice(
+                label=f"{mediaquota.SUBSCRIPTION_DAYS} дней",
+                amount=mediaquota.STARS_PRICE,
+            )],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Счёт за видео не выставлен: %s", exc)
+        await call.message.answer("❌ Не удалось выставить счёт. Попробуйте позже.",
+                                  reply_markup=back_kb())
+
+
+async def apply_media_payment(message, user: dict, payload: str) -> None:
+    """Зачислить оплаченный безлимит. Зовётся из общего обработчика платежей."""
+    try:
+        days = int(payload.split(":", 1)[1])
+    except (IndexError, ValueError):
+        log.warning("Непонятный платёж за видео: %s", payload)
+        return
+
+    quota = mediaquota.quota_of(user)
+    quota.extend(days)
+    mediaquota.store_quota(user, quota)
+    await storage.save()
+
+    await message.answer(
+        f"✅ Безлимит включён на {days} дней.\n\n"
+        f"Дневной предел снят. Размер файла по-прежнему до "
+        f"{media.size_limit_mb(config.uses_local_api())} МБ — это ограничение "
+        "Telegram, снять его подпиской нельзя.",
+        reply_markup=back_kb(),
+    )
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_80'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -20195,9 +20801,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_76
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_81'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -20718,9 +21324,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_77
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_82'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -20978,6 +21584,15 @@ async def confirm_checkout(query: PreCheckoutQuery) -> None:
 @router.message(F.successful_payment)
 async def payment_done(message: Message, user: dict) -> None:
     payload = message.successful_payment.invoice_payload or ""
+
+    # Платёж за видео обрабатывает другой модуль. Роутер один на всех,
+    # поэтому чужой товар пропускаем молча, а не считаем ошибкой.
+    if payload.startswith("media:"):
+        from .media import apply_media_payment
+
+        await apply_media_payment(message, user, payload)
+        return
+
     match = re.fullmatch(r"digest:(\d+)", payload)
     if not match:
         log.warning("Неизвестный платёж: %s", payload)
@@ -21077,9 +21692,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_78
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_83'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -21224,7 +21839,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_79
+RADAR_FILE_83
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -21286,7 +21901,7 @@ ok "Сборщик журналов: $APP_DIR/collect-logs.sh"
 #  Шаг 6. Настройки
 # --------------------------------------------------------------------------
 
-step "Настройка параметров"
+step "$(t step_settings)"
 
 ask() { # ask <подсказка> <переменная> <regexp> <обязательно yes|no>
     local prompt="$1" varname="$2" pattern="$3" required="$4" value=""
@@ -21546,7 +22161,7 @@ TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 #  Шаг 7. Сборка и запуск
 # --------------------------------------------------------------------------
 
-step "Сборка образа и запуск контейнеров"
+step "$(t step_build)"
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
@@ -21703,7 +22318,7 @@ fi
 #  Шаг 8. Диагностика до запуска
 # --------------------------------------------------------------------------
 
-step "Проверка системы до запуска бота"
+step "$(t step_diagnose)"
 
 info "Запускаю диагностику внутри контейнера"
 DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
@@ -21771,7 +22386,7 @@ fi
 #  Шаг 9. Запуск
 # --------------------------------------------------------------------------
 
-step "Запуск бота"
+step "$(t step_start)"
 
 run_slow "Запуск контейнеров" $COMPOSE $COMPOSE_ARGS up -d \
     || die_or_rollback "Не удалось запустить контейнеры"

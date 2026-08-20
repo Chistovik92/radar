@@ -16,9 +16,13 @@ from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from . import features, roles, storage
+from . import features, i18n, roles, storage
 
 log = logging.getLogger("radar.access")
+
+def _is_language_choice(event: TelegramObject) -> bool:
+    return isinstance(event, CallbackQuery) and str(event.data or "").startswith("lng:")
+
 
 class AccessMiddleware(BaseMiddleware):
     """Пропускает только зарегистрированных; по /start join регистрирует нового."""
@@ -26,6 +30,7 @@ class AccessMiddleware(BaseMiddleware):
     def __init__(self) -> None:
         self._notified: dict[int, float] = {}
         self._maintenance_notified: dict[int, float] = {}
+        self._language_asked: dict[int, float] = {}
 
     async def __call__(
         self,
@@ -109,4 +114,32 @@ class AccessMiddleware(BaseMiddleware):
 
         data["user"] = record
         data["role"] = role
+
+        # Язык ещё не выбран — спрашиваем один раз и пропускаем дальше.
+        # Пустое поле есть и у нового человека, и у того, кто пользовался
+        # ботом до появления выбора: вопрос для обоих одинаковый.
+        # Сам выбор языка (lng:*) не перехватываем, иначе получилось бы
+        # кольцо: вопрос → нажатие → снова вопрос.
+        if i18n.needs_choice(record) and not _is_language_choice(event):
+            await self._ask_language(event)
+
         return await handler(event, data)
+
+    async def _ask_language(self, event: TelegramObject) -> None:
+        now = time.monotonic()
+        key = getattr(getattr(event, "from_user", None), "id", 0)
+        if now - self._language_asked.get(key, 0) < 3600:
+            return
+        self._language_asked[key] = now
+
+        from .handlers.language import ASK_TEXT, language_keyboard
+
+        try:
+            if isinstance(event, Message):
+                await event.answer(ASK_TEXT, reply_markup=language_keyboard())
+            elif isinstance(event, CallbackQuery) and event.message is not None:
+                await event.message.answer(ASK_TEXT, reply_markup=language_keyboard())
+        except TelegramForbiddenError:
+            pass
+        except Exception:  # noqa: BLE001
+            log.debug("Не удалось спросить про язык")

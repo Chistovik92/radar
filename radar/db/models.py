@@ -78,6 +78,8 @@ class User(Base):
     weather_interval: Mapped[int] = mapped_column(Integer, default=0)
     weather_time: Mapped[str] = mapped_column(String(8), default="08:00")
     weather_format: Mapped[str] = mapped_column(String(8), default="text")  # text | image
+    # Язык интерфейса. Пусто — не выбран: спросим при первом обращении.
+    lang: Mapped[str] = mapped_column(String(2), default="")
     last_weather: Mapped[int] = mapped_column(BigIntType, default=0)
     last_fixed_date: Mapped[str] = mapped_column(String(16), default="")
 

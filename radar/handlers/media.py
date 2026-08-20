@@ -29,7 +29,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, features, media, roles
+from .. import config, features, media, mediaquota, roles, storage
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -47,9 +47,14 @@ _PENDING_TTL = 900
 
 
 def _allowed(role: str) -> bool:
-    if not features.enabled("media_download"):
-        return False
-    return roles.at_least(role, config.MEDIA_MIN_ROLE)
+    """Загрузка открыта всем ролям с 4.7.3.
+
+    Раньше она была привилегией: MEDIA_MIN_ROLE отсекал обычных
+    пользователей. Ограничение перенесено с роли на квоту — двадцать
+    роликов в сутки хватает для нормального пользования и не даёт
+    превратить одноплатник в бесплатный перекодировщик.
+    """
+    return features.enabled("media_download")
 
 
 def _cleanup_pending() -> None:
@@ -151,7 +156,15 @@ async def drop_request(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("med:get:"))
-async def download(call: CallbackQuery, role: str) -> None:
+async def download(call: CallbackQuery, role: str, user: dict) -> None:
+    quota = mediaquota.quota_of(user)
+    if not quota.allowed(mediaquota.today()):
+        await call.answer(
+            f"Дневной предел исчерпан: {mediaquota.FREE_PER_DAY} видео. "
+            "Лимит обновится завтра.",
+            show_alert=True,
+        )
+        return
     if not _allowed(role):
         await call.answer("Функция недоступна.", show_alert=True)
         return
@@ -200,6 +213,12 @@ async def download(call: CallbackQuery, role: str) -> None:
         if not path or not os.path.exists(path):
             await _safe_text(status, "❌ Файл не сформирован.")
             return
+
+        # Квоту тратим здесь: за неудачную загрузку человек платить
+        # не должен, а до этой строки мы доходим только с готовым файлом.
+        quota.spend(mediaquota.today())
+        mediaquota.store_quota(user, quota)
+        await storage.save()
 
         try:
             size = os.path.getsize(path)
@@ -313,7 +332,7 @@ async def cmd_media(message: Message, role: str) -> None:
 
 
 @router.callback_query(F.data == "med:menu")
-async def menu_media(call: CallbackQuery, role: str) -> None:
+async def menu_media(call: CallbackQuery, role: str, user: dict) -> None:
     """Вход из главного меню. Раньше сюда попадали только командой /media,
     о которой надо было знать заранее."""
     if not features.enabled("media_download"):
@@ -326,13 +345,87 @@ async def menu_media(call: CallbackQuery, role: str) -> None:
     await call.answer()
     limit = media.size_limit_mb(config.uses_local_api())
     server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
+    quota = mediaquota.quota_of(user)
     await safe_edit(
         call,
         "🎬 <b>Загрузка видео</b>\n\n"
         "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
+        f"<b>{mediaquota.describe(quota)}</b>\n"
         f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
         f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
         "<i>Скачивайте только то, на что у вас есть право: правила площадок "
         "и авторские права никто не отменял.</i>",
-        back_kb(),
+        _quota_keyboard(quota),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Подписка на безлимит (с 4.7.3)
+# --------------------------------------------------------------------------
+
+def _quota_keyboard(quota) -> InlineKeyboardMarkup:
+    rows = []
+    if not quota.unlimited:
+        rows.append([InlineKeyboardButton(
+            text=f"⭐️ Безлимит на месяц — {mediaquota.STARS_PRICE}",
+            callback_data="med:buy",
+        )])
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню",
+                                      callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "med:buy")
+async def buy_unlimited(call: CallbackQuery, user: dict) -> None:
+    from aiogram.types import LabeledPrice
+
+    quota = mediaquota.quota_of(user)
+    if quota.unlimited:
+        await call.answer(
+            f"Безлимит уже активен, осталось дней: {quota.days_left}",
+            show_alert=True,
+        )
+        return
+
+    await call.answer()
+    try:
+        await call.message.answer_invoice(
+            title=f"Загрузка видео без лимита — {mediaquota.SUBSCRIPTION_DAYS} дней",
+            description=(
+                f"Снимает дневной предел в {mediaquota.FREE_PER_DAY} видео.\n\n"
+                "Предел размера файла в 50 МБ остаётся: это ограничение "
+                "Telegram, а не наше решение, и подпиской оно не снимается."
+            ),
+            payload=f"media:{mediaquota.SUBSCRIPTION_DAYS}",
+            currency="XTR",
+            prices=[LabeledPrice(
+                label=f"{mediaquota.SUBSCRIPTION_DAYS} дней",
+                amount=mediaquota.STARS_PRICE,
+            )],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Счёт за видео не выставлен: %s", exc)
+        await call.message.answer("❌ Не удалось выставить счёт. Попробуйте позже.",
+                                  reply_markup=back_kb())
+
+
+async def apply_media_payment(message, user: dict, payload: str) -> None:
+    """Зачислить оплаченный безлимит. Зовётся из общего обработчика платежей."""
+    try:
+        days = int(payload.split(":", 1)[1])
+    except (IndexError, ValueError):
+        log.warning("Непонятный платёж за видео: %s", payload)
+        return
+
+    quota = mediaquota.quota_of(user)
+    quota.extend(days)
+    mediaquota.store_quota(user, quota)
+    await storage.save()
+
+    await message.answer(
+        f"✅ Безлимит включён на {days} дней.\n\n"
+        f"Дневной предел снят. Размер файла по-прежнему до "
+        f"{media.size_limit_mb(config.uses_local_api())} МБ — это ограничение "
+        "Telegram, снять его подпиской нельзя.",
+        reply_markup=back_kb(),
     )

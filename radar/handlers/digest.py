@@ -255,6 +255,15 @@ async def confirm_checkout(query: PreCheckoutQuery) -> None:
 @router.message(F.successful_payment)
 async def payment_done(message: Message, user: dict) -> None:
     payload = message.successful_payment.invoice_payload or ""
+
+    # Платёж за видео обрабатывает другой модуль. Роутер один на всех,
+    # поэтому чужой товар пропускаем молча, а не считаем ошибкой.
+    if payload.startswith("media:"):
+        from .media import apply_media_payment
+
+        await apply_media_payment(message, user, payload)
+        return
+
     match = re.fullmatch(r"digest:(\d+)", payload)
     if not match:
         log.warning("Неизвестный платёж: %s", payload)

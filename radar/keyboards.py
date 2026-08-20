@@ -20,7 +20,7 @@ from aiogram.types import (
 from . import config, features, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
-def main_menu(role: str | None) -> InlineKeyboardMarkup:
+def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
     """Главное меню.
 
     Собрано по назначению, а не по ролям: сначала то, чем пользуются каждый
@@ -64,7 +64,10 @@ def main_menu(role: str | None) -> InlineKeyboardMarkup:
     if roles.is_moderator(role):
         rows.append([InlineKeyboardButton(text="🛠 Управление", callback_data="menu:manage")])
 
-    rows.append([InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about")])
+    rows.append([
+        InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about"),
+        InlineKeyboardButton(text="🌍 Язык", callback_data="menu:lang"),
+    ])
 
     promo = promo_row()
     if promo:

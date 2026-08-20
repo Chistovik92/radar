@@ -161,6 +161,19 @@ t() {                  # t <ключ> [подстановка]
     local key="$1" value="" extra="${2:-}"
     if [ "$LANG_CODE" = "en" ]; then
         case "$key" in
+            step_prepare)        value="Preparing directory and install log" ;;
+            step_check)          value="Checking system components" ;;
+            step_update)         value="Updating system components" ;;
+            step_previous)       value="Checking previous installation" ;;
+            step_deploy)         value="Deploying project files" ;;
+            step_settings)       value="Configuring parameters" ;;
+            step_build)          value="Building image and starting containers" ;;
+            step_diagnose)       value="Checking the system before start" ;;
+            step_start)          value="Starting the bot" ;;
+            time_report)         value="Time spent" ;;
+            time_total)          value="TOTAL" ;;
+            time_server)         value="server time" ;;
+            done_running)        value="Radar v%s is running" ;;
             step_migrate)        value="Collecting data for migration" ;;
             migrate_no_install)  value="Installation not found in $APP_DIR" ;;
             migrate_backup_failed) value="Could not create the copy" ;;
@@ -193,6 +206,19 @@ t() {                  # t <ключ> [подстановка]
     fi
     if [ -z "$value" ]; then
         case "$key" in
+            step_prepare)        value="Подготовка каталога и журнала установки" ;;
+            step_check)          value="Проверка компонентов системы" ;;
+            step_update)         value="Обновление компонентов системы" ;;
+            step_previous)       value="Проверка предыдущей установки" ;;
+            step_deploy)         value="Развёртывание файлов проекта" ;;
+            step_settings)       value="Настройка параметров" ;;
+            step_build)          value="Сборка образа и запуск контейнеров" ;;
+            step_diagnose)       value="Проверка системы до запуска бота" ;;
+            step_start)          value="Запуск бота" ;;
+            time_report)         value="Затраченное время" ;;
+            time_total)          value="ВСЕГО" ;;
+            time_server)         value="время на сервере" ;;
+            done_running)        value="Система «Радар» v%s запущена" ;;
             step_migrate)        value="Сбор данных для переезда" ;;
             migrate_no_install)  value="Установка не найдена в $APP_DIR" ;;
             migrate_backup_failed) value="Не удалось собрать копию" ;;
@@ -227,6 +253,27 @@ t() {                  # t <ключ> [подстановка]
 }
 
 detect_language
+
+# Спрашиваем язык в начале, если его не задали флагом и не запомнили
+# раньше. Без терминала (curl | bash в конвейере) вопрос пропускаем:
+# ждать ответа там некому, установка просто зависла бы.
+ask_language() {
+    [ -n "${RADAR_LANG:-}" ] && return 0
+    [ -f "$APP_DIR/.env" ] && grep -q '^INSTALLER_LANG=' "$APP_DIR/.env" 2>/dev/null && return 0
+    [ -t 0 ] || return 0
+
+    printf "\n  %sChoose language / Выберите язык%s\n" "$C_BOLD" "$C_RESET"
+    printf "    1) Русский\n"
+    printf "    2) English\n"
+    printf "  %sВыбор [1]:%s " "$C_DIM" "$C_RESET"
+    local answer=""
+    read -r answer < /dev/tty || answer="1"
+    case "$answer" in
+        2) LANG_CODE="en" ;;
+        *) LANG_CODE="ru" ;;
+    esac
+    printf "\n"
+}
 
 COLS=$( (tput cols 2>/dev/null || echo 72) )
 [ "$COLS" -gt 78 ] && COLS=78
@@ -329,7 +376,7 @@ step()  {
 timing_report() {
     step_finish
     local total=$(( $(date +%s) - INSTALL_STARTED ))
-    printf "\n%sЗатраченное время%s\n" "$C_BOLD" "$C_RESET"
+    printf "\n%s%s%s\n" "$C_BOLD" "$(t time_report)" "$C_RESET"
     # Без выравнивания колонкой: printf считает ширину в байтах, а кириллица
     # занимает по два — таблица разъехалась бы ровно на русских названиях.
     printf "%b" "$STEP_TIMES" | while IFS="$(printf '\t')" read -r name spent; do
@@ -337,9 +384,9 @@ timing_report() {
         printf "  %s%s%s — %s\n" "$C_DIM" "$name" "$C_RESET" "$(human_time "$spent")"
     done
     line
-    printf "  %sВСЕГО%s — %s%s%s\n" "$C_BOLD" "$C_RESET" \
+    printf "  %s%s%s — %s%s%s\n" "$C_BOLD" "$(t time_total)" "$C_RESET" \
         "$C_BOLD" "$(human_time "$total")" "$C_RESET"
-    printf "  %sвремя на сервере: %s%s\n" "$C_DIM" "$(date "+%d.%m.%Y %H:%M:%S %Z")" "$C_RESET"
+    printf "  %s%s: %s%s\n" "$C_DIM" "$(t time_server)" "$(date "+%d.%m.%Y %H:%M:%S %Z")" "$C_RESET"
     log_raw "TIME  установка заняла ${total} с"
 }
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
@@ -846,7 +893,9 @@ banner
 #  Шаг 1. Каталог и лог
 # --------------------------------------------------------------------------
 
-step "Подготовка каталога и журнала установки"
+ask_language
+remember_language
+step "$(t step_prepare)"
 
 mkdir -p "$APP_DIR/data"
 cd "$APP_DIR"
@@ -1146,7 +1195,7 @@ fi
 #  Шаг 2. Проверка окружения
 # --------------------------------------------------------------------------
 
-step "Проверка компонентов системы"
+step "$(t step_check)"
 
 check_ok=true
 
@@ -1242,7 +1291,7 @@ fi
 #  Шаг 3. Обновление системы
 # --------------------------------------------------------------------------
 
-step "Обновление компонентов системы"
+step "$(t step_update)"
 
 # Шкала общая по шагу, плюс отдельная строка на каждый компонент —
 # так видно и общий ход, и чем именно установщик занят сейчас.
@@ -1325,7 +1374,7 @@ progress "$UPD_TOTAL" "$UPD_TOTAL" "компоненты проверены"
 #  Шаг 4. Диагностика существующей установки
 # --------------------------------------------------------------------------
 
-step "Проверка предыдущей установки"
+step "$(t step_previous)"
 
 MODE="новая установка"
 HEALTHY=false
@@ -1485,7 +1534,7 @@ ok "Режим: $MODE"
 #  Шаг 5. Файлы проекта
 # --------------------------------------------------------------------------
 
-step "Развёртывание файлов проекта"
+step "$(t step_deploy)"
 
 # Снимок делается до перезаписи: после неё вернуть прежнюю версию уже нечем
 make_snapshot
@@ -1554,7 +1603,7 @@ ok "Сборщик журналов: $APP_DIR/collect-logs.sh"
 #  Шаг 6. Настройки
 # --------------------------------------------------------------------------
 
-step "Настройка параметров"
+step "$(t step_settings)"
 
 ask() { # ask <подсказка> <переменная> <regexp> <обязательно yes|no>
     local prompt="$1" varname="$2" pattern="$3" required="$4" value=""
@@ -1814,7 +1863,7 @@ TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 #  Шаг 7. Сборка и запуск
 # --------------------------------------------------------------------------
 
-step "Сборка образа и запуск контейнеров"
+step "$(t step_build)"
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
@@ -1971,7 +2020,7 @@ fi
 #  Шаг 8. Диагностика до запуска
 # --------------------------------------------------------------------------
 
-step "Проверка системы до запуска бота"
+step "$(t step_diagnose)"
 
 info "Запускаю диагностику внутри контейнера"
 DOCTOR_OUT="$APP_DIR/.doctor-out.txt"
@@ -2039,7 +2088,7 @@ fi
 #  Шаг 9. Запуск
 # --------------------------------------------------------------------------
 
-step "Запуск бота"
+step "$(t step_start)"
 
 run_slow "Запуск контейнеров" $COMPOSE $COMPOSE_ARGS up -d \
     || die_or_rollback "Не удалось запустить контейнеры"
