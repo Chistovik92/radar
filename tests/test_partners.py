@@ -127,12 +127,29 @@ class TestSlug(unittest.TestCase):
 
 
 class TestDefaults(unittest.TestCase):
-    def test_icon_split_from_title(self):
-        """Значок в PROMO_TITLE не должен задваиваться в списке."""
+    def project(self):
         projects = partners.default_projects()
         if not projects:
             self.skipTest("промо отключено в окружении")
-        self.assertNotIn(projects[0].icon, projects[0].title)
+        return projects[0]
+
+    def test_icon_split_from_title(self):
+        """Значок в PROMO_TITLE не должен задваиваться в списке."""
+        project = self.project()
+        self.assertNotIn(project.icon, project.title)
+
+    def test_description_has_no_markup(self):
+        """PROMO_TEXT писался с HTML, а в списке выводится с экранированием:
+        теги должны быть сняты, иначе человек увидит «<b>HydraSite</b>»."""
+        description = self.project().description
+        for tag in ("<b>", "</b>", "<i>", "<a ", "&lt;"):
+            self.assertNotIn(tag, description)
+
+    def test_description_does_not_repeat_title(self):
+        """Название уже стоит заголовком — повтор в описании выглядит сбоем."""
+        project = self.project()
+        first = project.description.split("\n")[0].strip()
+        self.assertFalse(first.lower().startswith(project.title.lower()))
 
 
 if __name__ == "__main__":

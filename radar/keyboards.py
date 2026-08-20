@@ -92,6 +92,12 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu"),
         ])
         rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
+        # Управление разделами живёт здесь, а не внутри самих разделов:
+        # иначе настройки расползаются по боту и их приходится искать.
+        if features.enabled("partners"):
+            rows.append([InlineKeyboardButton(
+                text="🤝 Партнёрские проекты", callback_data="prj:manage",
+            )])
 
     if roles.is_moderator(role) and features.enabled("web_panel"):
         rows.append([

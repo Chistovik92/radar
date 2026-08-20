@@ -46,7 +46,7 @@ class AddProject(StatesGroup):
     description = State()
 
 
-def _list_keyboard(projects, role: str) -> InlineKeyboardMarkup:
+def _list_keyboard(projects) -> InlineKeyboardMarkup:
     rows = []
     for project in projects:
         # Кнопка-ссылка ведёт наружу сразу: лишний переход через бота
@@ -54,22 +54,21 @@ def _list_keyboard(projects, role: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{project.icon} {project.title}", url=project.url,
         )])
-    if roles.is_superadmin(role):
-        rows.append([InlineKeyboardButton(
-            text="✏️ Управление проектами", callback_data="prj:manage",
-        )])
+    # Кнопки управления здесь нет намеренно: правка разделов собрана
+    # в одном месте — в меню «Управление». Раздел для читателя остаётся
+    # только списком проектов.
     rows.append([InlineKeyboardButton(
         text="🏠 В главное меню", callback_data="menu:main",
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
+async def _render() -> tuple[str, InlineKeyboardMarkup]:
     projects = partners.visible_projects(await partners.load())
     if not projects:
         return (
             "🤝 <b>Партнёрские проекты</b>\n\nСписок пока пуст.",
-            _list_keyboard([], role),
+            _list_keyboard([]),
         )
 
     lines = ["🤝 <b>Партнёрские проекты</b>", ""]
@@ -78,11 +77,11 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
         if project.description:
             lines.append(esc(project.description))
         lines.append("")
-    return "\n".join(lines).strip(), _list_keyboard(projects, role)
+    return "\n".join(lines).strip(), _list_keyboard(projects)
 
 
 @router.message(Command("partner", "vpn", "partners"))
-async def cmd_partners(message: Message, role: str) -> None:
+async def cmd_partners(message: Message) -> None:
     if not features.enabled("partners"):
         # Пока раздел выключен, работает прежняя одиночная кнопка —
         # обновление не должно отнимать у людей то, что уже было.
@@ -90,14 +89,14 @@ async def cmd_partners(message: Message, role: str) -> None:
 
         await button_promo(message)
         return
-    text, markup = await _render(role)
+    text, markup = await _render()
     await message.answer(text, reply_markup=markup, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "menu:partners")
-async def menu_partners(call: CallbackQuery, role: str) -> None:
+async def menu_partners(call: CallbackQuery) -> None:
     await call.answer()
-    text, markup = await _render(role)
+    text, markup = await _render()
     await safe_edit(call, text, markup)
 
 
@@ -115,7 +114,7 @@ def _manage_keyboard(projects) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🗑", callback_data=f"prj:del:{project.slug}"),
         ])
     rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="prj:add")])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:partners")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

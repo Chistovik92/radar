@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.6.4 — автономный установщик.
+# Система «Радар» v4.6.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.6.4"
+VERSION="4.6.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1424,6 +1424,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.6.5", [
+        "🧭 <b>Всё управление собрано в одном месте.</b> Настройки разделов "
+        "больше не живут внутри самих разделов: правка партнёрских проектов "
+        "переехала в меню «Управление», рядом с возможностями, ключами "
+        "и журналами.",
+        "🩹 <b>Исправлена разметка в списке проектов.</b> Описание "
+        "показывалось вместе с тегами и повторяло название заголовком.",
+    ]),
     ("4.6.4", [
         "🤝 <b>Раздел «Партнёрские проекты»</b> вместо одной кнопки. "
         "Список правится прямо в боте: добавить, скрыть, удалить, "
@@ -1783,7 +1791,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.6.4"
+__version__ = "4.6.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7423,14 +7431,35 @@ def default_projects() -> list[Project]:
     parts = title.split(maxsplit=1)
     if len(parts) == 2 and not parts[0].isalnum() and len(parts[0]) <= 4:
         icon, title = parts[0], parts[1]
+    # PROMO_TEXT писался под прямую отправку и содержит HTML-разметку.
+    # В списке он выводится как обычный текст с экранированием, поэтому
+    # теги надо снять здесь — иначе человек увидит «<b>HydraSite</b>».
+    # Заодно убираем первую строку, если она повторяет название: в списке
+    # название уже стоит заголовком, и повтор выглядит ошибкой.
+    from .textutils import strip_tags
+
+    description = strip_tags(config.PROMO_TEXT or "").strip()
+    lines = [line for line in description.split("\n")]
+    while lines and _echoes_title(lines[0], title, icon):
+        lines.pop(0)
+    description = "\n".join(lines).strip()
+
     return [Project(
         slug="hydrasite",
         title=title[:MAX_TITLE],
         url=config.PROMO_URL,
-        description=(config.PROMO_TEXT or "")[:MAX_DESCRIPTION],
+        description=description[:MAX_DESCRIPTION],
         icon=icon,
         order=10,
     )]
+
+
+def _echoes_title(line: str, title: str, icon: str) -> bool:
+    """Повторяет ли строка описания название проекта."""
+    cleaned = line.replace(icon, "").strip()
+    if not cleaned:
+        return True
+    return cleaned.lower().startswith(title.lower())
 
 
 # --------------------------------------------------------------------------
@@ -13878,6 +13907,12 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu"),
         ])
         rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
+        # Управление разделами живёт здесь, а не внутри самих разделов:
+        # иначе настройки расползаются по боту и их приходится искать.
+        if features.enabled("partners"):
+            rows.append([InlineKeyboardButton(
+                text="🤝 Партнёрские проекты", callback_data="prj:manage",
+            )])
 
     if roles.is_moderator(role) and features.enabled("web_panel"):
         rows.append([
@@ -17329,7 +17364,7 @@ class AddProject(StatesGroup):
     description = State()
 
 
-def _list_keyboard(projects, role: str) -> InlineKeyboardMarkup:
+def _list_keyboard(projects) -> InlineKeyboardMarkup:
     rows = []
     for project in projects:
         # Кнопка-ссылка ведёт наружу сразу: лишний переход через бота
@@ -17337,22 +17372,21 @@ def _list_keyboard(projects, role: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{project.icon} {project.title}", url=project.url,
         )])
-    if roles.is_superadmin(role):
-        rows.append([InlineKeyboardButton(
-            text="✏️ Управление проектами", callback_data="prj:manage",
-        )])
+    # Кнопки управления здесь нет намеренно: правка разделов собрана
+    # в одном месте — в меню «Управление». Раздел для читателя остаётся
+    # только списком проектов.
     rows.append([InlineKeyboardButton(
         text="🏠 В главное меню", callback_data="menu:main",
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
+async def _render() -> tuple[str, InlineKeyboardMarkup]:
     projects = partners.visible_projects(await partners.load())
     if not projects:
         return (
             "🤝 <b>Партнёрские проекты</b>\n\nСписок пока пуст.",
-            _list_keyboard([], role),
+            _list_keyboard([]),
         )
 
     lines = ["🤝 <b>Партнёрские проекты</b>", ""]
@@ -17361,11 +17395,11 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
         if project.description:
             lines.append(esc(project.description))
         lines.append("")
-    return "\n".join(lines).strip(), _list_keyboard(projects, role)
+    return "\n".join(lines).strip(), _list_keyboard(projects)
 
 
 @router.message(Command("partner", "vpn", "partners"))
-async def cmd_partners(message: Message, role: str) -> None:
+async def cmd_partners(message: Message) -> None:
     if not features.enabled("partners"):
         # Пока раздел выключен, работает прежняя одиночная кнопка —
         # обновление не должно отнимать у людей то, что уже было.
@@ -17373,14 +17407,14 @@ async def cmd_partners(message: Message, role: str) -> None:
 
         await button_promo(message)
         return
-    text, markup = await _render(role)
+    text, markup = await _render()
     await message.answer(text, reply_markup=markup, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "menu:partners")
-async def menu_partners(call: CallbackQuery, role: str) -> None:
+async def menu_partners(call: CallbackQuery) -> None:
     await call.answer()
-    text, markup = await _render(role)
+    text, markup = await _render()
     await safe_edit(call, text, markup)
 
 
@@ -17398,7 +17432,7 @@ def _manage_keyboard(projects) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🗑", callback_data=f"prj:del:{project.slug}"),
         ])
     rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="prj:add")])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:partners")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

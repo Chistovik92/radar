@@ -157,14 +157,35 @@ def default_projects() -> list[Project]:
     parts = title.split(maxsplit=1)
     if len(parts) == 2 and not parts[0].isalnum() and len(parts[0]) <= 4:
         icon, title = parts[0], parts[1]
+    # PROMO_TEXT писался под прямую отправку и содержит HTML-разметку.
+    # В списке он выводится как обычный текст с экранированием, поэтому
+    # теги надо снять здесь — иначе человек увидит «<b>HydraSite</b>».
+    # Заодно убираем первую строку, если она повторяет название: в списке
+    # название уже стоит заголовком, и повтор выглядит ошибкой.
+    from .textutils import strip_tags
+
+    description = strip_tags(config.PROMO_TEXT or "").strip()
+    lines = [line for line in description.split("\n")]
+    while lines and _echoes_title(lines[0], title, icon):
+        lines.pop(0)
+    description = "\n".join(lines).strip()
+
     return [Project(
         slug="hydrasite",
         title=title[:MAX_TITLE],
         url=config.PROMO_URL,
-        description=(config.PROMO_TEXT or "")[:MAX_DESCRIPTION],
+        description=description[:MAX_DESCRIPTION],
         icon=icon,
         order=10,
     )]
+
+
+def _echoes_title(line: str, title: str, icon: str) -> bool:
+    """Повторяет ли строка описания название проекта."""
+    cleaned = line.replace(icon, "").strip()
+    if not cleaned:
+        return True
+    return cleaned.lower().startswith(title.lower())
 
 
 # --------------------------------------------------------------------------
