@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.6.1 — автономный установщик.
+# Система «Радар» v4.6.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.6.1"
+VERSION="4.6.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -148,8 +148,6 @@ overall() {
 HAS_TTY=false
 [ -t 1 ] && [ -z "${NO_ANIMATION:-}" ] && HAS_TTY=true
 
-SPIN_CHARS='|/-\\'
-SPIN_PID=""
 STEP_STARTED=0
 STEP_TITLE=""
 STEP_TIMES=""          # накопленный отчёт: «название<TAB>секунды»
@@ -166,48 +164,25 @@ human_time() {         # human_time <секунд>
     fi
 }
 
-# Полоса этапа. Крутится, пока идёт длинная операция, и стирает себя за собой.
-spinner_start() {      # spinner_start <подпись>
+# Полоса этапа рисуется в ОСНОВНОМ процессе, пока в фоне работает команда.
+#
+# Первый вариант делал наоборот — крутил полосу фоновым процессом, — и это
+# оказалось ошибкой: фоновая полоса переживала свой этап, продолжала писать
+# поверх чужого вывода, и к концу установки на экране крутились сразу
+# несколько полос от разных шагов. Здесь убежать нечему: цикл кончается
+# вместе с командой, потому что он её и ждёт.
+erase_line() {
     [ "$HAS_TTY" = true ] || return 0
-    local caption="$1"
-    (
-        local frame=0 width=22 position=0 direction=1
-        while :; do
-            local bar="" index=0
-            while [ "$index" -lt "$width" ]; do
-                if [ "$index" -eq "$position" ]; then bar="$bar#"; else bar="$bar."; fi
-                index=$((index + 1))
-            done
-            printf "\r  %s%s%s [%s] %s" \
-                "$C_CYAN" "${SPIN_CHARS:frame:1}" "$C_RESET" "$bar" "$caption"
-            frame=$(( (frame + 1) % 4 ))
-            position=$((position + direction))
-            [ "$position" -ge $((width - 1)) ] && direction=-1
-            [ "$position" -le 0 ] && direction=1
-            sleep 0.12
-        done
-    ) &
-    SPIN_PID=$!
-    # Отключаем уведомление оболочки о завершении фоновой задачи: иначе
-    # в конце этапа посреди вывода появляется «Terminated».
-    disown "$SPIN_PID" 2>/dev/null || true
+    printf "\r%s\r" "$(repeat ' ' $((COLS > 1 ? COLS - 1 : 40)))"
 }
 
-spinner_stop() {
-    [ -n "$SPIN_PID" ] || return 0
-    kill "$SPIN_PID" 2>/dev/null || true
-    wait "$SPIN_PID" 2>/dev/null || true
-    SPIN_PID=""
-    # Стираем строку целиком: остатки полосы иначе перемешаются с отчётом.
-    printf "\r%s\r" "$(repeat ' ' "$COLS")"
-}
-
-# Полосу нельзя оставить крутиться, если установка оборвалась.
-trap 'spinner_stop' EXIT
+# Если установка оборвалась посреди полосы, строку надо стереть,
+# иначе итоговое сообщение допишется в её хвост.
+trap 'erase_line' EXIT
 
 step_finish() {
     [ -n "$STEP_TITLE" ] || return 0
-    spinner_stop
+    erase_line
     local spent=$(( $(date +%s) - STEP_STARTED ))
     printf "  %s└%s %sзавершено за %s%s\n" \
         "$C_DIM" "$C_RESET" "$C_DIM" "$(human_time "$spent")" "$C_RESET"
@@ -337,6 +312,15 @@ SPINNER_PID=""
 
 spinner_start() {     # spinner_start <подпись>
     local label="$1"
+    # Без терминала анимация превращается в мусор из управляющих
+    # последовательностей: при `curl | bash` и в CI её быть не должно.
+    if [ "$HAS_TTY" != true ]; then
+        info "$label"
+        return 0
+    fi
+    # Второй спиннер поверх первого — источник каши на экране: полосы разных
+    # шагов начинают перебивать друг друга. Прежний всегда гасим.
+    spinner_stop
     ( 
         local index=0 pos=0 dir=1 width=24
         while :; do
@@ -363,6 +347,9 @@ spinner_stop() {      # spinner_stop [подпись завершения]
         kill "$SPINNER_PID" 2>/dev/null || true
         wait "$SPINNER_PID" 2>/dev/null || true
         SPINNER_PID=""
+        # Строку обязательно затираем: иначе следующая печать допишется
+        # в хвост полосы, и на экране остаются обрывки «сборка образа…».
+        erase_line
     fi
     progress_done
     [ -n "${1:-}" ] && ok "$1"
@@ -1437,6 +1424,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.6.2", [
+        "🛠 <b>Установщик больше не рисует полосы поверх полос.</b> "
+        "В шаблоне оказалось два спиннера с одинаковыми именами: полосы "
+        "разных шагов перебивали друг друга и переживали свой этап.",
+        "🧠 <b>Подняты лимиты обращений к ИИ</b> — тематические ленты дают "
+        "в разы больше материала, и на прежней квоте подборки объедали "
+        "оповещения об опасности.",
+        "📰 <b>Ленты источников обновлены</b> по проверенному списку: "
+        "ixbt.games, 4PDA, CNews, Championat, Р-Спорт, ТАСС, РИА, "
+        "«Интерфакс», РБК, ЦБ, Мосбиржа и другие.",
+    ]),
     ("4.6.1", [
         "🎮 <b>Шесть новых тематик подборок:</b> IT и игры, наука и техника, "
         "спорт, хобби и авто, кино и сериалы, деньги и рынки. У каждой свои "
@@ -1771,7 +1769,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.6.1"
+__version__ = "4.6.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -1830,12 +1828,20 @@ AI_CONCURRENCY: int = max(1, _int("AI_CONCURRENCY", 2))
 AI_TIMEOUT: int = max(20, _int("AI_TIMEOUT", 90))
 
 # Квоты бесплатного тарифа Gemini. Уточняйте актуальные значения в AI Studio.
-AI_RPM: int = max(1, _int("AI_RPM", 10))
-AI_RPD: int = max(1, _int("AI_RPD", 250))
+# Лимиты подняты в 4.6.2 вместе с тематическими лентами: восемь наборов
+# источников дают в разы больше материала, чем городские каналы, и на
+# прежних 250 запросах в сутки подборки выедали квоту, оставляя оповещения
+# об опасности без модели. Значения соответствуют бесплатному уровню
+# Gemini Flash; при своём ключе можно поднять ещё, через .env.
+AI_RPM: int = max(1, _int("AI_RPM", 15))
+AI_RPD: int = max(1, _int("AI_RPD", 1000))
 # Сколько суточных запросов держать в резерве только под ИИ-ассистента.
-AI_RESERVE: int = max(0, _int("AI_RESERVE", 40))
+# Резерв под оповещения растёт вместе с общим лимитом: он и есть
+# то, что защищает тревоги от прожорливых подборок.
+AI_RESERVE: int = max(0, _int("AI_RESERVE", 150))
 # Сколько новостей отправлять в модель одним запросом.
-AI_BATCH_SIZE: int = max(1, _int("AI_BATCH_SIZE", 8))
+# Крупнее пачка — меньше запросов на тот же объём новостей.
+AI_BATCH_SIZE: int = max(1, _int("AI_BATCH_SIZE", 12))
 # Пауза фонового анализа после ответа 429, секунды.
 AI_COOLDOWN: int = max(60, _int("AI_COOLDOWN", 900))
 # Прогонять сообщения через фильтр по ключевым словам до обращения к модели.
@@ -3886,8 +3892,14 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         channels=["ixbtgames", "ixbtnocomments", "makarenkoff_games"],
         rss=[
             "https://www.ixbt.com/export/news.rss",
-            "https://3dnews.ru/news/rss/",
+            "https://ixbt.games/export/news/rss.xml",
+            "https://4pda.to/feed/",
+            "https://cnews.ru/inc/rss/news.xml",
+            # Именно новостная лента Хабра, а не all/all: полная включает
+            # блоги и комментарии — на слабом сервере это тонны шума,
+            # который всё равно отсеется, но уже после разбора.
             "https://habr.com/ru/rss/news/?fl=ru",
+            "https://3dnews.ru/news/rss/",
         ],
         vk=["makarenkoff_games"],
         note="Каналы ixbt дают и игры, и железо; makarenkoff_games "
@@ -3897,8 +3909,8 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         topic="science",
         title="Наука и техника",
         rss=[
-            "https://nplus1.ru/rss",
             "https://naked-science.ru/feed",
+            "https://nplus1.ru/rss",
         ],
     ),
     ThematicPreset(
@@ -3906,7 +3918,8 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         title="Спорт",
         rss=[
             "https://www.sports.ru/rss/all_news.xml",
-            "https://matchtv.ru/rss",
+            "https://www.championat.com/rss/news/",
+            "https://rsport.ria.ru/export/rss2/archive/index.xml",
         ],
     ),
     ThematicPreset(
@@ -3921,17 +3934,41 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         topic="cinema",
         title="Кино и сериалы",
         rss=[
-            "https://www.kinopoisk.ru/media/rss/",
-            "https://dtf.ru/rss/all",
+            "https://dtf.ru/rss/cinema",
+            "https://www.mirf.ru/feed/",
+            "https://tass.ru/rss/kultura.xml",
         ],
     ),
     ThematicPreset(
         topic="finance",
         title="Деньги и рынки",
         rss=[
-            "https://www.rbc.ru/v10/ajax/rss/feed/economics",
-            "https://quote.rbc.ru/v10/ajax/rss/feed",
+            "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",
+            "https://www.kommersant.ru/RSS/section-finance.xml",
+            "https://www.cbr.ru/rss/eventrss/",
+            "https://www.moex.com/export/news.aspx?cat=101",
         ],
+    ),
+    ThematicPreset(
+        topic="federal",
+        title="Федеральное",
+        rss=[
+            "https://tass.ru/rss/v2.xml",
+            "https://ria.ru/export/rss2/archive/index.xml",
+            "https://www.interfax.ru/rss.asp",
+            "https://lenta.ru/rss/news",
+        ],
+        note="Самый плотный поток из всех наборов: ленты информагентств "
+             "дают сотни сообщений в сутки. Подключается только тем, кто "
+             "подписан на тематику «Федеральное».",
+    ),
+    ThematicPreset(
+        topic="weather_nature",
+        title="Погода и природа",
+        rss=["https://meteoinfo.ru/rss/forecasts/"],
+        note="Прогнозы Гидрометцентра. Личная погода по локациям берётся "
+             "не отсюда, а из Open-Meteo — эта лента для новостей "
+             "о паводках, штормовых предупреждениях и погоде в целом.",
     ),
 )
 

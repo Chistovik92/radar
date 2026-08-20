@@ -148,8 +148,6 @@ overall() {
 HAS_TTY=false
 [ -t 1 ] && [ -z "${NO_ANIMATION:-}" ] && HAS_TTY=true
 
-SPIN_CHARS='|/-\\'
-SPIN_PID=""
 STEP_STARTED=0
 STEP_TITLE=""
 STEP_TIMES=""          # накопленный отчёт: «название<TAB>секунды»
@@ -166,48 +164,25 @@ human_time() {         # human_time <секунд>
     fi
 }
 
-# Полоса этапа. Крутится, пока идёт длинная операция, и стирает себя за собой.
-spinner_start() {      # spinner_start <подпись>
+# Полоса этапа рисуется в ОСНОВНОМ процессе, пока в фоне работает команда.
+#
+# Первый вариант делал наоборот — крутил полосу фоновым процессом, — и это
+# оказалось ошибкой: фоновая полоса переживала свой этап, продолжала писать
+# поверх чужого вывода, и к концу установки на экране крутились сразу
+# несколько полос от разных шагов. Здесь убежать нечему: цикл кончается
+# вместе с командой, потому что он её и ждёт.
+erase_line() {
     [ "$HAS_TTY" = true ] || return 0
-    local caption="$1"
-    (
-        local frame=0 width=22 position=0 direction=1
-        while :; do
-            local bar="" index=0
-            while [ "$index" -lt "$width" ]; do
-                if [ "$index" -eq "$position" ]; then bar="$bar#"; else bar="$bar."; fi
-                index=$((index + 1))
-            done
-            printf "\r  %s%s%s [%s] %s" \
-                "$C_CYAN" "${SPIN_CHARS:frame:1}" "$C_RESET" "$bar" "$caption"
-            frame=$(( (frame + 1) % 4 ))
-            position=$((position + direction))
-            [ "$position" -ge $((width - 1)) ] && direction=-1
-            [ "$position" -le 0 ] && direction=1
-            sleep 0.12
-        done
-    ) &
-    SPIN_PID=$!
-    # Отключаем уведомление оболочки о завершении фоновой задачи: иначе
-    # в конце этапа посреди вывода появляется «Terminated».
-    disown "$SPIN_PID" 2>/dev/null || true
+    printf "\r%s\r" "$(repeat ' ' $((COLS > 1 ? COLS - 1 : 40)))"
 }
 
-spinner_stop() {
-    [ -n "$SPIN_PID" ] || return 0
-    kill "$SPIN_PID" 2>/dev/null || true
-    wait "$SPIN_PID" 2>/dev/null || true
-    SPIN_PID=""
-    # Стираем строку целиком: остатки полосы иначе перемешаются с отчётом.
-    printf "\r%s\r" "$(repeat ' ' "$COLS")"
-}
-
-# Полосу нельзя оставить крутиться, если установка оборвалась.
-trap 'spinner_stop' EXIT
+# Если установка оборвалась посреди полосы, строку надо стереть,
+# иначе итоговое сообщение допишется в её хвост.
+trap 'erase_line' EXIT
 
 step_finish() {
     [ -n "$STEP_TITLE" ] || return 0
-    spinner_stop
+    erase_line
     local spent=$(( $(date +%s) - STEP_STARTED ))
     printf "  %s└%s %sзавершено за %s%s\n" \
         "$C_DIM" "$C_RESET" "$C_DIM" "$(human_time "$spent")" "$C_RESET"
@@ -337,6 +312,15 @@ SPINNER_PID=""
 
 spinner_start() {     # spinner_start <подпись>
     local label="$1"
+    # Без терминала анимация превращается в мусор из управляющих
+    # последовательностей: при `curl | bash` и в CI её быть не должно.
+    if [ "$HAS_TTY" != true ]; then
+        info "$label"
+        return 0
+    fi
+    # Второй спиннер поверх первого — источник каши на экране: полосы разных
+    # шагов начинают перебивать друг друга. Прежний всегда гасим.
+    spinner_stop
     ( 
         local index=0 pos=0 dir=1 width=24
         while :; do
@@ -363,6 +347,9 @@ spinner_stop() {      # spinner_stop [подпись завершения]
         kill "$SPINNER_PID" 2>/dev/null || true
         wait "$SPINNER_PID" 2>/dev/null || true
         SPINNER_PID=""
+        # Строку обязательно затираем: иначе следующая печать допишется
+        # в хвост полосы, и на экране остаются обрывки «сборка образа…».
+        erase_line
     fi
     progress_done
     [ -n "${1:-}" ] && ok "$1"

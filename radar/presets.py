@@ -208,8 +208,14 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         channels=["ixbtgames", "ixbtnocomments", "makarenkoff_games"],
         rss=[
             "https://www.ixbt.com/export/news.rss",
-            "https://3dnews.ru/news/rss/",
+            "https://ixbt.games/export/news/rss.xml",
+            "https://4pda.to/feed/",
+            "https://cnews.ru/inc/rss/news.xml",
+            # Именно новостная лента Хабра, а не all/all: полная включает
+            # блоги и комментарии — на слабом сервере это тонны шума,
+            # который всё равно отсеется, но уже после разбора.
             "https://habr.com/ru/rss/news/?fl=ru",
+            "https://3dnews.ru/news/rss/",
         ],
         vk=["makarenkoff_games"],
         note="Каналы ixbt дают и игры, и железо; makarenkoff_games "
@@ -219,8 +225,8 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         topic="science",
         title="Наука и техника",
         rss=[
-            "https://nplus1.ru/rss",
             "https://naked-science.ru/feed",
+            "https://nplus1.ru/rss",
         ],
     ),
     ThematicPreset(
@@ -228,7 +234,8 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         title="Спорт",
         rss=[
             "https://www.sports.ru/rss/all_news.xml",
-            "https://matchtv.ru/rss",
+            "https://www.championat.com/rss/news/",
+            "https://rsport.ria.ru/export/rss2/archive/index.xml",
         ],
     ),
     ThematicPreset(
@@ -243,17 +250,41 @@ THEMATIC: tuple[ThematicPreset, ...] = (
         topic="cinema",
         title="Кино и сериалы",
         rss=[
-            "https://www.kinopoisk.ru/media/rss/",
-            "https://dtf.ru/rss/all",
+            "https://dtf.ru/rss/cinema",
+            "https://www.mirf.ru/feed/",
+            "https://tass.ru/rss/kultura.xml",
         ],
     ),
     ThematicPreset(
         topic="finance",
         title="Деньги и рынки",
         rss=[
-            "https://www.rbc.ru/v10/ajax/rss/feed/economics",
-            "https://quote.rbc.ru/v10/ajax/rss/feed",
+            "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",
+            "https://www.kommersant.ru/RSS/section-finance.xml",
+            "https://www.cbr.ru/rss/eventrss/",
+            "https://www.moex.com/export/news.aspx?cat=101",
         ],
+    ),
+    ThematicPreset(
+        topic="federal",
+        title="Федеральное",
+        rss=[
+            "https://tass.ru/rss/v2.xml",
+            "https://ria.ru/export/rss2/archive/index.xml",
+            "https://www.interfax.ru/rss.asp",
+            "https://lenta.ru/rss/news",
+        ],
+        note="Самый плотный поток из всех наборов: ленты информагентств "
+             "дают сотни сообщений в сутки. Подключается только тем, кто "
+             "подписан на тематику «Федеральное».",
+    ),
+    ThematicPreset(
+        topic="weather_nature",
+        title="Погода и природа",
+        rss=["https://meteoinfo.ru/rss/forecasts/"],
+        note="Прогнозы Гидрометцентра. Личная погода по локациям берётся "
+             "не отсюда, а из Open-Meteo — эта лента для новостей "
+             "о паводках, штормовых предупреждениях и погоде в целом.",
     ),
 )
 
