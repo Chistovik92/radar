@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.3 — автономный установщик.
+# Система «Радар» v4.7.3.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -24,6 +24,8 @@
 #   --reset          полный сброс: копия данных, затем установка с нуля
 #   --backup         только снять резервную копию и выйти
 #   --lang=ru|en     язык установщика (по умолчанию русский)
+#   --version=ТЕГ    поставить конкретный релиз (в том числе откатиться назад)
+#   --versions       показать доступные версии
 #   --restore-url=…  развернуть систему по ссылке со старого сервера
 #   --migrate        собрать всё для переезда на другую машину
 #   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
@@ -44,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.3"
+VERSION="4.7.3.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -60,6 +62,8 @@ CLI_MODE_SET=false      # способ установки задан ключо�
 BACKUP_PATH=""
 SKIP_UPDATES=false
 MIGRATE_OUT=false
+TARGET_VERSION=""
+LIST_VERSIONS=false
 RESTORE_FROM=""
 RESTORE_URL=""
 RESTORED=false
@@ -87,6 +91,8 @@ show_help() {
   --reset          полный сброс: копия данных, затем установка с нуля
   --backup         только снять резервную копию и выйти
   --lang=ru|en     язык установщика (по умолчанию русский)
+  --version=ТЕГ    поставить конкретный релиз (в том числе откатиться назад)
+  --versions       показать доступные версии
   --restore-url=…  развернуть систему по ссылке со старого сервера
   --migrate        собрать всё для переезда на другую машину
   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
@@ -108,6 +114,8 @@ for arg in "$@"; do
         --backup)       BACKUP_ONLY=true ;;
         --rollback)     ROLLBACK_ONLY=true ;;
         --migrate)      MIGRATE_OUT=true ;;
+        --version=*)    TARGET_VERSION="${arg#*=}" ;;
+        --versions)     LIST_VERSIONS=true ;;
         --lang=*)       RADAR_LANG="${arg#*=}" ;;
         --restore-url=*) RESTORE_URL="${arg#*=}" ;;
         --restore=*)    RESTORE_FROM="${arg#*=}" ;;
@@ -174,6 +182,17 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            versions_title)      value="Available versions" ;;
+            versions_main)       value="latest code, may be unreleased" ;;
+            versions_failed)     value="Could not fetch the list of releases from GitHub" ;;
+            versions_howto)      value="To install a specific one:" ;;
+            step_fetch_version)  value="Fetching the requested version" ;;
+            version_unknown)     value="No such release:" ;;
+            version_download_failed) value="Could not download that version" ;;
+            version_broken)      value="The downloaded installer is damaged" ;;
+            version_ready)       value="Installer ready:" ;;
+            version_handoff)     value="Handing over to that version's installer…" ;;
+            rollback_offer)      value="Roll back to a previous release?" ;;
             step_migrate)        value="Collecting data for migration" ;;
             migrate_no_install)  value="Installation not found in $APP_DIR" ;;
             migrate_backup_failed) value="Could not create the copy" ;;
@@ -219,6 +238,17 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            versions_title)      value="Доступные версии" ;;
+            versions_main)       value="последний код, возможно без релиза" ;;
+            versions_failed)     value="Не удалось получить список релизов с GitHub" ;;
+            versions_howto)      value="Поставить конкретную:" ;;
+            step_fetch_version)  value="Загрузка выбранной версии" ;;
+            version_unknown)     value="Такого релиза нет:" ;;
+            version_download_failed) value="Не удалось скачать эту версию" ;;
+            version_broken)      value="Скачанный установщик повреждён" ;;
+            version_ready)       value="Установщик получен:" ;;
+            version_handoff)     value="Передаю управление установщику этой версии…" ;;
+            rollback_offer)      value="Откатиться на предыдущий релиз?" ;;
             step_migrate)        value="Сбор данных для переезда" ;;
             migrate_no_install)  value="Установка не найдена в $APP_DIR" ;;
             migrate_backup_failed) value="Не удалось собрать копию" ;;
@@ -804,6 +834,11 @@ do_rollback() {       # do_rollback [путь к снимку]
     return 0
 }
 
+previous_release() {
+    # Предпоследний тег: последний — это, скорее всего, тот, что сломался.
+    fetch_versions | sed -n '2p'
+}
+
 offer_rollback() {    # offer_rollback <причина>
     local reason="$1" archive
     archive="$(latest_snapshot)"
@@ -822,7 +857,10 @@ offer_rollback() {    # offer_rollback <причина>
     printf "    %s2) Восстановить и файлы, и базу данных%s\n" "$C_BOLD" "$C_RESET"
     printf "       %sполный откат к состоянию до запуска установщика%s\n" \
         "$C_DIM" "$C_RESET"
-    printf "    %s3) Ничего не делать — разберусь сам%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "    %s3) %s%s\n" "$C_BOLD" "$(t rollback_offer)" "$C_RESET"
+    printf "       %sскачать и поставить предыдущий релиз с GitHub%s\n" \
+        "$C_DIM" "$C_RESET"
+    printf "    %s4) Ничего не делать — разберусь сам%s\n\n" "$C_BOLD" "$C_RESET"
     printf "  Выбор [1]: "
 
     local answer=""
@@ -840,6 +878,26 @@ offer_rollback() {    # offer_rollback <причина>
             [ -z "$archive" ] && { warn "Копии нет, восстановление невозможно"; return 1; }
             restore_database || warn "Базу восстановить не удалось"
             do_rollback "$archive" && return 0
+            return 1
+            ;;
+        3)
+            # Снимок мог не помочь, если сломан сам код: тогда берём
+            # предыдущий релиз с GitHub — заведомо рабочий, его уже ставили.
+            local previous
+            previous="$(previous_release)"
+            if [ -z "$previous" ]; then
+                warn "$(t versions_failed)"
+                return 1
+            fi
+            info "Ставлю предыдущий релиз: $previous"
+            local older
+            older="$(mktemp)"
+            if curl -fsSL --max-time 60 -o "$older" \
+                    "$RAW_BASE/$previous/install.sh" && bash -n "$older" 2>/dev/null; then
+                exec bash "$older" --lang="$LANG_CODE"
+            fi
+            rm -f "$older"
+            warn "$(t version_download_failed)"
             return 1
             ;;
         *)
@@ -1148,6 +1206,82 @@ detect_address() {
     fi
     printf '%s' "${address:-АДРЕС-СТАРОГО-СЕРВЕРА}"
 }
+
+# --------------------------------------------------------------------------
+#  Установка выбранной версии из GitHub (с 4.7.3.1)
+# --------------------------------------------------------------------------
+#
+# Три сценария, которые раньше делались руками:
+#   --version=v4.6.1  поставить конкретный релиз (в том числе более старый —
+#                     это и есть откат на предыдущую версию);
+#   --versions        показать, что вообще доступно;
+#   по умолчанию      ставится код из main, независимо от того, оформлен
+#                     он релизом или нет: на сервере автора должна
+#                     оказываться последняя версия, а не последняя
+#                     помеченная тегом.
+#
+# Откат намеренно не запрещён и не требует подтверждения: если новая
+# версия сломалась, человеку нужно вернуться назад немедленно, а не
+# доказывать установщику, что он понимает последствия. Предупреждение
+# выводится, снимок снимается — этого достаточно.
+
+RELEASES_API="https://api.github.com/repos/Chistovik92/radar/releases"
+RAW_BASE="https://raw.githubusercontent.com/Chistovik92/radar"
+
+fetch_versions() {
+    curl -fsSL --max-time 20 "$RELEASES_API" 2>/dev/null \
+        | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true
+}
+
+if [ "$LIST_VERSIONS" = true ]; then
+    banner
+    printf "  %s%s%s\n\n" "$C_BOLD" "$(t versions_title)" "$C_RESET"
+    versions="$(fetch_versions)"
+    if [ -z "$versions" ]; then
+        warn "$(t versions_failed)"
+        exit 1
+    fi
+    printf "    %smain%s — %s\n" "$C_CYAN" "$C_RESET" "$(t versions_main)"
+    printf '%s\n' "$versions" | while read -r tag; do
+        [ -n "$tag" ] && printf "    %s%s%s\n" "$C_CYAN" "$tag" "$C_RESET"
+    done
+    printf "\n  %s\n" "$(t versions_howto)"
+    printf "    sudo bash install.sh --version=v4.6.1\n\n"
+    exit 0
+fi
+
+if [ -n "$TARGET_VERSION" ] && [ "$TARGET_VERSION" != "main" ]; then
+    banner
+    step "$(t step_fetch_version)"
+
+    # Проверяем, что такая версия существует: иначе curl молча скачает
+    # страницу 404 и мы попытаемся выполнить HTML как скрипт.
+    if ! fetch_versions | grep -qx "$TARGET_VERSION"; then
+        warn "$(t version_unknown) $TARGET_VERSION"
+        printf "  %s\n" "$(t versions_howto)"
+        printf "    sudo bash install.sh --versions\n\n"
+        exit 1
+    fi
+
+    NEW_INSTALLER="$(mktemp)"
+    if ! curl -fsSL --max-time 60 -o "$NEW_INSTALLER" \
+            "$RAW_BASE/$TARGET_VERSION/install.sh"; then
+        rm -f "$NEW_INSTALLER"
+        die "$(t version_download_failed)"
+    fi
+
+    # Скачанное — тоже bash-скрипт, и он может быть повреждён при передаче.
+    if ! bash -n "$NEW_INSTALLER" 2>/dev/null; then
+        rm -f "$NEW_INSTALLER"
+        die "$(t version_broken)"
+    fi
+
+    ok "$(t version_ready) $TARGET_VERSION"
+    printf "  %s\n\n" "$(t version_handoff)"
+    # Передаём управление установщику нужной версии, убрав --version,
+    # иначе он попытается скачать сам себя по кругу.
+    exec bash "$NEW_INSTALLER" ${SKIP_UPDATES:+--skip-updates} --lang="$LANG_CODE"
+fi
 
 if [ "$MIGRATE_OUT" = true ]; then
     [ -d "$APP_DIR" ] || die "$(t migrate_no_install)"
@@ -1838,6 +1972,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.3.1", [
+        "🌍 <b>Меню переведено.</b> При английском языке кнопки оставались "
+        "русскими: меню собиралось без учёта выбранного языка.",
+        "📦 <b>Установка любой версии с GitHub:</b> "
+        "<code>--versions</code> покажет список, "
+        "<code>--version=v4.6.1</code> поставит нужную. "
+        "Установка более старой версии и есть откат.",
+        "🛟 <b>Сорванная установка предлагает предыдущий релиз</b> — "
+        "на случай, когда сломан сам код и снимок не спасает.",
+        "📄 <b>README на английском</b> — README.en.md.",
+    ]),
     ("4.7.3", [
         "🌍 <b>Бот говорит на двух языках.</b> При первом обращении "
         "спросит, какой выбрать — и у новых, и у тех, кто пользовался "
@@ -2253,7 +2398,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.3"
+__version__ = "4.7.3.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -15073,7 +15218,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from . import config, features, roles
+from . import config, features, i18n, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
@@ -15084,45 +15229,65 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     кнопку, иначе у суперадминистратора меню разрасталось до полутора
     десятков строк и переставало читаться.
     """
+    # Язык берётся из записи пользователя. Раньше меню собиралось без него,
+    # и при английском интерфейсе кнопки оставались русскими — интерфейс
+    # выглядел переведённым наполовину, что хуже, чем не переведённым вовсе.
+    lang = i18n.language_of(user)
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows = [
         [
-            InlineKeyboardButton(text="📍 Мои локации", callback_data="loc:list"),
-            InlineKeyboardButton(text="🌤 Погода", callback_data="loc:weather"),
+            InlineKeyboardButton(text=label("menu.locations", "📍 Мои локации"),
+                                 callback_data="loc:list"),
+            InlineKeyboardButton(text=label("menu.weather", "🌤 Погода"),
+                                 callback_data="loc:weather"),
         ],
         [
-            InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
-            InlineKeyboardButton(text="📢 Предложить источник", callback_data="src:suggest"),
+            InlineKeyboardButton(text=label("menu.alerts", "⚙️ Оповещения"),
+                                 callback_data="menu:settings"),
+            InlineKeyboardButton(text=label("menu.suggest", "📢 Предложить источник"),
+                                 callback_data="src:suggest"),
         ],
-        [InlineKeyboardButton(text="🔗 Пригласить", callback_data="usr:invite")],
+        [InlineKeyboardButton(text=label("menu.invite", "🔗 Пригласить"),
+                              callback_data="usr:invite")],
     ]
 
     if features.enabled("digest"):
-        rows.append([
-            InlineKeyboardButton(text="📰 Новостные подборки", callback_data="dig:menu")
-        ])
+        rows.append([InlineKeyboardButton(
+            text=label("menu.digest", "📰 Новостные подборки"),
+            callback_data="dig:menu")])
     if features.enabled("sos"):
-        rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
+        rows.append([InlineKeyboardButton(text=label("menu.sos", "🆘 SOS"),
+                                          callback_data="sos:menu")])
 
     # Журнал и загрузка видео жили без входа: журнал не вызывался ниоткуда,
     # видео открывалось только командой /media, о которой надо было знать.
     extra = []
     if features.enabled("history"):
-        extra.append(InlineKeyboardButton(text="📖 Журнал", callback_data="menu:history"))
+        extra.append(InlineKeyboardButton(text=label("menu.history", "📖 Журнал"),
+                                          callback_data="menu:history"))
     if features.enabled("media_download"):
-        extra.append(InlineKeyboardButton(text="🎬 Скачать видео", callback_data="med:menu"))
+        extra.append(InlineKeyboardButton(text=label("menu.media", "🎬 Скачать видео"),
+                                          callback_data="med:menu"))
     if extra:
         rows.append(extra)
 
     if roles.can_use_assistant(role):
-        rows.append([InlineKeyboardButton(text="🧠 ИИ-ассистент", callback_data="menu:ai")])
+        rows.append([InlineKeyboardButton(text=label("menu.assistant", "🧠 ИИ-ассистент"),
+                                          callback_data="menu:ai")])
 
     # Один вход в управление вместо россыпи кнопок
     if roles.is_moderator(role):
-        rows.append([InlineKeyboardButton(text="🛠 Управление", callback_data="menu:manage")])
+        rows.append([InlineKeyboardButton(text=label("menu.manage", "🛠 Управление"),
+                                          callback_data="menu:manage")])
 
     rows.append([
-        InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about"),
-        InlineKeyboardButton(text="🌍 Язык", callback_data="menu:lang"),
+        InlineKeyboardButton(text=label("menu.about", "ℹ️ О системе"),
+                             callback_data="menu:about"),
+        InlineKeyboardButton(text=label("lang.button", "🌍 Язык"),
+                             callback_data="menu:lang"),
     ])
 
     promo = promo_row()
@@ -16294,7 +16459,7 @@ def greeting(role: str) -> str:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
+async def cmd_start(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     # Закреплённые кнопки ставятся отдельным сообщением: Telegram не позволяет
     # приложить reply-клавиатуру и inline-меню к одному и тому же сообщению.
@@ -16304,19 +16469,19 @@ async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
             "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
             reply_markup=keyboard,
         )
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(Command("menu"))
-async def cmd_menu(message: Message, state: FSMContext, role: str) -> None:
+async def cmd_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_MENU)
-async def button_menu(message: Message, state: FSMContext, role: str) -> None:
+async def button_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_PROMO)
@@ -16336,9 +16501,9 @@ async def cmd_partner(message: Message) -> None:
 
 
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext, role: str) -> None:
+async def cmd_cancel(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer("✅ Действие отменено.", reply_markup=keyboards.main_menu(role))
+    await message.answer("✅ Действие отменено.", reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(Command("id"))
@@ -16386,10 +16551,10 @@ async def cmd_help(message: Message, role: str) -> None:
 
 
 @router.callback_query(F.data == "menu:main")
-async def menu_main(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def menu_main(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     await call.answer()
-    await safe_edit(call, greeting(role), keyboards.main_menu(role))
+    await safe_edit(call, greeting(role), keyboards.main_menu(role, user))
 
 
 @router.callback_query(F.data == "menu:settings")
@@ -21821,7 +21986,7 @@ async def cmd_reset(message: Message, role: str) -> None:
 
 
 @router.message(F.text)
-async def free_chat(message: Message, state: FSMContext, role: str) -> None:
+async def free_chat(message: Message, state: FSMContext, role: str, user: dict) -> None:
     if await state.get_state() is not None:
         await message.answer("⏳ Завершите текущее действие или отправьте /cancel.")
         return
@@ -21834,7 +21999,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
     if not roles.can_use_assistant(role):
         await message.answer(
             "Воспользуйтесь меню — или отправьте геопозицию, чтобы добавить локацию.",
-            reply_markup=keyboards.main_menu(role),
+            reply_markup=keyboards.main_menu(role, user),
         )
         return
 

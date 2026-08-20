@@ -17,7 +17,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from . import config, features, roles
+from . import config, features, i18n, roles
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
@@ -28,45 +28,65 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     кнопку, иначе у суперадминистратора меню разрасталось до полутора
     десятков строк и переставало читаться.
     """
+    # Язык берётся из записи пользователя. Раньше меню собиралось без него,
+    # и при английском интерфейсе кнопки оставались русскими — интерфейс
+    # выглядел переведённым наполовину, что хуже, чем не переведённым вовсе.
+    lang = i18n.language_of(user)
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows = [
         [
-            InlineKeyboardButton(text="📍 Мои локации", callback_data="loc:list"),
-            InlineKeyboardButton(text="🌤 Погода", callback_data="loc:weather"),
+            InlineKeyboardButton(text=label("menu.locations", "📍 Мои локации"),
+                                 callback_data="loc:list"),
+            InlineKeyboardButton(text=label("menu.weather", "🌤 Погода"),
+                                 callback_data="loc:weather"),
         ],
         [
-            InlineKeyboardButton(text="⚙️ Оповещения", callback_data="menu:settings"),
-            InlineKeyboardButton(text="📢 Предложить источник", callback_data="src:suggest"),
+            InlineKeyboardButton(text=label("menu.alerts", "⚙️ Оповещения"),
+                                 callback_data="menu:settings"),
+            InlineKeyboardButton(text=label("menu.suggest", "📢 Предложить источник"),
+                                 callback_data="src:suggest"),
         ],
-        [InlineKeyboardButton(text="🔗 Пригласить", callback_data="usr:invite")],
+        [InlineKeyboardButton(text=label("menu.invite", "🔗 Пригласить"),
+                              callback_data="usr:invite")],
     ]
 
     if features.enabled("digest"):
-        rows.append([
-            InlineKeyboardButton(text="📰 Новостные подборки", callback_data="dig:menu")
-        ])
+        rows.append([InlineKeyboardButton(
+            text=label("menu.digest", "📰 Новостные подборки"),
+            callback_data="dig:menu")])
     if features.enabled("sos"):
-        rows.append([InlineKeyboardButton(text="🆘 SOS", callback_data="sos:menu")])
+        rows.append([InlineKeyboardButton(text=label("menu.sos", "🆘 SOS"),
+                                          callback_data="sos:menu")])
 
     # Журнал и загрузка видео жили без входа: журнал не вызывался ниоткуда,
     # видео открывалось только командой /media, о которой надо было знать.
     extra = []
     if features.enabled("history"):
-        extra.append(InlineKeyboardButton(text="📖 Журнал", callback_data="menu:history"))
+        extra.append(InlineKeyboardButton(text=label("menu.history", "📖 Журнал"),
+                                          callback_data="menu:history"))
     if features.enabled("media_download"):
-        extra.append(InlineKeyboardButton(text="🎬 Скачать видео", callback_data="med:menu"))
+        extra.append(InlineKeyboardButton(text=label("menu.media", "🎬 Скачать видео"),
+                                          callback_data="med:menu"))
     if extra:
         rows.append(extra)
 
     if roles.can_use_assistant(role):
-        rows.append([InlineKeyboardButton(text="🧠 ИИ-ассистент", callback_data="menu:ai")])
+        rows.append([InlineKeyboardButton(text=label("menu.assistant", "🧠 ИИ-ассистент"),
+                                          callback_data="menu:ai")])
 
     # Один вход в управление вместо россыпи кнопок
     if roles.is_moderator(role):
-        rows.append([InlineKeyboardButton(text="🛠 Управление", callback_data="menu:manage")])
+        rows.append([InlineKeyboardButton(text=label("menu.manage", "🛠 Управление"),
+                                          callback_data="menu:manage")])
 
     rows.append([
-        InlineKeyboardButton(text="ℹ️ О системе", callback_data="menu:about"),
-        InlineKeyboardButton(text="🌍 Язык", callback_data="menu:lang"),
+        InlineKeyboardButton(text=label("menu.about", "ℹ️ О системе"),
+                             callback_data="menu:about"),
+        InlineKeyboardButton(text=label("lang.button", "🌍 Язык"),
+                             callback_data="menu:lang"),
     ])
 
     promo = promo_row()

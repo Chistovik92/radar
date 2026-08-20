@@ -124,7 +124,7 @@ async def cmd_reset(message: Message, role: str) -> None:
 
 
 @router.message(F.text)
-async def free_chat(message: Message, state: FSMContext, role: str) -> None:
+async def free_chat(message: Message, state: FSMContext, role: str, user: dict) -> None:
     if await state.get_state() is not None:
         await message.answer("⏳ Завершите текущее действие или отправьте /cancel.")
         return
@@ -137,7 +137,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
     if not roles.can_use_assistant(role):
         await message.answer(
             "Воспользуйтесь меню — или отправьте геопозицию, чтобы добавить локацию.",
-            reply_markup=keyboards.main_menu(role),
+            reply_markup=keyboards.main_menu(role, user),
         )
         return
 

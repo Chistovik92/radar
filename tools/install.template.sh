@@ -24,6 +24,8 @@
 #   --reset          полный сброс: копия данных, затем установка с нуля
 #   --backup         только снять резервную копию и выйти
 #   --lang=ru|en     язык установщика (по умолчанию русский)
+#   --version=ТЕГ    поставить конкретный релиз (в том числе откатиться назад)
+#   --versions       показать доступные версии
 #   --restore-url=…  развернуть систему по ссылке со старого сервера
 #   --migrate        собрать всё для переезда на другую машину
 #   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
@@ -60,6 +62,8 @@ CLI_MODE_SET=false      # способ установки задан ключо�
 BACKUP_PATH=""
 SKIP_UPDATES=false
 MIGRATE_OUT=false
+TARGET_VERSION=""
+LIST_VERSIONS=false
 RESTORE_FROM=""
 RESTORE_URL=""
 RESTORED=false
@@ -87,6 +91,8 @@ show_help() {
   --reset          полный сброс: копия данных, затем установка с нуля
   --backup         только снять резервную копию и выйти
   --lang=ru|en     язык установщика (по умолчанию русский)
+  --version=ТЕГ    поставить конкретный релиз (в том числе откатиться назад)
+  --versions       показать доступные версии
   --restore-url=…  развернуть систему по ссылке со старого сервера
   --migrate        собрать всё для переезда на другую машину
   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
@@ -108,6 +114,8 @@ for arg in "$@"; do
         --backup)       BACKUP_ONLY=true ;;
         --rollback)     ROLLBACK_ONLY=true ;;
         --migrate)      MIGRATE_OUT=true ;;
+        --version=*)    TARGET_VERSION="${arg#*=}" ;;
+        --versions)     LIST_VERSIONS=true ;;
         --lang=*)       RADAR_LANG="${arg#*=}" ;;
         --restore-url=*) RESTORE_URL="${arg#*=}" ;;
         --restore=*)    RESTORE_FROM="${arg#*=}" ;;
@@ -174,6 +182,17 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            versions_title)      value="Available versions" ;;
+            versions_main)       value="latest code, may be unreleased" ;;
+            versions_failed)     value="Could not fetch the list of releases from GitHub" ;;
+            versions_howto)      value="To install a specific one:" ;;
+            step_fetch_version)  value="Fetching the requested version" ;;
+            version_unknown)     value="No such release:" ;;
+            version_download_failed) value="Could not download that version" ;;
+            version_broken)      value="The downloaded installer is damaged" ;;
+            version_ready)       value="Installer ready:" ;;
+            version_handoff)     value="Handing over to that version's installer…" ;;
+            rollback_offer)      value="Roll back to a previous release?" ;;
             step_migrate)        value="Collecting data for migration" ;;
             migrate_no_install)  value="Installation not found in $APP_DIR" ;;
             migrate_backup_failed) value="Could not create the copy" ;;
@@ -219,6 +238,17 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            versions_title)      value="Доступные версии" ;;
+            versions_main)       value="последний код, возможно без релиза" ;;
+            versions_failed)     value="Не удалось получить список релизов с GitHub" ;;
+            versions_howto)      value="Поставить конкретную:" ;;
+            step_fetch_version)  value="Загрузка выбранной версии" ;;
+            version_unknown)     value="Такого релиза нет:" ;;
+            version_download_failed) value="Не удалось скачать эту версию" ;;
+            version_broken)      value="Скачанный установщик повреждён" ;;
+            version_ready)       value="Установщик получен:" ;;
+            version_handoff)     value="Передаю управление установщику этой версии…" ;;
+            rollback_offer)      value="Откатиться на предыдущий релиз?" ;;
             step_migrate)        value="Сбор данных для переезда" ;;
             migrate_no_install)  value="Установка не найдена в $APP_DIR" ;;
             migrate_backup_failed) value="Не удалось собрать копию" ;;
@@ -804,6 +834,11 @@ do_rollback() {       # do_rollback [путь к снимку]
     return 0
 }
 
+previous_release() {
+    # Предпоследний тег: последний — это, скорее всего, тот, что сломался.
+    fetch_versions | sed -n '2p'
+}
+
 offer_rollback() {    # offer_rollback <причина>
     local reason="$1" archive
     archive="$(latest_snapshot)"
@@ -822,7 +857,10 @@ offer_rollback() {    # offer_rollback <причина>
     printf "    %s2) Восстановить и файлы, и базу данных%s\n" "$C_BOLD" "$C_RESET"
     printf "       %sполный откат к состоянию до запуска установщика%s\n" \
         "$C_DIM" "$C_RESET"
-    printf "    %s3) Ничего не делать — разберусь сам%s\n\n" "$C_BOLD" "$C_RESET"
+    printf "    %s3) %s%s\n" "$C_BOLD" "$(t rollback_offer)" "$C_RESET"
+    printf "       %sскачать и поставить предыдущий релиз с GitHub%s\n" \
+        "$C_DIM" "$C_RESET"
+    printf "    %s4) Ничего не делать — разберусь сам%s\n\n" "$C_BOLD" "$C_RESET"
     printf "  Выбор [1]: "
 
     local answer=""
@@ -840,6 +878,26 @@ offer_rollback() {    # offer_rollback <причина>
             [ -z "$archive" ] && { warn "Копии нет, восстановление невозможно"; return 1; }
             restore_database || warn "Базу восстановить не удалось"
             do_rollback "$archive" && return 0
+            return 1
+            ;;
+        3)
+            # Снимок мог не помочь, если сломан сам код: тогда берём
+            # предыдущий релиз с GitHub — заведомо рабочий, его уже ставили.
+            local previous
+            previous="$(previous_release)"
+            if [ -z "$previous" ]; then
+                warn "$(t versions_failed)"
+                return 1
+            fi
+            info "Ставлю предыдущий релиз: $previous"
+            local older
+            older="$(mktemp)"
+            if curl -fsSL --max-time 60 -o "$older" \
+                    "$RAW_BASE/$previous/install.sh" && bash -n "$older" 2>/dev/null; then
+                exec bash "$older" --lang="$LANG_CODE"
+            fi
+            rm -f "$older"
+            warn "$(t version_download_failed)"
             return 1
             ;;
         *)
@@ -1148,6 +1206,82 @@ detect_address() {
     fi
     printf '%s' "${address:-АДРЕС-СТАРОГО-СЕРВЕРА}"
 }
+
+# --------------------------------------------------------------------------
+#  Установка выбранной версии из GitHub (с 4.7.3.1)
+# --------------------------------------------------------------------------
+#
+# Три сценария, которые раньше делались руками:
+#   --version=v4.6.1  поставить конкретный релиз (в том числе более старый —
+#                     это и есть откат на предыдущую версию);
+#   --versions        показать, что вообще доступно;
+#   по умолчанию      ставится код из main, независимо от того, оформлен
+#                     он релизом или нет: на сервере автора должна
+#                     оказываться последняя версия, а не последняя
+#                     помеченная тегом.
+#
+# Откат намеренно не запрещён и не требует подтверждения: если новая
+# версия сломалась, человеку нужно вернуться назад немедленно, а не
+# доказывать установщику, что он понимает последствия. Предупреждение
+# выводится, снимок снимается — этого достаточно.
+
+RELEASES_API="https://api.github.com/repos/Chistovik92/radar/releases"
+RAW_BASE="https://raw.githubusercontent.com/Chistovik92/radar"
+
+fetch_versions() {
+    curl -fsSL --max-time 20 "$RELEASES_API" 2>/dev/null \
+        | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true
+}
+
+if [ "$LIST_VERSIONS" = true ]; then
+    banner
+    printf "  %s%s%s\n\n" "$C_BOLD" "$(t versions_title)" "$C_RESET"
+    versions="$(fetch_versions)"
+    if [ -z "$versions" ]; then
+        warn "$(t versions_failed)"
+        exit 1
+    fi
+    printf "    %smain%s — %s\n" "$C_CYAN" "$C_RESET" "$(t versions_main)"
+    printf '%s\n' "$versions" | while read -r tag; do
+        [ -n "$tag" ] && printf "    %s%s%s\n" "$C_CYAN" "$tag" "$C_RESET"
+    done
+    printf "\n  %s\n" "$(t versions_howto)"
+    printf "    sudo bash install.sh --version=v4.6.1\n\n"
+    exit 0
+fi
+
+if [ -n "$TARGET_VERSION" ] && [ "$TARGET_VERSION" != "main" ]; then
+    banner
+    step "$(t step_fetch_version)"
+
+    # Проверяем, что такая версия существует: иначе curl молча скачает
+    # страницу 404 и мы попытаемся выполнить HTML как скрипт.
+    if ! fetch_versions | grep -qx "$TARGET_VERSION"; then
+        warn "$(t version_unknown) $TARGET_VERSION"
+        printf "  %s\n" "$(t versions_howto)"
+        printf "    sudo bash install.sh --versions\n\n"
+        exit 1
+    fi
+
+    NEW_INSTALLER="$(mktemp)"
+    if ! curl -fsSL --max-time 60 -o "$NEW_INSTALLER" \
+            "$RAW_BASE/$TARGET_VERSION/install.sh"; then
+        rm -f "$NEW_INSTALLER"
+        die "$(t version_download_failed)"
+    fi
+
+    # Скачанное — тоже bash-скрипт, и он может быть повреждён при передаче.
+    if ! bash -n "$NEW_INSTALLER" 2>/dev/null; then
+        rm -f "$NEW_INSTALLER"
+        die "$(t version_broken)"
+    fi
+
+    ok "$(t version_ready) $TARGET_VERSION"
+    printf "  %s\n\n" "$(t version_handoff)"
+    # Передаём управление установщику нужной версии, убрав --version,
+    # иначе он попытается скачать сам себя по кругу.
+    exec bash "$NEW_INSTALLER" ${SKIP_UPDATES:+--skip-updates} --lang="$LANG_CODE"
+fi
 
 if [ "$MIGRATE_OUT" = true ]; then
     [ -d "$APP_DIR" ] || die "$(t migrate_no_install)"

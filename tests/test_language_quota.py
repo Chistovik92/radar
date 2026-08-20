@@ -71,6 +71,39 @@ class TestLanguage(unittest.TestCase):
             self.assertIn(key, i18n.EN_STRINGS)
 
 
+class TestMenuTranslation(unittest.TestCase):
+    """Меню собиралось без учёта языка — кнопки оставались русскими."""
+
+    def labels(self, lang):
+        from radar import keyboards
+
+        markup = keyboards.main_menu("superadmin", {"lang": lang})
+        return [button.text for row in markup.inline_keyboard for button in row]
+
+    def test_english_menu_differs_from_russian(self):
+        self.assertNotEqual(self.labels("en"), self.labels("ru"))
+
+    def test_english_menu_has_english_labels(self):
+        labels = self.labels("en")
+        self.assertTrue(any("My locations" in item for item in labels))
+        self.assertTrue(any("Weather" in item for item in labels))
+
+    def test_russian_menu_stays_russian(self):
+        labels = self.labels("ru")
+        self.assertTrue(any("Мои локации" in item for item in labels))
+
+    def test_no_user_falls_back_to_russian(self):
+        from radar import keyboards
+
+        markup = keyboards.main_menu("user")
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertTrue(any("Мои локации" in item for item in labels))
+
+    def test_same_number_of_buttons(self):
+        """Перевод не должен ронять или добавлять пункты."""
+        self.assertEqual(len(self.labels("en")), len(self.labels("ru")))
+
+
 class TestQuota(unittest.TestCase):
     def setUp(self):
         self.today = mediaquota.today()

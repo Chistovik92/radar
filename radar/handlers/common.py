@@ -36,7 +36,7 @@ def greeting(role: str) -> str:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
+async def cmd_start(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     # Закреплённые кнопки ставятся отдельным сообщением: Telegram не позволяет
     # приложить reply-клавиатуру и inline-меню к одному и тому же сообщению.
@@ -46,19 +46,19 @@ async def cmd_start(message: Message, state: FSMContext, role: str) -> None:
             "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
             reply_markup=keyboard,
         )
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(Command("menu"))
-async def cmd_menu(message: Message, state: FSMContext, role: str) -> None:
+async def cmd_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_MENU)
-async def button_menu(message: Message, state: FSMContext, role: str) -> None:
+async def button_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role))
+    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_PROMO)
@@ -78,9 +78,9 @@ async def cmd_partner(message: Message) -> None:
 
 
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext, role: str) -> None:
+async def cmd_cancel(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer("✅ Действие отменено.", reply_markup=keyboards.main_menu(role))
+    await message.answer("✅ Действие отменено.", reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(Command("id"))
@@ -128,10 +128,10 @@ async def cmd_help(message: Message, role: str) -> None:
 
 
 @router.callback_query(F.data == "menu:main")
-async def menu_main(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def menu_main(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     await call.answer()
-    await safe_edit(call, greeting(role), keyboards.main_menu(role))
+    await safe_edit(call, greeting(role), keyboards.main_menu(role, user))
 
 
 @router.callback_query(F.data == "menu:settings")

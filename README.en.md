@@ -1,0 +1,122 @@
+# Radar v4.7.3.1
+
+[Русская версия](README.md)
+
+A Telegram bot that watches for city threats and utility outages, matches
+them against your saved addresses and warns you — with a focus on air
+threats and infrastructure failures.
+
+The system does not replace official warning channels. It is a helper,
+not a substitute.
+
+## Install
+
+One command on a clean Debian or Ubuntu machine:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)" -- --lang=en
+```
+
+The installer asks for the language first, then walks through every step
+with timings, and reports what it did at the end.
+
+### Choosing a version
+
+By default the code from `main` is installed — the latest one, whether or
+not it has been tagged as a release.
+
+```bash
+sudo bash install.sh --versions            # list what is available
+sudo bash install.sh --version=v4.6.1      # install a specific release
+```
+
+Installing an older release **is** the rollback procedure. It is not
+blocked and needs no confirmation: if a new version breaks something, you
+need to go back immediately, not argue with the installer. A snapshot is
+taken before anything is overwritten.
+
+### Installer flags
+
+| Flag | What it does |
+|---|---|
+| `--lang=ru\|en` | installer language (Russian by default) |
+| `--version=TAG` | install a specific release, including an older one |
+| `--versions` | list available releases |
+| `--backup` | take a backup and exit |
+| `--rollback` | restore the previous version from the last snapshot |
+| `--migrate` | prepare a move to another machine |
+| `--restore=FILE` | deploy from a backup file |
+| `--restore-url=URL` | deploy from a link produced by `--migrate` |
+| `--reset` | full reset: back up, wipe, install from scratch |
+| `--uninstall` | stop and remove containers and image, keep the data |
+| `--skip-updates` | do not update system packages |
+
+## What it does
+
+Watches public Telegram channels of utility services, emergency services
+and city administrations, plus RSS feeds of local media. Messages are
+analysed by an AI model, then matched against your locations.
+
+* **Air threats** — one message per city, listing every matched location.
+* **Utilities** — address level, by street and building.
+* **Allow-list warning** — when an air threat is announced, operators
+  restrict mobile internet; the bot says so explicitly.
+* **Weather** — per group of locations, as text or as a rendered image.
+* **News digests** — eighteen topics, delivered at a time you choose.
+* **SOS** — an alert to your trusted contacts with your location.
+* **Video download** — 20 clips a day for free, up to 50 MB each.
+
+## Language
+
+The bot asks which language to use on first contact — both for new users
+and for those who used it before the language choice existed. It can be
+changed later from the menu.
+
+Translation is in progress. Menus, key alert strings and the video
+section are translated; digests, weather, SOS and management screens are
+still Russian. An untranslated string falls back to Russian rather than
+showing a raw key: a Russian line among English ones is unpleasant but
+readable, unlike `menu.title.short`.
+
+## Moving to another server
+
+On the **old** machine:
+
+```bash
+sudo bash install.sh --migrate
+```
+
+It takes a backup, serves it over a one-time link and prints a ready
+command for the new machine. Run that command there.
+
+The link works **once** and expires after 30 minutes. This matters: the
+backup contains your bot token, database password and API keys — an open
+link would put all of it on the public internet.
+
+The old bot is **not** stopped automatically. Two instances sharing one
+token steal updates from each other, but deciding when to switch is your
+call: an automatic shutdown would leave both systems silent if the move
+failed.
+
+## Requirements
+
+* Debian 11+ or Ubuntu 20.04+, root access
+* 2 GB RAM (4 GB comfortable), 10 GB disk
+* Docker (installed automatically if missing)
+* A bot token from [@BotFather](https://t.me/BotFather)
+* A Gemini API key — optional; without it the system falls back to
+  heuristics: alerts still arrive, analysis quality is lower
+
+## Documentation
+
+* [ROADMAP.md](docs/ROADMAP.md) — what is planned and what is done
+* [STATUS.md](docs/STATUS.md) — current state, version history
+* [API_SETUP.md](docs/API_SETUP.md) — where to get every key
+* [MONETIZATION.md](docs/MONETIZATION.md) — paid features
+* [NEWS_DIGEST.md](docs/NEWS_DIGEST.md) — how digests work
+
+These are currently Russian only; English versions are being written.
+
+## Licence
+
+GPL-3.0. Author: SecretHero.
