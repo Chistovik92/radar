@@ -23,6 +23,8 @@
 #   --reinstall      принудительная полная переустановка (данные сохраняются)
 #   --reset          полный сброс: копия данных, затем установка с нуля
 #   --backup         только снять резервную копию и выйти
+#   --migrate        собрать всё для переезда на другую машину
+#   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
 #   --rollback       вернуть предыдущую версию из последнего снимка
 #   --skip-updates   не обновлять пакеты системы
 #   --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
@@ -55,6 +57,9 @@ ROLLBACK_ONLY=false
 CLI_MODE_SET=false      # способ установки задан ключом, спрашивать не нужно
 BACKUP_PATH=""
 SKIP_UPDATES=false
+MIGRATE_OUT=false
+RESTORE_FROM=""
+RESTORED=false
 LOG_FILE=""
 START_TS=$(date +%s)
 
@@ -77,6 +82,8 @@ show_help() {
   --reinstall      принудительная полная переустановка (данные сохраняются)
   --reset          полный сброс: копия данных, затем установка с нуля
   --backup         только снять резервную копию и выйти
+  --migrate        собрать всё для переезда на другую машину
+  --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
   --rollback       вернуть предыдущую версию из последнего снимка
   --skip-updates   не обновлять пакеты системы
   --uninstall      остановить и удалить контейнеры и образ (данные сохраняются)
@@ -94,6 +101,8 @@ for arg in "$@"; do
         --reset)        FULL_RESET=true; FORCE_REINSTALL=true; CLI_MODE_SET=true; NO_CACHE_FLAG="--no-cache" ;;
         --backup)       BACKUP_ONLY=true ;;
         --rollback)     ROLLBACK_ONLY=true ;;
+        --migrate)      MIGRATE_OUT=true ;;
+        --restore=*)    RESTORE_FROM="${arg#*=}" ;;
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
         -v|--version)   echo "radar $VERSION"; exit 0 ;;
@@ -772,8 +781,115 @@ fi
 if [ "$BACKUP_ONLY" = true ]; then
     cd "$APP_DIR"
     make_backup "по запросу" || die "Не удалось создать копию"
-    printf "\n  Восстановление: распакуйте архив и выполните\n"
-    printf "    docker exec -i radar_db psql -U radar radar < database.sql\n\n"
+    printf "\n  Восстановление: %s --restore=%s\n\n" "$0" "$BACKUP_PATH"
+    exit 0
+fi
+
+# --------------------------------------------------------------------------
+#  Переезд на другую машину (с 4.7.1)
+# --------------------------------------------------------------------------
+#
+# Две команды вместо десятка ручных шагов. На старой машине --migrate
+# снимает копию и печатает, что делать дальше; на новой --restore=ФАЙЛ
+# разворачивает систему и сверяет, что данные доехали.
+#
+# Бот на старой машине НЕ выключается автоматически: два одновременно
+# работающих экземпляра с одним токеном будут отбирать друг у друга
+# обновления, но решать, когда переключаться, должен человек — иначе
+# неудачный переезд оставит без оповещений и старую систему, и новую.
+
+# --- разворачивание из копии (вторая половина переезда) --------------------
+#
+# Копию раскладываем ДО обычной установки: дальше идёт штатный путь, который
+# видит готовый .env и файлы данных и ведёт себя как при обновлении. Так
+# переезд использует уже проверенный код, а не отдельную ветку, которую
+# никто не запускает.
+unpack_migration() {   # unpack_migration <архив>
+    local archive="$1" staging
+    [ -f "$archive" ] || die "Файл копии не найден: $archive"
+
+    staging="$(mktemp -d)"
+    info "Распаковываю копию"
+    tar -xzf "$archive" -C "$staging" 2>>"$LOG_FILE" \
+        || die "Не удалось распаковать копию — файл повреждён?"
+
+    if [ -f "$staging/manifest.txt" ]; then
+        printf "  %sСодержимое копии%s\n" "$C_BOLD" "$C_RESET"
+        sed 's/^/    /' "$staging/manifest.txt"
+    else
+        warn "В копии нет манифеста — возможно, это не копия «Радара»"
+    fi
+
+    mkdir -p "$APP_DIR/data"
+
+    if [ -f "$staging/env.backup" ]; then
+        cp "$staging/env.backup" "$APP_DIR/.env"
+        ok "Настройки перенесены"
+    else
+        warn "В копии нет .env — параметры придётся ввести заново"
+    fi
+
+    if [ -d "$staging/data" ]; then
+        cp -r "$staging/data/." "$APP_DIR/data/" 2>/dev/null || true
+        ok "Файлы данных перенесены"
+    fi
+
+    if [ -f "$staging/database.sql" ]; then
+        cp "$staging/database.sql" "$APP_DIR/data/migration-database.sql"
+        MIGRATION_DUMP="$APP_DIR/data/migration-database.sql"
+        ok "Дамп базы готов к заливке ($(du -h "$MIGRATION_DUMP" | cut -f1))"
+    else
+        warn "В копии нет дампа базы"
+    fi
+
+    rm -rf "$staging"
+}
+
+MIGRATION_DUMP=""
+
+if [ -n "$RESTORE_FROM" ]; then
+    banner
+    step "Разворачивание из копии"
+    mkdir -p "$APP_DIR"
+    # Путь может быть относительным — приводим к абсолютному до перехода
+    # в каталог установки, иначе файл «потеряется».
+    case "$RESTORE_FROM" in
+        /*) : ;;
+        *)  RESTORE_FROM="$(pwd)/$RESTORE_FROM" ;;
+    esac
+    unpack_migration "$RESTORE_FROM"
+    RESTORED=true
+    info "Дальше идёт обычная установка — она поднимет систему на этих данных"
+fi
+
+if [ "$MIGRATE_OUT" = true ]; then
+    [ -d "$APP_DIR" ] || die "Установка не найдена в $APP_DIR"
+    cd "$APP_DIR"
+    banner
+    step "Сбор данных для переезда"
+
+    make_backup "переезд" || die "Не удалось собрать копию"
+
+    line
+    printf "  %sЧто делать дальше%s\n" "$C_BOLD" "$C_RESET"
+    printf "  1. Скопируйте на новую машину два файла:\n"
+    printf "     %s%s%s\n" "$C_CYAN" "$BACKUP_PATH" "$C_RESET"
+    printf "     %sinstall.sh%s\n" "$C_CYAN" "$C_RESET"
+    printf "     Например: scp %s install.sh пользователь@новый-сервер:~/\n" \
+        "$BACKUP_PATH"
+    printf "  2. На новой машине выполните:\n"
+    printf "     %ssudo bash install.sh --restore=%s%s\n" \
+        "$C_CYAN" "$(basename "$BACKUP_PATH")" "$C_RESET"
+    printf "  3. Убедитесь, что новый бот отвечает в Telegram.\n"
+    printf "  4. %sТолько после этого%s остановите старый:\n" "$C_BOLD" "$C_RESET"
+    printf "     cd %s && docker compose down\n" "$APP_DIR"
+    line
+    printf "  %sДва экземпляра с одним токеном мешают друг другу:%s\n" \
+        "$C_YELLOW" "$C_RESET"
+    printf "  пока старый работает, новый будет получать обновления через раз.\n"
+    printf "  Это нормально на время проверки, но задерживаться в таком\n"
+    printf "  состоянии не стоит.\n\n"
+    timing_report
     exit 0
 fi
 
@@ -1557,8 +1673,32 @@ if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
         docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
         sleep 2
     done
+
+    # Заливка дампа при переезде. Делается до старта бота: иначе он создаст
+    # пустую схему, и дамп ляжет поверх наполовину — часть таблиц из копии,
+    # часть новых.
+    if [ -n "$MIGRATION_DUMP" ] && [ -f "$MIGRATION_DUMP" ]; then
+        info "Заливаю базу из копии"
+        db_user="$(get_env_value DB_USER)"; : "${db_user:=radar}"
+        db_name="$(get_env_value DB_NAME)"; : "${db_name:=radar}"
+        if docker exec -i radar_db psql -U "$db_user" -d "$db_name" \
+                < "$MIGRATION_DUMP" >>"$LOG_FILE" 2>&1; then
+            ok "База развёрнута из копии"
+            mv "$MIGRATION_DUMP" "$MIGRATION_DUMP.applied" 2>/dev/null || true
+            MIGRATION_DUMP="$MIGRATION_DUMP.applied"
+        else
+            warn "Залить дамп не удалось — смотрите журнал"
+            warn "Система поднимется с пустой базой; данные остались в копии"
+        fi
+    fi
 else
     info "База данных: SQLite (файл data/radar.db, отдельный контейнер не нужен)"
+    if [ -n "$MIGRATION_DUMP" ] && [ -f "$MIGRATION_DUMP" ]; then
+        # Дамп pg_dump в SQLite не заливается: это разные диалекты SQL.
+        # Молча продолжить нельзя — человек решит, что данные переехали.
+        warn "В копии дамп PostgreSQL, а выбрана SQLite — залить нельзя"
+        warn "Выберите PostgreSQL при установке либо переносите файл data/radar.db"
+    fi
 fi
 
 # Профиль media поднимает собственный Bot API Server: он снимает предел
@@ -1720,6 +1860,46 @@ ok "Бот вышел в рабочий режим"
 MIGRATED=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -oP 'пользователей \K\d+' | head -1 || true)
 [ -n "$MIGRATED" ] && ok "Перенесено пользователей: $MIGRATED"
 docker logs "$CONTAINER_NAME" 2>&1 | grep -q "Схема базы актуальна" && ok "Схема базы актуальна"
+
+# --- проверка целостности после переезда ----------------------------------
+#
+# Восстановление, которое не пересчитали, считается непроверенным. После
+# переезда сверяем, что данные действительно доехали: пустая база при
+# успешном старте выглядит точно так же, как полная, и человек узнает
+# о потере, только когда кто-то пожалуется на пропавшие оповещения.
+if [ "$RESTORED" = true ]; then
+    step "Проверка целостности после переезда"
+    if $COMPOSE $COMPOSE_ARGS run --rm --no-deps radar python - <<'RADAR_CHECK_EOF' 2>>"$LOG_FILE"
+import asyncio
+
+
+async def main() -> int:
+    from radar.db import engine, repo
+
+    await engine.ensure_schema()
+    users = await repo.count_users()
+    locations = await repo.count_locations()
+    sources = await repo.count_sources()
+
+    print(f"Пользователей: {users}")
+    print(f"Локаций: {locations}")
+    print(f"Источников: {sources}")
+
+    if users == 0:
+        print("ВНИМАНИЕ: пользователей ноль — данные не доехали")
+        return 1
+    return 0
+
+
+raise SystemExit(asyncio.run(main()))
+RADAR_CHECK_EOF
+    then
+        ok "Данные на месте"
+    else
+        warn "Проверка целостности не пройдена — данные могли не перенестись"
+        warn "Копия цела: разверните её заново или вернитесь на старую машину"
+    fi
+fi
 
 trap - ERR
 ELAPSED=$(( $(date +%s) - START_TS ))

@@ -56,6 +56,42 @@ ALLOWED_SCHEMES = ("http", "https", "tg")
 _SLUG_RE = re.compile(r"^[a-z0-9-]{2,32}$")
 
 
+def clean_description(text: str, title: str = "", icon: str = "") -> str:
+    """Приводит описание к виду, пригодному для показа в списке.
+
+    Две беды, обе видны только на живых данных:
+
+    * описание могло прийти из PROMO_TEXT с HTML-разметкой, а в списке
+      текст экранируется — человек видел «<b>HydraSite</b>» буквально;
+    * первая строка часто дублировала название, которое уже стоит
+      заголовком, и выглядело это как сбой.
+
+    Чистим при каждом чтении, а не только при создании: у тех, кто
+    обновился раньше, запись уже лежит в базе испорченной, и правка
+    в момент создания их не спасёт.
+    """
+    from .textutils import strip_tags
+
+    cleaned = strip_tags(text or "").strip()
+    if not cleaned:
+        return ""
+
+    lines = cleaned.split("\n")
+    while lines and _echoes_title(lines[0], title, icon):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _echoes_title(line: str, title: str, icon: str) -> bool:
+    """Повторяет ли строка описания название проекта."""
+    if not title:
+        return False
+    cleaned = line.replace(icon, "").strip() if icon else line.strip()
+    if not cleaned:
+        return True
+    return cleaned.lower().startswith(title.lower())
+
+
 @dataclass
 class Project:
     """Один партнёрский проект."""
@@ -109,12 +145,15 @@ class Project:
         url = str(raw.get("url") or "").strip()
         if not valid_slug(slug) or not title or not valid_url(url):
             return None
+        icon = str(raw.get("icon") or "🔗")[:4]
         return cls(
             slug=slug,
             title=title[:MAX_TITLE],
             url=url,
-            description=str(raw.get("description") or "")[:MAX_DESCRIPTION],
-            icon=str(raw.get("icon") or "🔗")[:4],
+            description=clean_description(
+                str(raw.get("description") or ""), title, icon
+            )[:MAX_DESCRIPTION],
+            icon=icon,
             order=_as_int(raw.get("order"), 100),
             visible=bool(raw.get("visible", True)),
             clicks=max(0, _as_int(raw.get("clicks"), 0)),
@@ -197,18 +236,7 @@ def default_projects() -> list[Project]:
     parts = title.split(maxsplit=1)
     if len(parts) == 2 and not parts[0].isalnum() and len(parts[0]) <= 4:
         icon, title = parts[0], parts[1]
-    # PROMO_TEXT писался под прямую отправку и содержит HTML-разметку.
-    # В списке он выводится как обычный текст с экранированием, поэтому
-    # теги надо снять здесь — иначе человек увидит «<b>HydraSite</b>».
-    # Заодно убираем первую строку, если она повторяет название: в списке
-    # название уже стоит заголовком, и повтор выглядит ошибкой.
-    from .textutils import strip_tags
-
-    description = strip_tags(config.PROMO_TEXT or "").strip()
-    lines = [line for line in description.split("\n")]
-    while lines and _echoes_title(lines[0], title, icon):
-        lines.pop(0)
-    description = "\n".join(lines).strip()
+    description = clean_description(config.PROMO_TEXT or "", title, icon)
 
     return [Project(
         slug="hydrasite",
@@ -218,14 +246,6 @@ def default_projects() -> list[Project]:
         icon=icon,
         order=10,
     )]
-
-
-def _echoes_title(line: str, title: str, icon: str) -> bool:
-    """Повторяет ли строка описания название проекта."""
-    cleaned = line.replace(icon, "").strip()
-    if not cleaned:
-        return True
-    return cleaned.lower().startswith(title.lower())
 
 
 # --------------------------------------------------------------------------

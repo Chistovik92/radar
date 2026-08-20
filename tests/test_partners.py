@@ -70,6 +70,45 @@ class TestProject(unittest.TestCase):
         self.assertEqual(project.clicks, 0)
 
 
+class TestStoredDescription(unittest.TestCase):
+    """Записи, уже лежащие в базе с разметкой, чинятся при чтении.
+
+    Правка только в момент создания не помогала тем, кто обновился раньше:
+    у них запись уже сохранена испорченной.
+    """
+
+    def stored(self, description):
+        return partners.Project.from_dict(raw(
+            title="HydraSite", icon="🐙", description=description,
+        ))
+
+    def test_tags_stripped_on_read(self):
+        project = self.stored("🐙 <b>HydraSite</b> — второй проект.\n\nДоступ в канале.")
+        self.assertNotIn("<b>", project.description)
+        self.assertNotIn("</b>", project.description)
+
+    def test_repeated_title_removed_on_read(self):
+        project = self.stored("🐙 <b>HydraSite</b> — второй проект.\n\nДоступ в канале.")
+        self.assertEqual(project.description, "Доступ в канале.")
+
+    def test_plain_description_untouched(self):
+        project = self.stored("Просто описание проекта.")
+        self.assertEqual(project.description, "Просто описание проекта.")
+
+    def test_empty_stays_empty(self):
+        self.assertEqual(self.stored("").description, "")
+        self.assertEqual(self.stored("   ").description, "")
+
+    def test_description_that_is_only_title_becomes_empty(self):
+        self.assertEqual(self.stored("🐙 HydraSite").description, "")
+
+    def test_clean_without_title_keeps_text(self):
+        """Без названия убирать нечего — текст остаётся целиком."""
+        self.assertEqual(
+            partners.clean_description("<i>Любой текст</i>"), "Любой текст"
+        )
+
+
 class TestParseAll(unittest.TestCase):
     def test_garbage_entries_dropped_not_whole_list(self):
         """Одна битая запись не должна ронять раздел целиком."""

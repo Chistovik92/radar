@@ -628,3 +628,29 @@ async def promo_count(project: str) -> int:
             .where(PromoCode.project == project)
         )
         return int(result.scalar_one() or 0)
+
+
+# --------------------------------------------------------------------------
+#  Пересчёт для проверки целостности (с 4.7.1)
+# --------------------------------------------------------------------------
+#
+# Нужны после переезда: успешный старт с пустой базой выглядит точно так же,
+# как с полной, и без пересчёта потеря данных обнаруживается только тогда,
+# когда кто-то пожалуется на пропавшие оповещения.
+
+async def count_users() -> int:
+    async with session() as active:
+        result = await active.execute(select(func.count()).select_from(User))
+        return int(result.scalar_one() or 0)
+
+
+async def count_locations() -> int:
+    async with session() as active:
+        result = await active.execute(select(func.count()).select_from(Location))
+        return int(result.scalar_one() or 0)
+
+
+async def count_sources() -> int:
+    async with session() as active:
+        result = await active.execute(select(func.count()).select_from(Source))
+        return int(result.scalar_one() or 0)
