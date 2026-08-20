@@ -103,7 +103,15 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
 
 
 def promo_row() -> list[InlineKeyboardButton]:
-    """Партнёрская кнопка. Ведёт по внешней ссылке, отключается через .env."""
+    """Партнёрская кнопка. Ведёт по внешней ссылке, отключается через .env.
+
+    С 4.6.5 при включённом флаге `partners` вместо прямой ссылки ведёт
+    в раздел со списком проектов: одна кнопка вмещала только один проект.
+    """
+    if features.enabled("partners"):
+        return [InlineKeyboardButton(
+            text="🤝 Партнёрские проекты", callback_data="menu:partners",
+        )]
     if not config.PROMO_ENABLED or not config.PROMO_URL:
         return []
     return [InlineKeyboardButton(text=config.PROMO_TITLE, url=config.PROMO_URL)]

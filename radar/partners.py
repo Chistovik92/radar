@@ -165,3 +165,75 @@ def default_projects() -> list[Project]:
         icon=icon,
         order=10,
     )]
+
+
+# --------------------------------------------------------------------------
+#  Хранение
+# --------------------------------------------------------------------------
+#
+# Проекты лежат в таблице meta одной записью, а не отдельной таблицей:
+# их единицы, они меняются вручную и никогда не участвуют в выборках.
+# Отдельная таблица с миграцией дала бы ту же функциональность дороже.
+
+META_KEY = "partners"
+
+_cache: list[Project] | None = None
+
+
+async def load() -> list[Project]:
+    """Список проектов. При первом обращении переносит проект из .env."""
+    global _cache
+    if _cache is not None:
+        return _cache
+
+    from .db import repo
+
+    try:
+        raw = await repo.get_meta(META_KEY, None)
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось прочитать партнёрские проекты")
+        return default_projects()
+
+    if raw is None:
+        _cache = default_projects()
+        if _cache:
+            await save(_cache)
+        return _cache
+
+    _cache = parse_all(raw)
+    return _cache
+
+
+async def save(projects: list[Project]) -> None:
+    global _cache
+    from .db import repo
+
+    ordered = order_projects(projects)[:MAX_PROJECTS]
+    await repo.set_meta(META_KEY, [item.to_dict() for item in ordered])
+    _cache = ordered
+
+
+def forget() -> None:
+    """Сбросить кэш — нужен тестам и после правки извне."""
+    global _cache
+    _cache = None
+
+
+async def by_slug(slug: str) -> Project | None:
+    for project in await load():
+        if project.slug == slug:
+            return project
+    return None
+
+
+async def remember_click(slug: str) -> None:
+    """Считает переход. Ошибка счётчика не должна мешать переходу."""
+    projects = await load()
+    for project in projects:
+        if project.slug == slug:
+            project.clicks += 1
+            try:
+                await save(projects)
+            except Exception:  # noqa: BLE001
+                log.debug("Счётчик переходов не сохранился")
+            return

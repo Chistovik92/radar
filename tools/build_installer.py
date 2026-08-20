@@ -96,6 +96,7 @@ MANIFEST = [
     "radar/handlers/logs.py",
     "radar/handlers/perf.py",
     "radar/handlers/shortlink.py",
+    "radar/handlers/partners.py",
     "radar/handlers/sos.py",
     "radar/handlers/media.py",
     "radar/handlers/settings_admin.py",

@@ -19,6 +19,7 @@ from . import (
     logs,
     media,
     network,
+    partners,
     perf,
     settings,
     shortlink,
@@ -38,6 +39,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(partners.router)
     dp.include_router(perf.router)
     dp.include_router(shortlink.router)
     dp.include_router(digest.router)

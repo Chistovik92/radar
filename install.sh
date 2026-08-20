@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.6.3 — автономный установщик.
+# Система «Радар» v4.6.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -40,7 +40,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.6.3"
+VERSION="4.6.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1128,7 +1128,7 @@ make_snapshot
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=76
+FILE_COUNT=77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -1424,6 +1424,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.6.4", [
+        "🤝 <b>Раздел «Партнёрские проекты»</b> вместо одной кнопки. "
+        "Список правится прямо в боте: добавить, скрыть, удалить, "
+        "посмотреть переходы. Прежняя кнопка HydraSite переносится "
+        "автоматически и ничего не теряет.",
+        "🔧 <b>Проверка install.sh в CI</b> больше не падает из-за прав "
+        "доступа к файлу — сравнивается содержимое, а не биты.",
+    ]),
     ("4.6.3", [
         "🧪 <b>Починены проверки на GitHub.</b> Восемнадцать тестов падали "
         "из-за отсутствия bs4: на машине разработчика библиотека стояла, "
@@ -1775,7 +1783,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.6.3"
+__version__ = "4.6.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7423,6 +7431,78 @@ def default_projects() -> list[Project]:
         icon=icon,
         order=10,
     )]
+
+
+# --------------------------------------------------------------------------
+#  Хранение
+# --------------------------------------------------------------------------
+#
+# Проекты лежат в таблице meta одной записью, а не отдельной таблицей:
+# их единицы, они меняются вручную и никогда не участвуют в выборках.
+# Отдельная таблица с миграцией дала бы ту же функциональность дороже.
+
+META_KEY = "partners"
+
+_cache: list[Project] | None = None
+
+
+async def load() -> list[Project]:
+    """Список проектов. При первом обращении переносит проект из .env."""
+    global _cache
+    if _cache is not None:
+        return _cache
+
+    from .db import repo
+
+    try:
+        raw = await repo.get_meta(META_KEY, None)
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось прочитать партнёрские проекты")
+        return default_projects()
+
+    if raw is None:
+        _cache = default_projects()
+        if _cache:
+            await save(_cache)
+        return _cache
+
+    _cache = parse_all(raw)
+    return _cache
+
+
+async def save(projects: list[Project]) -> None:
+    global _cache
+    from .db import repo
+
+    ordered = order_projects(projects)[:MAX_PROJECTS]
+    await repo.set_meta(META_KEY, [item.to_dict() for item in ordered])
+    _cache = ordered
+
+
+def forget() -> None:
+    """Сбросить кэш — нужен тестам и после правки извне."""
+    global _cache
+    _cache = None
+
+
+async def by_slug(slug: str) -> Project | None:
+    for project in await load():
+        if project.slug == slug:
+            return project
+    return None
+
+
+async def remember_click(slug: str) -> None:
+    """Считает переход. Ошибка счётчика не должна мешать переходу."""
+    projects = await load()
+    for project in projects:
+        if project.slug == slug:
+            project.clicks += 1
+            try:
+                await save(projects)
+            except Exception:  # noqa: BLE001
+                log.debug("Счётчик переходов не сохранился")
+            return
 RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
 cat > "radar/backup.py" <<'RADAR_FILE_29'
@@ -13809,7 +13889,15 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
 
 
 def promo_row() -> list[InlineKeyboardButton]:
-    """Партнёрская кнопка. Ведёт по внешней ссылке, отключается через .env."""
+    """Партнёрская кнопка. Ведёт по внешней ссылке, отключается через .env.
+
+    С 4.6.5 при включённом флаге `partners` вместо прямой ссылки ведёт
+    в раздел со списком проектов: одна кнопка вмещала только один проект.
+    """
+    if features.enabled("partners"):
+        return [InlineKeyboardButton(
+            text="🤝 Партнёрские проекты", callback_data="menu:partners",
+        )]
     if not config.PROMO_ENABLED or not config.PROMO_URL:
         return []
     return [InlineKeyboardButton(text=config.PROMO_TITLE, url=config.PROMO_URL)]
@@ -14794,6 +14882,7 @@ from . import (
     logs,
     media,
     network,
+    partners,
     perf,
     settings,
     shortlink,
@@ -14813,6 +14902,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
     dp.include_router(logs.router)
+    dp.include_router(partners.router)
     dp.include_router(perf.router)
     dp.include_router(shortlink.router)
     dp.include_router(digest.router)
@@ -17189,8 +17279,284 @@ async def cmd_shorts(message: Message, role: str) -> None:
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
 RADAR_FILE_69
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_70'
+"""Раздел «Партнёрские проекты».
+
+Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
+только суперадминистратору.
+
+Сознательные ограничения раздела:
+
+* здесь только собственные проекты автора; сторонней рекламы в «Радаре»
+  нет, и раздел не должен становиться местом для неё;
+* в оповещения об опасности раздел не попадает — человеку, которому
+  сообщают о угрозе, не место читать промо.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import features, partners, roles
+from ..textutils import esc
+from ..tg import back_kb, safe_edit
+
+log = logging.getLogger("radar.handlers.partners")
+router = Router(name="partners")
+
+
+class AddProject(StatesGroup):
+    title = State()
+    url = State()
+    description = State()
+
+
+def _list_keyboard(projects, role: str) -> InlineKeyboardMarkup:
+    rows = []
+    for project in projects:
+        # Кнопка-ссылка ведёт наружу сразу: лишний переход через бота
+        # ради счётчика раздражал бы больше, чем стоит сама цифра.
+        rows.append([InlineKeyboardButton(
+            text=f"{project.icon} {project.title}", url=project.url,
+        )])
+    if roles.is_superadmin(role):
+        rows.append([InlineKeyboardButton(
+            text="✏️ Управление проектами", callback_data="prj:manage",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="🏠 В главное меню", callback_data="menu:main",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
+    projects = partners.visible_projects(await partners.load())
+    if not projects:
+        return (
+            "🤝 <b>Партнёрские проекты</b>\n\nСписок пока пуст.",
+            _list_keyboard([], role),
+        )
+
+    lines = ["🤝 <b>Партнёрские проекты</b>", ""]
+    for project in projects:
+        lines.append(f"{project.icon} <b>{esc(project.title)}</b>")
+        if project.description:
+            lines.append(esc(project.description))
+        lines.append("")
+    return "\n".join(lines).strip(), _list_keyboard(projects, role)
+
+
+@router.message(Command("partner", "vpn", "partners"))
+async def cmd_partners(message: Message, role: str) -> None:
+    if not features.enabled("partners"):
+        # Пока раздел выключен, работает прежняя одиночная кнопка —
+        # обновление не должно отнимать у людей то, что уже было.
+        from .common import button_promo
+
+        await button_promo(message)
+        return
+    text, markup = await _render(role)
+    await message.answer(text, reply_markup=markup, disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "menu:partners")
+async def menu_partners(call: CallbackQuery, role: str) -> None:
+    await call.answer()
+    text, markup = await _render(role)
+    await safe_edit(call, text, markup)
+
+
+# --- управление -----------------------------------------------------------
+
+def _manage_keyboard(projects) -> InlineKeyboardMarkup:
+    rows = []
+    for project in projects:
+        mark = "👁" if project.visible else "🚫"
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{mark} {project.title} · {project.clicks}",
+                callback_data=f"prj:toggle:{project.slug}",
+            ),
+            InlineKeyboardButton(text="🗑", callback_data=f"prj:del:{project.slug}"),
+        ])
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="prj:add")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:partners")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _manage_text() -> str:
+    projects = partners.order_projects(await partners.load())
+    if not projects:
+        return "✏️ <b>Управление проектами</b>\n\nПроектов нет."
+    return (
+        "✏️ <b>Управление проектами</b>\n\n"
+        "Нажатие на проект скрывает или показывает его. "
+        "Число рядом — переходы по ссылке.\n"
+        f"Всего проектов: <b>{len(projects)}</b> из {partners.MAX_PROJECTS}."
+    )
+
+
+@router.callback_query(F.data == "prj:manage")
+async def manage(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    await call.answer()
+    projects = partners.order_projects(await partners.load())
+    await safe_edit(call, await _manage_text(), _manage_keyboard(projects))
+
+
+@router.callback_query(F.data.startswith("prj:toggle:"))
+async def toggle(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    slug = call.data.split(":", 2)[2]
+    projects = await partners.load()
+    for project in projects:
+        if project.slug == slug:
+            project.visible = not project.visible
+            await partners.save(projects)
+            await call.answer("Показан" if project.visible else "Скрыт")
+            break
+    else:
+        await call.answer("Проект не найден.", show_alert=True)
+    projects = partners.order_projects(await partners.load())
+    await safe_edit(call, await _manage_text(), _manage_keyboard(projects))
+
+
+@router.callback_query(F.data.startswith("prj:del:"))
+async def delete(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    slug = call.data.split(":", 2)[2]
+    projects = [item for item in await partners.load() if item.slug != slug]
+    await partners.save(projects)
+    await call.answer("Проект удалён")
+    await safe_edit(call, await _manage_text(),
+                    _manage_keyboard(partners.order_projects(projects)))
+
+
+@router.callback_query(F.data == "prj:add")
+async def add_start(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    if len(await partners.load()) >= partners.MAX_PROJECTS:
+        await call.answer("Достигнут предел числа проектов.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(AddProject.title)
+    await safe_edit(
+        call,
+        "Название проекта — можно со значком в начале, например "
+        "<code>🐙 HydraSite</code>.\n\n/cancel — отмена.",
+        back_kb(),
+    )
+
+
+@router.message(AddProject.title)
+async def add_title(message: Message, state: FSMContext) -> None:
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Название не может быть пустым.")
+        return
+    await state.update_data(title=title[:partners.MAX_TITLE])
+    await state.set_state(AddProject.url)
+    await message.answer("Ссылка на проект (http, https или tg).")
+
+
+@router.message(AddProject.url)
+async def add_url(message: Message, state: FSMContext) -> None:
+    url = (message.text or "").strip()
+    if not partners.valid_url(url):
+        await message.answer(
+            "Не похоже на ссылку. Нужен полный адрес: <code>https://…</code> "
+            "или <code>tg://…</code>"
+        )
+        return
+    await state.update_data(url=url)
+    await state.set_state(AddProject.description)
+    await message.answer("Короткое описание. Или «-», чтобы пропустить.")
+
+
+@router.message(AddProject.description)
+async def add_description(message: Message, state: FSMContext, role: str) -> None:
+    data = await state.get_data()
+    await state.clear()
+
+    description = (message.text or "").strip()
+    if description == "-":
+        description = ""
+
+    title = data.get("title", "")
+    icon = "🔗"
+    parts = title.split(maxsplit=1)
+    if len(parts) == 2 and not parts[0].isalnum() and len(parts[0]) <= 4:
+        icon, title = parts[0], parts[1]
+
+    projects = await partners.load()
+    slug = _make_slug(title, {item.slug for item in projects})
+    projects.append(partners.Project(
+        slug=slug, title=title, url=data.get("url", ""),
+        description=description[:partners.MAX_DESCRIPTION], icon=icon,
+        order=100 + len(projects),
+    ))
+    await partners.save(projects)
+    await message.answer(
+        f"✅ Проект «{esc(title)}» добавлен.",
+        reply_markup=_manage_keyboard(partners.order_projects(projects)),
+    )
+
+
+def _make_slug(title: str, taken: set[str]) -> str:
+    """Короткое имя из названия. При совпадении добавляется номер."""
+    translit = {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+        "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+        "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+        "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    }
+    result = []
+    for char in title.lower():
+        if char in translit:
+            result.append(translit[char])
+        elif char.isalnum():
+            result.append(char)
+        elif result and result[-1] != "-":
+            result.append("-")
+    slug = "".join(result).strip("-")[:32] or "project"
+    if len(slug) < 2:
+        slug = f"{slug}-1"
+    base = slug
+    number = 2
+    while slug in taken:
+        slug = f"{base[:28]}-{number}"
+        number += 1
+    return slug
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_71'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -17596,9 +17962,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_71'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_72'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -17911,9 +18277,9 @@ async def cmd_media(message: Message, role: str) -> None:
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
     )
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_72'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_73'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -18497,9 +18863,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_74'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -19020,9 +19386,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_75'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -19379,9 +19745,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_76'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -19526,7 +19892,7 @@ async def free_chat(message: Message, state: FSMContext, role: str) -> None:
         return
 
     await run(message, text)
-RADAR_FILE_75
+RADAR_FILE_76
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

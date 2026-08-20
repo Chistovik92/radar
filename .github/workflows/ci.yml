@@ -58,8 +58,13 @@ jobs:
 
       - name: install.sh соответствует исходникам
         run: |
+          # Сборщик выставляет install.sh право на исполнение, а в индексе
+          # git файл может лежать с обычными правами. Сравнивать нужно
+          # содержимое, а не биты доступа, иначе проверка падает на
+          # «old mode 100644 / new mode 100755», хотя текст совпадает.
+          git config core.fileMode false
           python tools/build_installer.py
-          git diff --exit-code install.sh \
+          git diff --exit-code -- install.sh \
             || { echo "install.sh устарел: выполните python3 tools/build_installer.py"; exit 1; }
 
   docker:
