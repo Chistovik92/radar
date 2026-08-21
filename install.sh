@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.3.6 — автономный установщик.
+# Система «Радар» v4.7.3.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.3.6"
+VERSION="4.7.3.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -379,12 +379,6 @@ else
     C_YELLOW=""; C_RED=""; C_BLUE=""
 fi
 
-# Спрашиваем язык здесь: после определения цветов (иначе при set -u
-# скрипт падал с «C_BOLD: unbound variable» — ровно это и случилось
-# в 4.7.3.2), но до всех режимов: --versions, --migrate и --restore
-# выходят раньше основного пути, и их вывод должен быть на выбранном языке.
-ask_language
-
 # --------------------------------------------------------------------------
 #  Что делаем (с 4.7.3.3)
 # --------------------------------------------------------------------------
@@ -494,8 +488,6 @@ choose_release() {
     ok "$(t version_selected) $TARGET_VERSION"
 }
 
-ask_action
-
 STEP_CURRENT=0
 STEP_TOTAL=9
 
@@ -600,6 +592,27 @@ timing_report() {
 info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
 ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; log_raw "OK    $*"; }
 warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; log_raw "WARN  $*"; }
+
+RELEASES_API="https://api.github.com/repos/Chistovik92/radar/releases"
+RAW_BASE="https://raw.githubusercontent.com/Chistovik92/radar"
+
+fetch_versions() {
+    curl -fsSL --max-time 20 "$RELEASES_API" 2>/dev/null \
+        | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true
+}
+
+run_questions() {
+    # Вопросы задаются здесь, а не раньше по файлу. В bash функция должна
+    # быть ОПРЕДЕЛЕНА к моменту вызова, а не просто присутствовать в файле:
+    # прежний вызов не видел ни info(), ни fetch_versions(), объявленных
+    # ниже, и падал с «command not found». Это место — первое, где
+    # определено уже всё нужное, и при этом установка ещё ничего не сделала.
+    ask_language
+    ask_action
+}
+
+
+
 fail() { printf "  %s✗%s %s\n" "$C_RED" "$C_RESET" "$*"; log_raw "FAIL  $*"; }
 die()  {
     printf "\n%s✗ %s%s\n" "$C_RED" "$*" "$C_RESET" >&2
@@ -1123,6 +1136,61 @@ banner() {
     printf "%s%s%s\n" "$C_CYAN" "$(printf '━%.0s' $(seq 1 "$COLS"))" "$C_RESET"
 }
 
+run_questions
+
+# Режимы, которые выходят до установки. Стоят здесь, а не ниже: показывать
+# список релизов, пройдя через создание каталога и журнала, незачем —
+# человек просил справку, а не установку.
+if [ "$LIST_VERSIONS" = true ]; then
+    banner
+    printf "  %s%s%s\n\n" "$C_BOLD" "$(t versions_title)" "$C_RESET"
+    versions="$(fetch_versions)"
+    if [ -z "$versions" ]; then
+        warn "$(t versions_failed)"
+        exit 1
+    fi
+    printf "    %smain%s — %s\n" "$C_CYAN" "$C_RESET" "$(t versions_main)"
+    printf '%s\n' "$versions" | while read -r tag; do
+        [ -n "$tag" ] && printf "    %s%s%s\n" "$C_CYAN" "$tag" "$C_RESET"
+    done
+    printf "\n  %s\n" "$(t versions_howto)"
+    printf "    sudo bash install.sh --version=v4.6.1\n\n"
+    exit 0
+fi
+
+if [ -n "$TARGET_VERSION" ] && [ "$TARGET_VERSION" != "main" ]; then
+    banner
+    step "$(t step_fetch_version)"
+
+    # Проверяем, что такая версия существует: иначе curl молча скачает
+    # страницу 404 и мы попытаемся выполнить HTML как скрипт.
+    if ! fetch_versions | grep -qx "$TARGET_VERSION"; then
+        warn "$(t version_unknown) $TARGET_VERSION"
+        printf "  %s\n" "$(t versions_howto)"
+        printf "    sudo bash install.sh --versions\n\n"
+        exit 1
+    fi
+
+    NEW_INSTALLER="$(mktemp)"
+    if ! curl -fsSL --max-time 60 -o "$NEW_INSTALLER" \
+            "$RAW_BASE/$TARGET_VERSION/install.sh"; then
+        rm -f "$NEW_INSTALLER"
+        die "$(t version_download_failed)"
+    fi
+
+    # Скачанное — тоже bash-скрипт, и он может быть повреждён при передаче.
+    if ! bash -n "$NEW_INSTALLER" 2>/dev/null; then
+        rm -f "$NEW_INSTALLER"
+        die "$(t version_broken)"
+    fi
+
+    ok "$(t version_ready) $TARGET_VERSION"
+    printf "  %s\n\n" "$(t version_handoff)"
+    # Передаём управление установщику нужной версии, убрав --version,
+    # иначе он попытается скачать сам себя по кругу.
+    exec bash "$NEW_INSTALLER" ${SKIP_UPDATES:+--skip-updates} --lang="$LANG_CODE"
+fi
+
 banner
 
 # --------------------------------------------------------------------------
@@ -1402,63 +1470,6 @@ detect_address() {
 # доказывать установщику, что он понимает последствия. Предупреждение
 # выводится, снимок снимается — этого достаточно.
 
-RELEASES_API="https://api.github.com/repos/Chistovik92/radar/releases"
-RAW_BASE="https://raw.githubusercontent.com/Chistovik92/radar"
-
-fetch_versions() {
-    curl -fsSL --max-time 20 "$RELEASES_API" 2>/dev/null \
-        | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true
-}
-
-if [ "$LIST_VERSIONS" = true ]; then
-    banner
-    printf "  %s%s%s\n\n" "$C_BOLD" "$(t versions_title)" "$C_RESET"
-    versions="$(fetch_versions)"
-    if [ -z "$versions" ]; then
-        warn "$(t versions_failed)"
-        exit 1
-    fi
-    printf "    %smain%s — %s\n" "$C_CYAN" "$C_RESET" "$(t versions_main)"
-    printf '%s\n' "$versions" | while read -r tag; do
-        [ -n "$tag" ] && printf "    %s%s%s\n" "$C_CYAN" "$tag" "$C_RESET"
-    done
-    printf "\n  %s\n" "$(t versions_howto)"
-    printf "    sudo bash install.sh --version=v4.6.1\n\n"
-    exit 0
-fi
-
-if [ -n "$TARGET_VERSION" ] && [ "$TARGET_VERSION" != "main" ]; then
-    banner
-    step "$(t step_fetch_version)"
-
-    # Проверяем, что такая версия существует: иначе curl молча скачает
-    # страницу 404 и мы попытаемся выполнить HTML как скрипт.
-    if ! fetch_versions | grep -qx "$TARGET_VERSION"; then
-        warn "$(t version_unknown) $TARGET_VERSION"
-        printf "  %s\n" "$(t versions_howto)"
-        printf "    sudo bash install.sh --versions\n\n"
-        exit 1
-    fi
-
-    NEW_INSTALLER="$(mktemp)"
-    if ! curl -fsSL --max-time 60 -o "$NEW_INSTALLER" \
-            "$RAW_BASE/$TARGET_VERSION/install.sh"; then
-        rm -f "$NEW_INSTALLER"
-        die "$(t version_download_failed)"
-    fi
-
-    # Скачанное — тоже bash-скрипт, и он может быть повреждён при передаче.
-    if ! bash -n "$NEW_INSTALLER" 2>/dev/null; then
-        rm -f "$NEW_INSTALLER"
-        die "$(t version_broken)"
-    fi
-
-    ok "$(t version_ready) $TARGET_VERSION"
-    printf "  %s\n\n" "$(t version_handoff)"
-    # Передаём управление установщику нужной версии, убрав --version,
-    # иначе он попытается скачать сам себя по кругу.
-    exec bash "$NEW_INSTALLER" ${SKIP_UPDATES:+--skip-updates} --lang="$LANG_CODE"
-fi
 
 if [ "$MIGRATE_OUT" = true ]; then
     [ -d "$APP_DIR" ] || die "$(t migrate_no_install)"
@@ -2165,6 +2176,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.3.8", [
+        "🛠 <b>Выбор релиза и пропуск обновлений заработали.</b> Вопросы "
+        "задавались раньше, чем определялись нужные им функции, — отсюда "
+        "«fetch_versions: command not found» и «info: command not found».",
+        "📋 <b>Вопросы теперь идут до установки</b>, а не посреди неё: "
+        "список версий больше не требует пройти подготовку каталога.",
+        "🧪 <b>Новая проверка от повторения:</b> линтер ловит вызов функции "
+        "раньше её определения. Такое дважды ломало установку и оба раза "
+        "проходило синтаксическую проверку.",
+    ]),
     ("4.7.3.6", [
         "🌤 <b>На картинке погоды появились значки.</b> Справа — солнце, "
         "месяц, облако или дождь по текущей погоде; в почасовой ленте "
@@ -2633,7 +2654,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.3.6"
+__version__ = "4.7.3.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"

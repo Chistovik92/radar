@@ -22,6 +22,7 @@ python3 tools/lint_docker.py            # Dockerfile против .dockerignore
 python3 tools/stamp_headers.py --check  # подпись автора
 python3 tools/build_installer.py        # пересборка install.sh
 bash -n install.sh                      # синтаксис собранного установщика
+python3 tools/lint_shellorder.py        # вызов функции раньше её определения
 ```
 
 Каждая проверка появилась после реальной поломки на сервере. Пропуск любой

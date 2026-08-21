@@ -53,6 +53,9 @@ jobs:
       - name: Подпись автора на месте
         run: python tools/stamp_headers.py --check
 
+      - name: Порядок функций в install.sh
+        run: python tools/lint_shellorder.py
+
       - name: Синтаксис bash
         run: bash -n install.sh && bash -n tools/install.template.sh
 
