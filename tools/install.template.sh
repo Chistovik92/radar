@@ -185,6 +185,9 @@ t() {                  # t <ключ> [подстановка]
             updates_ask)         value="Update system packages? [Y/n]" ;;
             updates_skipped)     value="System packages will not be updated" ;;
             migrate_ask)         value="Move this installation to another server? [y/N]" ;;
+            migrate_making_copy) value="Making a copy for the move" ;;
+            migrate_copy_ready)  value="Copy ready" ;;
+            migrate_port_busy)   value="Port is already in use:" ;;
             action_title)        value="What are we doing?" ;;
             action_main)         value="Install the latest code (main) — default" ;;
             action_release)      value="Install a specific release" ;;
@@ -256,6 +259,9 @@ t() {                  # t <ключ> [подстановка]
             updates_ask)         value="Обновлять пакеты системы? [Д/н]" ;;
             updates_skipped)     value="Пакеты системы обновляться не будут" ;;
             migrate_ask)         value="Переехать с этой установки на другой сервер? [д/Н]" ;;
+            migrate_making_copy) value="Собираю копию для переезда" ;;
+            migrate_copy_ready)  value="Копия готова" ;;
+            migrate_port_busy)   value="Порт уже занят:" ;;
             action_title)        value="Что делаем?" ;;
             action_main)         value="Поставить последний код (main) — по умолчанию" ;;
             action_release)      value="Поставить конкретный релиз" ;;
@@ -320,6 +326,7 @@ detect_language
 ask_language() {
     # Язык задан флагом или переменной — не переспрашиваем.
     [ -n "${RADAR_LANG:-}" ] && return 0
+    [ -n "${RADAR_ASKED:-}" ] && return 0
 
     # Проверяем ИМЕННО /dev/tty, а не stdin. При установке одной строкой
     # (`curl … | bash`) на stdin висит сам скрипт, поэтому `[ -t 0 ]`
@@ -392,6 +399,8 @@ fi
 # не задано флагом: автоматический запуск обязан работать по-прежнему.
 
 ask_action() {
+    # Вопросы уже заданы установщиком, который передал нам управление.
+    [ -n "${RADAR_ASKED:-}" ] && return 0
     ( : < /dev/tty ) 2>/dev/null || return 0
     [ -n "$TARGET_VERSION" ] && return 0
     [ "$MIGRATE_OUT" = true ] && return 0
@@ -424,6 +433,7 @@ ask_action() {
 }
 
 ask_updates() {
+    [ -n "${RADAR_ASKED:-}" ] && return 0
     # Обновление пакетов системы — самый долгий шаг после сборки образа,
     # и на слабом канале оно может занять больше, чем всё остальное.
     # Иногда его сознательно пропускают: например, когда обновляют бот
@@ -589,9 +599,59 @@ timing_report() {
     printf "  %s%s: %s%s\n" "$C_DIM" "$(t time_server)" "$(date "+%d.%m.%Y %H:%M:%S %Z")" "$C_RESET"
     log_raw "TIME  установка заняла ${total} с"
 }
-info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$*"; log_raw "INFO  $*"; }
-ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; log_raw "OK    $*"; }
-warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; log_raw "WARN  $*"; }
+# Перевод сообщений по самому русскому тексту.
+#
+# Так сделано намеренно: сообщений больше восьмидесяти, и заводить каждому
+# отдельный ключ означало бы править восемьдесят вызовов и держать их
+# в согласии со словарём. Здесь русская строка И ЕСТЬ ключ — вызовы
+# остаются как были, а непереведённое просто печатается по-русски.
+#
+# В журнал пишем всегда русский оригинал: журнал читает автор,
+# и разнобой языков в нём только мешает искать.
+tr_msg() {
+    if [ "${LANG_CODE:-ru}" != "en" ]; then
+        printf '%s' "$*"
+        return 0
+    fi
+    case "$*" in
+        "Бот вышел в рабочий режим") printf '%s' "The bot is up and running" ;;
+        "Жду запуска бота (первый запуск — до 10 минут)") printf '%s' "Waiting for the bot (first start takes up to 10 minutes)" ;;
+        "Запускаю диагностику внутри контейнера") printf '%s' "Running diagnostics inside the container" ;;
+        "Диагностика пройдена без замечаний") printf '%s' "Diagnostics passed with no issues" ;;
+        "Есть предупреждения, но запуск возможен") printf '%s' "There are warnings, but the start is possible" ;;
+        "Собираю образ (первый раз это занимает 5-15 минут)") printf '%s' "Building the image (5-15 minutes the first time)" ;;
+        "Образ собран") printf '%s' "Image built" ;;
+        "Останавливаю прежние контейнеры") printf '%s' "Stopping the previous containers" ;;
+        "База данных: SQLite (файл data/radar.db, отдельный контейнер не нужен)") printf '%s' "Database: SQLite (file data/radar.db, no separate container needed)" ;;
+        "База данных: PostgreSQL (отдельный контейнер)") printf '%s' "Database: PostgreSQL (separate container)" ;;
+        "Все пакеты актуальны") printf '%s' "All packages are up to date" ;;
+        "Время синхронизировано") printf '%s' "Clock is synchronised" ;;
+        "Время не синхронизировано — оповещения по расписанию будут смещаться") printf '%s' "Clock is not synchronised — scheduled alerts will drift" ;;
+        "Найдена предыдущая установка") printf '%s' "Found a previous installation" ;;
+        "Текущая установка работоспособна") printf '%s' "The current installation is healthy" ;;
+        "Использую существующий .env") printf '%s' "Using the existing .env" ;;
+        "Обновление поверх существующей установки") printf '%s' "Updating over the existing installation" ;;
+        "Собираю резервную копию (перед установкой)") printf '%s' "Making a backup (before installing)" ;;
+        "Контейнер базы не запущен — дамп пропущен") printf '%s' "Database container is not running — dump skipped" ;;
+        "Сохраняю снимок текущей установки") printf '%s' "Saving a snapshot of the current installation" ;;
+        "Распаковываю копию") printf '%s' "Unpacking the copy" ;;
+        "Заливаю базу из копии") printf '%s' "Loading the database from the copy" ;;
+        "База развёрнута из копии") printf '%s' "Database restored from the copy" ;;
+        "Залить дамп не удалось — смотрите журнал") printf '%s' "Could not load the dump — see the log" ;;
+        "Дамп базы не удался — копия будет без него") printf '%s' "Database dump failed — the copy will be without it" ;;
+        "Загрузка видео будет работать с пределом 50 МБ") printf '%s' "Video download will work with a 50 MB limit" ;;
+        "Загрузка видео: свой Bot API Server (файлы до 2 ГБ)") printf '%s' "Video download: own Bot API Server (files up to 2 GB)" ;;
+        "Базу восстановить не удалось") printf '%s' "Could not restore the database" ;;
+        "Восстановление отменено") printf '%s' "Restore cancelled" ;;
+        "Восстановить не удалось — подробности в журнале") printf '%s' "Restore failed — details in the log" ;;
+        "В копии нет манифеста — возможно, это не копия «Радара»") printf '%s' "No manifest in the copy — it may not be a Radar backup" ;;
+        *) printf '%s' "$*" ;;
+    esac
+}
+
+info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$(tr_msg "$*")"; log_raw "INFO  $*"; }
+ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$(tr_msg "$*")"; log_raw "OK    $*"; }
+warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$(tr_msg "$*")"; log_raw "WARN  $*"; }
 
 RELEASES_API="https://api.github.com/repos/Chistovik92/radar/releases"
 RAW_BASE="https://raw.githubusercontent.com/Chistovik92/radar"
@@ -1188,7 +1248,12 @@ if [ -n "$TARGET_VERSION" ] && [ "$TARGET_VERSION" != "main" ]; then
     printf "  %s\n\n" "$(t version_handoff)"
     # Передаём управление установщику нужной версии, убрав --version,
     # иначе он попытается скачать сам себя по кругу.
-    exec bash "$NEW_INSTALLER" ${SKIP_UPDATES:+--skip-updates} --lang="$LANG_CODE"
+    # RADAR_ASKED=1: установщик нужной версии не должен спрашивать заново
+    # то, на что человек уже ответил здесь. На фото это выглядело так:
+    # выбрал релиз, ответил про обновления — и получил те же вопросы ещё раз.
+    RADAR_ASKED=1 RADAR_LANG="$LANG_CODE" \
+        exec bash "$NEW_INSTALLER" ${SKIP_UPDATES:+--skip-updates} \
+        --lang="$LANG_CODE"
 fi
 
 banner
@@ -2056,7 +2121,13 @@ database_menu() {
     if [ "$backend" = "postgres" ] && [ -d "$APP_DIR/data/postgres" ]; then has_db=true; fi
 
     local snapshots
-    snapshots="$(ls -1 "$APP_DIR/backups"/db-*.tar.gz 2>/dev/null | wc -l || echo 0)"
+    # Без `|| echo 0`: при pipefail неудачный ls делает весь конвейер
+    # ненулевым, срабатывает запасная ветка — и к нулю от wc добавляется
+    # второй ноль. На экране это выглядело как «доступно: 0 0)».
+    snapshots="$(find "$APP_DIR/backups" -maxdepth 1 -name 'db-*.tar.gz' \
+        2>/dev/null | wc -l)" || true
+    snapshots="${snapshots//[!0-9]/}"
+    : "${snapshots:=0}"
 
     if [ "$has_db" != true ] && [ "$snapshots" -eq 0 ]; then
         return 0
@@ -2568,44 +2639,83 @@ echo
 log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED} с ==="
 
 # Предложение переехать. Спрашиваем в конце, а не в начале: до установки
-# человек ещё не знает, работает ли новая версия, и решать про переезд
-# рано. Копия к этому моменту уже снята — остаётся только раздать её.
-if ( : < /dev/tty ) 2>/dev/null && [ "$MIGRATE_OUT" != true ]; then
+# человек ещё не знает, работает ли новая версия, и решать про переезд рано.
+#
+# Всё тело — в функции с выключенным `set -e`. К этому месту ловушка ERR
+# уже снята, и при включённом errexit любая осечка (недоступный внешний
+# адрес, занятый порт) обрывала скрипт МОЛЧА: на экране оставался ответ
+# «Y» и приглашение оболочки, без единого слова о причине. Молчание здесь
+# хуже ошибки — человек считает, что переезд состоялся.
+offer_migration() {
+    set +e
+
     printf "  %s%s%s " "${C_DIM:-}" "$(t migrate_ask)" "${C_RESET:-}"
-    migrate_answer=""
-    read -r -t 60 migrate_answer < /dev/tty || migrate_answer="n"
+    local answer=""
+    read -r -t 60 answer < /dev/tty || answer="n"
     printf "\n"
-    case "$migrate_answer" in
-        y|Y|д|Д|yes|да)
-            SERVE_PORT="${MIGRATE_PORT:-8899}"
-            SERVE_MINUTES="${MIGRATE_MINUTES:-30}"
-            SERVE_TOKEN=""
-            # Свежая копия уже есть — снимаем ещё одну только если её нет
-            # (например, установка была первой и снимать было нечего).
-            if [ -z "${BACKUP_PATH:-}" ] || [ ! -f "$BACKUP_PATH" ]; then
-                make_backup "переезд" || die "$(t migrate_backup_failed)"
-            fi
-            if serve_migration "$BACKUP_PATH" "$SERVE_PORT" "$SERVE_MINUTES"; then
-                ADDRESS="$(detect_address)"
-                LINK="http://$ADDRESS:$SERVE_PORT/$SERVE_TOKEN"
-                line
-                printf "  %s%s%s\n\n" "${C_BOLD:-}" "$(t migrate_ready)" "${C_RESET:-}"
-                printf "  %s%s%s\n\n" "${C_CYAN:-}" \
-                    "sudo bash -c \"\$(curl -fsSL $INSTALLER_URL)\" -- --restore-url=$LINK" \
-                    "${C_RESET:-}"
-                line
-                printf "  %s\n" "$(t migrate_note_once)"
-                printf "  %s\n" "$(t migrate_note_time "$SERVE_MINUTES")"
-                printf "  %s\n" "$(t migrate_note_port "$SERVE_PORT")"
-                printf "  %s\n\n" "$(t migrate_note_secret)"
-                printf "  %s\n" "$(t migrate_note_stop)"
-                printf "    cd %s && docker compose down\n\n" "$APP_DIR"
-            else
-                warn "$(t migrate_serve_failed)"
-            fi
-            ;;
-        *) : ;;
+
+    case "$answer" in
+        y|Y|д|Д|yes|да|YES|ДА) : ;;
+        *) return 0 ;;
     esac
+
+    local port="${MIGRATE_PORT:-8899}"
+    local minutes="${MIGRATE_MINUTES:-30}"
+    SERVE_TOKEN=""
+
+    if [ -z "${BACKUP_PATH:-}" ] || [ ! -f "${BACKUP_PATH:-}" ]; then
+        info "$(t migrate_making_copy)"
+        if ! make_backup "переезд"; then
+            warn "$(t migrate_backup_failed)"
+            return 0
+        fi
+    fi
+
+    if [ ! -f "${BACKUP_PATH:-}" ]; then
+        warn "$(t migrate_backup_failed)"
+        return 0
+    fi
+    ok "$(t migrate_copy_ready): $(basename "$BACKUP_PATH")"
+
+    # Порт мог остаться занятым от прошлой попытки: молча промахнуться
+    # мимо этого нельзя, ссылка тогда просто не откроется.
+    if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":$port "; then
+        warn "$(t migrate_port_busy) $port"
+        return 0
+    fi
+
+    if ! serve_migration "$BACKUP_PATH" "$port" "$minutes"; then
+        warn "$(t migrate_serve_failed)"
+        printf "\n  %s\n" "$(t migrate_manual)"
+        printf "    scp %s install.sh пользователь@новый-сервер:~/\n" "$BACKUP_PATH"
+        printf "    sudo bash install.sh --restore=%s\n\n" \
+            "$(basename "$BACKUP_PATH")"
+        return 0
+    fi
+
+    local address link
+    address="$(detect_address)"
+    link="http://$address:$port/$SERVE_TOKEN"
+
+    line
+    printf "  %s%s%s\n\n" "${C_BOLD:-}" "$(t migrate_ready)" "${C_RESET:-}"
+    printf "  %s%s%s\n\n" "${C_CYAN:-}" \
+        "sudo bash -c \"\$(curl -fsSL $INSTALLER_URL)\" -- --restore-url=$link" \
+        "${C_RESET:-}"
+    line
+    printf "  %s\n" "$(t migrate_note_once)"
+    printf "  %s\n" "$(t migrate_note_time "$minutes")"
+    printf "  %s\n" "$(t migrate_note_port "$port")"
+    printf "  %s\n\n" "$(t migrate_note_secret)"
+    printf "  %s\n" "$(t migrate_note_stop)"
+    printf "    cd %s && docker compose down\n\n" "$APP_DIR"
+    printf "  %s%s%s\n\n" "${C_DIM:-}" "$(t migrate_waiting)" "${C_RESET:-}"
+    log_raw "MIGRATE ссылка выдана, порт $port, срок $minutes мин"
+    return 0
+}
+
+if ( : < /dev/tty ) 2>/dev/null && [ "$MIGRATE_OUT" != true ]; then
+    offer_migration
 fi
 
 if [ "$SHOW_LOGS" = true ]; then
