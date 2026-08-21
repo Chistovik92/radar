@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.3.5 — автономный установщик.
+# Система «Радар» v4.7.3.6 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.3.5"
+VERSION="4.7.3.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2165,6 +2165,15 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.3.6", [
+        "🌤 <b>На картинке погоды появились значки.</b> Справа — солнце, "
+        "месяц, облако или дождь по текущей погоде; в почасовой ленте "
+        "у каждого часа свой значок, и после рассвета луна сменяется солнцем.",
+        "📍 <b>Пустой квадрат перед адресом исчез.</b> Это был значок "
+        "локации, которого нет в шрифте образа — теперь он рисуется линиями.",
+        "🌘 <b>Фаза луны переехала вниз</b> и стала мельче: наверху нужен "
+        "ответ про погоду, а не про луну.",
+    ]),
     ("4.7.3.5", [
         "⏭ <b>Обновление пакетов системы можно пропустить</b> — установщик "
         "спрашивает об этом. Это самый долгий шаг после сборки образа.",
@@ -2624,7 +2633,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.3.5"
+__version__ = "4.7.3.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -9385,6 +9394,18 @@ PALETTES = {
 }
 
 
+# Цвета значков. Отдельно от палитр текста: значок должен читаться
+# одинаково на дневном и ночном небе, иначе на светлом фоне облако
+# сливается, а на тёмном пропадает снег.
+SUN_COLOR = (255, 206, 84)
+MOON_COLOR = (232, 236, 250)
+CLOUD_COLOR = (214, 222, 238)
+FOG_COLOR = (196, 205, 224)
+SNOW_COLOR = (238, 246, 255)
+STORM_CLOUD = (150, 160, 186)
+RAIN = (128, 190, 255)
+
+
 def palette_for(sky: str) -> dict:
     """Светлая тема только для дневного неба — остальные достаточно тёмные."""
     return PALETTES["light" if sky == "day" else "dark"]
@@ -9474,6 +9495,17 @@ def sky_for(weather: Any) -> str:
     return "night"
 
 
+def background_at(y: float, top_color, bottom_color):
+    """Цвет градиента на заданной высоте.
+
+    Нужен для «вычитания»: месяц рисуется кругом минус смещённый круг,
+    и этот второй круг обязан совпадать с фоном ровно в своей точке.
+    Иначе на градиенте остаётся видимое пятно — что и было с луной.
+    """
+    ratio = min(1.0, max(0.0, y / max(1, HEIGHT - 1)))
+    return _blend(top_color, bottom_color, ratio)
+
+
 def _gradient(draw, top_color, bottom_color) -> None:
     """Вертикальная заливка построчно — без numpy и лишних зависимостей."""
     for y in range(HEIGHT):
@@ -9556,6 +9588,148 @@ def _draw_wind_arrow(draw, cx: int, cy: int, size: int, degrees: float,
     draw.polygon([tip, left, right], fill=color)
 
 
+
+
+# --------------------------------------------------------------------------
+#  Значки (с 4.7.3.6)
+# --------------------------------------------------------------------------
+#
+# Всё рисуется примитивами, а не эмодзи. Причина простая: в образе стоит
+# DejaVu, эмодзи в нём нет, и «📍» печаталось пустым квадратом — именно
+# это и было видно перед адресом. Ставить шрифт с цветными эмодзи ради
+# десятка значков дороже, чем нарисовать их линиями, и надёжнее: набор
+# эмодзи в шрифте зависит от версии пакета, а круг с лучами — нет.
+
+def _pin(draw, x: int, y: int, size: int, color, hole=None) -> None:
+    """Булавка локации — вместо неотрисовываемого эмодзи.
+
+    Отверстие заливается цветом фона: белым оно сливалось со светлой
+    булавкой и превращало её в бесформенную каплю.
+    """
+    radius = size * 0.42
+    cx = x + size / 2
+    cy = y + radius
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=color)
+    # Остриё: треугольник вниз от круга
+    draw.polygon(
+        [(cx - radius * 0.62, cy + radius * 0.55),
+         (cx + radius * 0.62, cy + radius * 0.55),
+         (cx, y + size)],
+        fill=color,
+    )
+    inner = radius * 0.36
+    draw.ellipse([cx - inner, cy - inner, cx + inner, cy + inner],
+                 fill=hole or (26, 30, 58))
+
+
+def _cloud(draw, cx: float, cy: float, width: float, color) -> None:
+    """Облако из трёх кругов и прямоугольника — узнаётся в любом размере."""
+    unit = width / 4
+    draw.ellipse([cx - unit * 2, cy - unit, cx, cy + unit], fill=color)
+    draw.ellipse([cx - unit, cy - unit * 1.5, cx + unit * 1.2, cy + unit],
+                 fill=color)
+    draw.ellipse([cx + unit * 0.2, cy - unit * 0.8, cx + unit * 2, cy + unit],
+                 fill=color)
+    draw.rectangle([cx - unit * 2, cy, cx + unit * 2, cy + unit], fill=color)
+
+
+def _sun(draw, cx: float, cy: float, radius: float, rays: bool = True) -> None:
+    from math import cos, radians, sin
+
+    if rays:
+        for degree in range(0, 360, 45):
+            angle = radians(degree)
+            draw.line(
+                [(cx + cos(angle) * radius * 1.35, cy + sin(angle) * radius * 1.35),
+                 (cx + cos(angle) * radius * 1.9, cy + sin(angle) * radius * 1.9)],
+                fill=SUN_COLOR, width=max(2, int(radius * 0.22)),
+            )
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
+                 fill=SUN_COLOR)
+
+
+def _crescent(draw, cx: float, cy: float, radius: float, background) -> None:
+    """Месяц: круг минус смещённый круг цвета фона."""
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
+                 fill=MOON_COLOR)
+    shift = radius * 0.55
+    draw.ellipse([cx - radius + shift, cy - radius * 1.05,
+                  cx + radius + shift, cy + radius * 1.05], fill=background)
+
+
+def _drops(draw, cx: float, cy: float, width: float, color, count: int = 3) -> None:
+    step = width / (count + 1)
+    for index in range(count):
+        x = cx - width / 2 + step * (index + 1)
+        draw.line([(x, cy), (x - step * 0.2, cy + width * 0.32)],
+                  fill=color, width=max(2, int(width * 0.07)))
+
+
+def _flakes(draw, cx: float, cy: float, width: float, color, count: int = 3) -> None:
+    step = width / (count + 1)
+    size = width * 0.11
+    for index in range(count):
+        x = cx - width / 2 + step * (index + 1)
+        y = cy + width * 0.16
+        draw.line([(x - size, y), (x + size, y)], fill=color, width=2)
+        draw.line([(x, y - size), (x, y + size)], fill=color, width=2)
+
+
+def weather_icon(draw, cx: float, cy: float, size: float, code, day: bool,
+                 background, moon=None) -> None:
+    """Значок текущей погоды: солнце, луна, облако, дождь или снег.
+
+    Ночью вместо солнца рисуется месяц — по времени суток в точке локации,
+    а не по часам сервера.
+    """
+    value = int(code) if code is not None else 0
+    radius = size * 0.34
+
+    def light():
+        if day:
+            _sun(draw, cx, cy, radius)
+        elif moon is not None:
+            _draw_moon(draw, int(cx), int(cy), int(radius), moon)
+        else:
+            _crescent(draw, cx, cy, radius, background)
+
+    if value in (0, 1):
+        light()
+        return
+    if value == 2:
+        # Переменная облачность: светило выглядывает из-за облака
+        light()
+        _cloud(draw, cx + size * 0.16, cy + size * 0.2, size * 0.78, CLOUD_COLOR)
+        return
+    if value == 3:
+        _cloud(draw, cx, cy, size * 0.92, CLOUD_COLOR)
+        return
+    if value in (45, 48):
+        _cloud(draw, cx, cy - size * 0.1, size * 0.85, FOG_COLOR)
+        for index in range(3):
+            y = cy + size * (0.22 + index * 0.13)
+            draw.line([(cx - size * 0.36, y), (cx + size * 0.36, y)],
+                      fill=FOG_COLOR, width=max(2, int(size * 0.05)))
+        return
+    if 71 <= value <= 77 or value in (85, 86):
+        _cloud(draw, cx, cy - size * 0.12, size * 0.85, CLOUD_COLOR)
+        _flakes(draw, cx, cy + size * 0.2, size * 0.7, SNOW_COLOR)
+        return
+    if value in (95, 96, 99):
+        _cloud(draw, cx, cy - size * 0.12, size * 0.85, STORM_CLOUD)
+        draw.polygon(
+            [(cx - size * 0.08, cy + size * 0.12),
+             (cx + size * 0.12, cy + size * 0.12),
+             (cx - size * 0.02, cy + size * 0.42)],
+            fill=SUN_COLOR,
+        )
+        return
+
+    # Всё остальное — осадки дождём
+    _cloud(draw, cx, cy - size * 0.12, size * 0.85, CLOUD_COLOR)
+    _drops(draw, cx, cy + size * 0.2, size * 0.7, RAIN)
+
+
 # --- сборка ---------------------------------------------------------------
 
 def render(weather: Any, title: str = "") -> bytes | None:
@@ -9588,13 +9762,15 @@ def render(weather: Any, title: str = "") -> bytes | None:
         draw = ImageDraw.Draw(image)
         _gradient(draw, top_color, bottom_color)
 
-        # Заголовок: название локации без разметки
-        clean_title = _strip_tags(title) or "Погода"
-        draw.text((MARGIN, MARGIN - 12), clean_title[:46], font=head, fill=text)
+        # Заголовок: булавка рисуется, а не берётся из шрифта — эмодзи
+        # в DejaVu нет, и «📍» выводилось пустым квадратом.
+        clean_title = _strip_tags(title).lstrip("📍 ").strip() or "Погода"
+        _pin(draw, MARGIN, MARGIN - 10, 26, text, top_color)
+        draw.text((MARGIN + 36, MARGIN - 12), clean_title[:44], font=head, fill=text)
 
         stamp = getattr(weather, "local_time", "") or ""
         if stamp:
-            draw.text((MARGIN, MARGIN + 28), f"{stamp} · {sky_name}",
+            draw.text((MARGIN + 36, MARGIN + 28), f"{stamp} · {sky_name}",
                       font=tiny, fill=muted)
 
         # Крупная температура
@@ -9640,21 +9816,33 @@ def render(weather: Any, title: str = "") -> bytes | None:
         if details:
             draw.text((MARGIN, cursor), " · ".join(details), font=tiny, fill=muted)
 
-        # Светило: ночью и в сумерках — луна с фазой, днём — солнце
-        if sky == "day":
-            _draw_sun(draw, WIDTH - 160, 186, 58)
-        else:
-            moon = astro.moon()
-            _draw_moon(draw, WIDTH - 160, 186, 62, moon)
-            _centered(draw, f"{moon.name}, {moon.illumination * 100:.0f}%",
-                      WIDTH - 160, 262, tiny, muted)
+        # Справа — значок текущей погоды: то, что человек ищет глазами
+        # первым. Раньше там стояла луна, и по картинке нельзя было понять,
+        # идёт дождь или ясно.
+        moon = astro.moon()
+        icon_x, icon_y = WIDTH - 168, 172
+        # Фазу сюда НЕ передаём: наверху нужен значок погоды («ясно ночью» —
+        # это месяц), а конкретная фаза уходит вниз отдельной строкой.
+        # Иначе картинка отвечала на вопрос про луну вместо вопроса
+        # про погоду, с которым её и открывают.
+        weather_icon(draw, icon_x, icon_y, 118, getattr(weather, "code", None),
+                     sky == "day",
+                     background_at(icon_y, top_color, bottom_color))
 
         if weather.sunrise and weather.sunset:
             _centered(draw, f"↑ {weather.sunrise}   ↓ {weather.sunset}",
-                      WIDTH - 160, 296, small, text)
+                      icon_x, icon_y + 82, small, text)
+
+        # Фаза луны — отдельной строкой ниже и мельче: сведение полезное,
+        # но не то, ради чего открывают погоду.
+        phase_y = icon_y + 118
+        _draw_moon(draw, icon_x - 70, phase_y + 12, 16, moon)
+        draw.text((icon_x - 46, phase_y + 2),
+                  f"{moon.name}, {moon.illumination * 100:.0f}%",
+                  font=tiny, fill=muted)
 
         panel = _blend(bottom_color, colors["panel_mix"], colors["panel_ratio"])
-        _draw_hourly(draw, weather.hourly[:8], HEIGHT - 150, normal, small,
+        _draw_hourly(draw, weather.hourly[:8], HEIGHT - 190, normal, small,
                      panel, colors)
 
         buffer = io.BytesIO()
@@ -9682,7 +9870,7 @@ def _draw_hourly(draw, hours, top: int, font, small, panel, colors) -> None:
         return
 
     draw.rounded_rectangle(
-        [MARGIN - 16, top - 22, WIDTH - MARGIN + 16, HEIGHT - MARGIN + 10],
+        [MARGIN - 16, top - 20, WIDTH - MARGIN + 16, HEIGHT - MARGIN + 14],
         radius=26, fill=panel,
     )
 
@@ -9691,10 +9879,18 @@ def _draw_hourly(draw, hours, top: int, font, small, panel, colors) -> None:
         x = int(MARGIN + step * index + step / 2)
         _centered(draw, "сейчас" if index == 0 else item.label, x, top, small,
                   colors["muted"])
-        _centered(draw, f"{round(item.temp):d}°", x, top + 30, font,
+
+        # Значок между временем и температурой: по ряду иконок изменение
+        # погоды считывается одним взглядом, а по колонке цифр — нет.
+        # День или ночь для каждого часа берётся из самого прогноза,
+        # поэтому после рассвета солнце появляется само.
+        weather_icon(draw, x, top + 44, 34, getattr(item, "code", None),
+                     bool(getattr(item, "day", True)), panel)
+
+        _centered(draw, f"{round(item.temp):d}°", x, top + 62, font,
                   _temperature_color(item.temp, colors))
         if item.probability >= 20:
-            _centered(draw, f"{item.probability}%", x, top + 66, small,
+            _centered(draw, f"{item.probability}%", x, top + 96, small,
                       colors["rain"])
 
 

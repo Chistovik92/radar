@@ -154,5 +154,48 @@ class TestSky(unittest.TestCase):
         self.assertLess(sum(light), sum(dark))
 
 
+class TestIcons(unittest.TestCase):
+    """Значки рисуются примитивами: эмодзи в DejaVu нет, и они выводились
+    пустыми квадратами — именно так «📍» превращалось в прямоугольник."""
+
+    def canvas(self):
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            self.skipTest("Pillow не установлен")
+        image = Image.new("RGB", (200, 200), (20, 24, 50))
+        return image, ImageDraw.Draw(image)
+
+    def test_every_code_draws_something(self):
+        """Ни один код погоды не должен оставлять пустое место."""
+        for code in (0, 1, 2, 3, 45, 61, 63, 71, 75, 95, 999, None):
+            with self.subTest(code=code):
+                image, draw = self.canvas()
+                before = list(image.getdata())
+                weather_image.weather_icon(
+                    draw, 100, 100, 80, code, True, (20, 24, 50)
+                )
+                self.assertNotEqual(list(image.getdata()), before)
+
+    def test_night_icon_differs_from_day(self):
+        first, draw = self.canvas()
+        weather_image.weather_icon(draw, 100, 100, 80, 0, True, (20, 24, 50))
+        second, draw2 = self.canvas()
+        weather_image.weather_icon(draw2, 100, 100, 80, 0, False, (20, 24, 50))
+        self.assertNotEqual(list(first.getdata()), list(second.getdata()))
+
+    def test_pin_drawn(self):
+        image, draw = self.canvas()
+        before = list(image.getdata())
+        weather_image._pin(draw, 10, 10, 26, (255, 255, 255), (20, 24, 50))
+        self.assertNotEqual(list(image.getdata()), before)
+
+    def test_background_at_follows_gradient(self):
+        top, bottom = (0, 0, 0), (100, 100, 100)
+        self.assertEqual(weather_image.background_at(0, top, bottom), top)
+        low = weather_image.background_at(weather_image.HEIGHT, top, bottom)
+        self.assertEqual(low, bottom)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
