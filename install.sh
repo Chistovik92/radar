@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.3.3 — автономный установщик.
+# Система «Радар» v4.7.3.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.3.3"
+VERSION="4.7.3.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -182,6 +182,8 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            updates_ask)         value="Update system packages? [Y/n]" ;;
+            updates_skipped)     value="System packages will not be updated" ;;
             migrate_ask)         value="Move this installation to another server? [y/N]" ;;
             action_title)        value="What are we doing?" ;;
             action_main)         value="Install the latest code (main) — default" ;;
@@ -251,6 +253,8 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            updates_ask)         value="Обновлять пакеты системы? [Д/н]" ;;
+            updates_skipped)     value="Пакеты системы обновляться не будут" ;;
             migrate_ask)         value="Переехать с этой установки на другой сервер? [д/Н]" ;;
             action_title)        value="Что делаем?" ;;
             action_main)         value="Поставить последний код (main) — по умолчанию" ;;
@@ -420,6 +424,33 @@ ask_action() {
         3) BACKUP_ONLY=true ;;
         4) MIGRATE_OUT=true ;;
         *) : ;;   # main — как и было
+    esac
+
+    ask_updates
+}
+
+ask_updates() {
+    # Обновление пакетов системы — самый долгий шаг после сборки образа,
+    # и на слабом канале оно может занять больше, чем всё остальное.
+    # Иногда его сознательно пропускают: например, когда обновляют бот
+    # третий раз за вечер и система заведомо свежая.
+    [ "$SKIP_UPDATES" = true ] && return 0
+    [ "$BACKUP_ONLY" = true ] && return 0
+    [ "$MIGRATE_OUT" = true ] && return 0
+    ( : < /dev/tty ) 2>/dev/null || return 0
+
+    printf "  %s%s%s " "${C_DIM:-}" "$(t updates_ask)" "${C_RESET:-}"
+    local answer=""
+    read -r -t 60 answer < /dev/tty || answer="y"
+    : "${answer:=y}"
+    printf "\n"
+
+    case "$answer" in
+        n|N|н|Н|no|нет)
+            SKIP_UPDATES=true
+            info "$(t updates_skipped)"
+            ;;
+        *) : ;;
     esac
 }
 
@@ -2134,6 +2165,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.3.5", [
+        "⏭ <b>Обновление пакетов системы можно пропустить</b> — установщик "
+        "спрашивает об этом. Это самый долгий шаг после сборки образа.",
+        "🗓 <b>Копии по расписанию.</b> Ежедневно ночью, хранятся последние "
+        "семь. Копия, которую снимают руками, снимается ровно до того дня, "
+        "когда о ней забывают.",
+        "🔍 <b>Проверка целостности из бота</b> — пересчёт пользователей, "
+        "локаций и источников. Система с пустой базой запускается так же "
+        "успешно, как с полной: без пересчёта потеря видна слишком поздно.",
+    ]),
     ("4.7.3.3", [
         "🛠 <b>Установщик больше не падает на старте.</b> Вопрос о языке "
         "задавался до того, как определялись цвета — скрипт обрывался "
@@ -2583,7 +2624,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.3.3"
+__version__ = "4.7.3.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -4177,6 +4218,11 @@ FLAGS: tuple[Flag, ...] = (
     Flag("digest", "Новостные подборки",
          "Утренняя и вечерняя сводка по выбранным тематикам, одно сообщение.",
          group="Новости", since="4.4", default=False),
+    Flag("backup_schedule", "Копии по расписанию",
+         "Ежедневная резервная копия ночью, хранятся последние семь. "
+         "Копия, которую снимают руками, снимается до того дня, когда "
+         "о ней забывают.",
+         group="Данные", since="4.7.3.5", default=False),
     Flag("digest_summaries", "Пересказы подборок",
          "ИИ сжимает новости тематики в связную сводку — один запрос "
          "на тематику. Без него подборка выходит списком.",
@@ -9181,6 +9227,87 @@ def summary() -> str:
         "<code>bash install.sh --rollback</code></i>"
     )
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+#  Расписание и ротация (с 4.7.3.5)
+# --------------------------------------------------------------------------
+#
+# Копия, которую снимают руками, снимается ровно до того дня, когда о ней
+# забывают. Поэтому расписание — не удобство, а условие того, что копия
+# вообще будет существовать в момент аварии.
+#
+# Ротация обязательна по той же причине, что и расписание: без неё копии
+# заполнят диск одноплатника за несколько недель, и первым сломается
+# не резервное копирование, а сам бот — места не останется под базу.
+
+KEEP_COPIES = 7          # недельная глубина при ежедневных копиях
+SCHEDULE_HOUR = 4        # ночью: сжатие базы заметно нагружает слабый процессор
+
+
+def rotate(keep: int = KEEP_COPIES) -> list[str]:
+    """Удаляет самые старые копии сверх лимита. Возвращает удалённые имена."""
+    archives = listing()
+    if len(archives) <= keep:
+        return []
+
+    removed: list[str] = []
+    # listing() отдаёт от новых к старым, значит лишние — в хвосте.
+    for archive in archives[keep:]:
+        try:
+            Path(archive.path).unlink()
+            removed.append(archive.name)
+        except OSError as exc:
+            log.warning("Не удалось удалить копию %s: %s", archive.name, exc)
+    if removed:
+        log.info("Ротация копий: удалено %d", len(removed))
+    return removed
+
+
+def due_today(last_run: str, now: datetime) -> bool:
+    """Пора ли снимать копию.
+
+    Сравниваем по дате, а не по часам: если сервер был выключен в четыре
+    утра, копия должна сняться при первой возможности, а не пропасть
+    до следующих суток.
+    """
+    if now.hour < SCHEDULE_HOUR:
+        return False
+    return last_run != now.strftime("%Y-%m-%d")
+
+
+async def run_scheduled(now: datetime) -> str:
+    """Ежедневная копия с ротацией. Возвращает пустую строку, если не время."""
+    from . import features
+    from .db import repo
+
+    if not features.enabled("backup_schedule"):
+        return ""
+
+    try:
+        last_run = str(await repo.get_meta("backup_last_run", "") or "")
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось прочитать отметку о копии")
+        return ""
+
+    if not due_today(last_run, now):
+        return ""
+
+    path, note = await create("по расписанию")
+    try:
+        await repo.set_meta("backup_last_run", now.strftime("%Y-%m-%d"))
+    except Exception:  # noqa: BLE001
+        # Отметку не записали — завтра снимется ещё одна копия.
+        # Это лучше, чем не снять ни одной, поэтому не считаем ошибкой.
+        log.warning("Отметка о копии не сохранилась")
+
+    if path is None:
+        log.error("Копия по расписанию не создана: %s", note)
+        return ""
+
+    removed = rotate()
+    log.info("Копия по расписанию: %s, удалено старых: %d", path.name, len(removed))
+    return path.name
 RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
 cat > "radar/weather_image.py" <<'RADAR_FILE_33'
@@ -16182,6 +16309,7 @@ import aiohttp
 
 from . import (
     ai,
+    backup,
     config,
     digest,
     features,
@@ -16686,6 +16814,18 @@ async def run() -> None:
 
             try:
                 now_moment = datetime.now()
+
+                # Копия по расписанию. Внутри цикла, а не отдельной задачей:
+                # так она не запустится во время работ или при остановленном
+                # мониторинге — снимать копию наполовину поднятой системы
+                # незачем.
+                try:
+                    saved = await backup.run_scheduled(now_moment)
+                    if saved:
+                        log.info("Резервная копия создана: %s", saved)
+                except Exception:  # noqa: BLE001
+                    log.exception("Копия по расписанию не удалась")
+
                 await repeat_sos()
                 await release_held(now_moment)
                 await send_recap(now_moment)
@@ -21157,8 +21297,60 @@ def _backup_menu() -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="⬇️ Скачать последнюю", callback_data="bak:get")
         ])
+    rows.append([InlineKeyboardButton(
+        text="🔍 Проверить целостность", callback_data="bak:verify")])
     rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "bak:verify")
+async def backup_verify(call: CallbackQuery, role: str) -> None:
+    """Пересчёт данных — пункт 6 раздела 4.7 дорожной карты.
+
+    Нужен после восстановления и переезда: успешно запустившаяся система
+    с пустой базой выглядит точно так же, как с полной. Без пересчёта
+    потеря обнаруживается только когда кто-то пожалуется на пропавшие
+    оповещения — то есть слишком поздно.
+    """
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    await call.answer("Считаю…")
+    from ..db import repo
+
+    try:
+        users = await repo.count_users()
+        locations = await repo.count_locations()
+        sources = await repo.count_sources()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Проверка целостности не удалась")
+        await safe_edit(call, f"❌ Проверка не удалась: {esc(str(exc))}",
+                        _backup_menu())
+        return
+
+    lines = [
+        "🔍 <b>Целостность данных</b>",
+        "",
+        f"Пользователей: <b>{users}</b>",
+        f"Локаций: <b>{locations}</b>",
+        f"Источников: <b>{sources}</b>",
+        "",
+    ]
+    if users == 0:
+        lines.append(
+            "⚠️ <b>Пользователей ноль.</b> Если это не первая установка — "
+            "данные не перенеслись. Копия цела: разверните её заново."
+        )
+    elif locations == 0:
+        lines.append(
+            "⚠️ Локаций нет: оповещения никому не уйдут, пока люди "
+            "не добавят адреса."
+        )
+    else:
+        lines.append("✅ Данные на месте.")
+
+    await safe_edit(call, "\n".join(lines), _backup_menu())
 
 
 @router.message(Command("backup"))

@@ -193,6 +193,41 @@ class TestAlertFrame(unittest.TestCase):
                       format_locations_header([{"name": "Чапаева, 12"}]))
 
 
+class TestBackupSchedule(unittest.TestCase):
+    """Расписание копий: без ротации диск одноплатника кончится за недели."""
+
+    def test_due_after_hour(self):
+        from radar import backup
+
+        now = datetime(2026, 8, 21, backup.SCHEDULE_HOUR + 1, tzinfo=timezone.utc)
+        self.assertTrue(backup.due_today("", now))
+
+    def test_not_due_before_hour(self):
+        from radar import backup
+
+        now = datetime(2026, 8, 21, backup.SCHEDULE_HOUR - 1, tzinfo=timezone.utc)
+        self.assertFalse(backup.due_today("", now))
+
+    def test_not_twice_a_day(self):
+        from radar import backup
+
+        now = datetime(2026, 8, 21, 10, tzinfo=timezone.utc)
+        self.assertFalse(backup.due_today("2026-08-21", now))
+
+    def test_missed_day_runs_later(self):
+        """Сервер был выключен ночью — копия снимется при первой возможности,
+        а не пропадёт до следующих суток."""
+        from radar import backup
+
+        now = datetime(2026, 8, 21, 23, tzinfo=timezone.utc)
+        self.assertTrue(backup.due_today("2026-08-20", now))
+
+    def test_keeps_a_week(self):
+        from radar import backup
+
+        self.assertEqual(backup.KEEP_COPIES, 7)
+
+
 class TestQuota(unittest.TestCase):
     def setUp(self):
         self.today = mediaquota.today()

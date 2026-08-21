@@ -417,8 +417,60 @@ def _backup_menu() -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="⬇️ Скачать последнюю", callback_data="bak:get")
         ])
+    rows.append([InlineKeyboardButton(
+        text="🔍 Проверить целостность", callback_data="bak:verify")])
     rows.append([InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "bak:verify")
+async def backup_verify(call: CallbackQuery, role: str) -> None:
+    """Пересчёт данных — пункт 6 раздела 4.7 дорожной карты.
+
+    Нужен после восстановления и переезда: успешно запустившаяся система
+    с пустой базой выглядит точно так же, как с полной. Без пересчёта
+    потеря обнаруживается только когда кто-то пожалуется на пропавшие
+    оповещения — то есть слишком поздно.
+    """
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    await call.answer("Считаю…")
+    from ..db import repo
+
+    try:
+        users = await repo.count_users()
+        locations = await repo.count_locations()
+        sources = await repo.count_sources()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Проверка целостности не удалась")
+        await safe_edit(call, f"❌ Проверка не удалась: {esc(str(exc))}",
+                        _backup_menu())
+        return
+
+    lines = [
+        "🔍 <b>Целостность данных</b>",
+        "",
+        f"Пользователей: <b>{users}</b>",
+        f"Локаций: <b>{locations}</b>",
+        f"Источников: <b>{sources}</b>",
+        "",
+    ]
+    if users == 0:
+        lines.append(
+            "⚠️ <b>Пользователей ноль.</b> Если это не первая установка — "
+            "данные не перенеслись. Копия цела: разверните её заново."
+        )
+    elif locations == 0:
+        lines.append(
+            "⚠️ Локаций нет: оповещения никому не уйдут, пока люди "
+            "не добавят адреса."
+        )
+    else:
+        lines.append("✅ Данные на месте.")
+
+    await safe_edit(call, "\n".join(lines), _backup_menu())
 
 
 @router.message(Command("backup"))

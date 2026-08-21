@@ -182,6 +182,8 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            updates_ask)         value="Update system packages? [Y/n]" ;;
+            updates_skipped)     value="System packages will not be updated" ;;
             migrate_ask)         value="Move this installation to another server? [y/N]" ;;
             action_title)        value="What are we doing?" ;;
             action_main)         value="Install the latest code (main) — default" ;;
@@ -251,6 +253,8 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            updates_ask)         value="Обновлять пакеты системы? [Д/н]" ;;
+            updates_skipped)     value="Пакеты системы обновляться не будут" ;;
             migrate_ask)         value="Переехать с этой установки на другой сервер? [д/Н]" ;;
             action_title)        value="Что делаем?" ;;
             action_main)         value="Поставить последний код (main) — по умолчанию" ;;
@@ -420,6 +424,33 @@ ask_action() {
         3) BACKUP_ONLY=true ;;
         4) MIGRATE_OUT=true ;;
         *) : ;;   # main — как и было
+    esac
+
+    ask_updates
+}
+
+ask_updates() {
+    # Обновление пакетов системы — самый долгий шаг после сборки образа,
+    # и на слабом канале оно может занять больше, чем всё остальное.
+    # Иногда его сознательно пропускают: например, когда обновляют бот
+    # третий раз за вечер и система заведомо свежая.
+    [ "$SKIP_UPDATES" = true ] && return 0
+    [ "$BACKUP_ONLY" = true ] && return 0
+    [ "$MIGRATE_OUT" = true ] && return 0
+    ( : < /dev/tty ) 2>/dev/null || return 0
+
+    printf "  %s%s%s " "${C_DIM:-}" "$(t updates_ask)" "${C_RESET:-}"
+    local answer=""
+    read -r -t 60 answer < /dev/tty || answer="y"
+    : "${answer:=y}"
+    printf "\n"
+
+    case "$answer" in
+        n|N|н|Н|no|нет)
+            SKIP_UPDATES=true
+            info "$(t updates_skipped)"
+            ;;
+        *) : ;;
     esac
 }
 

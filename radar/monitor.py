@@ -18,6 +18,7 @@ import aiohttp
 
 from . import (
     ai,
+    backup,
     config,
     digest,
     features,
@@ -522,6 +523,18 @@ async def run() -> None:
 
             try:
                 now_moment = datetime.now()
+
+                # Копия по расписанию. Внутри цикла, а не отдельной задачей:
+                # так она не запустится во время работ или при остановленном
+                # мониторинге — снимать копию наполовину поднятой системы
+                # незачем.
+                try:
+                    saved = await backup.run_scheduled(now_moment)
+                    if saved:
+                        log.info("Резервная копия создана: %s", saved)
+                except Exception:  # noqa: BLE001
+                    log.exception("Копия по расписанию не удалась")
+
                 await repeat_sos()
                 await release_held(now_moment)
                 await send_recap(now_moment)

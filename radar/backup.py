@@ -220,3 +220,84 @@ def summary() -> str:
         "<code>bash install.sh --rollback</code></i>"
     )
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+#  Расписание и ротация (с 4.7.3.5)
+# --------------------------------------------------------------------------
+#
+# Копия, которую снимают руками, снимается ровно до того дня, когда о ней
+# забывают. Поэтому расписание — не удобство, а условие того, что копия
+# вообще будет существовать в момент аварии.
+#
+# Ротация обязательна по той же причине, что и расписание: без неё копии
+# заполнят диск одноплатника за несколько недель, и первым сломается
+# не резервное копирование, а сам бот — места не останется под базу.
+
+KEEP_COPIES = 7          # недельная глубина при ежедневных копиях
+SCHEDULE_HOUR = 4        # ночью: сжатие базы заметно нагружает слабый процессор
+
+
+def rotate(keep: int = KEEP_COPIES) -> list[str]:
+    """Удаляет самые старые копии сверх лимита. Возвращает удалённые имена."""
+    archives = listing()
+    if len(archives) <= keep:
+        return []
+
+    removed: list[str] = []
+    # listing() отдаёт от новых к старым, значит лишние — в хвосте.
+    for archive in archives[keep:]:
+        try:
+            Path(archive.path).unlink()
+            removed.append(archive.name)
+        except OSError as exc:
+            log.warning("Не удалось удалить копию %s: %s", archive.name, exc)
+    if removed:
+        log.info("Ротация копий: удалено %d", len(removed))
+    return removed
+
+
+def due_today(last_run: str, now: datetime) -> bool:
+    """Пора ли снимать копию.
+
+    Сравниваем по дате, а не по часам: если сервер был выключен в четыре
+    утра, копия должна сняться при первой возможности, а не пропасть
+    до следующих суток.
+    """
+    if now.hour < SCHEDULE_HOUR:
+        return False
+    return last_run != now.strftime("%Y-%m-%d")
+
+
+async def run_scheduled(now: datetime) -> str:
+    """Ежедневная копия с ротацией. Возвращает пустую строку, если не время."""
+    from . import features
+    from .db import repo
+
+    if not features.enabled("backup_schedule"):
+        return ""
+
+    try:
+        last_run = str(await repo.get_meta("backup_last_run", "") or "")
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось прочитать отметку о копии")
+        return ""
+
+    if not due_today(last_run, now):
+        return ""
+
+    path, note = await create("по расписанию")
+    try:
+        await repo.set_meta("backup_last_run", now.strftime("%Y-%m-%d"))
+    except Exception:  # noqa: BLE001
+        # Отметку не записали — завтра снимется ещё одна копия.
+        # Это лучше, чем не снять ни одной, поэтому не считаем ошибкой.
+        log.warning("Отметка о копии не сохранилась")
+
+    if path is None:
+        log.error("Копия по расписанию не создана: %s", note)
+        return ""
+
+    removed = rotate()
+    log.info("Копия по расписанию: %s, удалено старых: %d", path.name, len(removed))
+    return path.name
