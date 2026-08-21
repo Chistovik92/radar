@@ -399,5 +399,48 @@ class TestPythonVersionLint(unittest.TestCase):
         self.assertEqual(problems, [], "\n".join(problems))
 
 
+class TestFlagsActuallyWork(unittest.TestCase):
+    """Каждый флаг должен что-то переключать.
+
+    Тумблер, который врёт, хуже отсутствующего: на него надеются.
+    Проверяем не поведение целиком, а сам факт — что флаг упоминается
+    в коде за пределами списка возможностей.
+    """
+
+    IMPLEMENTED = (
+        "alerts", "weather", "ai_analysis", "ai_assistant",
+        "source_telegram", "source_rss", "source_vk", "all_clear",
+        "whitelist_notice", "weather_image", "weather_image_all",
+        "quiet_hours", "antispam", "digest", "digest_paid",
+        "digest_summaries", "link_shortener", "sos", "media_download",
+        "history", "source_export", "provider_switch", "egress_proxy",
+        "maintenance", "partners", "promo_codes", "promo_button",
+        "web_panel", "backup_schedule",
+    )
+
+    def sources(self):
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "radar"
+        text = []
+        for path in root.rglob("*.py"):
+            if path.name == "features.py":
+                continue
+            text.append(path.read_text(encoding="utf-8"))
+        return "\n".join(text)
+
+    def test_implemented_flags_are_used(self):
+        body = self.sources()
+        missing = [key for key in self.IMPLEMENTED if f'"{key}"' not in body]
+        self.assertEqual(missing, [], f"флаги не проверяются в коде: {missing}")
+
+    def test_known_flags_exist(self):
+        from radar import features
+
+        keys = {flag.key for flag in features.FLAGS}
+        for key in self.IMPLEMENTED:
+            self.assertIn(key, keys)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -21,7 +21,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, exporting, keyboards, roles, sourcecheck, storage
+from .. import config, exporting, features, keyboards, roles, sourcecheck, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit, send_html
@@ -196,8 +196,21 @@ async def add_rss(message: Message, state: FSMContext, role: str) -> None:
 MAX_IMPORT_BYTES = 1_000_000
 
 
+def _export_enabled() -> bool:
+    """Выгрузка и загрузка списка источников.
+
+    Флаг существовал с 3.3.5 и ничего не выключал. Он нужен там, где
+    список источников считается служебным и его не следует выносить
+    наружу даже администратору.
+    """
+    return features.enabled("source_export")
+
+
 @router.callback_query(F.data == "src:export")
 async def export_sources(call: CallbackQuery, role: str) -> None:
+    if not _export_enabled():
+        await call.answer("Выгрузка источников отключена.", show_alert=True)
+        return
     if not roles.can_moderate_sources(role):
         await call.answer("Недостаточно прав.", show_alert=True)
         return
@@ -220,6 +233,9 @@ async def export_sources(call: CallbackQuery, role: str) -> None:
 
 @router.callback_query(F.data == "src:import")
 async def ask_import(call: CallbackQuery, role: str) -> None:
+    if not _export_enabled():
+        await call.answer("Загрузка источников отключена.", show_alert=True)
+        return
     if not roles.is_admin(role):
         await call.answer("Загрузка доступна администраторам.", show_alert=True)
         return

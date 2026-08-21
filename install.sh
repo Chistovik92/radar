@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.4 — автономный установщик.
+# Система «Радар» v4.7.4.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.4"
+VERSION="4.7.4.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2241,6 +2241,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.4.3", [
+        "🛟 <b>Отдельный скрипт восстановления</b> — <code>restore.sh</code> "
+        "рядом с установкой. Он нужен тогда, когда установщик может "
+        "не запускаться вовсе, поэтому лежит на машине заранее.",
+        "🔧 <b>Ещё шесть переключателей перестали врать:</b> ИИ-ассистент, "
+        "примечание о белых списках, выгрузка источников, смена провайдера, "
+        "выход в сеть и кнопка партнёра.",
+        "🧪 <b>Тест следит, чтобы это не повторилось</b> — каждый заявленный "
+        "флаг обязан использоваться в коде.",
+    ]),
     ("4.7.4", [
         "🛟 <b>Переезд перестал молчать.</b> Ответ «да» обрывал установщик "
         "без единого слова: включённый errexit гасил любую осечку. Теперь "
@@ -2731,7 +2741,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.4"
+__version__ = "4.7.4.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3378,6 +3388,16 @@ def can_moderate_sources(actor_role: str | None) -> bool:
 
 
 def can_use_assistant(actor_role: str | None) -> bool:
+    """Доступен ли ИИ-ассистент.
+
+    Проверяется и роль, и флаг: раньше флаг «ИИ-ассистент» значился
+    в списке возможностей и ничего не выключал — доступ определялся
+    только ролью. Тумблер, который врёт, хуже отсутствующего.
+    """
+    from . import features
+
+    if not features.enabled("ai_assistant"):
+        return False
     return is_moderator(actor_role)
 RADAR_FILE_09
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ratelimit.py"
@@ -3950,7 +3970,11 @@ def build_city_alert(
     lines.extend(_event_line(analysis) for analysis in events)
     if whitelist_notice:
         lines.append("")
-        lines.append(WHITELIST_NOTICE)
+        # Флаг проверяется здесь, а не только у вызывающего: примечание
+        # добавляется из нескольких мест, и договорённость «проверьте сами»
+        # уже один раз не сработала.
+        if _whitelist_enabled():
+            lines.append(WHITELIST_NOTICE)
     return "\n".join(lines)
 
 
@@ -4007,6 +4031,15 @@ def _city_of(analysis: Analysis, locations: Sequence[dict[str, Any]], fallback: 
             return normalize_city(city), city
     city = analysis.city or fallback
     return normalize_city(city), city or "город"
+
+
+def _whitelist_enabled() -> bool:
+    try:
+        from . import features
+
+        return features.enabled("whitelist_notice")
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _all_clear_enabled() -> bool:
@@ -16081,10 +16114,13 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="🧠 Управление ИИ", callback_data="ai:menu")
         ])
-        rows.append([
-            InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
-            InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu"),
-        ])
+        # Выход в сеть — за своим флагом: раздел меняет маршрут всего
+        # трафика, и когда он не нужен, кнопке в меню не место.
+        network_row = [InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu")]
+        if features.enabled("egress_proxy"):
+            network_row.insert(0, InlineKeyboardButton(
+                text="🌐 Выход в сеть", callback_data="net:menu"))
+        rows.append(network_row)
         rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
         # Управление разделами живёт здесь, а не внутри самих разделов:
         # иначе настройки расползаются по боту и их приходится искать.
@@ -16112,6 +16148,12 @@ def promo_row() -> list[InlineKeyboardButton]:
         return [InlineKeyboardButton(
             text="🤝 Партнёрские проекты", callback_data="menu:partners",
         )]
+    # Флаг «Кнопка партнёра» и переменная PROMO_ENABLED существовали
+    # параллельно: флаг значился в списке возможностей и ничего не делал,
+    # выключалась кнопка только правкой .env. Теперь достаточно любого
+    # из двух — выключенный тумблер обязан выключать.
+    if not features.enabled("promo_button"):
+        return []
     if not config.PROMO_ENABLED or not config.PROMO_URL:
         return []
     return [InlineKeyboardButton(text=config.PROMO_TITLE, url=config.PROMO_URL)]
@@ -16218,13 +16260,19 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
 
 def ai_menu() -> InlineKeyboardMarkup:
     """Единый раздел управления ИИ."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Провайдер разбора", callback_data="prov:menu")],
+    rows = []
+    # Смена провайдера — за своим флагом: без него список провайдеров
+    # только путает, а сам флаг до 4.7.4.3 ничего не выключал.
+    if features.enabled("provider_switch"):
+        rows.append([InlineKeyboardButton(
+            text="🤖 Провайдер разбора", callback_data="prov:menu")])
+    rows.extend([
         [InlineKeyboardButton(text="🧪 Сравнить провайдеров", callback_data="bench:menu")],
         [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
         [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],
         [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def back_to_settings() -> InlineKeyboardMarkup:
@@ -18092,7 +18140,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, exporting, keyboards, roles, sourcecheck, storage
+from .. import config, exporting, features, keyboards, roles, sourcecheck, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit, send_html
@@ -18267,8 +18315,21 @@ async def add_rss(message: Message, state: FSMContext, role: str) -> None:
 MAX_IMPORT_BYTES = 1_000_000
 
 
+def _export_enabled() -> bool:
+    """Выгрузка и загрузка списка источников.
+
+    Флаг существовал с 3.3.5 и ничего не выключал. Он нужен там, где
+    список источников считается служебным и его не следует выносить
+    наружу даже администратору.
+    """
+    return features.enabled("source_export")
+
+
 @router.callback_query(F.data == "src:export")
 async def export_sources(call: CallbackQuery, role: str) -> None:
+    if not _export_enabled():
+        await call.answer("Выгрузка источников отключена.", show_alert=True)
+        return
     if not roles.can_moderate_sources(role):
         await call.answer("Недостаточно прав.", show_alert=True)
         return
@@ -18291,6 +18352,9 @@ async def export_sources(call: CallbackQuery, role: str) -> None:
 
 @router.callback_query(F.data == "src:import")
 async def ask_import(call: CallbackQuery, role: str) -> None:
+    if not _export_enabled():
+        await call.answer("Загрузка источников отключена.", show_alert=True)
+        return
     if not roles.is_admin(role):
         await call.answer("Загрузка доступна администраторам.", show_alert=True)
         return
@@ -22900,8 +22964,137 @@ tar -czf "$ARCHIVE" -C "$STAGE" .
 echo "Готово: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
 echo "Секреты из .env в архив не попадают."
 RADAR_COLLECT_EOF
+# Скрипт восстановления кладётся рядом с установкой. Он нужен именно
+# тогда, когда установщик может не работать, — значит должен лежать
+# на машине заранее, а не скачиваться в момент аварии.
+cat > "$APP_DIR/restore.sh" <<'RADAR_RESTORE_EOF'
+#!/usr/bin/env bash
+#
+# Отдельный скрипт, а не флаг установщика. Причина в том, ради чего он
+# существует: восстановление нужно тогда, когда установка сломана —
+# а установщик в этот момент может не запускаться вовсе. Скрипт нарочно
+# простой, без сборки образов и обращений к сети: распаковать, положить
+# на место, поднять.
+#
+# Использование:
+#   bash tools/restore.sh                     последняя копия
+#   bash tools/restore.sh ФАЙЛ.tar.gz         конкретная
+#   bash tools/restore.sh --list              что вообще есть
+#
+set -Eeuo pipefail
+
+APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
+BACKUPS="$APP_DIR/backups"
+
+C_RESET=""; C_BOLD=""; C_DIM=""; C_GREEN=""; C_RED=""; C_YELLOW=""
+if [ -t 1 ]; then
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    C_GREEN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YELLOW=$'\033[1;33m'
+fi
+
+ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; }
+warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+die()  { printf "\n  %s✗ %s%s\n\n" "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
+
+listing() {
+    find "$BACKUPS" -maxdepth 1 -name 'radar-backup-*.tar.gz' 2>/dev/null \
+        | sort -r || true
+}
+
+if [ "${1:-}" = "--list" ]; then
+    printf "\n  %sДоступные копии%s\n\n" "$C_BOLD" "$C_RESET"
+    found=false
+    while read -r item; do
+        [ -n "$item" ] || continue
+        found=true
+        printf "    %s  %s%s%s\n" "$(basename "$item")" \
+            "$C_DIM" "$(du -h "$item" | cut -f1)" "$C_RESET"
+    done <<< "$(listing)"
+    [ "$found" = true ] || printf "    копий нет\n"
+    printf "\n"
+    exit 0
+fi
+
+ARCHIVE="${1:-}"
+if [ -z "$ARCHIVE" ]; then
+    ARCHIVE="$(listing | head -1)"
+    [ -n "$ARCHIVE" ] || die "Копий не найдено в $BACKUPS"
+    printf "  Беру последнюю: %s\n" "$(basename "$ARCHIVE")"
+fi
+case "$ARCHIVE" in
+    /*) : ;;
+    *) [ -f "$ARCHIVE" ] || ARCHIVE="$BACKUPS/$ARCHIVE" ;;
+esac
+[ -f "$ARCHIVE" ] || die "Файл не найден: $ARCHIVE"
+
+printf "\n  %sВосстановление «Радара»%s\n" "$C_BOLD" "$C_RESET"
+printf "  Копия:    %s\n" "$(basename "$ARCHIVE")"
+printf "  Каталог:  %s\n\n" "$APP_DIR"
+
+# Подтверждение обязательно: восстановление затирает текущие данные,
+# и человек, запустивший скрипт наугад, должен успеть остановиться.
+if [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null; then
+    printf "  %sТекущие данные будут заменены. Продолжить? [д/Н]:%s " \
+        "$C_YELLOW" "$C_RESET"
+    answer=""
+    read -r answer < /dev/tty || answer="n"
+    case "$answer" in
+        y|Y|д|Д|yes|да) : ;;
+        *) die "Отменено" ;;
+    esac
+fi
+
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
+
+tar -xzf "$ARCHIVE" -C "$STAGING" || die "Не удалось распаковать копию"
+ok "Копия распакована"
+
+if [ -f "$STAGING/manifest.txt" ]; then
+    printf "\n  %sСодержимое копии%s\n" "$C_BOLD" "$C_RESET"
+    sed 's/^/    /' "$STAGING/manifest.txt"
+    printf "\n"
+else
+    warn "Манифеста нет — возможно, это не копия «Радара»"
+fi
+
+mkdir -p "$APP_DIR/data"
+
+if [ -d "$APP_DIR" ] && command -v docker >/dev/null 2>&1; then
+    (cd "$APP_DIR" && docker compose down 2>/dev/null) || true
+    ok "Контейнеры остановлены"
+fi
+
+if [ -f "$STAGING/env.backup" ]; then
+    cp "$STAGING/env.backup" "$APP_DIR/.env"
+    chmod 600 "$APP_DIR/.env" 2>/dev/null || true
+    ok "Настройки восстановлены"
+else
+    warn "В копии нет .env — параметры придётся ввести заново"
+fi
+
+if [ -d "$STAGING/data" ]; then
+    cp -r "$STAGING/data/." "$APP_DIR/data/" 2>/dev/null || true
+    ok "Файлы данных восстановлены"
+fi
+
+if [ -f "$STAGING/database.sql" ]; then
+    cp "$STAGING/database.sql" "$APP_DIR/data/restore-database.sql"
+    warn "В копии дамп PostgreSQL — залейте его после запуска:"
+    printf "    docker exec -i radar_db psql -U radar radar < %s\n" \
+        "$APP_DIR/data/restore-database.sql"
+fi
+
+printf "\n"
+ok "Восстановление завершено"
+printf "\n  Дальше:\n"
+printf "    cd %s && docker compose up -d\n" "$APP_DIR"
+printf "    затем проверьте целостность в боте: Управление → Копии\n\n"
+RADAR_RESTORE_EOF
+chmod +x "$APP_DIR/restore.sh" 2>/dev/null || true
 chmod +x "$APP_DIR/collect-logs.sh"
 ok "Сборщик журналов: $APP_DIR/collect-logs.sh"
+ok "Восстановление из копии: $APP_DIR/restore.sh"
 
 # --------------------------------------------------------------------------
 #  Шаг 6. Настройки

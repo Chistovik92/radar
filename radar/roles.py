@@ -106,4 +106,14 @@ def can_moderate_sources(actor_role: str | None) -> bool:
 
 
 def can_use_assistant(actor_role: str | None) -> bool:
+    """Доступен ли ИИ-ассистент.
+
+    Проверяется и роль, и флаг: раньше флаг «ИИ-ассистент» значился
+    в списке возможностей и ничего не выключал — доступ определялся
+    только ролью. Тумблер, который врёт, хуже отсутствующего.
+    """
+    from . import features
+
+    if not features.enabled("ai_assistant"):
+        return False
     return is_moderator(actor_role)

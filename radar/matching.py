@@ -439,7 +439,11 @@ def build_city_alert(
     lines.extend(_event_line(analysis) for analysis in events)
     if whitelist_notice:
         lines.append("")
-        lines.append(WHITELIST_NOTICE)
+        # Флаг проверяется здесь, а не только у вызывающего: примечание
+        # добавляется из нескольких мест, и договорённость «проверьте сами»
+        # уже один раз не сработала.
+        if _whitelist_enabled():
+            lines.append(WHITELIST_NOTICE)
     return "\n".join(lines)
 
 
@@ -496,6 +500,15 @@ def _city_of(analysis: Analysis, locations: Sequence[dict[str, Any]], fallback: 
             return normalize_city(city), city
     city = analysis.city or fallback
     return normalize_city(city), city or "город"
+
+
+def _whitelist_enabled() -> bool:
+    try:
+        from . import features
+
+        return features.enabled("whitelist_notice")
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _all_clear_enabled() -> bool:

@@ -120,10 +120,13 @@ def manage_menu(role: str | None) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="🧠 Управление ИИ", callback_data="ai:menu")
         ])
-        rows.append([
-            InlineKeyboardButton(text="🌐 Выход в сеть", callback_data="net:menu"),
-            InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu"),
-        ])
+        # Выход в сеть — за своим флагом: раздел меняет маршрут всего
+        # трафика, и когда он не нужен, кнопке в меню не место.
+        network_row = [InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu")]
+        if features.enabled("egress_proxy"):
+            network_row.insert(0, InlineKeyboardButton(
+                text="🌐 Выход в сеть", callback_data="net:menu"))
+        rows.append(network_row)
         rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
         # Управление разделами живёт здесь, а не внутри самих разделов:
         # иначе настройки расползаются по боту и их приходится искать.
@@ -151,6 +154,12 @@ def promo_row() -> list[InlineKeyboardButton]:
         return [InlineKeyboardButton(
             text="🤝 Партнёрские проекты", callback_data="menu:partners",
         )]
+    # Флаг «Кнопка партнёра» и переменная PROMO_ENABLED существовали
+    # параллельно: флаг значился в списке возможностей и ничего не делал,
+    # выключалась кнопка только правкой .env. Теперь достаточно любого
+    # из двух — выключенный тумблер обязан выключать.
+    if not features.enabled("promo_button"):
+        return []
     if not config.PROMO_ENABLED or not config.PROMO_URL:
         return []
     return [InlineKeyboardButton(text=config.PROMO_TITLE, url=config.PROMO_URL)]
@@ -257,13 +266,19 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
 
 def ai_menu() -> InlineKeyboardMarkup:
     """Единый раздел управления ИИ."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Провайдер разбора", callback_data="prov:menu")],
+    rows = []
+    # Смена провайдера — за своим флагом: без него список провайдеров
+    # только путает, а сам флаг до 4.7.4.3 ничего не выключал.
+    if features.enabled("provider_switch"):
+        rows.append([InlineKeyboardButton(
+            text="🤖 Провайдер разбора", callback_data="prov:menu")])
+    rows.extend([
         [InlineKeyboardButton(text="🧪 Сравнить провайдеров", callback_data="bench:menu")],
         [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
         [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],
         [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def back_to_settings() -> InlineKeyboardMarkup:
