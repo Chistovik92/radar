@@ -97,6 +97,28 @@ def _report() -> str:
     lines.append(f"Наблюдение идёт: <b>{_uptime(profiling.uptime())}</b>")
     lines.append(f"Интервал опроса: <b>{config.POLL_INTERVAL} с</b>")
 
+    # Состояние пула подборок: пустой пул и сломанный сбор снаружи
+    # выглядят одинаково, и разница обнаруживалась только чтением кода.
+    try:
+        from .. import monitor
+
+        state = monitor.digest_state()
+        lines.append("")
+        lines.append("📰 <b>Подборки</b>")
+        if not state["enabled"]:
+            lines.append("Выключены флагом.")
+        elif not state["total"]:
+            lines.append(
+                "В пуле пусто. Если так дольше часа — новости не проходят "
+                "разбор по тематикам."
+            )
+        else:
+            lines.append(f"В пуле новостей: <b>{state['total']}</b>")
+            top = sorted(state["topics"].items(), key=lambda item: -item[1])[:6]
+            lines.append(", ".join(f"{key} — {count}" for key, count in top))
+    except Exception:  # noqa: BLE001
+        pass
+
     lines.append("")
     lines.append(
         "<i>Проценты показывают, что именно оптимизировать. Сбор источников "

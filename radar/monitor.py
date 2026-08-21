@@ -274,29 +274,67 @@ async def _send_digests_inner(now: datetime) -> None:
         log.info("Подборки разосланы: %d получателей", delivered)
 
 
-def collect_digest(analyses: list[Analysis]) -> None:
-    """Копит материал для подборки: всё значимое, не только тревожное."""
+def collect_digest(items: list[Any]) -> None:
+    """Копит материал для подборок.
+
+    Берёт СЫРЫЕ сообщения источников, а не разобранные ИИ. Это главное
+    отличие от тревог, и из-за его отсутствия подборки не приходили вообще.
+
+    Разбор ИИ отвечает на вопрос «это тревога?»: матч «Спартака», выход
+    игры и курс доллара он честно помечает как нерелевантные — они и не
+    тревога. Дальше такие сообщения отбрасывались дважды: предфильтром
+    до модели и отбором `relevant` после. В пул подборок не доходило
+    ничего, кроме аварий ЖКХ, а у них своей тематики в списке нет.
+
+    Для подборки важен не уровень опасности, а тематика. Поэтому здесь
+    свой отбор — по ключевым словам темы, независимо от того, что решил
+    разбор тревог.
+    """
     if not features.enabled("digest"):
         return
-    for item in analyses:
-        if not item.relevant:
+
+    added = 0
+    for item in items:
+        text = getattr(item, "text", "") or ""
+        if not text:
             continue
-        topic = digest.topic_of(f"{item.summary} {item.raw}")
+        topic = digest.topic_of(text)
         if topic is None:
             continue
         _digest_pool.append(
             digest.Entry(
                 topic=topic,
-                summary=item.summary or item.raw[:200],
-                source=item.source,
-                link=item.link,
+                summary=text.strip()[:220],
+                source=getattr(item, "source", ""),
+                link=getattr(item, "link", ""),
             )
         )
-    asyncio.create_task(_shorten_pool_links())
+        added += 1
+
+    if added:
+        log.info("В подборки добавлено: %d (в пуле %d)", added, len(_digest_pool))
+        asyncio.create_task(_shorten_pool_links())
     del _digest_pool[:-300]
 
 
 _digest_pool: list["digest.Entry"] = []
+
+
+def digest_state() -> dict[str, Any]:
+    """Что сейчас в пуле подборок.
+
+    Нужна для диагностики: подборки не приходили неделями, и понять это
+    можно было только чтением кода — снаружи «пусто» и «сломано»
+    выглядят одинаково.
+    """
+    by_topic: dict[str, int] = {}
+    for entry in _digest_pool:
+        by_topic[entry.topic] = by_topic.get(entry.topic, 0) + 1
+    return {
+        "total": len(_digest_pool),
+        "topics": by_topic,
+        "enabled": features.enabled("digest"),
+    }
 
 
 async def _shorten_pool_links() -> None:
@@ -464,7 +502,9 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
             parsed = []
         analyses = [analysis for analysis in parsed if analysis.relevant]
         collect_recap(analyses)
-        collect_digest(analyses)
+        # Подборки наполняются из сырых сообщений: разбор ИИ отсеивает
+        # всё, что не тревога, а для подборок это как раз материал.
+        collect_digest(items)
         counters = ai.counters()
         log.info(
             "Новых сообщений: %d, значимых: %d | запросов к ИИ: %d, "

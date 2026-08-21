@@ -239,6 +239,56 @@ class TestSummaries(unittest.TestCase):
         self.assertNotIn("театр", text)
 
 
+class TestDigestIntake(unittest.TestCase):
+    """Наполнение пула подборок.
+
+    Подборки не приходили вовсе: пул наполнялся из разобранных ИИ
+    сообщений, а разбор помечает нетревожные новости как нерелевантные —
+    и они отбрасывались дважды, до модели и после. Для подборки важна
+    тематика, а не уровень опасности.
+    """
+
+    def test_topics_of_real_headlines(self):
+        cases = {
+            "Вышло крупное обновление Cyberpunk 2077": "it",
+            "Nvidia представила новую видеокарту": "it",
+            "Сборная России обыграла соперника": "sport",
+            "Учёные обнаружили новую экзопланету": "science",
+            "Курс доллара опустился ниже 90 рублей": "finance",
+            "Netflix показал трейлер сериала": "cinema",
+            "В Саратове отключат воду на улице Чапаева": "utilities",
+            "Мэрия утвердила бюджет города": "city",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(digest.topic_of(text), expected)
+
+    def test_forecast_is_not_gardening(self):
+        """«осадков» содержит «сад»: короткий корень уводил прогноз в хобби."""
+        self.assertEqual(
+            digest.topic_of("Сегодня солнечно, без осадков"), "weather_nature"
+        )
+
+    def test_nontroubling_news_still_classified(self):
+        """Спокойная новость обязана получить тематику: именно из таких
+        и состоит подборка."""
+        for text in ("Матч чемпионата перенесли",
+                     "Премьера фильма состоится осенью",
+                     "ЦБ снизил ключевую ставку"):
+            with self.subTest(text=text):
+                self.assertIsNotNone(digest.topic_of(text))
+
+    def test_short_roots_do_not_overlap(self):
+        """Короткие корни ловят чужие слова — проверяем самые опасные."""
+        risky = {"сад": "осадков", "игр": "тигр", "вод": "водитель"}
+        for root, word in risky.items():
+            for topic in digest.TOPICS:
+                if root in topic.keywords:
+                    self.fail(
+                        f"корень «{root}» из темы {topic.key} ловит «{word}»"
+                    )
+
+
 class TestSchedule(unittest.TestCase):
     def setUp(self):
         self.subscription = digest.Subscription(topics=["city"], times=["08:30"])
