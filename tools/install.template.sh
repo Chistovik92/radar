@@ -182,6 +182,19 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            tls_ask)             value="Publish the panel with a domain and HTTPS? [y/N]" ;;
+            tls_domain_ask)      value="Domain (for example radar.example.com):" ;;
+            tls_domain_empty)    value="No domain entered — skipping" ;;
+            tls_domain_bad)      value="That does not look like a domain:" ;;
+            tls_found)           value="Certificate already set up for" ;;
+            tls_found_no_domain) value="A certificate exists, but no domain is configured" ;;
+            tls_short_missing)   value="Short links do not know the address yet — fixing" ;;
+            tls_short_url)       value="Short links will use" ;;
+            tls_salt_created)    value="Salt for short codes generated" ;;
+            tls_salt_kept)       value="Existing salt kept: changing it would break links already sent" ;;
+            tls_script_missing)  value="tls.sh not found next to the installation" ;;
+            tls_failed)          value="Certificate was not issued — see the output above" ;;
+            tls_restart_hint)    value="Restart the bot to pick up the new settings: docker compose restart" ;;
             updates_ask)         value="Update system packages? [Y/n]" ;;
             updates_skipped)     value="System packages will not be updated" ;;
             migrate_ask)         value="Move this installation to another server? [y/N]" ;;
@@ -256,6 +269,19 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            tls_ask)             value="Открыть панель наружу по домену с HTTPS? [д/Н]" ;;
+            tls_domain_ask)      value="Домен (например radar.example.ru):" ;;
+            tls_domain_empty)    value="Домен не введён — пропускаю" ;;
+            tls_domain_bad)      value="Это не похоже на домен:" ;;
+            tls_found)           value="Сертификат уже настроен для" ;;
+            tls_found_no_domain) value="Сертификат есть, но домен не настроен" ;;
+            tls_short_missing)   value="Сократитель ссылок ещё не знает адрес — прописываю" ;;
+            tls_short_url)       value="Короткие ссылки будут вида" ;;
+            tls_salt_created)    value="Соль для коротких кодов создана" ;;
+            tls_salt_kept)       value="Существующая соль сохранена: смена сломала бы уже разосланные ссылки" ;;
+            tls_script_missing)  value="Рядом с установкой нет tls.sh" ;;
+            tls_failed)          value="Сертификат не выдан — смотрите вывод выше" ;;
+            tls_restart_hint)    value="Перезапустите бота, чтобы настройки применились: docker compose restart" ;;
             updates_ask)         value="Обновлять пакеты системы? [Д/н]" ;;
             updates_skipped)     value="Пакеты системы обновляться не будут" ;;
             migrate_ask)         value="Переехать с этой установки на другой сервер? [д/Н]" ;;
@@ -649,9 +675,25 @@ tr_msg() {
     esac
 }
 
-info() { printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$(tr_msg "$*")"; log_raw "INFO  $*"; }
-ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$(tr_msg "$*")"; log_raw "OK    $*"; }
-warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$(tr_msg "$*")"; log_raw "WARN  $*"; }
+# Перед любой печатью гасим строку прогресса. Она рисуется через \r
+# и остаётся на месте, пока её не затрут: без этого сообщение печатается
+# ПОВЕРХ полосы, и на экране получается «[####...] 25% список пакетов
+# обновлён ✓ Список пакетов актуален» — три состояния в одной строке.
+info() {
+    progress_done
+    printf "  %s→%s %s\n" "$C_CYAN" "$C_RESET" "$(tr_msg "$*")"
+    log_raw "INFO  $*"
+}
+ok() {
+    progress_done
+    printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$(tr_msg "$*")"
+    log_raw "OK    $*"
+}
+warn() {
+    progress_done
+    printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$(tr_msg "$*")"
+    log_raw "WARN  $*"
+}
 
 RELEASES_API="https://api.github.com/repos/Chistovik92/radar/releases"
 RAW_BASE="https://raw.githubusercontent.com/Chistovik92/radar"
@@ -2921,6 +2963,118 @@ printf "  %sЖурнал установки: %s%s\n" "$C_DIM" "$LOG_FILE" "$C_RE
 echo
 log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED} с ==="
 
+# --------------------------------------------------------------------------
+#  Публикация панели наружу (с 4.7.5.1)
+# --------------------------------------------------------------------------
+#
+# Раньше сертификат получали отдельным скриптом, о котором надо было знать.
+# Теперь установщик сам спрашивает — и сам доводит настройку до конца:
+# получить сертификат мало, нужно ещё прописать адрес в сократитель ссылок
+# и завести соль, иначе короткие ссылки останутся выключенными и человек
+# не поймёт, почему.
+
+tls_certificate_present() {
+    # Сертификат живёт в томе Caddy. Проверяем и контейнер, и том:
+    # контейнер могли остановить, а сертификат при этом цел.
+    docker volume ls --format '{{.Name}}' 2>/dev/null \
+        | grep -q 'caddy_data' && return 0
+    docker ps -a --format '{{.Names}}' 2>/dev/null \
+        | grep -q '^radar_tls$' && return 0
+    return 1
+}
+
+configured_domain() {
+    [ -f "$APP_DIR/tls/Caddyfile" ] || return 1
+    head -1 "$APP_DIR/tls/Caddyfile" 2>/dev/null | awk '{print $1}'
+}
+
+setup_shortener() {   # setup_shortener <домен>
+    local domain="$1"
+
+    # Соль разводит коды разных экземпляров. Генерируем, если её нет,
+    # и НИКОГДА не трогаем существующую: смена соли меняет все коды,
+    # и уже разосланные ссылки перестают открываться.
+    local salt
+    salt="$(get_env_value SHORT_SALT)"
+    if [ -z "$salt" ]; then
+        salt="$(head -c 18 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 24)"
+        set_env_value SHORT_SALT "$salt"
+        ok "$(t tls_salt_created)"
+    else
+        info "$(t tls_salt_kept)"
+    fi
+
+    set_env_value SHORT_BASE_URL "https://$domain"
+    ok "$(t tls_short_url): https://$domain"
+}
+
+offer_tls() {
+    set +e
+    ( : < /dev/tty ) 2>/dev/null || return 0
+
+    local existing=""
+    if tls_certificate_present; then
+        existing="$(configured_domain || true)"
+        if [ -n "$existing" ]; then
+            ok "$(t tls_found): $existing"
+            # Сертификат уже есть — остаётся убедиться, что короткие
+            # ссылки о нём знают. Это отдельный шаг, и его легко забыть.
+            local current
+            current="$(get_env_value SHORT_BASE_URL)"
+            if [ "$current" != "https://$existing" ]; then
+                info "$(t tls_short_missing)"
+                setup_shortener "$existing"
+            fi
+            return 0
+        fi
+        info "$(t tls_found_no_domain)"
+    fi
+
+    printf "\n  %s%s%s " "${C_DIM:-}" "$(t tls_ask)" "${C_RESET:-}"
+    local answer=""
+    if ! read -r answer < /dev/tty; then
+        printf "\n"
+        return 0
+    fi
+    printf "\n"
+    case "$answer" in
+        y|Y|д|Д|yes|да|YES|ДА) : ;;
+        *) return 0 ;;
+    esac
+
+    printf "  %s " "$(t tls_domain_ask)"
+    local domain=""
+    read -r domain < /dev/tty || domain=""
+    domain="$(printf '%s' "$domain" | tr -d ' \t\r')"
+    printf "\n"
+
+    if [ -z "$domain" ]; then
+        warn "$(t tls_domain_empty)"
+        return 0
+    fi
+    case "$domain" in
+        *.*) : ;;
+        *) warn "$(t tls_domain_bad) $domain"; return 0 ;;
+    esac
+
+    if [ ! -x "$APP_DIR/tls.sh" ]; then
+        warn "$(t tls_script_missing)"
+        return 0
+    fi
+
+    if RADAR_HOME="$APP_DIR" bash "$APP_DIR/tls.sh" "$domain"; then
+        setup_shortener "$domain"
+        info "$(t tls_restart_hint)"
+    else
+        warn "$(t tls_failed)"
+    fi
+    return 0
+}
+
+if [ "$MIGRATE_OUT" != true ]; then
+    offer_tls
+fi
+
 # Предложение переехать. Спрашиваем в конце, а не в начале: до установки
 # человек ещё не знает, работает ли новая версия, и решать про переезд рано.
 #
@@ -2934,7 +3088,14 @@ offer_migration() {
 
     printf "  %s%s%s " "${C_DIM:-}" "$(t migrate_ask)" "${C_RESET:-}"
     local answer=""
-    read -r -t 60 answer < /dev/tty || answer="n"
+    # Без таймаута: на экране вопрос уже напечатан, и оборвать его через
+    # минуту — значит показать вопрос и не дать ответить. Ровно это
+    # и происходило: строка появлялась, тут же возвращалось приглашение.
+    # Если терминала нет, сюда мы не дойдём — проверка выше.
+    if ! read -r answer < /dev/tty; then
+        printf "\n"
+        return 0
+    fi
     printf "\n"
 
     case "$answer" in
