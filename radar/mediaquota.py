@@ -23,7 +23,7 @@ Telegram Bot API, а не наше решение: бот физически н�
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("radar.mediaquota")
@@ -41,8 +41,15 @@ class Quota:
     day: str = ""
     paid_until: str = ""
 
+    # Служебный доступ администрации. В базе не хранится — вычисляется
+    # по роли при каждом обращении, иначе понижение роли оставило бы
+    # человеку безлимит навсегда.
+    complimentary: bool = field(default=False, compare=False)
+
     @property
     def unlimited(self) -> bool:
+        if self.complimentary:
+            return True
         if not self.paid_until:
             return False
         try:
@@ -53,6 +60,8 @@ class Quota:
 
     @property
     def days_left(self) -> int:
+        if self.complimentary or not self.paid_until:
+            return 0
         if not self.unlimited:
             return 0
         until = datetime.fromisoformat(self.paid_until)
@@ -104,8 +113,25 @@ def today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def quota_of(user: dict) -> Quota:
-    return Quota.from_dict((user or {}).get("media_quota"))
+def quota_of(user: dict, role: str | None = None) -> Quota:
+    """Квота человека с учётом единой подписки и роли.
+
+    Оплата подборок снимает дневной предел на видео — подписка одна.
+    Администрации предел не ставится вовсе: иначе ошибку в платной части
+    первым найдёт не разработчик, а тот, кто заплатил.
+    """
+    quota = Quota.from_dict((user or {}).get("media_quota"))
+
+    from . import subscription as common
+
+    if common.complimentary(user, role):
+        quota.complimentary = True
+        return quota
+
+    shared = common.paid_until(user)
+    if shared and shared > (quota.paid_until or ""):
+        quota.paid_until = shared
+    return quota
 
 
 def store_quota(user: dict, quota: Quota) -> None:

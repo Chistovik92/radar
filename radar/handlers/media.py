@@ -157,7 +157,7 @@ async def drop_request(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("med:get:"))
 async def download(call: CallbackQuery, role: str, user: dict) -> None:
-    quota = mediaquota.quota_of(user)
+    quota = mediaquota.quota_of(user, role)
     if not quota.allowed(mediaquota.today()):
         await call.answer(
             f"Дневной предел исчерпан: {mediaquota.FREE_PER_DAY} видео. "
@@ -345,7 +345,7 @@ async def menu_media(call: CallbackQuery, role: str, user: dict) -> None:
     await call.answer()
     limit = media.size_limit_mb(config.uses_local_api())
     server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
-    quota = mediaquota.quota_of(user)
+    quota = mediaquota.quota_of(user, role)
     await safe_edit(
         call,
         "🎬 <b>Загрузка видео</b>\n\n"
@@ -376,10 +376,10 @@ def _quota_keyboard(quota) -> InlineKeyboardMarkup:
 
 
 @router.callback_query(F.data == "med:buy")
-async def buy_unlimited(call: CallbackQuery, user: dict) -> None:
+async def buy_unlimited(call: CallbackQuery, user: dict, role: str) -> None:
     from aiogram.types import LabeledPrice
 
-    quota = mediaquota.quota_of(user)
+    quota = mediaquota.quota_of(user, role)
     if quota.unlimited:
         await call.answer(
             f"Безлимит уже активен, осталось дней: {quota.days_left}",
@@ -392,7 +392,8 @@ async def buy_unlimited(call: CallbackQuery, user: dict) -> None:
         await call.message.answer_invoice(
             title=f"Загрузка видео без лимита — {mediaquota.SUBSCRIPTION_DAYS} дней",
             description=(
-                f"Снимает дневной предел в {mediaquota.FREE_PER_DAY} видео.\n\n"
+                f"Снимает дневной предел в {mediaquota.FREE_PER_DAY} видео "
+                "и открывает новостные подборки: подписка одна на всё.\n\n"
                 "Предел размера файла в 50 МБ остаётся: это ограничение "
                 "Telegram, а не наше решение, и подпиской оно не снимается."
             ),
@@ -409,7 +410,8 @@ async def buy_unlimited(call: CallbackQuery, user: dict) -> None:
                                   reply_markup=back_kb())
 
 
-async def apply_media_payment(message, user: dict, payload: str) -> None:
+async def apply_media_payment(message, user: dict, payload: str,
+                              role: str = "user") -> None:
     """Зачислить оплаченный безлимит. Зовётся из общего обработчика платежей."""
     try:
         days = int(payload.split(":", 1)[1])
@@ -417,7 +419,7 @@ async def apply_media_payment(message, user: dict, payload: str) -> None:
         log.warning("Непонятный платёж за видео: %s", payload)
         return
 
-    quota = mediaquota.quota_of(user)
+    quota = mediaquota.quota_of(user, role)
     quota.extend(days)
     mediaquota.store_quota(user, quota)
     await storage.save()

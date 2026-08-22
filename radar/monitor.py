@@ -153,6 +153,21 @@ async def dispatch_user(
             sent += 1
         await asyncio.sleep(0.3)
 
+    # Доставку отмечаем только когда что-то действительно ушло: журнал
+    # обязан отражать полученное, а не запланированное. Иначе человек
+    # увидит в нём тревогу, которой не приходило.
+    if sent and features.enabled("history"):
+        from .db import repo as history_repo
+
+        for analysis in analyses:
+            event_id = getattr(analysis, "event_id", None)
+            if not event_id:
+                continue
+            try:
+                await history_repo.record_delivery(event_id, uid, None)
+            except Exception:  # noqa: BLE001
+                log.debug("Доставка не записана в журнал")
+
     changed = False
     if features.enabled("weather") and weather_due(user, now_ts, now):
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
@@ -501,6 +516,21 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
             log.exception("Пакетный разбор сообщений не удался")
             parsed = []
         analyses = [analysis for analysis in parsed if analysis.relevant]
+
+        # Журнал событий заполняется здесь. Функции store_event
+        # и record_delivery были написаны давно и не вызывались ниоткуда:
+        # раздел «Журнал» открывался и всегда показывал пусто, даже когда
+        # тревоги приходили. Идентификаторы кладём в само событие, чтобы
+        # рассылка знала, что отмечать доставленным.
+        if features.enabled("history"):
+            from .db import repo as history_repo
+
+            for analysis in analyses:
+                try:
+                    analysis.event_id = await history_repo.store_event(analysis)
+                except Exception:  # noqa: BLE001
+                    log.debug("Событие не сохранилось в журнал")
+
         collect_recap(analyses)
         # Подборки наполняются из сырых сообщений: разбор ИИ отсеивает
         # всё, что не тревога, а для подборок это как раз материал.

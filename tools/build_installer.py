@@ -58,6 +58,7 @@ MANIFEST = [
     "radar/promo.py",
     "radar/i18n.py",
     "radar/mediaquota.py",
+    "radar/subscription.py",
     "radar/backup.py",
     "radar/weather_image.py",
     "radar/web/__init__.py",

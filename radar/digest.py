@@ -264,6 +264,15 @@ def free_for_role(role: str | None) -> bool:
 def subscription_of(user: dict[str, Any], role: str | None = None) -> Subscription:
     subscription = Subscription.from_dict(user.get("digest"))
     subscription.complimentary = free_for_role(role or user.get("role"))
+
+    # Подписка единая: оплата загрузки видео открывает и подборки.
+    # Для человека это одна покупка, и продавать дважды за одно и то же
+    # ощущение — нечестно.
+    from . import subscription as common
+
+    shared = common.paid_until(user)
+    if shared and shared > (subscription.paid_until or ""):
+        subscription.paid_until = shared
     return subscription
 
 
@@ -434,7 +443,12 @@ def describe(subscription: Subscription) -> str:
         if subscription.paid:
             lines.append(f"Оплачено дней сверх того: <b>{subscription.days_left}</b>")
     elif subscription.paid:
-        lines.append(f"✅ Подписка активна, осталось дней: <b>{subscription.days_left}</b>")
+        lines.append(
+            f"✅ Подписка активна, осталось дней: <b>{subscription.days_left}</b>"
+        )
+        lines.append(
+            "<i>Она же снимает дневной предел на загрузку видео.</i>"
+        )
     else:
         lines.append(
             f"Бесплатно доступно тематик: <b>{FREE_TOPICS}</b>. "

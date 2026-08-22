@@ -67,6 +67,11 @@ class Analysis:
     """Результат разбора одного сообщения источника."""
 
     relevant: bool = False
+    # Идентификатор записи в журнале. Проставляется после сохранения
+    # события и нужен рассылке, чтобы отметить доставку. В сравнении
+    # не участвует: два одинаковых по смыслу разбора не должны
+    # считаться разными только из-за номера строки в базе.
+    event_id: int | None = field(default=None, compare=False)
     categories: list[str] = field(default_factory=list)
     severity: str = "info"
     scope: str = "city"  # region | city | district | street
