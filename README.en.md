@@ -1,4 +1,4 @@
-# Radar v4.7.4.8
+# Radar v4.7.5
 
 [Русская версия](README.md)
 
@@ -112,10 +112,10 @@ failed.
 * [ROADMAP.md](docs/ROADMAP.md) — what is planned and what is done
 * [STATUS.md](docs/STATUS.md) — current state, version history
 * [API_SETUP.md](docs/API_SETUP.md) — where to get every key
-* [MONETIZATION.md](docs/MONETIZATION.md) — paid features
+* [MONETIZATION.en.md](docs/MONETIZATION.en.md) — paid features
 * [NEWS_DIGEST.md](docs/NEWS_DIGEST.md) — how digests work
 
-These are currently Russian only; English versions are being written.
+ROADMAP, STATUS, API_SETUP and NEWS_DIGEST are Russian only for now.
 
 ## Licence
 

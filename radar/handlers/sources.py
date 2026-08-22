@@ -39,10 +39,26 @@ def normalize_channel(raw: str) -> str:
 @router.callback_query(F.data == "src:suggest")
 async def suggest(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
+
+    # Флаг «Предложение источников новостей» до 4.7.5 ничего не выключал.
+    # Когда он снят, предложения не принимаются вовсе: список источников
+    # тогда ведёт только администрация, и обещать людям обратное нельзя.
+    if not features.enabled("digest_suggestions"):
+        await safe_edit(
+            call,
+            "📢 <b>Предложить источник</b>\n\n"
+            "Приём предложений сейчас закрыт — список источников ведёт "
+            "администрация.",
+            back_kb("menu:main", "Назад"),
+        )
+        return
+
     await safe_edit(
         call,
         "📢 <b>Предложить источник</b>\nПришлите юзернейм публичного канала, например "
-        "<code>saratovzhkh</code> или ссылку на него.",
+        "<code>saratovzhkh</code> или ссылку на него.\n\n"
+        "<i>Подойдут и тематические каналы — про игры, спорт, науку: "
+        "они попадут в новостные подборки.</i>",
         back_kb("menu:main", "Отмена"),
     )
     await state.set_state(Form.suggest_source)

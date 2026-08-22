@@ -10,7 +10,7 @@
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.4.8"
+__version__ = "4.7.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"

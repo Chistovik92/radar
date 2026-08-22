@@ -410,6 +410,7 @@ class TestFlagsActuallyWork(unittest.TestCase):
     IMPLEMENTED = (
         "alerts", "weather", "ai_analysis", "ai_assistant",
         "source_telegram", "source_rss", "source_vk", "all_clear",
+        "digest_suggestions", "platform_max",
         "whitelist_notice", "weather_image", "weather_image_all",
         "quiet_hours", "antispam", "digest", "digest_paid",
         "digest_summaries", "link_shortener", "sos", "media_download",
@@ -421,9 +422,11 @@ class TestFlagsActuallyWork(unittest.TestCase):
     def sources(self):
         import pathlib
 
-        root = pathlib.Path(__file__).resolve().parent.parent / "radar"
-        text = []
-        for path in root.rglob("*.py"):
+        # main.py тоже считается: адаптер MAX запускается оттуда,
+        # и без него флаг выглядел бы неиспользуемым.
+        root = pathlib.Path(__file__).resolve().parent.parent
+        text = [(root / "main.py").read_text(encoding="utf-8")]
+        for path in (root / "radar").rglob("*.py"):
             if path.name == "features.py":
                 continue
             text.append(path.read_text(encoding="utf-8"))

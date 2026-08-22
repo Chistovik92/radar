@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.4.8 — автономный установщик.
+# Система «Радар» v4.7.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.4.8"
+VERSION="4.7.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2241,6 +2241,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.5", [
+        "🔒 <b>Сертификат для веб-панели одной командой</b> — "
+        "<code>tls.sh домен</code>. Продлевается сам, без cron: забытое "
+        "продление ломает панель ровно через три месяца, когда о нём "
+        "уже никто не помнит.",
+        "🔧 <b>Последние переключатели закрыты.</b> Предложение источников "
+        "и мессенджер MAX теперь работают, а «Источники Одноклассники» "
+        "убраны из списка: кода для них нет, и тумблер обещал впустую.",
+        "🌍 <b>Подборки переведены</b> вместе с названиями всех "
+        "восемнадцати тематик.",
+    ]),
     ("4.7.4.8", [
         "📖 <b>Журнал наконец заполняется.</b> Запись событий и доставок "
         "была написана, но не вызывалась ниоткуда — раздел показывал пусто "
@@ -2716,6 +2727,26 @@ async def main() -> None:
         panel_task = asyncio.create_task(run_panel(), name="web-panel")
     asyncio.create_task(announce(), name="announce")
 
+    # Адаптер MAX. Пакет radar/platforms/ существовал с 4.4 и не
+    # импортировался ни одним модулем — флаг «Мессенджер MAX» значился
+    # в списке возможностей и не мог ничего включить.
+    #
+    # Запускается отдельной задачей и только по флагу: реализация
+    # не проверялась на живом сервере, и она не должна мешать Telegram,
+    # если MAX ответит не тем, чего мы ждём.
+    if features.enabled("platform_max"):
+        from radar.platforms.max import MaxTransport
+
+        max_transport = MaxTransport()
+        if max_transport.configured:
+            asyncio.create_task(max_transport.start(), name="max")
+            log.info("Адаптер MAX запущен")
+        else:
+            log.warning(
+                "Мессенджер MAX включён флагом, но MAX_BOT_TOKEN пуст — "
+                "адаптер не запускается"
+            )
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
@@ -2764,7 +2795,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.4.8"
+__version__ = "4.7.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -4356,9 +4387,10 @@ FLAGS: tuple[Flag, ...] = (
          group="Источники", since="3.0"),
     Flag("source_vk", "Источники ВКонтакте", "Стены открытых сообществ через VK API.",
          group="Источники", since="4.3", default=False),
-    Flag("source_ok", "Источники Одноклассники",
-         "Ленты групп через API OK. Требует регистрации приложения на apiok.ru.",
-         group="Источники", since="4.1", default=False),
+    # Флаг «Источники Одноклассники» убран в 4.7.5. Кода для OK в проекте
+    # нет — были только ключи в настройках, а сам сбор не написан.
+    # Тумблер, который ничего не включает, хуже отсутствующего: на него
+    # надеются. Вернётся вместе с реализацией, а не раньше.
 
     # --- подача ---
     Flag("all_clear", "Отбой опасности", "Отдельное сообщение при снятии угрозы.",
@@ -7739,46 +7771,68 @@ def build(entries: Iterable[Entry], subscription: Subscription,
     return "\n".join(lines).strip()
 
 
-def describe(subscription: Subscription) -> str:
+def describe(subscription: Subscription, lang: str = "ru") -> str:
     """Состояние подписки для меню."""
-    lines = ["📰 <b>Новостные подборки</b>", ""]
+    from . import i18n
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
+    lines = [f"📰 <b>{_('digest.title', 'Новостные подборки')}</b>", ""]
 
     if subscription.complimentary:
-        lines.append(
-            "🛠 <b>Служебный доступ</b> — все тематики открыты без оплаты."
-        )
+        lines.append(_(
+            "digest.staff",
+            "🛠 <b>Служебный доступ</b> — все тематики открыты без оплаты.",
+        ))
         if subscription.paid:
-            lines.append(f"Оплачено дней сверх того: <b>{subscription.days_left}</b>")
+            lines.append(
+                f"{_('digest.extra_days', 'Оплачено дней сверх того')}: "
+                f"<b>{subscription.days_left}</b>"
+            )
     elif subscription.paid:
         lines.append(
-            f"✅ Подписка активна, осталось дней: <b>{subscription.days_left}</b>"
+            f"✅ {_('digest.paid', 'Подписка активна, осталось дней')}: "
+            f"<b>{subscription.days_left}</b>"
         )
-        lines.append(
-            "<i>Она же снимает дневной предел на загрузку видео.</i>"
-        )
+        lines.append("<i>" + _(
+            "digest.covers_media",
+            "Она же снимает дневной предел на загрузку видео.",
+        ) + "</i>")
     else:
         lines.append(
-            f"Бесплатно доступно тематик: <b>{FREE_TOPICS}</b>. "
-            "Подписка открывает все двенадцать."
+            f"{_('digest.free', 'Бесплатно доступно тематик')}: "
+            f"<b>{FREE_TOPICS}</b>. " + _(
+                "digest.upsell",
+                f"Подписка открывает все {len(TOPICS)}.",
+            )
         )
 
     chosen = subscription.allowed_topics()
     lines.append("")
     if chosen:
-        lines.append("<b>Ваши тематики:</b>")
+        lines.append(f"<b>{_('digest.topics', 'Ваши тематики')}:</b>")
         for key in chosen:
             topic = BY_KEY[key]
-            lines.append(f"{topic.icon} {esc(topic.title)}")
+            title = i18n.t(f"topic.{key}", lang, topic.title)
+            lines.append(f"{topic.icon} {esc(title)}")
     else:
-        lines.append("Тематики не выбраны — подборка не приходит.")
+        lines.append(_(
+            "digest.no_topics",
+            "Тематики не выбраны — подборка не приходит.",
+        ))
 
     lines.append("")
-    lines.append(f"<b>Время доставки:</b> {', '.join(subscription.times)}")
-    lines.append("")
     lines.append(
-        "<i>Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
-        "всегда и от подписки не зависят.</i>"
+        f"<b>{_('digest.times', 'Время доставки')}:</b> "
+        f"{', '.join(subscription.times)}"
     )
+    lines.append("")
+    lines.append("<i>" + _(
+        "digest.free_always",
+        "Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
+        "всегда и от подписки не зависят.",
+    ) + "</i>")
     return "\n".join(lines)
 RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/quiet.py"
@@ -8901,13 +8955,47 @@ EN_STRINGS: dict[str, str] = {
     "media.too_big": "The file is larger than the limit.",
 
     # --- подборки ---
-    "digest.title": "📰 News digests",
+    "digest.title": "News digests",
     "digest.topics": "Topics",
     "digest.times": "Delivery times",
     "digest.free": "Free plan: one topic",
     "digest.paid": "Subscription active, days left",
     "digest.buy": "⭐️ Subscribe",
     "digest.sources": "Sources",
+
+    "digest.staff": "🛠 <b>Staff access</b> — all topics are open, no payment.",
+    "digest.extra_days": "Paid days on top of that",
+    "digest.paid": "Subscription active, days left",
+    "digest.covers_media": "It also lifts the daily video download limit.",
+    "digest.free": "Topics available for free",
+    "digest.upsell": "A subscription opens all of them.",
+    "digest.topics": "Your topics",
+    "digest.no_topics": "No topics selected — the digest will not arrive.",
+    "digest.times": "Delivery time",
+    "digest.free_always": (
+        "Danger alerts, utilities, weather and SOS stay free at all times "
+        "and do not depend on the subscription."
+    ),
+
+    # --- названия тематик ---
+    "topic.city": "City and government",
+    "topic.incidents": "Incidents",
+    "topic.utilities": "Utilities and infrastructure",
+    "topic.transport": "Transport",
+    "topic.health": "Health",
+    "topic.education": "Education",
+    "topic.social": "Social",
+    "topic.economy": "Economy and business",
+    "topic.culture": "Culture and leisure",
+    "topic.weather_nature": "Weather and nature",
+    "topic.region": "Region",
+    "topic.federal": "National",
+    "topic.it": "IT and games",
+    "topic.science": "Science and tech",
+    "topic.sport": "Sport",
+    "topic.hobby": "Hobbies and cars",
+    "topic.cinema": "Films and series",
+    "topic.finance": "Money and markets",
 
     # --- погода ---
     "weather.feels": "feels like",
@@ -18406,10 +18494,26 @@ def normalize_channel(raw: str) -> str:
 @router.callback_query(F.data == "src:suggest")
 async def suggest(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
+
+    # Флаг «Предложение источников новостей» до 4.7.5 ничего не выключал.
+    # Когда он снят, предложения не принимаются вовсе: список источников
+    # тогда ведёт только администрация, и обещать людям обратное нельзя.
+    if not features.enabled("digest_suggestions"):
+        await safe_edit(
+            call,
+            "📢 <b>Предложить источник</b>\n\n"
+            "Приём предложений сейчас закрыт — список источников ведёт "
+            "администрация.",
+            back_kb("menu:main", "Назад"),
+        )
+        return
+
     await safe_edit(
         call,
         "📢 <b>Предложить источник</b>\nПришлите юзернейм публичного канала, например "
-        "<code>saratovzhkh</code> или ссылку на него.",
+        "<code>saratovzhkh</code> или ссылку на него.\n\n"
+        "<i>Подойдут и тематические каналы — про игры, спорт, науку: "
+        "они попадут в новостные подборки.</i>",
         back_kb("menu:main", "Отмена"),
     )
     await state.set_state(Form.suggest_source)
@@ -22694,7 +22798,7 @@ from aiogram.types import (
     PreCheckoutQuery,
 )
 
-from .. import digest, features, roles, secrets, storage
+from .. import digest, features, i18n, roles, secrets, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
@@ -22763,7 +22867,7 @@ async def cmd_digest(message: Message, user: dict, role: str) -> None:
         return
     subscription = digest.subscription_of(user)
     await message.answer(
-        digest.describe(subscription), reply_markup=_menu(subscription, role)
+        digest.describe(subscription, i18n.language_of(user)), reply_markup=_menu(subscription, role)
     )
 
 
@@ -22776,7 +22880,7 @@ async def show_menu(call: CallbackQuery, state: FSMContext, user: dict,
     await state.clear()
     await call.answer()
     subscription = digest.subscription_of(user)
-    await safe_edit(call, digest.describe(subscription), _menu(subscription, role))
+    await safe_edit(call, digest.describe(subscription, i18n.language_of(user)), _menu(subscription, role))
 
 
 @router.callback_query(F.data == "dig:topics")
@@ -22812,7 +22916,7 @@ async def toggle_topic(call: CallbackQuery, user: dict) -> None:
 
     digest.store_subscription(user, subscription)
     await storage.save(call.from_user.id)
-    await safe_edit(call, digest.describe(subscription), _topics_menu(subscription))
+    await safe_edit(call, digest.describe(subscription, i18n.language_of(user)), _topics_menu(subscription))
 
 
 @router.callback_query(F.data == "dig:time")
@@ -23364,9 +23468,163 @@ printf "    cd %s && docker compose up -d\n" "$APP_DIR"
 printf "    затем проверьте целостность в боте: Управление → Копии\n\n"
 RADAR_RESTORE_EOF
 chmod +x "$APP_DIR/restore.sh" 2>/dev/null || true
+
+# Скрипт получения сертификата — тоже рядом с установкой: он нужен
+# на самой машине, где домен и порты, а не на машине разработчика.
+cat > "$APP_DIR/tls.sh" <<'RADAR_TLS_EOF'
+#!/usr/bin/env bash
+#
+# Получает сертификат и поднимает перед панелью Caddy, который сам держит
+# его в актуальном состоянии.
+#
+# Почему Caddy, а не certbot с nginx: Caddy получает и продлевает
+# сертификат сам, без cron и хуков. Для машины, за которой никто
+# не следит ежедневно, это важнее гибкости — забытое продление ломает
+# панель ровно через три месяца, когда о нём уже никто не помнит.
+#
+# ГЛАВНОЕ ОГРАНИЧЕНИЕ, о котором нужно знать заранее: проверка владения
+# доменом идёт ИЗВНЕ на порты 80 и 443. Если роутер их не пробрасывает
+# или провайдер режет — выдача не пройдёт, и никакие настройки здесь
+# не помогут. Скрипт проверяет это до обращения к Let's Encrypt,
+# чтобы не тратить попытки: у них лимит пять неудач в час на домен.
+#
+set -Eeuo pipefail
+
+APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
+DOMAIN="${1:-}"
+EMAIL="${2:-}"
+
+C_RESET=""; C_BOLD=""; C_DIM=""; C_GREEN=""; C_RED=""; C_YELLOW=""
+if [ -t 1 ]; then
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    C_GREEN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YELLOW=$'\033[1;33m'
+fi
+ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; }
+info() { printf "  %s→%s %s\n" "$C_DIM" "$C_RESET" "$*"; }
+warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+die()  { printf "\n  %s✗ %s%s\n\n" "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
+
+if [ -z "$DOMAIN" ]; then
+    cat <<'USAGE'
+
+  Сертификат для веб-панели «Радара»
+
+  Использование:
+    bash tls.sh домен [почта]
+
+  Например:
+    bash tls.sh radar.example.ru admin@example.ru
+
+  Что нужно заранее:
+    1. Домен указывает A-записью на внешний адрес этого сервера.
+    2. Порты 80 и 443 проброшены на сервер снаружи.
+       Проверка владения доменом идёт именно снаружи — без проброса
+       сертификат не выдадут, сколько ни пробуй.
+
+USAGE
+    exit 0
+fi
+
+printf "\n  %sСертификат для %s%s\n\n" "$C_BOLD" "$DOMAIN" "$C_RESET"
+
+command -v docker >/dev/null 2>&1 || die "Docker не установлен"
+[ -d "$APP_DIR" ] || die "Установка не найдена в $APP_DIR"
+
+# --- проверки до обращения к Let's Encrypt --------------------------------
+#
+# У них лимит: пять неудачных попыток на домен в час. Поэтому всё, что
+# можно проверить самим, проверяем заранее.
+
+info "Проверяю, куда указывает домен"
+resolved="$(getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -1 || true)"
+external="$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
+
+if [ -z "$resolved" ]; then
+    die "Домен $DOMAIN не разрешается в адрес — проверьте A-запись"
+fi
+ok "Домен указывает на $resolved"
+
+if [ -n "$external" ] && [ "$resolved" != "$external" ]; then
+    warn "Внешний адрес сервера — $external, а домен указывает на $resolved"
+    warn "Если между ними нет проброса, проверка владения не пройдёт"
+fi
+
+info "Проверяю, свободен ли порт 80"
+if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':80 '; then
+    die "Порт 80 занят. Освободите его: проверка Let's Encrypt идёт на него"
+fi
+ok "Порт 80 свободен"
+
+WEB_PORT="$(grep -E '^WEB_PORT=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+: "${WEB_PORT:=8080}"
+
+# --- Caddy ----------------------------------------------------------------
+
+mkdir -p "$APP_DIR/tls"
+cat > "$APP_DIR/tls/Caddyfile" <<CADDY
+$DOMAIN {
+    reverse_proxy radar:$WEB_PORT
+    encode gzip
+}
+CADDY
+ok "Настройки Caddy записаны"
+
+cat > "$APP_DIR/tls/docker-compose.tls.yml" <<COMPOSE
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: radar_tls
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./tls/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - default
+
+volumes:
+  caddy_data:
+  caddy_config:
+COMPOSE
+ok "Описание контейнера готово"
+
+info "Поднимаю Caddy — сертификат запросится автоматически"
+cd "$APP_DIR"
+if ! docker compose -f docker-compose.yml -f tls/docker-compose.tls.yml up -d caddy; then
+    die "Caddy не запустился — смотрите docker logs radar_tls"
+fi
+
+printf "\n"
+info "Жду выдачу сертификата (обычно до минуты)"
+issued=false
+for _ in $(seq 1 30); do
+    if docker logs radar_tls 2>&1 | grep -q "certificate obtained successfully"; then
+        issued=true
+        break
+    fi
+    sleep 4
+done
+
+if [ "$issued" = true ]; then
+    ok "Сертификат получен"
+    printf "\n  Панель доступна: %shttps://%s%s\n" "$C_BOLD" "$DOMAIN" "$C_RESET"
+    printf "  Короткие ссылки: %shttps://%s/s/КОД%s\n\n" "$C_BOLD" "$DOMAIN" "$C_RESET"
+    printf "  Не забудьте задать в боте:\n"
+    printf "    SHORT_BASE_URL = https://%s\n\n" "$DOMAIN"
+else
+    warn "Сертификат пока не выдан. Обычная причина — порты 80 и 443"
+    warn "не проброшены снаружи. Посмотрите: docker logs radar_tls"
+    printf "\n"
+fi
+RADAR_TLS_EOF
+chmod +x "$APP_DIR/tls.sh" 2>/dev/null || true
 chmod +x "$APP_DIR/collect-logs.sh"
 ok "Сборщик журналов: $APP_DIR/collect-logs.sh"
 ok "Восстановление из копии: $APP_DIR/restore.sh"
+ok "Сертификат для панели: $APP_DIR/tls.sh домен"
 
 # --------------------------------------------------------------------------
 #  Шаг 6. Настройки

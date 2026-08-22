@@ -432,44 +432,66 @@ def build(entries: Iterable[Entry], subscription: Subscription,
     return "\n".join(lines).strip()
 
 
-def describe(subscription: Subscription) -> str:
+def describe(subscription: Subscription, lang: str = "ru") -> str:
     """Состояние подписки для меню."""
-    lines = ["📰 <b>Новостные подборки</b>", ""]
+    from . import i18n
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
+    lines = [f"📰 <b>{_('digest.title', 'Новостные подборки')}</b>", ""]
 
     if subscription.complimentary:
-        lines.append(
-            "🛠 <b>Служебный доступ</b> — все тематики открыты без оплаты."
-        )
+        lines.append(_(
+            "digest.staff",
+            "🛠 <b>Служебный доступ</b> — все тематики открыты без оплаты.",
+        ))
         if subscription.paid:
-            lines.append(f"Оплачено дней сверх того: <b>{subscription.days_left}</b>")
+            lines.append(
+                f"{_('digest.extra_days', 'Оплачено дней сверх того')}: "
+                f"<b>{subscription.days_left}</b>"
+            )
     elif subscription.paid:
         lines.append(
-            f"✅ Подписка активна, осталось дней: <b>{subscription.days_left}</b>"
+            f"✅ {_('digest.paid', 'Подписка активна, осталось дней')}: "
+            f"<b>{subscription.days_left}</b>"
         )
-        lines.append(
-            "<i>Она же снимает дневной предел на загрузку видео.</i>"
-        )
+        lines.append("<i>" + _(
+            "digest.covers_media",
+            "Она же снимает дневной предел на загрузку видео.",
+        ) + "</i>")
     else:
         lines.append(
-            f"Бесплатно доступно тематик: <b>{FREE_TOPICS}</b>. "
-            "Подписка открывает все двенадцать."
+            f"{_('digest.free', 'Бесплатно доступно тематик')}: "
+            f"<b>{FREE_TOPICS}</b>. " + _(
+                "digest.upsell",
+                f"Подписка открывает все {len(TOPICS)}.",
+            )
         )
 
     chosen = subscription.allowed_topics()
     lines.append("")
     if chosen:
-        lines.append("<b>Ваши тематики:</b>")
+        lines.append(f"<b>{_('digest.topics', 'Ваши тематики')}:</b>")
         for key in chosen:
             topic = BY_KEY[key]
-            lines.append(f"{topic.icon} {esc(topic.title)}")
+            title = i18n.t(f"topic.{key}", lang, topic.title)
+            lines.append(f"{topic.icon} {esc(title)}")
     else:
-        lines.append("Тематики не выбраны — подборка не приходит.")
+        lines.append(_(
+            "digest.no_topics",
+            "Тематики не выбраны — подборка не приходит.",
+        ))
 
     lines.append("")
-    lines.append(f"<b>Время доставки:</b> {', '.join(subscription.times)}")
-    lines.append("")
     lines.append(
-        "<i>Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
-        "всегда и от подписки не зависят.</i>"
+        f"<b>{_('digest.times', 'Время доставки')}:</b> "
+        f"{', '.join(subscription.times)}"
     )
+    lines.append("")
+    lines.append("<i>" + _(
+        "digest.free_always",
+        "Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
+        "всегда и от подписки не зависят.",
+    ) + "</i>")
     return "\n".join(lines)

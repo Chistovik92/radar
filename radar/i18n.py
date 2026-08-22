@@ -99,13 +99,47 @@ EN_STRINGS: dict[str, str] = {
     "media.too_big": "The file is larger than the limit.",
 
     # --- подборки ---
-    "digest.title": "📰 News digests",
+    "digest.title": "News digests",
     "digest.topics": "Topics",
     "digest.times": "Delivery times",
     "digest.free": "Free plan: one topic",
     "digest.paid": "Subscription active, days left",
     "digest.buy": "⭐️ Subscribe",
     "digest.sources": "Sources",
+
+    "digest.staff": "🛠 <b>Staff access</b> — all topics are open, no payment.",
+    "digest.extra_days": "Paid days on top of that",
+    "digest.paid": "Subscription active, days left",
+    "digest.covers_media": "It also lifts the daily video download limit.",
+    "digest.free": "Topics available for free",
+    "digest.upsell": "A subscription opens all of them.",
+    "digest.topics": "Your topics",
+    "digest.no_topics": "No topics selected — the digest will not arrive.",
+    "digest.times": "Delivery time",
+    "digest.free_always": (
+        "Danger alerts, utilities, weather and SOS stay free at all times "
+        "and do not depend on the subscription."
+    ),
+
+    # --- названия тематик ---
+    "topic.city": "City and government",
+    "topic.incidents": "Incidents",
+    "topic.utilities": "Utilities and infrastructure",
+    "topic.transport": "Transport",
+    "topic.health": "Health",
+    "topic.education": "Education",
+    "topic.social": "Social",
+    "topic.economy": "Economy and business",
+    "topic.culture": "Culture and leisure",
+    "topic.weather_nature": "Weather and nature",
+    "topic.region": "Region",
+    "topic.federal": "National",
+    "topic.it": "IT and games",
+    "topic.science": "Science and tech",
+    "topic.sport": "Sport",
+    "topic.hobby": "Hobbies and cars",
+    "topic.cinema": "Films and series",
+    "topic.finance": "Money and markets",
 
     # --- погода ---
     "weather.feels": "feels like",

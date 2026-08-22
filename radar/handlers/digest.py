@@ -23,7 +23,7 @@ from aiogram.types import (
     PreCheckoutQuery,
 )
 
-from .. import digest, features, roles, secrets, storage
+from .. import digest, features, i18n, roles, secrets, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
@@ -92,7 +92,7 @@ async def cmd_digest(message: Message, user: dict, role: str) -> None:
         return
     subscription = digest.subscription_of(user)
     await message.answer(
-        digest.describe(subscription), reply_markup=_menu(subscription, role)
+        digest.describe(subscription, i18n.language_of(user)), reply_markup=_menu(subscription, role)
     )
 
 
@@ -105,7 +105,7 @@ async def show_menu(call: CallbackQuery, state: FSMContext, user: dict,
     await state.clear()
     await call.answer()
     subscription = digest.subscription_of(user)
-    await safe_edit(call, digest.describe(subscription), _menu(subscription, role))
+    await safe_edit(call, digest.describe(subscription, i18n.language_of(user)), _menu(subscription, role))
 
 
 @router.callback_query(F.data == "dig:topics")
@@ -141,7 +141,7 @@ async def toggle_topic(call: CallbackQuery, user: dict) -> None:
 
     digest.store_subscription(user, subscription)
     await storage.save(call.from_user.id)
-    await safe_edit(call, digest.describe(subscription), _topics_menu(subscription))
+    await safe_edit(call, digest.describe(subscription, i18n.language_of(user)), _topics_menu(subscription))
 
 
 @router.callback_query(F.data == "dig:time")
