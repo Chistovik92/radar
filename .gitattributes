@@ -1,0 +1,30 @@
+# --------------------------------------------------------------------------
+# Система «Радар» — правила окончаний строк
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# --------------------------------------------------------------------------
+#
+# Главное здесь — скрипты. Если Git на Windows превратит install.sh
+# в CRLF, на сервере он перестанет запускаться: bash увидит «\r» в конце
+# shebang и скажет «bad interpreter». Ошибка выглядит необъяснимо, потому
+# что содержимое файла на вид правильное.
+#
+# Поэтому всему, что исполняется на Linux, окончания строк прибиты
+# намертво, независимо от настроек рабочей машины.
+
+* text=auto eol=lf
+
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.py            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.ini           text eol=lf
+*.md            text eol=lf
+.env.example    text eol=lf
+
+# Двоичное — не трогать
+*.png           binary
+*.jpg           binary
+*.gz            binary
+*.zip           binary
+*.db            binary

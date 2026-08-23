@@ -100,10 +100,6 @@ EN_STRINGS: dict[str, str] = {
 
     # --- подборки ---
     "digest.title": "News digests",
-    "digest.topics": "Topics",
-    "digest.times": "Delivery times",
-    "digest.free": "Free plan: one topic",
-    "digest.paid": "Subscription active, days left",
     "digest.buy": "⭐️ Subscribe",
     "digest.sources": "Sources",
 
@@ -152,12 +148,25 @@ EN_STRINGS: dict[str, str] = {
     "weather.tomorrow": "tomorrow",
 
     # --- SOS ---
-    "sos.title": "🆘 SOS",
+    "sos.overview": "🆘 Emergency help",
+    "sos.no_contacts": (
+        "No trusted contacts yet. Add someone who will receive your location "
+        "if you press the SOS button."
+    ),
     "sos.contacts": "Trusted contacts",
+    "sos.ready": "ready to receive the signal",
+    "sos.pending": "not confirmed — has not opened the bot",
+    "sos.none_confirmed": (
+        "⚠️ No contact is confirmed. Telegram does not let a bot write first — "
+        "the contact must open the bot via your link. Until then the signal "
+        "goes to the system administrators."
+    ),
+    "sos.add": "➕ Add a contact",
+    "sos.fire": "🆘 Send the signal",
+    "sos.title": "🆘 SOS",
     "sos.send": "🆘 Send an alert",
     "sos.stop": "✅ Cancel the alert",
     "sos.sent": "Alert sent to your contacts.",
-    "sos.no_contacts": "Add at least one trusted contact first.",
 
     # --- журнал ---
     "history.title": "📖 History",

@@ -88,7 +88,8 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
 <main><h1>{html.escape(title)}</h1>{body}</main></body></html>"""
 
 
-def _login_page(bot_username: str, message: str = "") -> str:
+def _login_page(bot_username: str, message: str = "",
+                public_url: str = "") -> str:
     warning = f'<p class="bad">{html.escape(message)}</p>' if message else ""
     widget = (
         f'<script async src="https://telegram.org/js/telegram-widget.js?22" '
@@ -97,6 +98,30 @@ def _login_page(bot_username: str, message: str = "") -> str:
         if bot_username else
         '<p class="warn">Имя бота не определено — вход недоступен.</p>'
     )
+    # Подсказка про домен. Виджет Telegram при непривязанном домене
+    # показывает только «Bot domain invalid» — и по этой надписи нельзя
+    # догадаться, что делать. Ошибка не наша: домен привязывается
+    # у BotFather, и никакая настройка на сервере её не снимет.
+    hint = (
+        '<details class="muted" style="margin-top:18px;text-align:left">'
+        '<summary>Кнопка не работает или пишет «Bot domain invalid»?</summary>'
+        '<p>Домен нужно привязать к боту — это делается в Telegram, '
+        'а не на сервере:</p>'
+        '<ol>'
+        '<li>Откройте <b>@BotFather</b></li>'
+        '<li>Команда <code>/setdomain</code></li>'
+        '<li>Выберите своего бота'
+        + (f' (<b>@{html.escape(bot_username)}</b>)' if bot_username else '')
+        + '</li>'
+        '<li>Пришлите адрес панели: <code>' + html.escape(public_url or
+          'https://ваш-домен') + '</code></li>'
+        '</ol>'
+        '<p>Адрес должен совпадать точно — со схемой <code>https://</code> '
+        'и без пути в конце. По IP-адресу вход через Telegram '
+        '<b>не работает вовсе</b>: виджет принимает только домены.</p>'
+        '</details>'
+    )
+
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -104,7 +129,7 @@ def _login_page(bot_username: str, message: str = "") -> str:
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
 <p class="muted">Вход через Telegram. Доступ — с роли администратора.</p>
-{warning}{widget}
+{warning}{widget}{hint}
 </div></body></html>"""
 
 
@@ -341,8 +366,22 @@ async def create_app() -> Any:
         return guard(handler, "superadmin")
 
     async def login(request):
+        # Адрес берём из настроек сократителя: он же и есть внешний адрес
+        # панели, если сертификат выдавался установщиком. Так подсказка
+        # показывает конкретный адрес, а не «ваш-домен».
+        from .. import shortener
+
+        public = shortener.base_url()
+        if not public:
+            host = request.headers.get("Host", "")
+            if host and not host.replace(".", "").replace(":", "").isdigit():
+                scheme = request.headers.get("X-Forwarded-Proto", "https")
+                public = f"{scheme}://{host}"
+
         return web.Response(
-            text=_login_page(bot_username["value"], request.query.get("error", "")),
+            text=_login_page(
+                bot_username["value"], request.query.get("error", ""), public
+            ),
             content_type="text/html",
         )
 

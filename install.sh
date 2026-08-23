@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.5.1 — автономный установщик.
+# Система «Радар» v4.7.5.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.5.1"
+VERSION="4.7.5.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -182,6 +182,11 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            tls_botfather_title) value="One more step — in Telegram, not on the server:" ;;
+            tls_botfather_open)  value="Open" ;;
+            tls_botfather_pick)  value="Pick your bot from the list" ;;
+            tls_botfather_send)  value="Send the address:" ;;
+            tls_botfather_note)  value="Without this the login widget says «Bot domain invalid»." ;;
             tls_ask)             value="Publish the panel with a domain and HTTPS? [y/N]" ;;
             tls_domain_ask)      value="Domain (for example radar.example.com):" ;;
             tls_domain_empty)    value="No domain entered — skipping" ;;
@@ -269,6 +274,11 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            tls_botfather_title) value="Остался шаг — он делается в Telegram, а не на сервере:" ;;
+            tls_botfather_open)  value="Откройте" ;;
+            tls_botfather_pick)  value="Выберите своего бота из списка" ;;
+            tls_botfather_send)  value="Пришлите адрес:" ;;
+            tls_botfather_note)  value="Без этого виджет входа пишет «Bot domain invalid»." ;;
             tls_ask)             value="Открыть панель наружу по домену с HTTPS? [д/Н]" ;;
             tls_domain_ask)      value="Домен (например radar.example.ru):" ;;
             tls_domain_empty)    value="Домен не введён — пропускаю" ;;
@@ -2283,6 +2293,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.5.2", [
+        "🔑 <b>«Bot domain invalid» теперь объясняется.</b> Домен "
+        "привязывается к боту у BotFather, а не на сервере — страница входа "
+        "и установщик говорят об этом прямо, с готовым адресом.",
+        "🌍 <b>Переведён раздел SOS.</b> Заодно нашлась тихая поломка: "
+        "повторяющиеся ключи в словаре молча перекрывали друг друга, "
+        "и текст подставлялся не тот.",
+    ]),
     ("4.7.5.1", [
         "🔒 <b>Сертификат теперь предлагает сам установщик.</b> Он же "
         "проверяет, нет ли сертификата уже, прописывает адрес "
@@ -2849,7 +2867,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.5.1"
+__version__ = "4.7.5.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -9010,10 +9028,6 @@ EN_STRINGS: dict[str, str] = {
 
     # --- подборки ---
     "digest.title": "News digests",
-    "digest.topics": "Topics",
-    "digest.times": "Delivery times",
-    "digest.free": "Free plan: one topic",
-    "digest.paid": "Subscription active, days left",
     "digest.buy": "⭐️ Subscribe",
     "digest.sources": "Sources",
 
@@ -9062,12 +9076,25 @@ EN_STRINGS: dict[str, str] = {
     "weather.tomorrow": "tomorrow",
 
     # --- SOS ---
-    "sos.title": "🆘 SOS",
+    "sos.overview": "🆘 Emergency help",
+    "sos.no_contacts": (
+        "No trusted contacts yet. Add someone who will receive your location "
+        "if you press the SOS button."
+    ),
     "sos.contacts": "Trusted contacts",
+    "sos.ready": "ready to receive the signal",
+    "sos.pending": "not confirmed — has not opened the bot",
+    "sos.none_confirmed": (
+        "⚠️ No contact is confirmed. Telegram does not let a bot write first — "
+        "the contact must open the bot via your link. Until then the signal "
+        "goes to the system administrators."
+    ),
+    "sos.add": "➕ Add a contact",
+    "sos.fire": "🆘 Send the signal",
+    "sos.title": "🆘 SOS",
     "sos.send": "🆘 Send an alert",
     "sos.stop": "✅ Cancel the alert",
     "sos.sent": "Alert sent to your contacts.",
-    "sos.no_contacts": "Add at least one trusted contact first.",
 
     # --- журнал ---
     "history.title": "📖 History",
@@ -10719,7 +10746,8 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
 <main><h1>{html.escape(title)}</h1>{body}</main></body></html>"""
 
 
-def _login_page(bot_username: str, message: str = "") -> str:
+def _login_page(bot_username: str, message: str = "",
+                public_url: str = "") -> str:
     warning = f'<p class="bad">{html.escape(message)}</p>' if message else ""
     widget = (
         f'<script async src="https://telegram.org/js/telegram-widget.js?22" '
@@ -10728,6 +10756,30 @@ def _login_page(bot_username: str, message: str = "") -> str:
         if bot_username else
         '<p class="warn">Имя бота не определено — вход недоступен.</p>'
     )
+    # Подсказка про домен. Виджет Telegram при непривязанном домене
+    # показывает только «Bot domain invalid» — и по этой надписи нельзя
+    # догадаться, что делать. Ошибка не наша: домен привязывается
+    # у BotFather, и никакая настройка на сервере её не снимет.
+    hint = (
+        '<details class="muted" style="margin-top:18px;text-align:left">'
+        '<summary>Кнопка не работает или пишет «Bot domain invalid»?</summary>'
+        '<p>Домен нужно привязать к боту — это делается в Telegram, '
+        'а не на сервере:</p>'
+        '<ol>'
+        '<li>Откройте <b>@BotFather</b></li>'
+        '<li>Команда <code>/setdomain</code></li>'
+        '<li>Выберите своего бота'
+        + (f' (<b>@{html.escape(bot_username)}</b>)' if bot_username else '')
+        + '</li>'
+        '<li>Пришлите адрес панели: <code>' + html.escape(public_url or
+          'https://ваш-домен') + '</code></li>'
+        '</ol>'
+        '<p>Адрес должен совпадать точно — со схемой <code>https://</code> '
+        'и без пути в конце. По IP-адресу вход через Telegram '
+        '<b>не работает вовсе</b>: виджет принимает только домены.</p>'
+        '</details>'
+    )
+
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -10735,7 +10787,7 @@ def _login_page(bot_username: str, message: str = "") -> str:
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
 <p class="muted">Вход через Telegram. Доступ — с роли администратора.</p>
-{warning}{widget}
+{warning}{widget}{hint}
 </div></body></html>"""
 
 
@@ -10972,8 +11024,22 @@ async def create_app() -> Any:
         return guard(handler, "superadmin")
 
     async def login(request):
+        # Адрес берём из настроек сократителя: он же и есть внешний адрес
+        # панели, если сертификат выдавался установщиком. Так подсказка
+        # показывает конкретный адрес, а не «ваш-домен».
+        from .. import shortener
+
+        public = shortener.base_url()
+        if not public:
+            host = request.headers.get("Host", "")
+            if host and not host.replace(".", "").replace(":", "").isdigit():
+                scheme = request.headers.get("X-Forwarded-Proto", "https")
+                public = f"{scheme}://{host}"
+
         return web.Response(
-            text=_login_page(bot_username["value"], request.query.get("error", "")),
+            text=_login_page(
+                bot_username["value"], request.query.get("error", ""), public
+            ),
             content_type="text/html",
         )
 
@@ -20849,7 +20915,7 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 
-from .. import config, features, geocode, roles, sos, storage
+from .. import config, features, geocode, i18n, roles, sos, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, bot, safe_edit, send_html
@@ -20866,6 +20932,7 @@ def _session() -> aiohttp.ClientSession:
 
 
 def _menu(user: dict) -> InlineKeyboardMarkup:
+    lang = i18n.language_of(user)
     contacts = sos.contacts_of(user)
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -20880,42 +20947,56 @@ def _menu(user: dict) -> InlineKeyboardMarkup:
 
     if len(contacts) < sos.MAX_CONTACTS:
         rows.append([
-            InlineKeyboardButton(text="➕ Добавить контакт", callback_data="sos:add")
+            InlineKeyboardButton(
+                text=i18n.t("sos.add", lang, "➕ Добавить контакт"),
+                callback_data="sos:add")
         ])
 
     if sos.confirmed_contacts(user) or contacts:
         rows.append([
-            InlineKeyboardButton(text="🆘 Отправить сигнал", callback_data="sos:fire")
+            InlineKeyboardButton(
+                text=i18n.t("sos.fire", lang, "🆘 Отправить сигнал"),
+                callback_data="sos:fire")
         ])
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+        callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _overview(user: dict) -> str:
+def _overview(user: dict, lang: str = "ru") -> str:
+    from .. import i18n
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     contacts = sos.contacts_of(user)
-    lines = ["🆘 <b>Экстренная помощь</b>", ""]
+    lines = [f"<b>{_('sos.overview', '🆘 Экстренная помощь')}</b>", ""]
 
     if not contacts:
-        lines.append(
+        lines.append(_(
+            "sos.no_contacts",
             "Доверенные контакты не заданы. Добавьте человека, которому уйдёт "
-            "ваша геопозиция, если вы нажмёте кнопку SOS."
-        )
+            "ваша геопозиция, если вы нажмёте кнопку SOS.",
+        ))
     else:
-        lines.append("<b>Доверенные контакты:</b>")
+        lines.append(f"<b>{_('sos.contacts', 'Доверенные контакты')}:</b>")
         for contact in contacts:
-            state = "готов принимать сигнал" if contact.confirmed else (
-                "не подтверждён — не открывал бота"
+            state = (
+                _("sos.ready", "готов принимать сигнал") if contact.confirmed
+                else _("sos.pending", "не подтверждён — не открывал бота")
             )
             mark = "✅" if contact.confirmed else "⏳"
             lines.append(f"{mark} {esc(contact.title)} — <i>{state}</i>")
 
         if not sos.confirmed_contacts(user):
             lines.append("")
-            lines.append(
+            lines.append(_(
+                "sos.none_confirmed",
                 "⚠️ Ни один контакт не подтверждён. Telegram не даёт боту писать "
                 "первым — контакт должен открыть бота по вашей ссылке. Пока этого "
-                "не произошло, сигнал уйдёт администраторам системы."
-            )
+                "не произошло, сигнал уйдёт администраторам системы.",
+            ))
 
     lines.append("")
     lines.append(
@@ -20931,7 +21012,7 @@ async def show_menu(call: CallbackQuery, state: FSMContext, user: dict) -> None:
         return
     await state.clear()
     await call.answer()
-    await safe_edit(call, _overview(user), _menu(user))
+    await safe_edit(call, _overview(user, i18n.language_of(user)), _menu(user))
 
 
 @router.message(Command("sos"))
@@ -20940,7 +21021,7 @@ async def cmd_sos(message: Message, state: FSMContext, user: dict) -> None:
         await message.answer("Функция SOS отключена.")
         return
     await state.clear()
-    await message.answer(_overview(user), reply_markup=_menu(user))
+    await message.answer(_overview(user, i18n.language_of(user)), reply_markup=_menu(user))
 
 
 # --------------------------------------------------------------------------
@@ -21117,7 +21198,7 @@ async def drop_contact(call: CallbackQuery, user: dict) -> None:
         await call.answer("Контакт удалён")
     else:
         await call.answer("Контакт не найден", show_alert=True)
-    await safe_edit(call, _overview(user), _menu(user))
+    await safe_edit(call, _overview(user, i18n.language_of(user)), _menu(user))
 
 
 # --------------------------------------------------------------------------
@@ -24417,6 +24498,20 @@ offer_tls() {
 
     if RADAR_HOME="$APP_DIR" bash "$APP_DIR/tls.sh" "$domain"; then
         setup_shortener "$domain"
+
+        # Домен для входа в панель привязывается у BotFather, а не здесь.
+        # Без этого шага виджет Telegram пишет «Bot domain invalid»,
+        # и по этой надписи догадаться, что делать, невозможно.
+        line
+        printf "  %s%s%s\n\n" "${C_BOLD:-}" "$(t tls_botfather_title)" "${C_RESET:-}"
+        printf "    1. %s @BotFather\n" "$(t tls_botfather_open)"
+        printf "    2. /setdomain\n"
+        printf "    3. %s\n" "$(t tls_botfather_pick)"
+        printf "    4. %s %shttps://%s%s\n\n" "$(t tls_botfather_send)" \
+            "${C_CYAN:-}" "$domain" "${C_RESET:-}"
+        printf "  %s\n" "$(t tls_botfather_note)"
+        line
+
         info "$(t tls_restart_hint)"
     else
         warn "$(t tls_failed)"

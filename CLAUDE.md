@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 4.7.3.5, на GitHub выложена 4.7.3.3.
+Текущая версия — 4.7.5.2, на GitHub выложена 4.7.3.3.
 
 ## Общение
 
@@ -68,3 +68,66 @@ for f in tests/test_*.py; do python3 -m unittest "tests.$(basename "$f" .py)" ||
 
 `docs/STATUS.md` — состояние и решения · `docs/ROADMAP.md` — план по версиям ·
 `docs/API_SETUP.md` — настройка сервисов · `docs/HANDOFF.md` — передача проекта
+
+## Работа из Claude Code на Windows
+
+Проект целиком переносим: код на Python, сборка через Docker, сервер —
+Linux-одноплатник. С Windows правится код, но **запускать бота там не надо**:
+Docker-образ собирается под ARM, а установщик рассчитан на Debian/Ubuntu.
+
+### Порядок работы
+
+```powershell
+git clone https://github.com/Chistovik92/radar
+cd radar
+```
+
+Проверки запускаются как есть — они на чистом Python, без внешних
+зависимостей:
+
+```powershell
+python -m unittest discover -s tests
+python tools\stubcheck.py
+python tools\lint_undefined.py
+python tools\lint_names.py
+python tools\lint_pyversion.py
+python tools\lint_docker.py
+python tools\build_installer.py
+```
+
+`lint_shellorder.py` и `bash -n install.sh` требуют bash — на Windows
+берутся из Git Bash или WSL. **Пропускать их нельзя:** обе поломки
+установщика, которые доходили до сервера, ловились именно ими.
+
+### Чего остерегаться именно на Windows
+
+**Окончания строк.** Главная опасность. Если Git превратит `install.sh`
+в CRLF, на сервере он не запустится: bash увидит `\r` в конце shebang
+и скажет `bad interpreter`. Содержимое файла при этом на вид правильное,
+и причина неочевидна. От этого защищает `.gitattributes` — он появился
+в 4.7.5.2 и прибивает `eol=lf` всему, что исполняется на Linux. Проверить:
+
+```powershell
+python -c "d=open('install.sh','rb').read(); print('CRLF:', d.count(b'\r\n'))"
+```
+
+Должно быть 0.
+
+**Кодировка.** Весь проект в UTF-8, включая сообщения на русском.
+PowerShell по умолчанию пишет в CP1251 — при правке файлов через
+`>` или `Out-File` нужен явный `-Encoding utf8`, иначе русские строки
+превратятся в мусор.
+
+**Права на файлы.** Windows не хранит бит исполнения. Если `install.sh`
+или `tools/*.sh` перестали быть исполняемыми, это чинится один раз:
+
+```powershell
+git update-index --chmod=+x install.sh
+```
+
+### Что нельзя проверить на Windows
+
+Собственно установку, переезд и получение сертификата: они требуют
+Docker на Linux, живого домена и проброшенных портов. Их проверяет
+только автор на своём сервере — и до такой проверки любой из этих
+механизмов считается непроверенным, как бы аккуратно он ни был написан.

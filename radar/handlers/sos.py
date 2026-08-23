@@ -25,7 +25,7 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 
-from .. import config, features, geocode, roles, sos, storage
+from .. import config, features, geocode, i18n, roles, sos, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, bot, safe_edit, send_html
@@ -42,6 +42,7 @@ def _session() -> aiohttp.ClientSession:
 
 
 def _menu(user: dict) -> InlineKeyboardMarkup:
+    lang = i18n.language_of(user)
     contacts = sos.contacts_of(user)
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -56,42 +57,56 @@ def _menu(user: dict) -> InlineKeyboardMarkup:
 
     if len(contacts) < sos.MAX_CONTACTS:
         rows.append([
-            InlineKeyboardButton(text="➕ Добавить контакт", callback_data="sos:add")
+            InlineKeyboardButton(
+                text=i18n.t("sos.add", lang, "➕ Добавить контакт"),
+                callback_data="sos:add")
         ])
 
     if sos.confirmed_contacts(user) or contacts:
         rows.append([
-            InlineKeyboardButton(text="🆘 Отправить сигнал", callback_data="sos:fire")
+            InlineKeyboardButton(
+                text=i18n.t("sos.fire", lang, "🆘 Отправить сигнал"),
+                callback_data="sos:fire")
         ])
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+        callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _overview(user: dict) -> str:
+def _overview(user: dict, lang: str = "ru") -> str:
+    from .. import i18n
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     contacts = sos.contacts_of(user)
-    lines = ["🆘 <b>Экстренная помощь</b>", ""]
+    lines = [f"<b>{_('sos.overview', '🆘 Экстренная помощь')}</b>", ""]
 
     if not contacts:
-        lines.append(
+        lines.append(_(
+            "sos.no_contacts",
             "Доверенные контакты не заданы. Добавьте человека, которому уйдёт "
-            "ваша геопозиция, если вы нажмёте кнопку SOS."
-        )
+            "ваша геопозиция, если вы нажмёте кнопку SOS.",
+        ))
     else:
-        lines.append("<b>Доверенные контакты:</b>")
+        lines.append(f"<b>{_('sos.contacts', 'Доверенные контакты')}:</b>")
         for contact in contacts:
-            state = "готов принимать сигнал" if contact.confirmed else (
-                "не подтверждён — не открывал бота"
+            state = (
+                _("sos.ready", "готов принимать сигнал") if contact.confirmed
+                else _("sos.pending", "не подтверждён — не открывал бота")
             )
             mark = "✅" if contact.confirmed else "⏳"
             lines.append(f"{mark} {esc(contact.title)} — <i>{state}</i>")
 
         if not sos.confirmed_contacts(user):
             lines.append("")
-            lines.append(
+            lines.append(_(
+                "sos.none_confirmed",
                 "⚠️ Ни один контакт не подтверждён. Telegram не даёт боту писать "
                 "первым — контакт должен открыть бота по вашей ссылке. Пока этого "
-                "не произошло, сигнал уйдёт администраторам системы."
-            )
+                "не произошло, сигнал уйдёт администраторам системы.",
+            ))
 
     lines.append("")
     lines.append(
@@ -107,7 +122,7 @@ async def show_menu(call: CallbackQuery, state: FSMContext, user: dict) -> None:
         return
     await state.clear()
     await call.answer()
-    await safe_edit(call, _overview(user), _menu(user))
+    await safe_edit(call, _overview(user, i18n.language_of(user)), _menu(user))
 
 
 @router.message(Command("sos"))
@@ -116,7 +131,7 @@ async def cmd_sos(message: Message, state: FSMContext, user: dict) -> None:
         await message.answer("Функция SOS отключена.")
         return
     await state.clear()
-    await message.answer(_overview(user), reply_markup=_menu(user))
+    await message.answer(_overview(user, i18n.language_of(user)), reply_markup=_menu(user))
 
 
 # --------------------------------------------------------------------------
@@ -293,7 +308,7 @@ async def drop_contact(call: CallbackQuery, user: dict) -> None:
         await call.answer("Контакт удалён")
     else:
         await call.answer("Контакт не найден", show_alert=True)
-    await safe_edit(call, _overview(user), _menu(user))
+    await safe_edit(call, _overview(user, i18n.language_of(user)), _menu(user))
 
 
 # --------------------------------------------------------------------------

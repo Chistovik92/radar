@@ -182,6 +182,11 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="TOTAL" ;;
             time_server)         value="server time" ;;
             done_running)        value="Radar v%s is running" ;;
+            tls_botfather_title) value="One more step — in Telegram, not on the server:" ;;
+            tls_botfather_open)  value="Open" ;;
+            tls_botfather_pick)  value="Pick your bot from the list" ;;
+            tls_botfather_send)  value="Send the address:" ;;
+            tls_botfather_note)  value="Without this the login widget says «Bot domain invalid»." ;;
             tls_ask)             value="Publish the panel with a domain and HTTPS? [y/N]" ;;
             tls_domain_ask)      value="Domain (for example radar.example.com):" ;;
             tls_domain_empty)    value="No domain entered — skipping" ;;
@@ -269,6 +274,11 @@ t() {                  # t <ключ> [подстановка]
             time_total)          value="ВСЕГО" ;;
             time_server)         value="время на сервере" ;;
             done_running)        value="Система «Радар» v%s запущена" ;;
+            tls_botfather_title) value="Остался шаг — он делается в Telegram, а не на сервере:" ;;
+            tls_botfather_open)  value="Откройте" ;;
+            tls_botfather_pick)  value="Выберите своего бота из списка" ;;
+            tls_botfather_send)  value="Пришлите адрес:" ;;
+            tls_botfather_note)  value="Без этого виджет входа пишет «Bot domain invalid»." ;;
             tls_ask)             value="Открыть панель наружу по домену с HTTPS? [д/Н]" ;;
             tls_domain_ask)      value="Домен (например radar.example.ru):" ;;
             tls_domain_empty)    value="Домен не введён — пропускаю" ;;
@@ -3064,6 +3074,20 @@ offer_tls() {
 
     if RADAR_HOME="$APP_DIR" bash "$APP_DIR/tls.sh" "$domain"; then
         setup_shortener "$domain"
+
+        # Домен для входа в панель привязывается у BotFather, а не здесь.
+        # Без этого шага виджет Telegram пишет «Bot domain invalid»,
+        # и по этой надписи догадаться, что делать, невозможно.
+        line
+        printf "  %s%s%s\n\n" "${C_BOLD:-}" "$(t tls_botfather_title)" "${C_RESET:-}"
+        printf "    1. %s @BotFather\n" "$(t tls_botfather_open)"
+        printf "    2. /setdomain\n"
+        printf "    3. %s\n" "$(t tls_botfather_pick)"
+        printf "    4. %s %shttps://%s%s\n\n" "$(t tls_botfather_send)" \
+            "${C_CYAN:-}" "$domain" "${C_RESET:-}"
+        printf "  %s\n" "$(t tls_botfather_note)"
+        line
+
         info "$(t tls_restart_hint)"
     else
         warn "$(t tls_failed)"

@@ -71,6 +71,40 @@ class TestLanguage(unittest.TestCase):
             self.assertIn(key, i18n.EN_STRINGS)
 
 
+class TestDictionary(unittest.TestCase):
+    """Словарь переводов.
+
+    Питон молча оставляет последнее значение при повторе ключа в литерале
+    словаря — дубликат не ошибка, а тихая подмена. Так уже случилось:
+    черновые строки перекрывали рабочие, и раздел SOS показывал
+    «Add at least one trusted contact first» вместо нужного текста.
+    """
+
+    def test_no_duplicate_keys(self):
+        import pathlib
+        import re
+        from collections import Counter
+
+        source = (pathlib.Path(__file__).resolve().parent.parent
+                  / "radar" / "i18n.py").read_text(encoding="utf-8")
+        keys = re.findall(r'^\s{4}"([\w.]+)":', source, re.M)
+        duplicates = [key for key, count in Counter(keys).items() if count > 1]
+        self.assertEqual(duplicates, [], f"повторяются ключи: {duplicates}")
+
+    def test_keys_look_like_keys(self):
+        """Ключ вида «Заголовок» означает, что кто-то положил в словарь
+        русский текст вместо имени строки."""
+        for key in i18n.EN_STRINGS:
+            with self.subTest(key=key):
+                self.assertTrue(key.isascii(), key)
+                self.assertNotIn(" ", key)
+
+    def test_values_are_not_empty(self):
+        for key, value in i18n.EN_STRINGS.items():
+            with self.subTest(key=key):
+                self.assertTrue(value.strip(), key)
+
+
 class TestMenuTranslation(unittest.TestCase):
     """Меню собиралось без учёта языка — кнопки оставались русскими."""
 
