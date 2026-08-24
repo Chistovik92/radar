@@ -370,11 +370,68 @@ backup is ever needed for real.
 Collected here is what does not deserve its own version but keeps piling
 up.
 
-13. **Measurements instead of guesses.** The `/perf` command shows how time
-    is spent across the cycle's stages and resource use. ✅ implemented in
-    4.5.7. Next: take readings on the live server under real load and
-    optimize whichever stage actually eats time, not the one that merely
-    looks suspicious.
+13. **Measurements instead of guesses.** ✅ closed: the tool — `/perf` —
+    was built in 4.5.7, readings were taken on the production server in
+    4.7.6.5, and the optimization shipped in 4.7.7.
+
+    What the measurement showed (RK3318, 35 sources, 21 minutes observed):
+
+    | Stage | Share | Average |
+    |---|---|---|
+    | Source collection | 100% | 51.2 s |
+    | AI analysis | 0% | 10 ms |
+    | Alert delivery | 0% | 1 ms |
+    | Digest delivery | 0% | 1 ms |
+
+    Meanwhile: 2 min 50 s of CPU time over 21 minutes, load average 0.07
+    across four cores, 247 MiB of memory. The machine was idle: 51 seconds
+    of a 180-second cycle went into waiting on the network, one source at
+    a time.
+
+    The `/perf` report itself concluded that "collection is bound by the
+    network, not by code speed." True to the letter and misleading in
+    substance — and that turned out to be the main finding: **sequential
+    waiting is not cured by faster code but by overlapping the waits**.
+    `collect()` walked the sources strictly in turn, each waiting for the
+    previous one.
+
+    Done in 4.7.7: a parallel walk capped by `SOURCE_CONCURRENCY`
+    (6 by default) — 51 seconds becomes roughly 10–14. The cap is
+    mandatory: thirty-five simultaneous requests to `t.me` from one
+    address look like scraping, and it is the alerting system that pays
+    for it. Two properties that are easy to lose unnoticed were preserved:
+    result order (deduplication through `seen` depends on it) and
+    resilience — one broken feed does not bring the cycle down.
+
+    **The second measurement mattered more than the first.** Right after a
+    server reboot came a complaint that the bot "takes a long time to
+    answer, or does not answer commands at all", and `/perf` showed 1 min
+    41 s of CPU time over one minute of observation at a load average of
+    0.54. The core was busy, not waiting on the network — the opposite of
+    the first reading.
+
+    The cause: `BeautifulSoup(page, "html.parser")` and `ET.fromstring`
+    were computed **directly in the event loop**, and that loop is shared
+    with Telegram polling. `html.parser` is pure Python, and parsing a
+    channel page on ARM takes hundreds of milliseconds; while the bot
+    parsed thirty-five pages, there was nobody left to answer commands.
+    It shows up worst at startup, where the warm-up walks every source at
+    once.
+
+    Fixed in 4.7.7: parsing moved into `parse_channel` and `parse_rss`
+    and runs through `asyncio.to_thread`. This mattered more than the
+    parallelism itself — and without it the parallel walk would have made
+    things worse: six simultaneous parses would occupy the loop more
+    tightly than one.
+
+    **The VK walk is deliberately left sequential:** it has a `sleep(0.4)`
+    between requests because VK returns codes 6 and 9 on frequent calls.
+    Speeding it up would mean collecting rate-limit errors and treating
+    live communities as dead.
+
+    A caveat: observation ran for 21 minutes, so the measurement says
+    nothing about memory growth or the `save` stage (which never fired).
+    Those need a full-day run.
 14. **Flags with no implementation.** Partly closed in 4.7.2: `weather`,
     `ai_analysis` (turning it off now switches to the heuristic, as its
     description promised), `source_telegram`, `source_rss`, `all_clear`,

@@ -1,4 +1,4 @@
-# Radar v4.7.6.5
+# Radar v4.7.7
 
 [Русская версия](README.md)
 
@@ -76,6 +76,14 @@ analysed by an AI model, then matched against your locations.
 * **News digests** — eighteen topics, delivered at a time you choose.
 * **SOS** — an alert to your trusted contacts with your location.
 * **Video download** — 20 clips a day for free, up to 50 MB each.
+
+Sources are polled **in parallel**, with at most `SOURCE_CONCURRENCY` of
+them at a time (6 by default). Until 4.7.7 the walk was sequential: a
+measurement on the production server showed 51 seconds per cycle against a
+180-second interval — the bot spent over a quarter of its time waiting on
+the network while using two percent of the CPU. The cap matters as much as
+the parallelism: dozens of simultaneous requests to `t.me` from one address
+look like scraping, and it is the alerting system that would pay for it.
 
 ## Language
 

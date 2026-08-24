@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -67,6 +68,25 @@ def clean(text: str) -> str:
     return "\n".join(line.strip() for line in text.splitlines() if line.strip()).strip()
 
 
+def parse_channel(page: str, channel: str, limit: int) -> list[Item]:
+    """Разбор страницы канала. Вынесен отдельно, чтобы считать его в потоке.
+
+    `html.parser` — чистый Python, и на ARM разбор страницы Telegram занимает
+    сотни миллисекунд. В цикле событий это блокирует ВСЁ, включая ответы
+    на команды: бот «висит» ровно на время обхода источников. Симптом
+    выглядит как «после перезагрузки долго не отвечает» — потому что
+    на старте идёт разогрев по всем источникам сразу.
+    """
+    soup = BeautifulSoup(page, "html.parser")
+    blocks = soup.find_all("div", class_="tgme_widget_message_text")
+    items: list[Item] = []
+    for block in blocks[-limit:]:
+        text = clean(block.get_text(separator="\n"))
+        if len(text) >= 20:
+            items.append(Item(source=channel, text=text, kind="tg"))
+    return items
+
+
 async def fetch_channel(
     session: aiohttp.ClientSession, channel: str, limit: int
 ) -> list[Item]:
@@ -82,28 +102,16 @@ async def fetch_channel(
         log.debug("Канал @%s недоступен: %s", channel, exc)
         return []
 
-    soup = BeautifulSoup(page, "html.parser")
-    blocks = soup.find_all("div", class_="tgme_widget_message_text")
-    items: list[Item] = []
-    for block in blocks[-limit:]:
-        text = clean(block.get_text(separator="\n"))
-        if len(text) >= 20:
-            items.append(Item(source=channel, text=text, kind="tg"))
-    return items
-
-
-async def fetch_rss(session: aiohttp.ClientSession, url: str, limit: int) -> list[Item]:
-    """Читает RSS/Atom-ленту СМИ или официального сайта."""
     try:
-        async with session.get(url) as response:
-            if response.status != 200:
-                log.debug("RSS %s: HTTP %s", url, response.status)
-                return []
-            body = await response.text()
+        return await asyncio.to_thread(parse_channel, page, channel, limit)
     except Exception as exc:  # noqa: BLE001
-        log.debug("RSS %s недоступен: %s", url, exc)
+        log.debug("Канал @%s: разбор не удался (%s)", channel, exc)
         return []
 
+
+def parse_rss(body: str, url: str, limit: int) -> list[Item]:
+    """Разбор ленты. Отдельно от загрузки — по той же причине, что и канал:
+    `ET.fromstring` считает синхронно и в цикле событий держит бота."""
     try:
         root = ET.fromstring(body.strip())
     except ET.ParseError as exc:
@@ -122,6 +130,25 @@ async def fetch_rss(session: aiohttp.ClientSession, url: str, limit: int) -> lis
         if len(text) >= 20:
             items.append(Item(source=label, text=text, kind="rss", link=_entry_link(entry)))
     return items
+
+
+async def fetch_rss(session: aiohttp.ClientSession, url: str, limit: int) -> list[Item]:
+    """Читает RSS/Atom-ленту СМИ или официального сайта."""
+    try:
+        async with session.get(url) as response:
+            if response.status != 200:
+                log.debug("RSS %s: HTTP %s", url, response.status)
+                return []
+            body = await response.text()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("RSS %s недоступен: %s", url, exc)
+        return []
+
+    try:
+        return await asyncio.to_thread(parse_rss, body, url, limit)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("RSS %s: разбор не удался (%s)", url, exc)
+        return []
 
 
 def _entry_link(entry: ET.Element) -> str:
@@ -159,21 +186,59 @@ async def collect(
     limit: int = config.MSG_PER_SOURCE,
     *,
     warmup: bool = False,
+    concurrency: int | None = None,
 ) -> list[Item]:
     """Обходит все источники и возвращает только новые сообщения.
 
     При warmup=True сообщения помечаются прочитанными, но не возвращаются —
     так первый запуск не рассылает всю ленту разом.
+
+    Источники опрашиваются параллельно, но не более `SOURCE_CONCURRENCY`
+    одновременно. До 4.7.7 обход был последовательным, и замер на живом
+    сервере показал 51 секунду на цикл при интервале 180: почти всё это
+    время бот ждал ответа сети, занимая два процента процессора. Здесь
+    выигрывает не скорость кода, а то, что ожидания накладываются друг
+    на друга.
+
+    Два свойства, которые важно сохранить:
+
+    * **порядок результатов.** `gather` возвращает их в порядке аргументов,
+      а не завершения. Дедупликация через `seen` зависит от порядка: при
+      случайном порядке одно и то же событие из двух каналов попадало бы
+      в сводку то от одного источника, то от другого — и разбор
+      выглядел бы нестабильным;
+    * **сбой одного источника не роняет цикл.** `fetch_*` уже глушат свои
+      исключения, но `return_exceptions=True` страхует от того, чего они
+      не предусмотрели: система оповещения не должна замолкать из-за
+      одной мёртвой ленты.
     """
+    cap = concurrency if concurrency is not None else config.SOURCE_CONCURRENCY
+    guard = asyncio.Semaphore(max(1, cap))
+
+    async def bounded(coroutine_factory):
+        async with guard:
+            return await coroutine_factory()
+
+    tasks = [
+        bounded(lambda name=name: fetch_channel(session, name, limit))
+        for name in list(channels)
+    ]
+    tasks += [
+        bounded(lambda link=link: fetch_rss(session, link, limit))
+        for link in list(feeds)
+    ]
+
+    if not tasks:
+        return []
+
+    batches = await asyncio.gather(*tasks, return_exceptions=True)
+
     fresh: list[Item] = []
-
-    for channel in list(channels):
-        for item in await fetch_channel(session, channel, limit):
-            if seen.add(item.key) and not warmup:
-                fresh.append(item)
-
-    for url in list(feeds):
-        for item in await fetch_rss(session, url, limit):
+    for batch in batches:
+        if isinstance(batch, BaseException):
+            log.debug("Источник не опрошен: %s", batch)
+            continue
+        for item in batch:
             if seen.add(item.key) and not warmup:
                 fresh.append(item)
 

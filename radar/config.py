@@ -121,6 +121,16 @@ def database_url(async_driver: bool = True) -> str:
     return f"{driver}://{DB_USER}{password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 POLL_INTERVAL: int = max(60, _int("POLL_INTERVAL", 180))
 MSG_PER_SOURCE: int = max(1, _int("MSG_PER_SOURCE", 5))
+# Сколько источников опрашивать одновременно. До 4.7.7 обход был строго
+# последовательным, и замер на живом сервере показал 51 секунду на цикл
+# при интервале 180 — то есть больше четверти времени бот просто ждал сеть,
+# загрузив процессор на два процента.
+#
+# Предел нужен, а не «все разом»: тридцать пять одновременных запросов
+# к t.me с одного адреса выглядят как выкачивание, а расплачивается за это
+# система оповещения — её задача важнее лишних секунд. Шесть даёт выигрыш
+# примерно в шесть раз и остаётся вежливым числом.
+SOURCE_CONCURRENCY: int = max(1, _int("SOURCE_CONCURRENCY", 6))
 CLUSTER_RADIUS_M: int = max(0, _int("CLUSTER_RADIUS_M", 1000))
 MAX_LOCATIONS: int = _int("MAX_LOCATIONS", 0)  # 0 — без ограничения
 DEFAULT_CITY: str = (os.getenv("DEFAULT_CITY") or "").strip()
