@@ -53,6 +53,7 @@ MANIFEST = [
     "radar/quiet.py",
     "radar/profiling.py",
     "radar/astro.py",
+    "radar/restartnotice.py",
     "radar/shortener.py",
     "radar/partners.py",
     "radar/promo.py",

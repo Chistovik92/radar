@@ -555,6 +555,32 @@ async def main() -> None:
                 "адаптер не запускается"
             )
 
+    # Кто писал, пока бот был выключен. Спрашиваем ДО сброса очереди:
+    # delete_webhook(drop_pending_updates=True) стирает её без следа,
+    # и человек, написавший во время обновления, не получает ответа никогда.
+    # Сами обновления не обрабатываются — только адресаты (см. restartnotice).
+    if features.enabled("restart_notice"):
+        from radar import i18n, restartnotice
+
+        try:
+            await restartnotice.notify(
+                bot,
+                storage.users(),
+                send_html,
+                i18n.language_of,
+                lambda lang: i18n.t(
+                    "restart.missed", lang,
+                    "🛠 <b>Бот был на технических работах</b>\n\n"
+                    "Ваше сообщение пришло во время перезапуска и не было "
+                    "обработано — пришлите его ещё раз.\n\n"
+                    "<i>Оповещения об опасности не потеряны: после "
+                    "перезапуска бот перечитывает источники заново.</i>",
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            # Вежливость не должна мешать запуску: бот обязан подняться.
+            log.exception("Уведомление о технических работах не разослано")
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

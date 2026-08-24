@@ -290,6 +290,31 @@ backup is ever needed for real.
    operations. Flag: `maintenance`. ✅ implemented ahead of schedule in
    4.5.6.
 
+   **Extended in 4.7.8.** The mode turned out to have a hole exactly where
+   it is needed most: it only works while the bot is **running**. During an
+   update the container is down for about three minutes (build,
+   diagnostics, start), and there is nobody to answer for all of it. Worse,
+   startup runs `delete_webhook(drop_pending_updates=True)` — messages that
+   had piled up were erased without a trace, and anyone who wrote during
+   the update never got a reply. For an alerting system that is doubly bad:
+   silence is indistinguishable from a breakdown.
+
+   Now, before clearing the queue, the bot fetches the pending updates once,
+   extracts **only the chat identifiers** from them, and writes to those
+   people: "there was maintenance, please send it again."
+   Flag: `restart_notice`.
+
+   The key decision: the updates themselves are **not processed**. Replaying
+   a ten-minute-old SOS press, or re-parsing a location that was sent then,
+   is not acceptable — it would look like an event happening right now,
+   which is exactly what this system must never do. There is a dedicated
+   test asserting the module never touches the dispatcher.
+
+   An instant reply *during* the downtime was **deliberately not built.**
+   It would need a separate stub process holding the same token, and a stub
+   left behind would keep stealing updates from the real bot — which would
+   then look dead. Three minutes of delay is cheaper than that failure.
+
 ### 4.7 — installer: languages and version choice
 
 9. **Two installer languages: Russian and English.** Finished in 4.7.3:

@@ -306,6 +306,13 @@ EN_STRINGS: dict[str, str] = {
         "⚠️ <i>GEMINI_API_KEY is not set — heuristic analysis is running "
         "without AI.</i>"
     ),
+    "restart.missed": (
+        "🛠 <b>The bot was down for maintenance</b>\n\n"
+        "Your message arrived while it was restarting and was not processed "
+        "— please send it again.\n\n"
+        "<i>Danger alerts were not lost: the bot re-reads its sources after "
+        "every restart.</i>"
+    ),
     "common.your_id": "🆔 Your ID",
     "common.role": "Role",
     "common.pinned_buttons": (
