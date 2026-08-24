@@ -62,10 +62,14 @@ CODES: dict[int, tuple[str, str, str]] = {
 
 SPARK = "▁▂▃▄▅▆▇█"
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+WEEKDAYS_EN = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
-def describe(code: int | None, day: bool = True) -> tuple[str, str]:
-    name, icon_day, icon_night = CODES.get(int(code) if code is not None else -1,
-                                          ("", "🌡", "🌡"))
+def describe(code: int | None, day: bool = True, lang: str = "ru") -> tuple[str, str]:
+    from . import i18n
+
+    key = int(code) if code is not None else -1
+    name_ru, icon_day, icon_night = CODES.get(key, ("", "🌡", "🌡"))
+    name = i18n.t(f"weather.wmo.{key}", lang, name_ru) if name_ru else ""
     return name, (icon_day if day else icon_night)
 
 
@@ -115,10 +119,15 @@ class Weather:
 # --------------------------------------------------------------------------
 
 async def fetch(
-    session: aiohttp.ClientSession, lat: float, lon: float, hours: int = 8
+    session: aiohttp.ClientSession, lat: float, lon: float, hours: int = 8,
+    lang: str = "ru",
 ) -> Weather:
+    from . import i18n
+
     if not lat and not lon:
-        return Weather(ok=False, error="нет координат — отправьте геопозицию заново")
+        return Weather(ok=False, error=i18n.t(
+            "weather.error.no_coords", lang, "нет координат — отправьте геопозицию заново"
+        ))
 
     params = {
         "latitude": f"{lat}",
@@ -136,17 +145,25 @@ async def fetch(
     try:
         async with session.get(_URL, params=params) as response:
             if response.status != 200:
-                return Weather(ok=False, error=f"сервис погоды вернул код {response.status}")
+                status_text = i18n.t(
+                    "weather.error.bad_status", lang, "сервис погоды вернул код"
+                )
+                return Weather(ok=False, error=f"{status_text} {response.status}")
             data = await response.json(content_type=None)
     except Exception as exc:  # noqa: BLE001
         log.warning("Погода недоступна: %s", exc)
-        return Weather(ok=False, error="сбой получения погоды")
+        return Weather(ok=False, error=i18n.t(
+            "weather.error.fetch_failed", lang, "сбой получения погоды"
+        ))
 
-    return parse(data, hours)
+    return parse(data, hours, lang)
 
 
-def parse(data: dict, hours: int = 8) -> Weather:
+def parse(data: dict, hours: int = 8, lang: str = "ru") -> Weather:
     """Превращает ответ Open-Meteo в структуру. Вынесено ради тестируемости."""
+    from . import i18n
+
+    hour_suffix = i18n.t("weather.hour_suffix", lang, "ч")
     current = data.get("current") or {}
     weather = Weather(
         ok=True,
@@ -177,7 +194,10 @@ def parse(data: dict, hours: int = 8) -> Weather:
         if temp is None:
             continue
         stamp = times[index]
-        label = stamp.split("T")[1][:2] + "ч" if "T" in stamp else f"+{index - now}ч"
+        label = (
+            stamp.split("T")[1][:2] + hour_suffix if "T" in stamp
+            else f"+{index - now}{hour_suffix}"
+        )
         weather.hourly.append(
             Hour(
                 label=label,
@@ -211,7 +231,7 @@ def parse(data: dict, hours: int = 8) -> Weather:
             continue
         weather.daily.append(
             Day(
-                label=_day_label(date, index),
+                label=_day_label(date, index, lang),
                 low=low,
                 high=high,
                 probability=_integer(
@@ -249,14 +269,17 @@ def _now_index(times: list, current_time) -> int:
     return 0
 
 
-def _day_label(date: str, index: int) -> str:
+def _day_label(date: str, index: int, lang: str = "ru") -> str:
+    from . import i18n
+
     if index == 0:
-        return "сегодня"
+        return i18n.t("weather.today", lang, "сегодня")
     if index == 1:
-        return "завтра"
+        return i18n.t("weather.tomorrow", lang, "завтра")
     try:
         parsed = datetime.strptime(str(date)[:10], "%Y-%m-%d")
-        return f"{WEEKDAYS[parsed.weekday()]} {parsed.day}"
+        weekdays = WEEKDAYS_EN if i18n.normalize(lang) == i18n.EN else WEEKDAYS
+        return f"{weekdays[parsed.weekday()]} {parsed.day}"
     except ValueError:
         return str(date)[:10]
 
@@ -279,12 +302,15 @@ def _temp(value: float | None) -> str:
     return f"{round(value):+d}°".replace("+", "") if value is not None else "—"
 
 
-def render(weather: Weather, title: str = "") -> str:
+def render(weather: Weather, title: str = "", lang: str = "ru") -> str:
     """Собирает готовый HTML-блок сводки."""
-    if not weather.ok:
-        return f"⚠️ {weather.error or 'нет данных о погоде'}"
+    from . import i18n
 
-    name, icon = describe(weather.code, weather.is_day)
+    if not weather.ok:
+        no_data = i18n.t("weather.error.no_data", lang, "нет данных о погоде")
+        return f"⚠️ {weather.error or no_data}"
+
+    name, icon = describe(weather.code, weather.is_day, lang)
     lines: list[str] = []
     if title:
         lines.append(title)
@@ -297,7 +323,8 @@ def render(weather: Weather, title: str = "") -> str:
     details: list[str] = []
     if weather.feels is not None and weather.temp is not None:
         if abs(weather.feels - weather.temp) >= 1:
-            details.append(f"ощущается {_temp(weather.feels)}")
+            feels = i18n.t("weather.feels", lang, "ощущается")
+            details.append(f"{feels} {_temp(weather.feels)}")
     if weather.wind is not None:
         wind = f"💨 {weather.wind:.0f} м/с"
         if weather.gusts and weather.gusts - (weather.wind or 0) >= 3:
@@ -314,7 +341,7 @@ def render(weather: Weather, title: str = "") -> str:
         bars = _sparkline([hour.temp for hour in weather.hourly])
         rows = []
         for hour, bar in zip(weather.hourly, bars):
-            _, hour_icon = describe(hour.code, hour.day)
+            _, hour_icon = describe(hour.code, hour.day, lang)
             chance = f"{hour.probability:>3d}%" if hour.probability else "   ·"
             rows.append(f"{hour.label:<4}{hour_icon} {_temp(hour.temp):>4} {bar} {chance}")
         lines.append("")
@@ -324,7 +351,7 @@ def render(weather: Weather, title: str = "") -> str:
         lines.append("")
         rows = []
         for day in weather.daily[:3]:
-            _, day_icon = describe(day.code, True)
+            _, day_icon = describe(day.code, True, lang)
             chance = f"  ☔️ {day.probability}%" if day.probability >= 20 else ""
             rows.append(
                 f"{day.label:<8}{day_icon} {_temp(day.high):>4} … {_temp(day.low):<4}{chance}"
@@ -337,9 +364,10 @@ def render(weather: Weather, title: str = "") -> str:
     return "\n".join(lines)
 
 
-async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
+async def forecast(session: aiohttp.ClientSession, lat: float, lon: float,
+                    lang: str = "ru") -> str:
     """Совместимость: получить и сразу оформить."""
-    return render(await fetch(session, lat, lon))
+    return render(await fetch(session, lat, lon, lang=lang), lang=lang)
 
 
 async def deliver(
@@ -360,8 +388,10 @@ async def deliver(
     Текст остаётся запасным вариантом на всех отказах: нет Pillow, не
     отрисовалось, не ушло в Telegram. Молчания быть не должно.
     """
-    from . import features
+    from . import features, i18n
     from .tg import send_html
+
+    lang = i18n.language_of(user)
 
     picture = None
     if features.enabled("weather_image"):
@@ -379,7 +409,7 @@ async def deliver(
             picture = weather_image.render(data, title)
 
     if picture is None:
-        await send_html(chat_id, render(data, title), markup)
+        await send_html(chat_id, render(data, title, lang), markup)
         return
 
     from aiogram.types import BufferedInputFile
@@ -395,4 +425,4 @@ async def deliver(
         )
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
-        await send_html(chat_id, render(data, title), markup)
+        await send_html(chat_id, render(data, title, lang), markup)

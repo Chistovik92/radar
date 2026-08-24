@@ -23,6 +23,7 @@ from . import (
     digest,
     features,
     geocode,
+    i18n,
     presets,
     profiling,
     shortener,
@@ -173,7 +174,7 @@ async def dispatch_user(
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
         for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            data = await weather.fetch(session, lat, lon)
+            data = await weather.fetch(session, lat, lon, lang=i18n.language_of(user))
             markup = back_kb() if index == len(clusters) - 1 else None
             await weather.deliver(uid, data, cluster_title(cluster), markup, user)
             sent += 1

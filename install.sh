@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.5.2 — автономный установщик.
+# Система «Радар» v4.7.5.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.5.2"
+VERSION="4.7.5.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2867,7 +2867,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.5.2"
+__version__ = "4.7.5.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -9074,6 +9074,41 @@ EN_STRINGS: dict[str, str] = {
     "weather.now": "now",
     "weather.today": "today",
     "weather.tomorrow": "tomorrow",
+    "weather.hour_suffix": "h",
+    "weather.error.no_coords": "no coordinates — send your location again",
+    "weather.error.bad_status": "the weather service returned code",
+    "weather.error.fetch_failed": "failed to get the weather",
+    "weather.error.no_data": "no weather data",
+
+    # --- погода: описания кодов WMO ---
+    "weather.wmo.0": "clear sky",
+    "weather.wmo.1": "mostly clear",
+    "weather.wmo.2": "partly cloudy",
+    "weather.wmo.3": "overcast",
+    "weather.wmo.45": "fog",
+    "weather.wmo.48": "depositing rime fog",
+    "weather.wmo.51": "light drizzle",
+    "weather.wmo.53": "drizzle",
+    "weather.wmo.55": "dense drizzle",
+    "weather.wmo.56": "light freezing drizzle",
+    "weather.wmo.57": "dense freezing drizzle",
+    "weather.wmo.61": "slight rain",
+    "weather.wmo.63": "rain",
+    "weather.wmo.65": "heavy rain",
+    "weather.wmo.66": "light freezing rain",
+    "weather.wmo.67": "heavy freezing rain",
+    "weather.wmo.71": "slight snow",
+    "weather.wmo.73": "snow",
+    "weather.wmo.75": "heavy snow",
+    "weather.wmo.77": "snow grains",
+    "weather.wmo.80": "slight rain showers",
+    "weather.wmo.81": "rain showers",
+    "weather.wmo.82": "violent rain showers",
+    "weather.wmo.85": "slight snow showers",
+    "weather.wmo.86": "heavy snow showers",
+    "weather.wmo.95": "thunderstorm",
+    "weather.wmo.96": "thunderstorm with slight hail",
+    "weather.wmo.99": "thunderstorm with heavy hail",
 
     # --- SOS ---
     "sos.overview": "🆘 Emergency help",
@@ -9116,6 +9151,53 @@ EN_STRINGS: dict[str, str] = {
     "common.cancelled": "✅ Cancelled.",
     "common.only_superadmin": "⛔️ Superadministrator only.",
     "common.error": "Something went wrong — try again later.",
+    "common.insufficient_rights": "Insufficient permissions.",
+
+    # --- справка (/help) ---
+    "help.title": "How it works",
+    "help.step1": (
+        "1. Send your location (paperclip → Location) — this adds a location. "
+        "You can add as many as you like."
+    ),
+    "help.step2": (
+        "2. Military threats (drones, missile danger) arrive as one citywide "
+        "message covering all your locations in it."
+    ),
+    "help.step3": "3. Utility outages are searched by address — street and house number.",
+    "help.step4": "4. Locations closer than 1 km to each other are merged into one summary.",
+    "help.commands_title": "Commands",
+    "help.cmd_basic": "/menu — menu - /id — your ID and role - /cancel — reset input",
+    "help.cmd_partner": "/partner — partner project",
+    "help.cmd_assistant": "/ai &lt;question&gt; — AI assistant - /aireset — clear context",
+    "help.cmd_quota": "/quota — Gemini quota usage",
+    "help.cmd_admin1": "/stats — system statistics - /models — Gemini models",
+    "help.cmd_admin2": "/digest — news digests - /sos — SOS button",
+    "help.cmd_admin3": "/media — download video by link - /panel — web panel",
+    "help.cmd_super1": (
+        "/features — system features\n"
+        "/logs — logs - /logtail — recent lines - /logclear — clear"
+    ),
+    "help.cmd_super2": "/perf — cycle time and resources - /bench — AI provider comparison",
+    "help.cmd_super3": (
+        "/keys — keys and settings - /provider — choose provider\n"
+        "/network — network and proxy - /backup — backup"
+    ),
+
+    # --- раздел «Управление» ---
+    "manage.sources": "📡 Sources",
+    "manage.users": "👥 Users",
+    "manage.stats": "📊 Statistics",
+    "manage.features": "⚙️ Features",
+    "manage.keys": "🔑 Access keys",
+    "manage.ai": "🧠 AI management",
+    "manage.backups": "💾 Backups",
+    "manage.network": "🌐 Network access",
+    "manage.logs": "📋 Logs",
+    "manage.panel": "🖥 Web panel",
+    "manage.role_line": "Your role",
+    "manage.all_sections": "All sections are available, including access keys and logs.",
+    "manage.admin_sections": "Sources, users, statistics and invites are available.",
+    "manage.mod_sections": "Sources and user settings editing are available.",
 }
 
 
@@ -15661,10 +15743,14 @@ CODES: dict[int, tuple[str, str, str]] = {
 
 SPARK = "▁▂▃▄▅▆▇█"
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+WEEKDAYS_EN = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
-def describe(code: int | None, day: bool = True) -> tuple[str, str]:
-    name, icon_day, icon_night = CODES.get(int(code) if code is not None else -1,
-                                          ("", "🌡", "🌡"))
+def describe(code: int | None, day: bool = True, lang: str = "ru") -> tuple[str, str]:
+    from . import i18n
+
+    key = int(code) if code is not None else -1
+    name_ru, icon_day, icon_night = CODES.get(key, ("", "🌡", "🌡"))
+    name = i18n.t(f"weather.wmo.{key}", lang, name_ru) if name_ru else ""
     return name, (icon_day if day else icon_night)
 
 
@@ -15714,10 +15800,15 @@ class Weather:
 # --------------------------------------------------------------------------
 
 async def fetch(
-    session: aiohttp.ClientSession, lat: float, lon: float, hours: int = 8
+    session: aiohttp.ClientSession, lat: float, lon: float, hours: int = 8,
+    lang: str = "ru",
 ) -> Weather:
+    from . import i18n
+
     if not lat and not lon:
-        return Weather(ok=False, error="нет координат — отправьте геопозицию заново")
+        return Weather(ok=False, error=i18n.t(
+            "weather.error.no_coords", lang, "нет координат — отправьте геопозицию заново"
+        ))
 
     params = {
         "latitude": f"{lat}",
@@ -15735,17 +15826,25 @@ async def fetch(
     try:
         async with session.get(_URL, params=params) as response:
             if response.status != 200:
-                return Weather(ok=False, error=f"сервис погоды вернул код {response.status}")
+                status_text = i18n.t(
+                    "weather.error.bad_status", lang, "сервис погоды вернул код"
+                )
+                return Weather(ok=False, error=f"{status_text} {response.status}")
             data = await response.json(content_type=None)
     except Exception as exc:  # noqa: BLE001
         log.warning("Погода недоступна: %s", exc)
-        return Weather(ok=False, error="сбой получения погоды")
+        return Weather(ok=False, error=i18n.t(
+            "weather.error.fetch_failed", lang, "сбой получения погоды"
+        ))
 
-    return parse(data, hours)
+    return parse(data, hours, lang)
 
 
-def parse(data: dict, hours: int = 8) -> Weather:
+def parse(data: dict, hours: int = 8, lang: str = "ru") -> Weather:
     """Превращает ответ Open-Meteo в структуру. Вынесено ради тестируемости."""
+    from . import i18n
+
+    hour_suffix = i18n.t("weather.hour_suffix", lang, "ч")
     current = data.get("current") or {}
     weather = Weather(
         ok=True,
@@ -15776,7 +15875,10 @@ def parse(data: dict, hours: int = 8) -> Weather:
         if temp is None:
             continue
         stamp = times[index]
-        label = stamp.split("T")[1][:2] + "ч" if "T" in stamp else f"+{index - now}ч"
+        label = (
+            stamp.split("T")[1][:2] + hour_suffix if "T" in stamp
+            else f"+{index - now}{hour_suffix}"
+        )
         weather.hourly.append(
             Hour(
                 label=label,
@@ -15810,7 +15912,7 @@ def parse(data: dict, hours: int = 8) -> Weather:
             continue
         weather.daily.append(
             Day(
-                label=_day_label(date, index),
+                label=_day_label(date, index, lang),
                 low=low,
                 high=high,
                 probability=_integer(
@@ -15848,14 +15950,17 @@ def _now_index(times: list, current_time) -> int:
     return 0
 
 
-def _day_label(date: str, index: int) -> str:
+def _day_label(date: str, index: int, lang: str = "ru") -> str:
+    from . import i18n
+
     if index == 0:
-        return "сегодня"
+        return i18n.t("weather.today", lang, "сегодня")
     if index == 1:
-        return "завтра"
+        return i18n.t("weather.tomorrow", lang, "завтра")
     try:
         parsed = datetime.strptime(str(date)[:10], "%Y-%m-%d")
-        return f"{WEEKDAYS[parsed.weekday()]} {parsed.day}"
+        weekdays = WEEKDAYS_EN if i18n.normalize(lang) == i18n.EN else WEEKDAYS
+        return f"{weekdays[parsed.weekday()]} {parsed.day}"
     except ValueError:
         return str(date)[:10]
 
@@ -15878,12 +15983,15 @@ def _temp(value: float | None) -> str:
     return f"{round(value):+d}°".replace("+", "") if value is not None else "—"
 
 
-def render(weather: Weather, title: str = "") -> str:
+def render(weather: Weather, title: str = "", lang: str = "ru") -> str:
     """Собирает готовый HTML-блок сводки."""
-    if not weather.ok:
-        return f"⚠️ {weather.error or 'нет данных о погоде'}"
+    from . import i18n
 
-    name, icon = describe(weather.code, weather.is_day)
+    if not weather.ok:
+        no_data = i18n.t("weather.error.no_data", lang, "нет данных о погоде")
+        return f"⚠️ {weather.error or no_data}"
+
+    name, icon = describe(weather.code, weather.is_day, lang)
     lines: list[str] = []
     if title:
         lines.append(title)
@@ -15896,7 +16004,8 @@ def render(weather: Weather, title: str = "") -> str:
     details: list[str] = []
     if weather.feels is not None and weather.temp is not None:
         if abs(weather.feels - weather.temp) >= 1:
-            details.append(f"ощущается {_temp(weather.feels)}")
+            feels = i18n.t("weather.feels", lang, "ощущается")
+            details.append(f"{feels} {_temp(weather.feels)}")
     if weather.wind is not None:
         wind = f"💨 {weather.wind:.0f} м/с"
         if weather.gusts and weather.gusts - (weather.wind or 0) >= 3:
@@ -15913,7 +16022,7 @@ def render(weather: Weather, title: str = "") -> str:
         bars = _sparkline([hour.temp for hour in weather.hourly])
         rows = []
         for hour, bar in zip(weather.hourly, bars):
-            _, hour_icon = describe(hour.code, hour.day)
+            _, hour_icon = describe(hour.code, hour.day, lang)
             chance = f"{hour.probability:>3d}%" if hour.probability else "   ·"
             rows.append(f"{hour.label:<4}{hour_icon} {_temp(hour.temp):>4} {bar} {chance}")
         lines.append("")
@@ -15923,7 +16032,7 @@ def render(weather: Weather, title: str = "") -> str:
         lines.append("")
         rows = []
         for day in weather.daily[:3]:
-            _, day_icon = describe(day.code, True)
+            _, day_icon = describe(day.code, True, lang)
             chance = f"  ☔️ {day.probability}%" if day.probability >= 20 else ""
             rows.append(
                 f"{day.label:<8}{day_icon} {_temp(day.high):>4} … {_temp(day.low):<4}{chance}"
@@ -15936,9 +16045,10 @@ def render(weather: Weather, title: str = "") -> str:
     return "\n".join(lines)
 
 
-async def forecast(session: aiohttp.ClientSession, lat: float, lon: float) -> str:
+async def forecast(session: aiohttp.ClientSession, lat: float, lon: float,
+                    lang: str = "ru") -> str:
     """Совместимость: получить и сразу оформить."""
-    return render(await fetch(session, lat, lon))
+    return render(await fetch(session, lat, lon, lang=lang), lang=lang)
 
 
 async def deliver(
@@ -15959,8 +16069,10 @@ async def deliver(
     Текст остаётся запасным вариантом на всех отказах: нет Pillow, не
     отрисовалось, не ушло в Telegram. Молчания быть не должно.
     """
-    from . import features
+    from . import features, i18n
     from .tg import send_html
+
+    lang = i18n.language_of(user)
 
     picture = None
     if features.enabled("weather_image"):
@@ -15978,7 +16090,7 @@ async def deliver(
             picture = weather_image.render(data, title)
 
     if picture is None:
-        await send_html(chat_id, render(data, title), markup)
+        await send_html(chat_id, render(data, title, lang), markup)
         return
 
     from aiogram.types import BufferedInputFile
@@ -15994,7 +16106,7 @@ async def deliver(
         )
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
-        await send_html(chat_id, render(data, title), markup)
+        await send_html(chat_id, render(data, title, lang), markup)
 RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
 cat > "radar/sources.py" <<'RADAR_FILE_60'
@@ -16475,52 +16587,68 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def manage_menu(role: str | None) -> InlineKeyboardMarkup:
+def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
     """Раздел управления: содержимое зависит от роли."""
+    lang = i18n.language_of(user)
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows: list[list[InlineKeyboardButton]] = []
 
     if roles.is_moderator(role):
         rows.append([
-            InlineKeyboardButton(text="📡 Источники", callback_data="menu:mod"),
-            InlineKeyboardButton(text="👥 Пользователи", callback_data="usr:list:0"),
+            InlineKeyboardButton(text=label("manage.sources", "📡 Источники"),
+                                 callback_data="menu:mod"),
+            InlineKeyboardButton(text=label("manage.users", "👥 Пользователи"),
+                                 callback_data="usr:list:0"),
         ])
 
     if roles.is_admin(role):
         rows.append([
-            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")
+            InlineKeyboardButton(text=label("manage.stats", "📊 Статистика"),
+                                 callback_data="menu:stats")
         ])
 
     if roles.is_superadmin(role):
         rows.append([
-            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
-            InlineKeyboardButton(text="🔑 Ключи доступа", callback_data="key:list"),
+            InlineKeyboardButton(text=label("manage.features", "⚙️ Возможности"),
+                                 callback_data="feat:list"),
+            InlineKeyboardButton(text=label("manage.keys", "🔑 Ключи доступа"),
+                                 callback_data="key:list"),
         ])
         # Всё, что касается ИИ, — за одним входом: раньше проверка провайдеров
         # открывалась и отсюда, и из раздела ключей.
         rows.append([
-            InlineKeyboardButton(text="🧠 Управление ИИ", callback_data="ai:menu")
+            InlineKeyboardButton(text=label("manage.ai", "🧠 Управление ИИ"),
+                                 callback_data="ai:menu")
         ])
         # Выход в сеть — за своим флагом: раздел меняет маршрут всего
         # трафика, и когда он не нужен, кнопке в меню не место.
-        network_row = [InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu")]
+        network_row = [InlineKeyboardButton(text=label("manage.backups", "💾 Копии"),
+                                            callback_data="bak:menu")]
         if features.enabled("egress_proxy"):
             network_row.insert(0, InlineKeyboardButton(
-                text="🌐 Выход в сеть", callback_data="net:menu"))
+                text=label("manage.network", "🌐 Выход в сеть"), callback_data="net:menu"))
         rows.append(network_row)
-        rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
+        rows.append([InlineKeyboardButton(text=label("manage.logs", "📋 Журналы"),
+                                          callback_data="log:list")])
         # Управление разделами живёт здесь, а не внутри самих разделов:
         # иначе настройки расползаются по боту и их приходится искать.
         if features.enabled("partners"):
             rows.append([InlineKeyboardButton(
-                text="🤝 Партнёрские проекты", callback_data="prj:manage",
+                text=label("menu.partners", "🤝 Партнёрские проекты"),
+                callback_data="prj:manage",
             )])
 
     if roles.is_moderator(role) and features.enabled("web_panel"):
         rows.append([
-            InlineKeyboardButton(text="🖥 Веб-панель", callback_data="menu:panel")
+            InlineKeyboardButton(text=label("manage.panel", "🖥 Веб-панель"),
+                                 callback_data="menu:panel")
         ])
 
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(text=label("menu.home", "🏠 В главное меню"),
+                                      callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -17042,6 +17170,7 @@ from . import (
     digest,
     features,
     geocode,
+    i18n,
     presets,
     profiling,
     shortener,
@@ -17192,7 +17321,7 @@ async def dispatch_user(
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
         for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            data = await weather.fetch(session, lat, lon)
+            data = await weather.fetch(session, lat, lon, lang=i18n.language_of(user))
             markup = back_kb() if index == len(clusters) - 1 else None
             await weather.deliver(uid, data, cluster_title(cluster), markup, user)
             sent += 1
@@ -17716,7 +17845,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
-from .. import ai, config, keyboards, monitor, roles, storage
+from .. import ai, config, i18n, keyboards, monitor, roles, storage
 from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit
 
@@ -17791,39 +17920,57 @@ async def cmd_id(message: Message, role: str) -> None:
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message, role: str) -> None:
+async def cmd_help(message: Message, role: str, user: dict) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     lines = [
-        "<b>Как это работает</b>",
-        "1. Отправьте геопозицию (Скрепка → Геопозиция) — так добавляется локация. "
-        "Их может быть сколько угодно.",
-        "2. Военные угрозы (БПЛА, ракетная опасность) приходят на весь город одним "
-        "сообщением по всем вашим локациям в нём.",
-        "3. Аварии ЖКХ ищутся адресно — по улице и дому.",
-        "4. Локации ближе 1 км друг к другу объединяются в одну сводку.",
+        f"<b>{_('help.title', 'Как это работает')}</b>",
+        _(
+            "help.step1",
+            "1. Отправьте геопозицию (Скрепка → Геопозиция) — так добавляется "
+            "локация. Их может быть сколько угодно.",
+        ),
+        _(
+            "help.step2",
+            "2. Военные угрозы (БПЛА, ракетная опасность) приходят на весь город "
+            "одним сообщением по всем вашим локациям в нём.",
+        ),
+        _("help.step3", "3. Аварии ЖКХ ищутся адресно — по улице и дому."),
+        _("help.step4", "4. Локации ближе 1 км друг к другу объединяются в одну сводку."),
         "",
-        "<b>Команды</b>",
-        "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод",
-        "/partner — партнёрский проект",
+        f"<b>{_('help.commands_title', 'Команды')}</b>",
+        _("help.cmd_basic", "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод"),
+        _("help.cmd_partner", "/partner — партнёрский проект"),
     ]
     if roles.can_use_assistant(role):
-        lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")
-        lines.append("/quota — расход квоты Gemini")
+        lines.append(_(
+            "help.cmd_assistant",
+            "/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст",
+        ))
+        lines.append(_("help.cmd_quota", "/quota — расход квоты Gemini"))
     if roles.is_admin(role):
-        lines.append("/stats — статистика системы - /models — модели Gemini")
-        lines.append("/digest — новостные подборки - /sos — тревожная кнопка")
-        lines.append("/media — скачать видео по ссылке - /panel — веб-панель")
+        lines.append(_("help.cmd_admin1", "/stats — статистика системы - /models — модели Gemini"))
+        lines.append(_("help.cmd_admin2", "/digest — новостные подборки - /sos — тревожная кнопка"))
+        lines.append(_(
+            "help.cmd_admin3", "/media — скачать видео по ссылке - /panel — веб-панель"
+        ))
     if roles.is_superadmin(role):
-        lines.append(
+        lines.append(_(
+            "help.cmd_super1",
             "/features — возможности системы\n"
-            "/logs — журналы - /logtail — последние строки - /logclear — очистить"
-        )
-        lines.append(
-            "/perf — время цикла и ресурсы - /bench — сравнение ИИ-провайдеров"
-        )
-        lines.append(
+            "/logs — журналы - /logtail — последние строки - /logclear — очистить",
+        ))
+        lines.append(_(
+            "help.cmd_super2", "/perf — время цикла и ресурсы - /bench — сравнение ИИ-провайдеров"
+        ))
+        lines.append(_(
+            "help.cmd_super3",
             "/keys — ключи и настройки - /provider — выбор провайдера\n"
-            "/network — сеть и прокси - /backup — резервная копия"
-        )
+            "/network — сеть и прокси - /backup — резервная копия",
+        ))
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
 
@@ -17846,27 +17993,44 @@ async def menu_settings(call: CallbackQuery, state: FSMContext, user: dict[str, 
 
 
 @router.callback_query(F.data == "menu:manage")
-async def menu_manage(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def menu_manage(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     if not roles.is_moderator(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_("common.insufficient_rights", "Недостаточно прав."), show_alert=True)
         return
     await state.clear()
     await call.answer()
 
-    lines = ["🛠 <b>Управление</b>", "", f"Ваша роль: {roles.title(role)}", ""]
+    lines = [
+        f"<b>{_('menu.manage', '🛠 Управление')}</b>", "",
+        f"{_('manage.role_line', 'Ваша роль')}: {roles.title(role)}", "",
+    ]
     if roles.is_superadmin(role):
-        lines.append("Доступны все разделы, включая ключи доступа и журналы.")
+        lines.append(_(
+            "manage.all_sections", "Доступны все разделы, включая ключи доступа и журналы."
+        ))
     elif roles.is_admin(role):
-        lines.append("Доступны источники, пользователи, статистика и приглашения.")
+        lines.append(_(
+            "manage.admin_sections", "Доступны источники, пользователи, статистика и приглашения."
+        ))
     else:
-        lines.append("Доступны источники и правка настроек пользователей.")
-    await safe_edit(call, "\n".join(lines), keyboards.manage_menu(role))
+        lines.append(_(
+            "manage.mod_sections", "Доступны источники и правка настроек пользователей."
+        ))
+    await safe_edit(call, "\n".join(lines), keyboards.manage_menu(role, user))
 
 
 @router.callback_query(F.data == "menu:mod")
-async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def menu_mod(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     if not roles.is_moderator(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", i18n.language_of(user), "Недостаточно прав."),
+            show_alert=True,
+        )
         return
     await state.clear()
     await call.answer()
@@ -18041,9 +18205,12 @@ async def cmd_setmodel(message: Message, role: str) -> None:
 
 
 @router.callback_query(F.data == "menu:stats")
-async def stats_button(call: CallbackQuery, role: str) -> None:
+async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.is_admin(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", i18n.language_of(user), "Недостаточно прав."),
+            show_alert=True,
+        )
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
@@ -18067,7 +18234,7 @@ from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
 
-from .. import config, geocode, keyboards, roles, storage, weather
+from .. import config, geocode, i18n, keyboards, roles, storage, weather
 from ..matching import cluster_title
 from ..textutils import cluster_center, cluster_locations, esc, haversine_m
 from ..tg import back_kb, safe_edit, send_html
@@ -18206,7 +18373,7 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
     async with _session() as session:
         for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            data = await weather.fetch(session, lat, lon)
+            data = await weather.fetch(session, lat, lon, lang=i18n.language_of(user))
             markup = back_kb() if index == len(clusters) - 1 else None
             await weather.deliver(
                 call.message.chat.id,

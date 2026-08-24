@@ -146,6 +146,41 @@ EN_STRINGS: dict[str, str] = {
     "weather.now": "now",
     "weather.today": "today",
     "weather.tomorrow": "tomorrow",
+    "weather.hour_suffix": "h",
+    "weather.error.no_coords": "no coordinates — send your location again",
+    "weather.error.bad_status": "the weather service returned code",
+    "weather.error.fetch_failed": "failed to get the weather",
+    "weather.error.no_data": "no weather data",
+
+    # --- погода: описания кодов WMO ---
+    "weather.wmo.0": "clear sky",
+    "weather.wmo.1": "mostly clear",
+    "weather.wmo.2": "partly cloudy",
+    "weather.wmo.3": "overcast",
+    "weather.wmo.45": "fog",
+    "weather.wmo.48": "depositing rime fog",
+    "weather.wmo.51": "light drizzle",
+    "weather.wmo.53": "drizzle",
+    "weather.wmo.55": "dense drizzle",
+    "weather.wmo.56": "light freezing drizzle",
+    "weather.wmo.57": "dense freezing drizzle",
+    "weather.wmo.61": "slight rain",
+    "weather.wmo.63": "rain",
+    "weather.wmo.65": "heavy rain",
+    "weather.wmo.66": "light freezing rain",
+    "weather.wmo.67": "heavy freezing rain",
+    "weather.wmo.71": "slight snow",
+    "weather.wmo.73": "snow",
+    "weather.wmo.75": "heavy snow",
+    "weather.wmo.77": "snow grains",
+    "weather.wmo.80": "slight rain showers",
+    "weather.wmo.81": "rain showers",
+    "weather.wmo.82": "violent rain showers",
+    "weather.wmo.85": "slight snow showers",
+    "weather.wmo.86": "heavy snow showers",
+    "weather.wmo.95": "thunderstorm",
+    "weather.wmo.96": "thunderstorm with slight hail",
+    "weather.wmo.99": "thunderstorm with heavy hail",
 
     # --- SOS ---
     "sos.overview": "🆘 Emergency help",
@@ -188,6 +223,53 @@ EN_STRINGS: dict[str, str] = {
     "common.cancelled": "✅ Cancelled.",
     "common.only_superadmin": "⛔️ Superadministrator only.",
     "common.error": "Something went wrong — try again later.",
+    "common.insufficient_rights": "Insufficient permissions.",
+
+    # --- справка (/help) ---
+    "help.title": "How it works",
+    "help.step1": (
+        "1. Send your location (paperclip → Location) — this adds a location. "
+        "You can add as many as you like."
+    ),
+    "help.step2": (
+        "2. Military threats (drones, missile danger) arrive as one citywide "
+        "message covering all your locations in it."
+    ),
+    "help.step3": "3. Utility outages are searched by address — street and house number.",
+    "help.step4": "4. Locations closer than 1 km to each other are merged into one summary.",
+    "help.commands_title": "Commands",
+    "help.cmd_basic": "/menu — menu - /id — your ID and role - /cancel — reset input",
+    "help.cmd_partner": "/partner — partner project",
+    "help.cmd_assistant": "/ai &lt;question&gt; — AI assistant - /aireset — clear context",
+    "help.cmd_quota": "/quota — Gemini quota usage",
+    "help.cmd_admin1": "/stats — system statistics - /models — Gemini models",
+    "help.cmd_admin2": "/digest — news digests - /sos — SOS button",
+    "help.cmd_admin3": "/media — download video by link - /panel — web panel",
+    "help.cmd_super1": (
+        "/features — system features\n"
+        "/logs — logs - /logtail — recent lines - /logclear — clear"
+    ),
+    "help.cmd_super2": "/perf — cycle time and resources - /bench — AI provider comparison",
+    "help.cmd_super3": (
+        "/keys — keys and settings - /provider — choose provider\n"
+        "/network — network and proxy - /backup — backup"
+    ),
+
+    # --- раздел «Управление» ---
+    "manage.sources": "📡 Sources",
+    "manage.users": "👥 Users",
+    "manage.stats": "📊 Statistics",
+    "manage.features": "⚙️ Features",
+    "manage.keys": "🔑 Access keys",
+    "manage.ai": "🧠 AI management",
+    "manage.backups": "💾 Backups",
+    "manage.network": "🌐 Network access",
+    "manage.logs": "📋 Logs",
+    "manage.panel": "🖥 Web panel",
+    "manage.role_line": "Your role",
+    "manage.all_sections": "All sections are available, including access keys and logs.",
+    "manage.admin_sections": "Sources, users, statistics and invites are available.",
+    "manage.mod_sections": "Sources and user settings editing are available.",
 }
 
 

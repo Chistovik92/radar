@@ -15,7 +15,7 @@ from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
 
-from .. import config, geocode, keyboards, roles, storage, weather
+from .. import config, geocode, i18n, keyboards, roles, storage, weather
 from ..matching import cluster_title
 from ..textutils import cluster_center, cluster_locations, esc, haversine_m
 from ..tg import back_kb, safe_edit, send_html
@@ -154,7 +154,7 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
     async with _session() as session:
         for index, cluster in enumerate(clusters):
             lat, lon = cluster_center(cluster)
-            data = await weather.fetch(session, lat, lon)
+            data = await weather.fetch(session, lat, lon, lang=i18n.language_of(user))
             markup = back_kb() if index == len(clusters) - 1 else None
             await weather.deliver(
                 call.message.chat.id,

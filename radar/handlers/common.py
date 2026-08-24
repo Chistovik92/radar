@@ -16,7 +16,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
-from .. import ai, config, keyboards, monitor, roles, storage
+from .. import ai, config, i18n, keyboards, monitor, roles, storage
 from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit
 
@@ -91,39 +91,57 @@ async def cmd_id(message: Message, role: str) -> None:
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message, role: str) -> None:
+async def cmd_help(message: Message, role: str, user: dict) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     lines = [
-        "<b>Как это работает</b>",
-        "1. Отправьте геопозицию (Скрепка → Геопозиция) — так добавляется локация. "
-        "Их может быть сколько угодно.",
-        "2. Военные угрозы (БПЛА, ракетная опасность) приходят на весь город одним "
-        "сообщением по всем вашим локациям в нём.",
-        "3. Аварии ЖКХ ищутся адресно — по улице и дому.",
-        "4. Локации ближе 1 км друг к другу объединяются в одну сводку.",
+        f"<b>{_('help.title', 'Как это работает')}</b>",
+        _(
+            "help.step1",
+            "1. Отправьте геопозицию (Скрепка → Геопозиция) — так добавляется "
+            "локация. Их может быть сколько угодно.",
+        ),
+        _(
+            "help.step2",
+            "2. Военные угрозы (БПЛА, ракетная опасность) приходят на весь город "
+            "одним сообщением по всем вашим локациям в нём.",
+        ),
+        _("help.step3", "3. Аварии ЖКХ ищутся адресно — по улице и дому."),
+        _("help.step4", "4. Локации ближе 1 км друг к другу объединяются в одну сводку."),
         "",
-        "<b>Команды</b>",
-        "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод",
-        "/partner — партнёрский проект",
+        f"<b>{_('help.commands_title', 'Команды')}</b>",
+        _("help.cmd_basic", "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод"),
+        _("help.cmd_partner", "/partner — партнёрский проект"),
     ]
     if roles.can_use_assistant(role):
-        lines.append("/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст")
-        lines.append("/quota — расход квоты Gemini")
+        lines.append(_(
+            "help.cmd_assistant",
+            "/ai &lt;вопрос&gt; — ИИ-ассистент - /aireset — очистить контекст",
+        ))
+        lines.append(_("help.cmd_quota", "/quota — расход квоты Gemini"))
     if roles.is_admin(role):
-        lines.append("/stats — статистика системы - /models — модели Gemini")
-        lines.append("/digest — новостные подборки - /sos — тревожная кнопка")
-        lines.append("/media — скачать видео по ссылке - /panel — веб-панель")
+        lines.append(_("help.cmd_admin1", "/stats — статистика системы - /models — модели Gemini"))
+        lines.append(_("help.cmd_admin2", "/digest — новостные подборки - /sos — тревожная кнопка"))
+        lines.append(_(
+            "help.cmd_admin3", "/media — скачать видео по ссылке - /panel — веб-панель"
+        ))
     if roles.is_superadmin(role):
-        lines.append(
+        lines.append(_(
+            "help.cmd_super1",
             "/features — возможности системы\n"
-            "/logs — журналы - /logtail — последние строки - /logclear — очистить"
-        )
-        lines.append(
-            "/perf — время цикла и ресурсы - /bench — сравнение ИИ-провайдеров"
-        )
-        lines.append(
+            "/logs — журналы - /logtail — последние строки - /logclear — очистить",
+        ))
+        lines.append(_(
+            "help.cmd_super2", "/perf — время цикла и ресурсы - /bench — сравнение ИИ-провайдеров"
+        ))
+        lines.append(_(
+            "help.cmd_super3",
             "/keys — ключи и настройки - /provider — выбор провайдера\n"
-            "/network — сеть и прокси - /backup — резервная копия"
-        )
+            "/network — сеть и прокси - /backup — резервная копия",
+        ))
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
 
@@ -146,27 +164,44 @@ async def menu_settings(call: CallbackQuery, state: FSMContext, user: dict[str, 
 
 
 @router.callback_query(F.data == "menu:manage")
-async def menu_manage(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def menu_manage(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     if not roles.is_moderator(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_("common.insufficient_rights", "Недостаточно прав."), show_alert=True)
         return
     await state.clear()
     await call.answer()
 
-    lines = ["🛠 <b>Управление</b>", "", f"Ваша роль: {roles.title(role)}", ""]
+    lines = [
+        f"<b>{_('menu.manage', '🛠 Управление')}</b>", "",
+        f"{_('manage.role_line', 'Ваша роль')}: {roles.title(role)}", "",
+    ]
     if roles.is_superadmin(role):
-        lines.append("Доступны все разделы, включая ключи доступа и журналы.")
+        lines.append(_(
+            "manage.all_sections", "Доступны все разделы, включая ключи доступа и журналы."
+        ))
     elif roles.is_admin(role):
-        lines.append("Доступны источники, пользователи, статистика и приглашения.")
+        lines.append(_(
+            "manage.admin_sections", "Доступны источники, пользователи, статистика и приглашения."
+        ))
     else:
-        lines.append("Доступны источники и правка настроек пользователей.")
-    await safe_edit(call, "\n".join(lines), keyboards.manage_menu(role))
+        lines.append(_(
+            "manage.mod_sections", "Доступны источники и правка настроек пользователей."
+        ))
+    await safe_edit(call, "\n".join(lines), keyboards.manage_menu(role, user))
 
 
 @router.callback_query(F.data == "menu:mod")
-async def menu_mod(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def menu_mod(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     if not roles.is_moderator(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", i18n.language_of(user), "Недостаточно прав."),
+            show_alert=True,
+        )
         return
     await state.clear()
     await call.answer()
@@ -341,9 +376,12 @@ async def cmd_setmodel(message: Message, role: str) -> None:
 
 
 @router.callback_query(F.data == "menu:stats")
-async def stats_button(call: CallbackQuery, role: str) -> None:
+async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.is_admin(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", i18n.language_of(user), "Недостаточно прав."),
+            show_alert=True,
+        )
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))

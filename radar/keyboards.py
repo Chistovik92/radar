@@ -95,52 +95,68 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def manage_menu(role: str | None) -> InlineKeyboardMarkup:
+def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
     """Раздел управления: содержимое зависит от роли."""
+    lang = i18n.language_of(user)
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows: list[list[InlineKeyboardButton]] = []
 
     if roles.is_moderator(role):
         rows.append([
-            InlineKeyboardButton(text="📡 Источники", callback_data="menu:mod"),
-            InlineKeyboardButton(text="👥 Пользователи", callback_data="usr:list:0"),
+            InlineKeyboardButton(text=label("manage.sources", "📡 Источники"),
+                                 callback_data="menu:mod"),
+            InlineKeyboardButton(text=label("manage.users", "👥 Пользователи"),
+                                 callback_data="usr:list:0"),
         ])
 
     if roles.is_admin(role):
         rows.append([
-            InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats")
+            InlineKeyboardButton(text=label("manage.stats", "📊 Статистика"),
+                                 callback_data="menu:stats")
         ])
 
     if roles.is_superadmin(role):
         rows.append([
-            InlineKeyboardButton(text="⚙️ Возможности", callback_data="feat:list"),
-            InlineKeyboardButton(text="🔑 Ключи доступа", callback_data="key:list"),
+            InlineKeyboardButton(text=label("manage.features", "⚙️ Возможности"),
+                                 callback_data="feat:list"),
+            InlineKeyboardButton(text=label("manage.keys", "🔑 Ключи доступа"),
+                                 callback_data="key:list"),
         ])
         # Всё, что касается ИИ, — за одним входом: раньше проверка провайдеров
         # открывалась и отсюда, и из раздела ключей.
         rows.append([
-            InlineKeyboardButton(text="🧠 Управление ИИ", callback_data="ai:menu")
+            InlineKeyboardButton(text=label("manage.ai", "🧠 Управление ИИ"),
+                                 callback_data="ai:menu")
         ])
         # Выход в сеть — за своим флагом: раздел меняет маршрут всего
         # трафика, и когда он не нужен, кнопке в меню не место.
-        network_row = [InlineKeyboardButton(text="💾 Копии", callback_data="bak:menu")]
+        network_row = [InlineKeyboardButton(text=label("manage.backups", "💾 Копии"),
+                                            callback_data="bak:menu")]
         if features.enabled("egress_proxy"):
             network_row.insert(0, InlineKeyboardButton(
-                text="🌐 Выход в сеть", callback_data="net:menu"))
+                text=label("manage.network", "🌐 Выход в сеть"), callback_data="net:menu"))
         rows.append(network_row)
-        rows.append([InlineKeyboardButton(text="📋 Журналы", callback_data="log:list")])
+        rows.append([InlineKeyboardButton(text=label("manage.logs", "📋 Журналы"),
+                                          callback_data="log:list")])
         # Управление разделами живёт здесь, а не внутри самих разделов:
         # иначе настройки расползаются по боту и их приходится искать.
         if features.enabled("partners"):
             rows.append([InlineKeyboardButton(
-                text="🤝 Партнёрские проекты", callback_data="prj:manage",
+                text=label("menu.partners", "🤝 Партнёрские проекты"),
+                callback_data="prj:manage",
             )])
 
     if roles.is_moderator(role) and features.enabled("web_panel"):
         rows.append([
-            InlineKeyboardButton(text="🖥 Веб-панель", callback_data="menu:panel")
+            InlineKeyboardButton(text=label("manage.panel", "🖥 Веб-панель"),
+                                 callback_data="menu:panel")
         ])
 
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(text=label("menu.home", "🏠 В главное меню"),
+                                      callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
