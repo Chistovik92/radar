@@ -410,7 +410,7 @@ def weather_icon(draw, cx: float, cy: float, size: float, code, day: bool,
 
 # --- сборка ---------------------------------------------------------------
 
-def render(weather: Any, title: str = "") -> bytes | None:
+def render(weather: Any, title: str = "", lang: str = "ru") -> bytes | None:
     """Возвращает PNG или None, если рисовать нечем."""
     if not available():
         return None
@@ -442,13 +442,17 @@ def render(weather: Any, title: str = "") -> bytes | None:
 
         # Заголовок: булавка рисуется, а не берётся из шрифта — эмодзи
         # в DejaVu нет, и «📍» выводилось пустым квадратом.
-        clean_title = _strip_tags(title).lstrip("📍 ").strip() or "Погода"
+        from . import i18n
+
+        clean_title = (_strip_tags(title).lstrip("📍 ").strip()
+                       or i18n.t("weather.image.title", lang, "Погода"))
         _pin(draw, MARGIN, MARGIN - 10, 26, text, top_color)
         draw.text((MARGIN + 36, MARGIN - 12), clean_title[:44], font=head, fill=text)
 
         stamp = getattr(weather, "local_time", "") or ""
         if stamp:
-            draw.text((MARGIN + 36, MARGIN + 28), f"{stamp} · {sky_name}",
+            sky_label = i18n.t(f"weather.sky.{sky}", lang, sky_name)
+            draw.text((MARGIN + 36, MARGIN + 28), f"{stamp} · {sky_label}",
                       font=tiny, fill=muted)
 
         # Крупная температура
@@ -456,13 +460,16 @@ def render(weather: Any, title: str = "") -> bytes | None:
         draw.text((MARGIN - 6, MARGIN + 62), f"{round(temperature):d}°",
                   font=big, fill=_temperature_color(temperature, colors))
 
+        speed_unit = i18n.t("weather.image.ms", lang, "м/с")
+
         cursor = MARGIN + 190
         if weather.feels is not None:
-            draw.text((MARGIN, cursor), f"ощущается как {round(weather.feels):d}°",
+            feels = i18n.t("weather.image.feels_like", lang, "ощущается как")
+            draw.text((MARGIN, cursor), f"{feels} {round(weather.feels):d}°",
                       font=normal, fill=muted)
             cursor += 38
 
-        name, _icon = _describe(weather)
+        name, _icon = _describe(weather, lang)
         if name:
             draw.text((MARGIN, cursor), name.capitalize(), font=normal, fill=text)
             cursor += 40
@@ -472,32 +479,36 @@ def render(weather: Any, title: str = "") -> bytes | None:
             arrow_x = MARGIN + 14
             _draw_wind_arrow(draw, arrow_x, cursor + 13, 14,
                              float(weather.wind_dir or 0), text)
-            parts = [f"{weather.wind:.0f} м/с"]
-            direction = astro.wind_name(weather.wind_dir)
+            parts = [f"{weather.wind:.0f} {speed_unit}"]
+            direction = astro.wind_name(weather.wind_dir, lang)
             if direction:
                 parts.append(direction)
-            force = astro.beaufort(weather.wind)
+            force = astro.beaufort(weather.wind, lang)
             if force:
                 parts.append(force)
             draw.text((arrow_x + 30, cursor), ", ".join(parts), font=small, fill=text)
             cursor += 32
             if weather.gusts is not None and weather.gusts > (weather.wind or 0) + 2:
+                gusts = i18n.t("weather.image.gusts_to", lang, "порывы до")
                 draw.text((arrow_x + 30, cursor),
-                          f"порывы до {weather.gusts:.0f} м/с", font=tiny, fill=muted)
+                          f"{gusts} {weather.gusts:.0f} {speed_unit}",
+                          font=tiny, fill=muted)
                 cursor += 28
 
         details = []
         if weather.humidity is not None:
-            details.append(f"влажность {weather.humidity}%")
+            humidity = i18n.t("weather.image.humidity", lang, "влажность")
+            details.append(f"{humidity} {weather.humidity}%")
         if weather.pressure is not None:
-            details.append(f"{weather.pressure * 0.75006:.0f} мм рт. ст.")
+            mmhg = i18n.t("weather.image.mmhg", lang, "мм рт. ст.")
+            details.append(f"{weather.pressure * 0.75006:.0f} {mmhg}")
         if details:
             draw.text((MARGIN, cursor), " · ".join(details), font=tiny, fill=muted)
 
         # Справа — значок текущей погоды: то, что человек ищет глазами
         # первым. Раньше там стояла луна, и по картинке нельзя было понять,
         # идёт дождь или ясно.
-        moon = astro.moon()
+        moon = astro.moon(lang=lang)
         icon_x, icon_y = WIDTH - 168, 172
         # Фазу сюда НЕ передаём: наверху нужен значок погоды («ясно ночью» —
         # это месяц), а конкретная фаза уходит вниз отдельной строкой.
@@ -521,7 +532,7 @@ def render(weather: Any, title: str = "") -> bytes | None:
 
         panel = _blend(bottom_color, colors["panel_mix"], colors["panel_ratio"])
         _draw_hourly(draw, weather.hourly[:8], HEIGHT - 190, normal, small,
-                     panel, colors)
+                     panel, colors, lang)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
@@ -536,13 +547,15 @@ def _centered(draw, text: str, cx: int, y: int, font, fill) -> None:
     draw.text((cx - width / 2, y), text, font=font, fill=fill)
 
 
-def _describe(weather: Any) -> tuple[str, str]:
+def _describe(weather: Any, lang: str = "ru") -> tuple[str, str]:
     from .weather import describe
 
-    return describe(getattr(weather, "code", None), getattr(weather, "is_day", True))
+    return describe(getattr(weather, "code", None),
+                    getattr(weather, "is_day", True), lang)
 
 
-def _draw_hourly(draw, hours, top: int, font, small, panel, colors) -> None:
+def _draw_hourly(draw, hours, top: int, font, small, panel, colors,
+                 lang: str = "ru") -> None:
     """Почасовая лента: время, температура, вероятность осадков."""
     if not hours:
         return
@@ -552,10 +565,13 @@ def _draw_hourly(draw, hours, top: int, font, small, panel, colors) -> None:
         radius=26, fill=panel,
     )
 
+    from . import i18n
+
+    now_label = i18n.t("weather.image.now", lang, "сейчас")
     step = (WIDTH - 2 * MARGIN) / len(hours)
     for index, item in enumerate(hours):
         x = int(MARGIN + step * index + step / 2)
-        _centered(draw, "сейчас" if index == 0 else item.label, x, top, small,
+        _centered(draw, now_label if index == 0 else item.label, x, top, small,
                   colors["muted"])
 
         # Значок между временем и температурой: по ряду иконок изменение

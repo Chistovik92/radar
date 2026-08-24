@@ -406,7 +406,7 @@ async def deliver(
         if wants_picture:
             from . import weather_image
 
-            picture = weather_image.render(data, title)
+            picture = weather_image.render(data, title, lang)
 
     if picture is None:
         await send_html(chat_id, render(data, title, lang), markup)

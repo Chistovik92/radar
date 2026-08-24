@@ -182,6 +182,47 @@ EN_STRINGS: dict[str, str] = {
     "weather.wmo.96": "thunderstorm with slight hail",
     "weather.wmo.99": "thunderstorm with heavy hail",
 
+    # --- погода картинкой ---
+    "weather.image.title": "Weather",
+    "weather.image.feels_like": "feels like",
+    "weather.image.gusts_to": "gusts up to",
+    "weather.image.humidity": "humidity",
+    "weather.image.mmhg": "mmHg",
+    "weather.image.ms": "m/s",
+    "weather.image.now": "now",
+    "weather.sky.night": "night",
+    "weather.sky.dawn": "dawn",
+    "weather.sky.day": "day",
+    "weather.sky.dusk": "dusk",
+
+    # --- роза ветров ---
+    "wind.n": "northerly",
+    "wind.ne": "north-easterly",
+    "wind.e": "easterly",
+    "wind.se": "south-easterly",
+    "wind.s": "southerly",
+    "wind.sw": "south-westerly",
+    "wind.w": "westerly",
+    "wind.nw": "north-westerly",
+
+    # --- сила ветра ---
+    "wind.calm": "calm",
+    "wind.light": "light",
+    "wind.moderate": "moderate",
+    "wind.fresh": "fresh",
+    "wind.strong": "strong",
+    "wind.storm": "stormy",
+
+    # --- фазы луны ---
+    "moon.new": "new moon",
+    "moon.waxing_crescent": "waxing crescent",
+    "moon.first_quarter": "first quarter",
+    "moon.waxing_gibbous": "waxing gibbous",
+    "moon.full": "full moon",
+    "moon.waning_gibbous": "waning gibbous",
+    "moon.last_quarter": "last quarter",
+    "moon.waning_crescent": "waning crescent",
+
     # --- SOS ---
     "sos.overview": "🆘 Emergency help",
     "sos.no_contacts": (
@@ -254,6 +295,135 @@ EN_STRINGS: dict[str, str] = {
         "/keys — keys and settings - /provider — choose provider\n"
         "/network — network and proxy - /backup — backup"
     ),
+
+    # --- приветствие и общие подписи ---
+    "app.title": "Radar",
+    "greeting.assistant": (
+        "🧠 <i>The AI assistant is active: write a question in the chat "
+        "or use /ai.</i>"
+    ),
+    "greeting.no_key": (
+        "⚠️ <i>GEMINI_API_KEY is not set — heuristic analysis is running "
+        "without AI.</i>"
+    ),
+    "common.your_id": "🆔 Your ID",
+    "common.role": "Role",
+    "common.pinned_buttons": (
+        "The <b>Menu</b> and <b>HydraSite</b> buttons are pinned below the "
+        "input field."
+    ),
+
+    # --- роли ---
+    "role.user": "👤 User",
+    "role.moderator": "🛡 Moderator",
+    "role.admin": "👑 Administrator",
+    "role.superadmin": "⭐️ Superadministrator",
+
+    # --- категории оповещений ---
+    "category.bpla": "Drones / missile danger",
+    "category.mchs": "Emergency service alerts",
+    "category.jkh": "Utilities and network failures",
+    "category.whitelist": "Warn about allow-lists",
+
+    # --- настройки: погода ---
+    "settings.weather_button": "🌤 Weather",
+    "settings.weather_mode.title": "⏱ <b>Weather mode</b>",
+    "settings.weather_mode.prompt": "Choose an interval or set your own value.",
+    "settings.weather.off": "off",
+    "settings.weather.every": "every",
+    "settings.weather.at": "at",
+    "settings.weather.minutes": "min",
+    "settings.weather.hours_short": "h",
+    "settings.weather.hour": "hourly",
+    "settings.weather.hours3": "every 3 hours",
+    "settings.weather.hours6": "every 6 hours",
+    "settings.weather.disable": "Turn off",
+    "settings.weather.own_interval": "Own interval",
+    "settings.weather.fixed_time": "At a fixed time",
+    "settings.weather.disabled": "Weather turned off",
+    "settings.weather.interval_set": "Interval",
+    "settings.weather.ask_time": (
+        "⏰ Enter the time in <code>HH:MM</code> format (for example, 08:30):"
+    ),
+    "settings.weather.ask_interval": (
+        "⏱ Enter an interval: <code>45</code> (minutes) or <code>2h</code> (hours):"
+    ),
+    "settings.weather.bad_time": (
+        "❌ Wrong format. Example: <code>08:30</code>. /cancel to abort."
+    ),
+    "settings.weather.bad_interval": (
+        "❌ Enter a number of minutes, or something like <code>2h</code>."
+    ),
+    "settings.weather.range": "❌ The interval must be between 15 minutes and 24 hours.",
+    "settings.weather.daily_at": "✅ Weather will arrive daily at",
+    "settings.weather.interval_ok": "✅ Interval",
+
+    # --- настройки: вид погоды ---
+    "settings.wformat.title": "🖼 <b>Weather summary format</b>",
+    "settings.wformat.now": "Currently",
+    "settings.wformat.text": "text",
+    "settings.wformat.image": "image",
+    "settings.wformat.image_all": "image (for everyone)",
+    "settings.wformat.as_text": "📄 As text",
+    "settings.wformat.as_image": "🖼 As an image",
+    "settings.wformat.forced": (
+        "Personal choice is temporarily unavailable. When the administration "
+        "lifts the global setting, your previous choice comes back."
+    ),
+    "settings.wformat.why": (
+        "An image is clearer, but it will not load under mobile-internet "
+        "restrictions — which is exactly the situation this system exists "
+        "for. Text always gets through."
+    ),
+    "settings.wformat.off": "Weather as an image is turned off.",
+    "settings.wformat.label": "🖼 Weather format",
+
+    # --- настройки: тихие часы ---
+    "settings.quiet.title": "🌙 <b>Quiet hours</b>",
+    "settings.quiet.label": "🌙 Quiet hours",
+    "settings.quiet.prompt": (
+        "Send an interval, for example <code>23:00-07:00</code>.\n"
+        "A \"-\" turns quiet hours off."
+    ),
+    "settings.quiet.always": (
+        "<b>Military threats and emergency alerts always get through</b> — "
+        "only utilities and weather are held back."
+    ),
+    "settings.quiet.bad_format": (
+        "❌ Format: <code>23:00-07:00</code>. A \"-\" turns it off. /cancel to abort."
+    ),
+    "settings.quiet.cleared": "✅ Quiet hours turned off.",
+    "settings.quiet.set": "✅ Quiet hours",
+    "settings.quiet.note": (
+        "<i>Military threats and emergency alerts will arrive at any time.</i>"
+    ),
+    "settings.quiet.disabled": "Quiet hours are turned off.",
+    "settings.quiet.none": "off",
+
+    # --- предложение источника ---
+    "suggest.title": "📢 <b>Suggest a source</b>",
+    "suggest.prompt": (
+        "Send the username of a public channel, for example "
+        "<code>saratovzhkh</code>, or a link to it."
+    ),
+    "suggest.thematic": (
+        "<i>Topic channels work too — gaming, sport, science: they go into "
+        "the news digests.</i>"
+    ),
+    "suggest.closed": (
+        "Suggestions are closed at the moment — the source list is curated "
+        "by the administration."
+    ),
+    "suggest.sent": "✅ Channel @{channel} has been sent to the moderators.",
+    "suggest.already": "ℹ️ The source is already in the list or in the queue.",
+    "suggest.bad": "❌ Invalid channel username.",
+
+    # --- общее (продолжение) ---
+    "common.on": "Enabled",
+    "common.off": "Disabled",
+    "common.user_not_found": "User not found.",
+    "common.cancel": "Cancel",
+    "common.back": "◀️ Back",
 
     # --- раздел «Управление» ---
     "manage.sources": "📡 Sources",

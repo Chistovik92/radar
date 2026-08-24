@@ -440,15 +440,31 @@ up.
     In 4.7.3.1 the main menu was translated: it used to be assembled
     without regard to language, and with an English interface the buttons
     stayed Russian.
-    **Still left:** the weather image, the subordinate management screens
-    (sources, users, AI, network, keys, backups, logs, partners), role
-    names (`roles.title`). There is a lot of it, and it is translated
-    gradually; an untranslated string falls back to Russian rather than
-    showing a key. It touches everything a person sees.
-    A note for later: the text is currently scattered across modules as
-    inline strings in the code, so the first step is moving it into one
-    dictionary — otherwise translation has to be assembled piece by piece
-    and half the strings stay in Russian.
+    In 4.7.6 everything an ordinary user can reach was closed out:
+    - **role names** (`roles.title`) — visible in `/start`, `/id` and
+      "Management";
+    - **alert categories** (`matching.category_title`) — the settings
+      screen and digest headings;
+    - **the whole "Notifications" screen:** weather mode, summary format,
+      quiet hours, every prompt and input-error message;
+    - **the weather image** — captions, wind rose, wind-force scale and
+      moon phases (`weather_image.py`, `astro.py`);
+    - **"Suggest a source"** — the only sources screen an ordinary person
+      ever reaches.
+    **The item is closed for the user-facing part.** What deliberately
+    stays untranslated is what only the superadministrator can reach:
+    keys, AI management, network, backups, logs, the partner project
+    editor. The superadministrator is the author himself, and translating
+    those screens would double the maintenance burden without a single
+    reader — for exactly the same reason the installer's technical log
+    lines stayed in Russian (item 9). Moderator screens — the source queue
+    and user cards — remain candidates: a reader is theoretically possible
+    there, but there is none yet.
+    A caveat that proved its worth: the text used to be scattered across
+    modules as inline strings in the code, so the first step was moving it
+    into a shared dictionary. Without that, translation would have had to
+    be assembled piece by piece, and half the strings would have stayed
+    Russian without anyone noticing.
 
 ---
 

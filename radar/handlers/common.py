@@ -22,16 +22,27 @@ from ..tg import back_kb, safe_edit
 
 router = Router(name="common")
 
-def greeting(role: str) -> str:
-    lines = [f"🎛 <b>Система «Радар» v{config.VERSION}</b>", f"Ваша роль: {roles.title(role)}"]
+def greeting(role: str, user: dict | None = None) -> str:
+    lang = i18n.language_of(user)
+    role_line = i18n.t("manage.role_line", lang, "Ваша роль")
+    lines = [
+        f"🎛 <b>{i18n.t('app.title', lang, 'Система «Радар»')} v{config.VERSION}</b>",
+        f"{role_line}: {roles.title(role, lang)}",
+    ]
     if roles.can_use_assistant(role):
         lines.append("")
-        lines.append(
-            "🧠 <i>ИИ-ассистент активен: напишите вопрос в чат или используйте /ai.</i>"
-        )
+        lines.append(i18n.t(
+            "greeting.assistant",
+            lang,
+            "🧠 <i>ИИ-ассистент активен: напишите вопрос в чат или используйте /ai.</i>",
+        ))
     if not ai.ENABLED and roles.is_admin(role):
         lines.append("")
-        lines.append("⚠️ <i>GEMINI_API_KEY не задан — работает эвристический анализ без ИИ.</i>")
+        lines.append(i18n.t(
+            "greeting.no_key",
+            lang,
+            "⚠️ <i>GEMINI_API_KEY не задан — работает эвристический анализ без ИИ.</i>",
+        ))
     return "\n".join(lines)
 
 
@@ -43,22 +54,26 @@ async def cmd_start(message: Message, state: FSMContext, role: str, user: dict) 
     keyboard = keyboards.persistent_keyboard()
     if keyboard is not None:
         await message.answer(
-            "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
+            i18n.t(
+                "common.pinned_buttons",
+                i18n.language_of(user),
+                "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
+            ),
             reply_markup=keyboard,
         )
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
+    await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
+    await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_MENU)
 async def button_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
+    await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_PROMO)
@@ -80,13 +95,19 @@ async def cmd_partner(message: Message) -> None:
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer("✅ Действие отменено.", reply_markup=keyboards.main_menu(role, user))
+    await message.answer(
+        i18n.t("common.cancelled", i18n.language_of(user), "✅ Действие отменено."),
+        reply_markup=keyboards.main_menu(role, user),
+    )
 
 
 @router.message(Command("id"))
-async def cmd_id(message: Message, role: str) -> None:
+async def cmd_id(message: Message, role: str, user: dict) -> None:
+    lang = i18n.language_of(user)
     await message.answer(
-        f"🆔 Ваш ID: <code>{message.from_user.id}</code>\nРоль: {roles.title(role)}"
+        f"{i18n.t('common.your_id', lang, '🆔 Ваш ID')}: "
+        f"<code>{message.from_user.id}</code>\n"
+        f"{i18n.t('common.role', lang, 'Роль')}: {roles.title(role, lang)}"
     )
 
 
@@ -149,16 +170,22 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
 async def menu_main(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     await call.answer()
-    await safe_edit(call, greeting(role), keyboards.main_menu(role, user))
+    await safe_edit(call, greeting(role, user), keyboards.main_menu(role, user))
 
 
 @router.callback_query(F.data == "menu:settings")
 async def menu_settings(call: CallbackQuery, state: FSMContext, user: dict[str, Any]) -> None:
     await state.clear()
     await call.answer()
+    lang = i18n.language_of(user)
     await safe_edit(
         call,
-        "⚙️ <b>Оповещения</b>\nВыберите, какие события присылать, и режим погоды.",
+        f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>\n"
+        + i18n.t(
+            "settings.prompt",
+            lang,
+            "Выберите, какие события присылать, и режим погоды.",
+        ),
         keyboards.settings_menu(user),
     )
 
@@ -178,7 +205,7 @@ async def menu_manage(call: CallbackQuery, state: FSMContext, role: str, user: d
 
     lines = [
         f"<b>{_('menu.manage', '🛠 Управление')}</b>", "",
-        f"{_('manage.role_line', 'Ваша роль')}: {roles.title(role)}", "",
+        f"{_('manage.role_line', 'Ваша роль')}: {roles.title(role, lang)}", "",
     ]
     if roles.is_superadmin(role):
         lines.append(_(

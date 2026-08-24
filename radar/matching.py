@@ -396,6 +396,11 @@ def _label(key: str, russian: str, lang: str = "ru") -> str:
     return i18n.t(key, lang, russian)
 
 
+def category_title(key: str, lang: str = "ru") -> str:
+    """Название категории оповещения. Русское — запасной вариант."""
+    return _label(f"category.{key}", CATEGORY_TITLES.get(key, key), lang)
+
+
 def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "",
                             lang: str = "ru") -> str:
     names = ", ".join(_loc_label(loc) for loc in locations)

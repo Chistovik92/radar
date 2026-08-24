@@ -1,4 +1,4 @@
-# Radar v4.7.5.4
+# Radar v4.7.6
 
 [Русская версия](README.md)
 
@@ -14,11 +14,22 @@ not a substitute.
 One command on a clean Debian or Ubuntu machine:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)" -- --lang=en
+bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh) --lang=en
 ```
 
-The installer asks for the language first, then walks through every step
-with timings, and reports what it did at the end.
+Without `--lang=en` the installer asks for a language first. Either way it
+then walks through every step with timings and reports what it did at the
+end.
+
+Downloading the script first is more reliable. If the connection drops,
+`<(curl ...)` hands over an incomplete script — the installer survives that
+(its body is wrapped in a function, so a truncated file simply does not
+run), but a downloaded file can be re-run without fetching it again:
+
+```bash
+curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+bash radar-install.sh --lang=en
+```
 
 ### Choosing a version
 
@@ -72,14 +83,20 @@ The bot asks which language to use on first contact — both for new users
 and for those who used it before the language choice existed. It can be
 changed later from the menu ("🌍 Language").
 
-Translation happens key by key: the dictionary lives in `radar/i18n.py`,
-and an untranslated string falls back to Russian rather than showing a
-raw key — a Russian line among English ones is unpleasant but readable,
-unlike `menu.title.short`. As of 4.7.5.3, translated: the main menu, key
-alert strings, the video section, news digests, SOS, the text weather
-summary, `/help`, and the top level of the "Management" section. Still
-Russian: the weather image, the management sub-screens (sources, users,
-AI, network, keys, backups, logs, partners) and role names.
+The dictionary lives in `radar/i18n.py`, and an untranslated string falls
+back to Russian rather than showing a raw key — a Russian line among
+English ones is unpleasant but readable, unlike `menu.title.short`.
+
+Since 4.7.6 **everything an ordinary user can reach is translated:** the
+main menu, alerts, weather as text and as an image (including the wind
+rose and moon phases), news digests, SOS, the history log, video
+download, the whole "Notifications" screen, "Suggest a source", `/help`
+and role names.
+
+Superadministrator screens deliberately stay in Russian — keys, AI
+management, network, backups, logs, the partner project editor. Only the
+system's owner reads them, and translating them would double the
+maintenance burden without a single reader.
 
 ## Moving to another server
 

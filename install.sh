@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.5.4 — автономный установщик.
+# Система «Радар» v4.7.6 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.5.4"
+VERSION="4.7.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2867,7 +2867,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.5.4"
+__version__ = "4.7.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3446,8 +3446,13 @@ def level(role: str | None) -> int:
     return LEVEL.get(role or USER, 0)
 
 
-def title(role: str | None) -> str:
-    return TITLES.get(role or USER, TITLES[USER])
+def title(role: str | None, lang: str = "ru") -> str:
+    """Название роли. Русское остаётся запасным вариантом, как везде."""
+    from . import i18n
+
+    key = role or USER
+    russian = TITLES.get(key, TITLES[USER])
+    return i18n.t(f"role.{key if key in TITLES else USER}", lang, russian)
 
 
 def at_least(role: str | None, minimum: str) -> bool:
@@ -4051,6 +4056,11 @@ def _label(key: str, russian: str, lang: str = "ru") -> str:
     from . import i18n
 
     return i18n.t(key, lang, russian)
+
+
+def category_title(key: str, lang: str = "ru") -> str:
+    """Название категории оповещения. Русское — запасной вариант."""
+    return _label(f"category.{key}", CATEGORY_TITLES.get(key, key), lang)
 
 
 def format_locations_header(locations: Sequence[dict[str, Any]], note: str = "",
@@ -7987,11 +7997,13 @@ def should_hold(categories: set[str] | list[str], user: dict[str, Any],
     return not (URGENT & set(categories))
 
 
-def quiet_summary(user: dict[str, Any]) -> str:
+def quiet_summary(user: dict[str, Any], lang: str = "") -> str:
+    from . import i18n
+
     start = str(user.get("quiet_from") or "")
     end = str(user.get("quiet_to") or "")
     if not start or not end:
-        return "не заданы"
+        return i18n.t("settings.quiet.none", lang or i18n.language_of(user), "не заданы")
     return f"{start} — {end}"
 
 
@@ -8281,19 +8293,19 @@ class Moon:
 
 
 PHASES = (
-    (0.02, "новолуние"),
-    (0.24, "растущий серп"),
-    (0.27, "первая четверть"),
-    (0.48, "растущая луна"),
-    (0.52, "полнолуние"),
-    (0.73, "убывающая луна"),
-    (0.77, "последняя четверть"),
-    (0.98, "убывающий серп"),
-    (1.01, "новолуние"),
+    (0.02, "новолуние", "moon.new"),
+    (0.24, "растущий серп", "moon.waxing_crescent"),
+    (0.27, "первая четверть", "moon.first_quarter"),
+    (0.48, "растущая луна", "moon.waxing_gibbous"),
+    (0.52, "полнолуние", "moon.full"),
+    (0.73, "убывающая луна", "moon.waning_gibbous"),
+    (0.77, "последняя четверть", "moon.last_quarter"),
+    (0.98, "убывающий серп", "moon.waning_crescent"),
+    (1.01, "новолуние", "moon.new"),
 )
 
 
-def moon(moment: datetime | None = None) -> Moon:
+def moon(moment: datetime | None = None, lang: str = "ru") -> Moon:
     """Фаза луны на указанный момент (по умолчанию — сейчас)."""
     if moment is None:
         moment = datetime.now(timezone.utc)
@@ -8309,11 +8321,14 @@ def moon(moment: datetime | None = None) -> Moon:
 
     illumination = (1 - cos(2 * pi * phase)) / 2
 
-    name = PHASES[-1][1]
-    for edge, title in PHASES:
+    from . import i18n
+
+    russian, key = PHASES[-1][1], PHASES[-1][2]
+    for edge, title, phase_key in PHASES:
         if phase < edge:
-            name = title
+            russian, key = title, phase_key
             break
+    name = i18n.t(key, lang, russian)
 
     return Moon(
         age=age,
@@ -8330,7 +8345,20 @@ ROSE = (
     "северный", "северо-восточный", "восточный", "юго-восточный",
     "южный", "юго-западный", "западный", "северо-западный",
 )
+ROSE_KEYS = ("wind.n", "wind.ne", "wind.e", "wind.se",
+             "wind.s", "wind.sw", "wind.w", "wind.nw")
 ROSE_SHORT = ("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
+ROSE_SHORT_EN = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+# Границы шкалы Бофорта в м/с и названия: русское — запасной вариант.
+FORCE = (
+    (1.5, "штиль", "wind.calm"),
+    (3.3, "лёгкий", "wind.light"),
+    (7.9, "умеренный", "wind.moderate"),
+    (13.8, "свежий", "wind.fresh"),
+    (20.7, "сильный", "wind.strong"),
+)
+FORCE_TOP = ("штормовой", "wind.storm")
 
 
 def wind_sector(degrees: float | None) -> int | None:
@@ -8340,31 +8368,35 @@ def wind_sector(degrees: float | None) -> int | None:
     return int((degrees % 360) / 45 + 0.5) % 8
 
 
-def wind_name(degrees: float | None) -> str:
+def wind_name(degrees: float | None, lang: str = "ru") -> str:
+    from . import i18n
+
     sector = wind_sector(degrees)
-    return ROSE[sector] if sector is not None else ""
+    if sector is None:
+        return ""
+    return i18n.t(ROSE_KEYS[sector], lang, ROSE[sector])
 
 
-def wind_short(degrees: float | None) -> str:
+def wind_short(degrees: float | None, lang: str = "ru") -> str:
+    from . import i18n
+
     sector = wind_sector(degrees)
-    return ROSE_SHORT[sector] if sector is not None else ""
+    if sector is None:
+        return ""
+    table = ROSE_SHORT_EN if i18n.normalize(lang) == i18n.EN else ROSE_SHORT
+    return table[sector]
 
 
-def beaufort(speed: float | None) -> str:
+def beaufort(speed: float | None, lang: str = "ru") -> str:
     """Словесная оценка силы ветра в м/с — понятнее голой цифры."""
+    from . import i18n
+
     if speed is None:
         return ""
-    if speed < 1.5:
-        return "штиль"
-    if speed < 3.3:
-        return "лёгкий"
-    if speed < 7.9:
-        return "умеренный"
-    if speed < 13.8:
-        return "свежий"
-    if speed < 20.7:
-        return "сильный"
-    return "штормовой"
+    for limit, russian, key in FORCE:
+        if speed < limit:
+            return i18n.t(key, lang, russian)
+    return i18n.t(FORCE_TOP[1], lang, FORCE_TOP[0])
 RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/shortener.py"
 cat > "radar/shortener.py" <<'RADAR_FILE_27'
@@ -9110,6 +9142,47 @@ EN_STRINGS: dict[str, str] = {
     "weather.wmo.96": "thunderstorm with slight hail",
     "weather.wmo.99": "thunderstorm with heavy hail",
 
+    # --- погода картинкой ---
+    "weather.image.title": "Weather",
+    "weather.image.feels_like": "feels like",
+    "weather.image.gusts_to": "gusts up to",
+    "weather.image.humidity": "humidity",
+    "weather.image.mmhg": "mmHg",
+    "weather.image.ms": "m/s",
+    "weather.image.now": "now",
+    "weather.sky.night": "night",
+    "weather.sky.dawn": "dawn",
+    "weather.sky.day": "day",
+    "weather.sky.dusk": "dusk",
+
+    # --- роза ветров ---
+    "wind.n": "northerly",
+    "wind.ne": "north-easterly",
+    "wind.e": "easterly",
+    "wind.se": "south-easterly",
+    "wind.s": "southerly",
+    "wind.sw": "south-westerly",
+    "wind.w": "westerly",
+    "wind.nw": "north-westerly",
+
+    # --- сила ветра ---
+    "wind.calm": "calm",
+    "wind.light": "light",
+    "wind.moderate": "moderate",
+    "wind.fresh": "fresh",
+    "wind.strong": "strong",
+    "wind.storm": "stormy",
+
+    # --- фазы луны ---
+    "moon.new": "new moon",
+    "moon.waxing_crescent": "waxing crescent",
+    "moon.first_quarter": "first quarter",
+    "moon.waxing_gibbous": "waxing gibbous",
+    "moon.full": "full moon",
+    "moon.waning_gibbous": "waning gibbous",
+    "moon.last_quarter": "last quarter",
+    "moon.waning_crescent": "waning crescent",
+
     # --- SOS ---
     "sos.overview": "🆘 Emergency help",
     "sos.no_contacts": (
@@ -9182,6 +9255,135 @@ EN_STRINGS: dict[str, str] = {
         "/keys — keys and settings - /provider — choose provider\n"
         "/network — network and proxy - /backup — backup"
     ),
+
+    # --- приветствие и общие подписи ---
+    "app.title": "Radar",
+    "greeting.assistant": (
+        "🧠 <i>The AI assistant is active: write a question in the chat "
+        "or use /ai.</i>"
+    ),
+    "greeting.no_key": (
+        "⚠️ <i>GEMINI_API_KEY is not set — heuristic analysis is running "
+        "without AI.</i>"
+    ),
+    "common.your_id": "🆔 Your ID",
+    "common.role": "Role",
+    "common.pinned_buttons": (
+        "The <b>Menu</b> and <b>HydraSite</b> buttons are pinned below the "
+        "input field."
+    ),
+
+    # --- роли ---
+    "role.user": "👤 User",
+    "role.moderator": "🛡 Moderator",
+    "role.admin": "👑 Administrator",
+    "role.superadmin": "⭐️ Superadministrator",
+
+    # --- категории оповещений ---
+    "category.bpla": "Drones / missile danger",
+    "category.mchs": "Emergency service alerts",
+    "category.jkh": "Utilities and network failures",
+    "category.whitelist": "Warn about allow-lists",
+
+    # --- настройки: погода ---
+    "settings.weather_button": "🌤 Weather",
+    "settings.weather_mode.title": "⏱ <b>Weather mode</b>",
+    "settings.weather_mode.prompt": "Choose an interval or set your own value.",
+    "settings.weather.off": "off",
+    "settings.weather.every": "every",
+    "settings.weather.at": "at",
+    "settings.weather.minutes": "min",
+    "settings.weather.hours_short": "h",
+    "settings.weather.hour": "hourly",
+    "settings.weather.hours3": "every 3 hours",
+    "settings.weather.hours6": "every 6 hours",
+    "settings.weather.disable": "Turn off",
+    "settings.weather.own_interval": "Own interval",
+    "settings.weather.fixed_time": "At a fixed time",
+    "settings.weather.disabled": "Weather turned off",
+    "settings.weather.interval_set": "Interval",
+    "settings.weather.ask_time": (
+        "⏰ Enter the time in <code>HH:MM</code> format (for example, 08:30):"
+    ),
+    "settings.weather.ask_interval": (
+        "⏱ Enter an interval: <code>45</code> (minutes) or <code>2h</code> (hours):"
+    ),
+    "settings.weather.bad_time": (
+        "❌ Wrong format. Example: <code>08:30</code>. /cancel to abort."
+    ),
+    "settings.weather.bad_interval": (
+        "❌ Enter a number of minutes, or something like <code>2h</code>."
+    ),
+    "settings.weather.range": "❌ The interval must be between 15 minutes and 24 hours.",
+    "settings.weather.daily_at": "✅ Weather will arrive daily at",
+    "settings.weather.interval_ok": "✅ Interval",
+
+    # --- настройки: вид погоды ---
+    "settings.wformat.title": "🖼 <b>Weather summary format</b>",
+    "settings.wformat.now": "Currently",
+    "settings.wformat.text": "text",
+    "settings.wformat.image": "image",
+    "settings.wformat.image_all": "image (for everyone)",
+    "settings.wformat.as_text": "📄 As text",
+    "settings.wformat.as_image": "🖼 As an image",
+    "settings.wformat.forced": (
+        "Personal choice is temporarily unavailable. When the administration "
+        "lifts the global setting, your previous choice comes back."
+    ),
+    "settings.wformat.why": (
+        "An image is clearer, but it will not load under mobile-internet "
+        "restrictions — which is exactly the situation this system exists "
+        "for. Text always gets through."
+    ),
+    "settings.wformat.off": "Weather as an image is turned off.",
+    "settings.wformat.label": "🖼 Weather format",
+
+    # --- настройки: тихие часы ---
+    "settings.quiet.title": "🌙 <b>Quiet hours</b>",
+    "settings.quiet.label": "🌙 Quiet hours",
+    "settings.quiet.prompt": (
+        "Send an interval, for example <code>23:00-07:00</code>.\n"
+        "A \"-\" turns quiet hours off."
+    ),
+    "settings.quiet.always": (
+        "<b>Military threats and emergency alerts always get through</b> — "
+        "only utilities and weather are held back."
+    ),
+    "settings.quiet.bad_format": (
+        "❌ Format: <code>23:00-07:00</code>. A \"-\" turns it off. /cancel to abort."
+    ),
+    "settings.quiet.cleared": "✅ Quiet hours turned off.",
+    "settings.quiet.set": "✅ Quiet hours",
+    "settings.quiet.note": (
+        "<i>Military threats and emergency alerts will arrive at any time.</i>"
+    ),
+    "settings.quiet.disabled": "Quiet hours are turned off.",
+    "settings.quiet.none": "off",
+
+    # --- предложение источника ---
+    "suggest.title": "📢 <b>Suggest a source</b>",
+    "suggest.prompt": (
+        "Send the username of a public channel, for example "
+        "<code>saratovzhkh</code>, or a link to it."
+    ),
+    "suggest.thematic": (
+        "<i>Topic channels work too — gaming, sport, science: they go into "
+        "the news digests.</i>"
+    ),
+    "suggest.closed": (
+        "Suggestions are closed at the moment — the source list is curated "
+        "by the administration."
+    ),
+    "suggest.sent": "✅ Channel @{channel} has been sent to the moderators.",
+    "suggest.already": "ℹ️ The source is already in the list or in the queue.",
+    "suggest.bad": "❌ Invalid channel username.",
+
+    # --- общее (продолжение) ---
+    "common.on": "Enabled",
+    "common.off": "Disabled",
+    "common.user_not_found": "User not found.",
+    "common.cancel": "Cancel",
+    "common.back": "◀️ Back",
 
     # --- раздел «Управление» ---
     "manage.sources": "📡 Sources",
@@ -10292,7 +10494,7 @@ def weather_icon(draw, cx: float, cy: float, size: float, code, day: bool,
 
 # --- сборка ---------------------------------------------------------------
 
-def render(weather: Any, title: str = "") -> bytes | None:
+def render(weather: Any, title: str = "", lang: str = "ru") -> bytes | None:
     """Возвращает PNG или None, если рисовать нечем."""
     if not available():
         return None
@@ -10324,13 +10526,17 @@ def render(weather: Any, title: str = "") -> bytes | None:
 
         # Заголовок: булавка рисуется, а не берётся из шрифта — эмодзи
         # в DejaVu нет, и «📍» выводилось пустым квадратом.
-        clean_title = _strip_tags(title).lstrip("📍 ").strip() or "Погода"
+        from . import i18n
+
+        clean_title = (_strip_tags(title).lstrip("📍 ").strip()
+                       or i18n.t("weather.image.title", lang, "Погода"))
         _pin(draw, MARGIN, MARGIN - 10, 26, text, top_color)
         draw.text((MARGIN + 36, MARGIN - 12), clean_title[:44], font=head, fill=text)
 
         stamp = getattr(weather, "local_time", "") or ""
         if stamp:
-            draw.text((MARGIN + 36, MARGIN + 28), f"{stamp} · {sky_name}",
+            sky_label = i18n.t(f"weather.sky.{sky}", lang, sky_name)
+            draw.text((MARGIN + 36, MARGIN + 28), f"{stamp} · {sky_label}",
                       font=tiny, fill=muted)
 
         # Крупная температура
@@ -10338,13 +10544,16 @@ def render(weather: Any, title: str = "") -> bytes | None:
         draw.text((MARGIN - 6, MARGIN + 62), f"{round(temperature):d}°",
                   font=big, fill=_temperature_color(temperature, colors))
 
+        speed_unit = i18n.t("weather.image.ms", lang, "м/с")
+
         cursor = MARGIN + 190
         if weather.feels is not None:
-            draw.text((MARGIN, cursor), f"ощущается как {round(weather.feels):d}°",
+            feels = i18n.t("weather.image.feels_like", lang, "ощущается как")
+            draw.text((MARGIN, cursor), f"{feels} {round(weather.feels):d}°",
                       font=normal, fill=muted)
             cursor += 38
 
-        name, _icon = _describe(weather)
+        name, _icon = _describe(weather, lang)
         if name:
             draw.text((MARGIN, cursor), name.capitalize(), font=normal, fill=text)
             cursor += 40
@@ -10354,32 +10563,36 @@ def render(weather: Any, title: str = "") -> bytes | None:
             arrow_x = MARGIN + 14
             _draw_wind_arrow(draw, arrow_x, cursor + 13, 14,
                              float(weather.wind_dir or 0), text)
-            parts = [f"{weather.wind:.0f} м/с"]
-            direction = astro.wind_name(weather.wind_dir)
+            parts = [f"{weather.wind:.0f} {speed_unit}"]
+            direction = astro.wind_name(weather.wind_dir, lang)
             if direction:
                 parts.append(direction)
-            force = astro.beaufort(weather.wind)
+            force = astro.beaufort(weather.wind, lang)
             if force:
                 parts.append(force)
             draw.text((arrow_x + 30, cursor), ", ".join(parts), font=small, fill=text)
             cursor += 32
             if weather.gusts is not None and weather.gusts > (weather.wind or 0) + 2:
+                gusts = i18n.t("weather.image.gusts_to", lang, "порывы до")
                 draw.text((arrow_x + 30, cursor),
-                          f"порывы до {weather.gusts:.0f} м/с", font=tiny, fill=muted)
+                          f"{gusts} {weather.gusts:.0f} {speed_unit}",
+                          font=tiny, fill=muted)
                 cursor += 28
 
         details = []
         if weather.humidity is not None:
-            details.append(f"влажность {weather.humidity}%")
+            humidity = i18n.t("weather.image.humidity", lang, "влажность")
+            details.append(f"{humidity} {weather.humidity}%")
         if weather.pressure is not None:
-            details.append(f"{weather.pressure * 0.75006:.0f} мм рт. ст.")
+            mmhg = i18n.t("weather.image.mmhg", lang, "мм рт. ст.")
+            details.append(f"{weather.pressure * 0.75006:.0f} {mmhg}")
         if details:
             draw.text((MARGIN, cursor), " · ".join(details), font=tiny, fill=muted)
 
         # Справа — значок текущей погоды: то, что человек ищет глазами
         # первым. Раньше там стояла луна, и по картинке нельзя было понять,
         # идёт дождь или ясно.
-        moon = astro.moon()
+        moon = astro.moon(lang=lang)
         icon_x, icon_y = WIDTH - 168, 172
         # Фазу сюда НЕ передаём: наверху нужен значок погоды («ясно ночью» —
         # это месяц), а конкретная фаза уходит вниз отдельной строкой.
@@ -10403,7 +10616,7 @@ def render(weather: Any, title: str = "") -> bytes | None:
 
         panel = _blend(bottom_color, colors["panel_mix"], colors["panel_ratio"])
         _draw_hourly(draw, weather.hourly[:8], HEIGHT - 190, normal, small,
-                     panel, colors)
+                     panel, colors, lang)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
@@ -10418,13 +10631,15 @@ def _centered(draw, text: str, cx: int, y: int, font, fill) -> None:
     draw.text((cx - width / 2, y), text, font=font, fill=fill)
 
 
-def _describe(weather: Any) -> tuple[str, str]:
+def _describe(weather: Any, lang: str = "ru") -> tuple[str, str]:
     from .weather import describe
 
-    return describe(getattr(weather, "code", None), getattr(weather, "is_day", True))
+    return describe(getattr(weather, "code", None),
+                    getattr(weather, "is_day", True), lang)
 
 
-def _draw_hourly(draw, hours, top: int, font, small, panel, colors) -> None:
+def _draw_hourly(draw, hours, top: int, font, small, panel, colors,
+                 lang: str = "ru") -> None:
     """Почасовая лента: время, температура, вероятность осадков."""
     if not hours:
         return
@@ -10434,10 +10649,13 @@ def _draw_hourly(draw, hours, top: int, font, small, panel, colors) -> None:
         radius=26, fill=panel,
     )
 
+    from . import i18n
+
+    now_label = i18n.t("weather.image.now", lang, "сейчас")
     step = (WIDTH - 2 * MARGIN) / len(hours)
     for index, item in enumerate(hours):
         x = int(MARGIN + step * index + step / 2)
-        _centered(draw, "сейчас" if index == 0 else item.label, x, top, small,
+        _centered(draw, now_label if index == 0 else item.label, x, top, small,
                   colors["muted"])
 
         # Значок между временем и температурой: по ряду иконок изменение
@@ -16087,7 +16305,7 @@ async def deliver(
         if wants_picture:
             from . import weather_image
 
-            picture = weather_image.render(data, title)
+            picture = weather_image.render(data, title, lang)
 
     if picture is None:
         await send_html(chat_id, render(data, title, lang), markup)
@@ -16711,19 +16929,30 @@ def persistent_keyboard() -> ReplyKeyboardMarkup | None:
     )
 
 
-def weather_label(user: dict[str, Any]) -> str:
+def weather_label(user: dict[str, Any], lang: str = "") -> str:
+    lang = lang or i18n.language_of(user)
     if user.get("weather_mode") == "time":
-        return f"в {user.get('weather_time', '08:00')}"
+        at = i18n.t("settings.weather.at", lang, "в")
+        return f"{at} {user.get('weather_time', '08:00')}"
     minutes = int(user.get("weather_interval") or 0)
     if minutes <= 0:
-        return "откл"
+        return i18n.t("settings.weather.off", lang, "откл")
+    every = i18n.t("settings.weather.every", lang, "каждые")
     if minutes >= 60 and minutes % 60 == 0:
-        return f"каждые {minutes // 60} ч"
-    return f"каждые {minutes} мин"
+        hours = i18n.t("settings.weather.hours_short", lang, "ч")
+        return f"{every} {minutes // 60} {hours}"
+    return f"{every} {minutes} {i18n.t('settings.weather.minutes', lang, 'мин')}"
 
 
 def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarkup:
     """target — id редактируемого пользователя (пусто, если правит себя)."""
+    from .matching import category_title
+
+    lang = i18n.language_of(user)
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     settings = user.get("settings") or {}
     suffix = f":{target}" if target else ""
     rows: list[list[InlineKeyboardButton]] = []
@@ -16732,9 +16961,10 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
         row = []
         for key in keys[index:index + 2]:
             mark = "✅" if settings.get(key) else "❌"
+            name = category_title(key, lang).split(" /")[0]
             row.append(
                 InlineKeyboardButton(
-                    text=f"{mark} {CATEGORY_ICONS[key]} {CATEGORY_TITLES[key].split(' /')[0]}",
+                    text=f"{mark} {CATEGORY_ICONS[key]} {name}",
                     callback_data=f"set:toggle:{key}{suffix}",
                 )
             )
@@ -16742,29 +16972,34 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
     if not target:
         rows.append(
             [InlineKeyboardButton(
-                text=f"🌤 Погода: {weather_label(user)}", callback_data="set:weather"
+                text=f"{label('settings.weather_button', '🌤 Погода')}: "
+                     f"{weather_label(user, lang)}",
+                callback_data="set:weather",
             )]
         )
         if features.enabled("weather_image"):
             if features.enabled("weather_image_all"):
                 # Выбор перекрыт администрацией — кнопка не должна показывать
                 # «текст», когда всё равно придёт картинка.
-                label = "картинка (для всех)"
+                mode = label("settings.wformat.image_all", "картинка (для всех)")
             else:
                 picture = user.get("weather_format") != "text"
-                label = "картинка" if picture else "текст"
+                mode = (label("settings.wformat.image", "картинка") if picture
+                        else label("settings.wformat.text", "текст"))
             rows.append([InlineKeyboardButton(
-                text=f"🖼 Вид погоды: {label}",
+                text=f"{label('settings.wformat.label', '🖼 Вид погоды')}: {mode}",
                 callback_data="set:wformat",
             )])
         if features.enabled("quiet_hours"):
             from .quiet import quiet_summary
 
             rows.append([InlineKeyboardButton(
-                text=f"🌙 Тихие часы: {quiet_summary(user)}",
+                text=f"{label('settings.quiet.label', '🌙 Тихие часы')}: "
+                     f"{quiet_summary(user, lang)}",
                 callback_data="set:quiet",
             )])
-        rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+        rows.append([InlineKeyboardButton(
+            text=label("menu.home", "🏠 В главное меню"), callback_data="menu:main")])
     else:
         rows.append(
             [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{target}")]
@@ -16789,41 +17024,63 @@ def ai_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def back_to_settings() -> InlineKeyboardMarkup:
+def back_to_settings(lang: str = "ru") -> InlineKeyboardMarkup:
     """Только возврат — когда выбирать нечего."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
+        [InlineKeyboardButton(text=i18n.t("common.back", lang, "◀️ Назад"),
+                              callback_data="menu:settings")],
     ])
 
 
-def weather_format_menu() -> InlineKeyboardMarkup:
+def weather_format_menu(lang: str = "ru") -> InlineKeyboardMarkup:
     """Вид сводки погоды: текст или картинка."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📄 Текстом", callback_data="set:wfmt:text")],
-        [InlineKeyboardButton(text="🖼 Картинкой", callback_data="set:wfmt:image")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
+        [InlineKeyboardButton(
+            text=i18n.t("settings.wformat.as_text", lang, "📄 Текстом"),
+            callback_data="set:wfmt:text")],
+        [InlineKeyboardButton(
+            text=i18n.t("settings.wformat.as_image", lang, "🖼 Картинкой"),
+            callback_data="set:wfmt:image")],
+        [InlineKeyboardButton(text=i18n.t("common.back", lang, "◀️ Назад"),
+                              callback_data="menu:settings")],
     ])
 
 
-def weather_menu(target: str = "") -> InlineKeyboardMarkup:
+def weather_menu(target: str = "", lang: str = "ru") -> InlineKeyboardMarkup:
     """Меню режима погоды. target — чужой пользователь (правит администрация)."""
     suffix = f":{target}" if target else ""
     back = f"usr:card:{target}" if target else "menu:settings"
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Отключить", callback_data=f"set:wth:0{suffix}"),
-                InlineKeyboardButton(text="Каждый час", callback_data=f"set:wth:60{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.disable", "Отключить"),
+                    callback_data=f"set:wth:0{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.hour", "Каждый час"),
+                    callback_data=f"set:wth:60{suffix}"),
             ],
             [
-                InlineKeyboardButton(text="Каждые 3 часа", callback_data=f"set:wth:180{suffix}"),
-                InlineKeyboardButton(text="Каждые 6 часов", callback_data=f"set:wth:360{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.hours3", "Каждые 3 часа"),
+                    callback_data=f"set:wth:180{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.hours6", "Каждые 6 часов"),
+                    callback_data=f"set:wth:360{suffix}"),
             ],
             [
-                InlineKeyboardButton(text="⏰ Точное время", callback_data=f"set:wthtime{suffix}"),
-                InlineKeyboardButton(text="⏱ Свой интервал", callback_data=f"set:wthint{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.fixed_time", "⏰ Точное время"),
+                    callback_data=f"set:wthtime{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.own_interval", "⏱ Свой интервал"),
+                    callback_data=f"set:wthint{suffix}"),
             ],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data=back)],
+            [InlineKeyboardButton(text=label("common.back", "◀️ Назад"), callback_data=back)],
         ]
     )
 
@@ -17851,16 +18108,27 @@ from ..tg import back_kb, safe_edit
 
 router = Router(name="common")
 
-def greeting(role: str) -> str:
-    lines = [f"🎛 <b>Система «Радар» v{config.VERSION}</b>", f"Ваша роль: {roles.title(role)}"]
+def greeting(role: str, user: dict | None = None) -> str:
+    lang = i18n.language_of(user)
+    role_line = i18n.t("manage.role_line", lang, "Ваша роль")
+    lines = [
+        f"🎛 <b>{i18n.t('app.title', lang, 'Система «Радар»')} v{config.VERSION}</b>",
+        f"{role_line}: {roles.title(role, lang)}",
+    ]
     if roles.can_use_assistant(role):
         lines.append("")
-        lines.append(
-            "🧠 <i>ИИ-ассистент активен: напишите вопрос в чат или используйте /ai.</i>"
-        )
+        lines.append(i18n.t(
+            "greeting.assistant",
+            lang,
+            "🧠 <i>ИИ-ассистент активен: напишите вопрос в чат или используйте /ai.</i>",
+        ))
     if not ai.ENABLED and roles.is_admin(role):
         lines.append("")
-        lines.append("⚠️ <i>GEMINI_API_KEY не задан — работает эвристический анализ без ИИ.</i>")
+        lines.append(i18n.t(
+            "greeting.no_key",
+            lang,
+            "⚠️ <i>GEMINI_API_KEY не задан — работает эвристический анализ без ИИ.</i>",
+        ))
     return "\n".join(lines)
 
 
@@ -17872,22 +18140,26 @@ async def cmd_start(message: Message, state: FSMContext, role: str, user: dict) 
     keyboard = keyboards.persistent_keyboard()
     if keyboard is not None:
         await message.answer(
-            "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
+            i18n.t(
+                "common.pinned_buttons",
+                i18n.language_of(user),
+                "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
+            ),
             reply_markup=keyboard,
         )
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
+    await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
+    await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_MENU)
 async def button_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer(greeting(role), reply_markup=keyboards.main_menu(role, user))
+    await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 
 @router.message(F.text == keyboards.BTN_PROMO)
@@ -17909,13 +18181,19 @@ async def cmd_partner(message: Message) -> None:
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
-    await message.answer("✅ Действие отменено.", reply_markup=keyboards.main_menu(role, user))
+    await message.answer(
+        i18n.t("common.cancelled", i18n.language_of(user), "✅ Действие отменено."),
+        reply_markup=keyboards.main_menu(role, user),
+    )
 
 
 @router.message(Command("id"))
-async def cmd_id(message: Message, role: str) -> None:
+async def cmd_id(message: Message, role: str, user: dict) -> None:
+    lang = i18n.language_of(user)
     await message.answer(
-        f"🆔 Ваш ID: <code>{message.from_user.id}</code>\nРоль: {roles.title(role)}"
+        f"{i18n.t('common.your_id', lang, '🆔 Ваш ID')}: "
+        f"<code>{message.from_user.id}</code>\n"
+        f"{i18n.t('common.role', lang, 'Роль')}: {roles.title(role, lang)}"
     )
 
 
@@ -17978,16 +18256,22 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
 async def menu_main(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     await call.answer()
-    await safe_edit(call, greeting(role), keyboards.main_menu(role, user))
+    await safe_edit(call, greeting(role, user), keyboards.main_menu(role, user))
 
 
 @router.callback_query(F.data == "menu:settings")
 async def menu_settings(call: CallbackQuery, state: FSMContext, user: dict[str, Any]) -> None:
     await state.clear()
     await call.answer()
+    lang = i18n.language_of(user)
     await safe_edit(
         call,
-        "⚙️ <b>Оповещения</b>\nВыберите, какие события присылать, и режим погоды.",
+        f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>\n"
+        + i18n.t(
+            "settings.prompt",
+            lang,
+            "Выберите, какие события присылать, и режим погоды.",
+        ),
         keyboards.settings_menu(user),
     )
 
@@ -18007,7 +18291,7 @@ async def menu_manage(call: CallbackQuery, state: FSMContext, role: str, user: d
 
     lines = [
         f"<b>{_('menu.manage', '🛠 Управление')}</b>", "",
-        f"{_('manage.role_line', 'Ваша роль')}: {roles.title(role)}", "",
+        f"{_('manage.role_line', 'Ваша роль')}: {roles.title(role, lang)}", "",
     ]
     if roles.is_superadmin(role):
         lines.append(_(
@@ -18403,7 +18687,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import features, keyboards, roles, storage
+from .. import features, i18n, keyboards, roles, storage
 from ..matching import CATEGORY_TITLES
 from ..states import Form
 from ..tg import back_kb, safe_edit, send_html
@@ -18412,6 +18696,7 @@ router = Router(name="settings")
 
 @router.callback_query(F.data.startswith("set:toggle:"))
 async def toggle_category(call: CallbackQuery, user: dict[str, Any], role: str) -> None:
+    lang = i18n.language_of(user)
     parts = call.data.split(":")
     key = parts[2]
     target_id = parts[3] if len(parts) > 3 else ""
@@ -18423,16 +18708,23 @@ async def toggle_category(call: CallbackQuery, user: dict[str, Any], role: str) 
     if target_id:
         subject = storage.get_user(target_id)
         if subject is None:
-            await call.answer("Пользователь не найден.", show_alert=True)
+            await call.answer(
+                i18n.t("common.user_not_found", lang, "Пользователь не найден."),
+                show_alert=True)
             return
         if not roles.can_edit_user(role, subject.get("role")):
-            await call.answer("Недостаточно прав.", show_alert=True)
+            await call.answer(
+                i18n.t("common.insufficient_rights", lang, "Недостаточно прав."),
+                show_alert=True)
             return
 
     settings = subject.setdefault("settings", storage.default_settings())
     settings[key] = not settings.get(key, True)
     await storage.save()
-    await call.answer("Включено" if settings[key] else "Выключено")
+    await call.answer(
+        i18n.t("common.on", lang, "Включено") if settings[key]
+        else i18n.t("common.off", lang, "Выключено")
+    )
     try:
         await call.message.edit_reply_markup(
             reply_markup=keyboards.settings_menu(subject, target_id)
@@ -18453,12 +18745,15 @@ def _subject(call: CallbackQuery, user: dict[str, Any], role: str,
 
 
 @router.callback_query(F.data == "set:weather")
-async def weather_menu(call: CallbackQuery) -> None:
+async def weather_menu(call: CallbackQuery, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     await call.answer()
     await safe_edit(
         call,
-        "⏱ <b>Режим погоды</b>\nВыберите интервал или задайте своё значение.",
-        keyboards.weather_menu(),
+        i18n.t("settings.weather_mode.title", lang, "⏱ <b>Режим погоды</b>") + "\n"
+        + i18n.t("settings.weather_mode.prompt", lang,
+                 "Выберите интервал или задайте своё значение."),
+        keyboards.weather_menu(lang=lang),
     )
 
 
@@ -18500,11 +18795,18 @@ async def set_interval(call: CallbackQuery, user: dict[str, Any], role: str) -> 
         await call.answer("Недостаточно прав.", show_alert=True)
         return
 
+    lang = i18n.language_of(user)
     subject["weather_mode"] = "interval"
     subject["weather_interval"] = minutes
     subject["last_weather"] = 0
     await storage.save(target or call.from_user.id)
-    await call.answer("Погода отключена" if minutes == 0 else f"Интервал: {minutes} мин")
+    if minutes == 0:
+        await call.answer(i18n.t("settings.weather.disabled", lang, "Погода отключена"))
+    else:
+        await call.answer(
+            f"{i18n.t('settings.weather.interval_set', lang, 'Интервал')}: {minutes} "
+            f"{i18n.t('settings.weather.minutes', lang, 'мин')}"
+        )
 
     if target:
         await send_html(
@@ -18516,37 +18818,52 @@ async def set_interval(call: CallbackQuery, user: dict[str, Any], role: str) -> 
             call,
             f"✅ Погода пользователя <code>{target}</code>: "
             f"{keyboards.weather_label(subject)}",
-            keyboards.weather_menu(target),
+            keyboards.weather_menu(target, lang),
         )
     else:
-        await safe_edit(call, "⚙️ <b>Оповещения</b>", keyboards.settings_menu(user))
+        await safe_edit(
+            call,
+            f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",
+            keyboards.settings_menu(user),
+        )
 
 
 @router.callback_query(F.data.startswith("set:wthtime"))
-async def ask_time(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_time(call: CallbackQuery, state: FSMContext, role: str,
+                   user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     parts = call.data.split(":")
     target = parts[2] if len(parts) > 2 else ""
     if target and not roles.can_edit_user(role, (storage.get_user(target) or {}).get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", lang, "Недостаточно прав."), show_alert=True)
         return
 
     await call.answer()
     await state.update_data(weather_target=target)
     await state.set_state(Form.weather_time)
-    who = f" для <code>{target}</code>" if target else ""
+    prompt = i18n.t(
+        "settings.weather.ask_time", lang,
+        "⏰ Введите время в формате <code>HH:MM</code> (например, 08:30):")
+    if target:
+        prompt = f"<code>{target}</code>\n{prompt}"
     await safe_edit(
         call,
-        f"⏰ Введите время{who} в формате <code>HH:MM</code> (например, 08:30):",
-        back_kb(f"usr:wth:{target}" if target else "set:weather", "Отмена"),
+        prompt,
+        back_kb(f"usr:wth:{target}" if target else "set:weather",
+                i18n.t("common.cancel", lang, "Отмена")),
     )
 
 
 @router.message(Form.weather_time)
 async def save_time(message: Message, state: FSMContext, user: dict[str, Any],
                     role: str) -> None:
+    lang = i18n.language_of(user)
     value = (message.text or "").strip()
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", value):
-        await message.answer("❌ Неверный формат. Пример: <code>08:30</code>. /cancel — отмена.")
+        await message.answer(i18n.t(
+            "settings.weather.bad_time", lang,
+            "❌ Неверный формат. Пример: <code>08:30</code>. /cancel — отмена."))
         return
     hour, minute = value.split(":")
     value = f"{int(hour):02d}:{minute}"
@@ -18574,17 +18891,21 @@ async def save_time(message: Message, state: FSMContext, user: dict[str, Any],
         )
     else:
         await message.answer(
-            f"✅ Погода будет приходить ежедневно в <b>{value}</b>.",
+            f"{i18n.t('settings.weather.daily_at', lang, '✅ Погода будет приходить ежедневно в')}"
+            f" <b>{value}</b>.",
             reply_markup=keyboards.settings_menu(user),
         )
 
 
 @router.callback_query(F.data.startswith("set:wthint"))
-async def ask_interval(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_interval(call: CallbackQuery, state: FSMContext, role: str,
+                       user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     parts = call.data.split(":")
     target = parts[2] if len(parts) > 2 else ""
     if target and not roles.can_edit_user(role, (storage.get_user(target) or {}).get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", lang, "Недостаточно прав."), show_alert=True)
         return
 
     await call.answer()
@@ -18592,23 +18913,30 @@ async def ask_interval(call: CallbackQuery, state: FSMContext, role: str) -> Non
     await state.set_state(Form.weather_interval)
     await safe_edit(
         call,
-        "⏱ Введите интервал: <code>45</code> (минут) или <code>2ч</code> (часа):",
-        back_kb(f"usr:wth:{target}" if target else "set:weather", "Отмена"),
+        i18n.t("settings.weather.ask_interval", lang,
+               "⏱ Введите интервал: <code>45</code> (минут) или <code>2ч</code> (часа):"),
+        back_kb(f"usr:wth:{target}" if target else "set:weather",
+                i18n.t("common.cancel", lang, "Отмена")),
     )
 
 
 @router.message(Form.weather_interval)
 async def save_interval(message: Message, state: FSMContext, user: dict[str, Any],
                         role: str) -> None:
+    lang = i18n.language_of(user)
     raw = (message.text or "").strip().lower().replace(" ", "")
     match = re.fullmatch(r"(\d+)(ч|h|мин|м|min|m)?", raw)
     if not match:
-        await message.answer("❌ Введите число минут или, например, <code>2ч</code>.")
+        await message.answer(i18n.t(
+            "settings.weather.bad_interval", lang,
+            "❌ Введите число минут или, например, <code>2ч</code>."))
         return
     number = int(match.group(1))
     minutes = number * 60 if match.group(2) in ("ч", "h") else number
     if not 15 <= minutes <= 1440:
-        await message.answer("❌ Допустимый интервал — от 15 минут до 24 часов.")
+        await message.answer(i18n.t(
+            "settings.weather.range", lang,
+            "❌ Допустимый интервал — от 15 минут до 24 часов."))
         return
     target = (await state.get_data()).get("weather_target") or ""
     subject = user
@@ -18633,7 +18961,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         )
     else:
         await message.answer(
-            f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
+            f"{i18n.t('settings.weather.interval_ok', lang, '✅ Интервал')}: "
+            f"<b>{minutes} {i18n.t('settings.weather.minutes', lang, 'мин')}</b>.",
+            reply_markup=keyboards.settings_menu(user),
         )
 
 
@@ -18643,30 +18973,47 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
 
 @router.callback_query(F.data == "set:wformat")
 async def weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     if not features.enabled("weather_image"):
-        await call.answer("Погода картинкой отключена.", show_alert=True)
+        await call.answer(
+            _("settings.wformat.off", "Погода картинкой отключена."), show_alert=True)
         return
 
     await call.answer()
+    title = _("settings.wformat.title", "🖼 <b>Вид сводки погоды</b>")
+    now = _("settings.wformat.now", "Сейчас")
+
     if features.enabled("weather_image_all"):
         await safe_edit(
             call,
-            "🖼 <b>Вид сводки погоды</b>\nСейчас: <b>картинкой</b> — "
-            "так настроено для всех.\n\n"
-            "Личный выбор временно недоступен. Когда администрация снимет "
-            "общую настройку, ваш прежний выбор вернётся.",
-            keyboards.back_to_settings(),
+            f"{title}\n{now}: "
+            f"<b>{_('settings.wformat.image_all', 'картинка (для всех)')}</b>\n\n"
+            + _(
+                "settings.wformat.forced",
+                "Личный выбор временно недоступен. Когда администрация снимет "
+                "общую настройку, ваш прежний выбор вернётся.",
+            ),
+            keyboards.back_to_settings(lang),
         )
         return
 
-    current = "текстом" if user.get("weather_format") == "text" else "картинкой"
+    current = (_("settings.wformat.text", "текстом")
+               if user.get("weather_format") == "text"
+               else _("settings.wformat.image", "картинкой"))
     await safe_edit(
         call,
-        f"🖼 <b>Вид сводки погоды</b>\nСейчас: <b>{current}</b>\n\n"
-        "Картинка нагляднее, но не прогрузится при ограничениях мобильного "
-        "интернета — а это ровно тот случай, ради которого система "
-        "и существует. Текст дойдёт всегда.",
-        keyboards.weather_format_menu(),
+        f"{title}\n{now}: <b>{current}</b>\n\n"
+        + _(
+            "settings.wformat.why",
+            "Картинка нагляднее, но не прогрузится при ограничениях мобильного "
+            "интернета — а это ровно тот случай, ради которого система "
+            "и существует. Текст дойдёт всегда.",
+        ),
+        keyboards.weather_format_menu(lang),
     )
 
 
@@ -18677,33 +19024,56 @@ async def set_weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
         await call.answer()
         return
 
+    lang = i18n.language_of(user)
     user["weather_format"] = value
     await storage.save(call.from_user.id)
-    await call.answer("Текстом" if value == "text" else "Картинкой")
-    await safe_edit(call, "⚙️ <b>Оповещения</b>", keyboards.settings_menu(user))
+    await call.answer(
+        i18n.t("settings.wformat.as_text", lang, "📄 Текстом") if value == "text"
+        else i18n.t("settings.wformat.as_image", lang, "🖼 Картинкой")
+    )
+    await safe_edit(
+        call,
+        f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",
+        keyboards.settings_menu(user),
+    )
 
 
 @router.callback_query(F.data == "set:quiet")
-async def ask_quiet(call: CallbackQuery, state: FSMContext) -> None:
+async def ask_quiet(call: CallbackQuery, state: FSMContext, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     if not features.enabled("quiet_hours"):
-        await call.answer("Тихие часы отключены.", show_alert=True)
+        await call.answer(
+            _("settings.quiet.disabled", "Тихие часы отключены."), show_alert=True)
         return
 
     await call.answer()
     await state.set_state(Form.quiet_hours)
     await safe_edit(
         call,
-        "🌙 <b>Тихие часы</b>\n\n"
-        "Пришлите интервал, например <code>23:00-07:00</code>.\n"
-        "«-» отключит тихие часы.\n\n"
-        "<b>Военные угрозы и МЧС проходят всегда</b> — придерживаются "
-        "только ЖКХ и погода.\n\n<i>/cancel — отмена.</i>",
-        back_kb("menu:settings", "Отмена"),
+        f"{_('settings.quiet.title', '🌙 <b>Тихие часы</b>')}\n\n"
+        + _(
+            "settings.quiet.prompt",
+            "Пришлите интервал, например <code>23:00-07:00</code>.\n"
+            "«-» отключит тихие часы.",
+        )
+        + "\n\n"
+        + _(
+            "settings.quiet.always",
+            "<b>Военные угрозы и МЧС проходят всегда</b> — придерживаются "
+            "только ЖКХ и погода.",
+        )
+        + "\n\n<i>/cancel</i>",
+        back_kb("menu:settings", _("common.cancel", "Отмена")),
     )
 
 
 @router.message(Form.quiet_hours)
 async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     text = (message.text or "").strip()
     if text.startswith("/"):
         return
@@ -18714,7 +19084,8 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         await storage.save(message.from_user.id)
         await state.clear()
         await message.answer(
-            "✅ Тихие часы отключены.", reply_markup=keyboards.settings_menu(user)
+            i18n.t("settings.quiet.cleared", lang, "✅ Тихие часы отключены."),
+            reply_markup=keyboards.settings_menu(user),
         )
         return
 
@@ -18722,9 +19093,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         r"\s*([01]?\d|2[0-3]):([0-5]\d)\s*[-–—]\s*([01]?\d|2[0-3]):([0-5]\d)\s*", text
     )
     if not match:
-        await message.answer(
-            "❌ Формат: <code>23:00-07:00</code>. «-» отключит. /cancel — отмена."
-        )
+        await message.answer(i18n.t(
+            "settings.quiet.bad_format", lang,
+            "❌ Формат: <code>23:00-07:00</code>. «-» отключит. /cancel — отмена."))
         return
 
     user["quiet_from"] = f"{int(match.group(1)):02d}:{match.group(2)}"
@@ -18733,8 +19104,12 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
     await state.clear()
 
     await message.answer(
-        f"✅ Тихие часы: <b>{user['quiet_from']} — {user['quiet_to']}</b>\n"
-        "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
+        f"{i18n.t('settings.quiet.set', lang, '✅ Тихие часы')}: "
+        f"<b>{user['quiet_from']} — {user['quiet_to']}</b>\n"
+        + i18n.t(
+            "settings.quiet.note", lang,
+            "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
+        ),
         reply_markup=keyboards.settings_menu(user),
     )
 RADAR_FILE_69
@@ -18763,7 +19138,16 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, exporting, features, keyboards, roles, sourcecheck, storage
+from .. import (
+    config,
+    exporting,
+    features,
+    i18n,
+    keyboards,
+    roles,
+    sourcecheck,
+    storage,
+)
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit, send_html
@@ -18779,8 +19163,14 @@ def normalize_channel(raw: str) -> str:
 
 
 @router.callback_query(F.data == "src:suggest")
-async def suggest(call: CallbackQuery, state: FSMContext) -> None:
+async def suggest(call: CallbackQuery, state: FSMContext, user: dict) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     await call.answer()
+    title = _("suggest.title", "📢 <b>Предложить источник</b>")
 
     # Флаг «Предложение источников новостей» до 4.7.5 ничего не выключал.
     # Когда он снят, предложения не принимаются вовсе: список источников
@@ -18788,38 +19178,55 @@ async def suggest(call: CallbackQuery, state: FSMContext) -> None:
     if not features.enabled("digest_suggestions"):
         await safe_edit(
             call,
-            "📢 <b>Предложить источник</b>\n\n"
-            "Приём предложений сейчас закрыт — список источников ведёт "
-            "администрация.",
-            back_kb("menu:main", "Назад"),
+            f"{title}\n\n" + _(
+                "suggest.closed",
+                "Приём предложений сейчас закрыт — список источников ведёт "
+                "администрация.",
+            ),
+            back_kb("menu:main", _("common.back", "Назад")),
         )
         return
 
     await safe_edit(
         call,
-        "📢 <b>Предложить источник</b>\nПришлите юзернейм публичного канала, например "
-        "<code>saratovzhkh</code> или ссылку на него.\n\n"
-        "<i>Подойдут и тематические каналы — про игры, спорт, науку: "
-        "они попадут в новостные подборки.</i>",
-        back_kb("menu:main", "Отмена"),
+        f"{title}\n"
+        + _(
+            "suggest.prompt",
+            "Пришлите юзернейм публичного канала, например "
+            "<code>saratovzhkh</code> или ссылку на него.",
+        )
+        + "\n\n"
+        + _(
+            "suggest.thematic",
+            "<i>Подойдут и тематические каналы — про игры, спорт, науку: "
+            "они попадут в новостные подборки.</i>",
+        ),
+        back_kb("menu:main", _("common.cancel", "Отмена")),
     )
     await state.set_state(Form.suggest_source)
 
 
 @router.message(Form.suggest_source)
-async def save_suggestion(message: Message, state: FSMContext) -> None:
+async def save_suggestion(message: Message, state: FSMContext, user: dict) -> None:
+    lang = i18n.language_of(user)
     channel = normalize_channel(message.text or "")
     await state.clear()
     if not CHANNEL_RE.match(channel):
-        await message.answer("❌ Некорректный юзернейм канала.", reply_markup=back_kb())
+        await message.answer(
+            i18n.t("suggest.bad", lang, "❌ Некорректный юзернейм канала."),
+            reply_markup=back_kb())
         return
     if channel in storage.channels() or channel in storage.pending():
-        await message.answer("ℹ️ Источник уже в базе или в очереди.", reply_markup=back_kb())
+        await message.answer(
+            i18n.t("suggest.already", lang, "ℹ️ Источник уже в базе или в очереди."),
+            reply_markup=back_kb())
         return
     storage.pending().append(channel)
     await storage.save()
     await message.answer(
-        f"✅ Канал @{esc(channel)} отправлен модераторам.", reply_markup=back_kb()
+        i18n.t("suggest.sent", lang, "✅ Канал @{channel} отправлен модераторам.")
+        .format(channel=esc(channel)),
+        reply_markup=back_kb(),
     )
 
 

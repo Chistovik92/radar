@@ -38,8 +38,13 @@ def level(role: str | None) -> int:
     return LEVEL.get(role or USER, 0)
 
 
-def title(role: str | None) -> str:
-    return TITLES.get(role or USER, TITLES[USER])
+def title(role: str | None, lang: str = "ru") -> str:
+    """Название роли. Русское остаётся запасным вариантом, как везде."""
+    from . import i18n
+
+    key = role or USER
+    russian = TITLES.get(key, TITLES[USER])
+    return i18n.t(f"role.{key if key in TITLES else USER}", lang, russian)
 
 
 def at_least(role: str | None, minimum: str) -> bool:

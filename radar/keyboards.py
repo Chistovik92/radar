@@ -219,19 +219,30 @@ def persistent_keyboard() -> ReplyKeyboardMarkup | None:
     )
 
 
-def weather_label(user: dict[str, Any]) -> str:
+def weather_label(user: dict[str, Any], lang: str = "") -> str:
+    lang = lang or i18n.language_of(user)
     if user.get("weather_mode") == "time":
-        return f"в {user.get('weather_time', '08:00')}"
+        at = i18n.t("settings.weather.at", lang, "в")
+        return f"{at} {user.get('weather_time', '08:00')}"
     minutes = int(user.get("weather_interval") or 0)
     if minutes <= 0:
-        return "откл"
+        return i18n.t("settings.weather.off", lang, "откл")
+    every = i18n.t("settings.weather.every", lang, "каждые")
     if minutes >= 60 and minutes % 60 == 0:
-        return f"каждые {minutes // 60} ч"
-    return f"каждые {minutes} мин"
+        hours = i18n.t("settings.weather.hours_short", lang, "ч")
+        return f"{every} {minutes // 60} {hours}"
+    return f"{every} {minutes} {i18n.t('settings.weather.minutes', lang, 'мин')}"
 
 
 def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarkup:
     """target — id редактируемого пользователя (пусто, если правит себя)."""
+    from .matching import category_title
+
+    lang = i18n.language_of(user)
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     settings = user.get("settings") or {}
     suffix = f":{target}" if target else ""
     rows: list[list[InlineKeyboardButton]] = []
@@ -240,9 +251,10 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
         row = []
         for key in keys[index:index + 2]:
             mark = "✅" if settings.get(key) else "❌"
+            name = category_title(key, lang).split(" /")[0]
             row.append(
                 InlineKeyboardButton(
-                    text=f"{mark} {CATEGORY_ICONS[key]} {CATEGORY_TITLES[key].split(' /')[0]}",
+                    text=f"{mark} {CATEGORY_ICONS[key]} {name}",
                     callback_data=f"set:toggle:{key}{suffix}",
                 )
             )
@@ -250,29 +262,34 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
     if not target:
         rows.append(
             [InlineKeyboardButton(
-                text=f"🌤 Погода: {weather_label(user)}", callback_data="set:weather"
+                text=f"{label('settings.weather_button', '🌤 Погода')}: "
+                     f"{weather_label(user, lang)}",
+                callback_data="set:weather",
             )]
         )
         if features.enabled("weather_image"):
             if features.enabled("weather_image_all"):
                 # Выбор перекрыт администрацией — кнопка не должна показывать
                 # «текст», когда всё равно придёт картинка.
-                label = "картинка (для всех)"
+                mode = label("settings.wformat.image_all", "картинка (для всех)")
             else:
                 picture = user.get("weather_format") != "text"
-                label = "картинка" if picture else "текст"
+                mode = (label("settings.wformat.image", "картинка") if picture
+                        else label("settings.wformat.text", "текст"))
             rows.append([InlineKeyboardButton(
-                text=f"🖼 Вид погоды: {label}",
+                text=f"{label('settings.wformat.label', '🖼 Вид погоды')}: {mode}",
                 callback_data="set:wformat",
             )])
         if features.enabled("quiet_hours"):
             from .quiet import quiet_summary
 
             rows.append([InlineKeyboardButton(
-                text=f"🌙 Тихие часы: {quiet_summary(user)}",
+                text=f"{label('settings.quiet.label', '🌙 Тихие часы')}: "
+                     f"{quiet_summary(user, lang)}",
                 callback_data="set:quiet",
             )])
-        rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+        rows.append([InlineKeyboardButton(
+            text=label("menu.home", "🏠 В главное меню"), callback_data="menu:main")])
     else:
         rows.append(
             [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{target}")]
@@ -297,41 +314,63 @@ def ai_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def back_to_settings() -> InlineKeyboardMarkup:
+def back_to_settings(lang: str = "ru") -> InlineKeyboardMarkup:
     """Только возврат — когда выбирать нечего."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
+        [InlineKeyboardButton(text=i18n.t("common.back", lang, "◀️ Назад"),
+                              callback_data="menu:settings")],
     ])
 
 
-def weather_format_menu() -> InlineKeyboardMarkup:
+def weather_format_menu(lang: str = "ru") -> InlineKeyboardMarkup:
     """Вид сводки погоды: текст или картинка."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📄 Текстом", callback_data="set:wfmt:text")],
-        [InlineKeyboardButton(text="🖼 Картинкой", callback_data="set:wfmt:image")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:settings")],
+        [InlineKeyboardButton(
+            text=i18n.t("settings.wformat.as_text", lang, "📄 Текстом"),
+            callback_data="set:wfmt:text")],
+        [InlineKeyboardButton(
+            text=i18n.t("settings.wformat.as_image", lang, "🖼 Картинкой"),
+            callback_data="set:wfmt:image")],
+        [InlineKeyboardButton(text=i18n.t("common.back", lang, "◀️ Назад"),
+                              callback_data="menu:settings")],
     ])
 
 
-def weather_menu(target: str = "") -> InlineKeyboardMarkup:
+def weather_menu(target: str = "", lang: str = "ru") -> InlineKeyboardMarkup:
     """Меню режима погоды. target — чужой пользователь (правит администрация)."""
     suffix = f":{target}" if target else ""
     back = f"usr:card:{target}" if target else "menu:settings"
+
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Отключить", callback_data=f"set:wth:0{suffix}"),
-                InlineKeyboardButton(text="Каждый час", callback_data=f"set:wth:60{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.disable", "Отключить"),
+                    callback_data=f"set:wth:0{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.hour", "Каждый час"),
+                    callback_data=f"set:wth:60{suffix}"),
             ],
             [
-                InlineKeyboardButton(text="Каждые 3 часа", callback_data=f"set:wth:180{suffix}"),
-                InlineKeyboardButton(text="Каждые 6 часов", callback_data=f"set:wth:360{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.hours3", "Каждые 3 часа"),
+                    callback_data=f"set:wth:180{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.hours6", "Каждые 6 часов"),
+                    callback_data=f"set:wth:360{suffix}"),
             ],
             [
-                InlineKeyboardButton(text="⏰ Точное время", callback_data=f"set:wthtime{suffix}"),
-                InlineKeyboardButton(text="⏱ Свой интервал", callback_data=f"set:wthint{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.fixed_time", "⏰ Точное время"),
+                    callback_data=f"set:wthtime{suffix}"),
+                InlineKeyboardButton(
+                    text=label("settings.weather.own_interval", "⏱ Свой интервал"),
+                    callback_data=f"set:wthint{suffix}"),
             ],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data=back)],
+            [InlineKeyboardButton(text=label("common.back", "◀️ Назад"), callback_data=back)],
         ]
     )
 

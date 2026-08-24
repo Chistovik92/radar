@@ -16,7 +16,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import features, keyboards, roles, storage
+from .. import features, i18n, keyboards, roles, storage
 from ..matching import CATEGORY_TITLES
 from ..states import Form
 from ..tg import back_kb, safe_edit, send_html
@@ -25,6 +25,7 @@ router = Router(name="settings")
 
 @router.callback_query(F.data.startswith("set:toggle:"))
 async def toggle_category(call: CallbackQuery, user: dict[str, Any], role: str) -> None:
+    lang = i18n.language_of(user)
     parts = call.data.split(":")
     key = parts[2]
     target_id = parts[3] if len(parts) > 3 else ""
@@ -36,16 +37,23 @@ async def toggle_category(call: CallbackQuery, user: dict[str, Any], role: str) 
     if target_id:
         subject = storage.get_user(target_id)
         if subject is None:
-            await call.answer("Пользователь не найден.", show_alert=True)
+            await call.answer(
+                i18n.t("common.user_not_found", lang, "Пользователь не найден."),
+                show_alert=True)
             return
         if not roles.can_edit_user(role, subject.get("role")):
-            await call.answer("Недостаточно прав.", show_alert=True)
+            await call.answer(
+                i18n.t("common.insufficient_rights", lang, "Недостаточно прав."),
+                show_alert=True)
             return
 
     settings = subject.setdefault("settings", storage.default_settings())
     settings[key] = not settings.get(key, True)
     await storage.save()
-    await call.answer("Включено" if settings[key] else "Выключено")
+    await call.answer(
+        i18n.t("common.on", lang, "Включено") if settings[key]
+        else i18n.t("common.off", lang, "Выключено")
+    )
     try:
         await call.message.edit_reply_markup(
             reply_markup=keyboards.settings_menu(subject, target_id)
@@ -66,12 +74,15 @@ def _subject(call: CallbackQuery, user: dict[str, Any], role: str,
 
 
 @router.callback_query(F.data == "set:weather")
-async def weather_menu(call: CallbackQuery) -> None:
+async def weather_menu(call: CallbackQuery, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     await call.answer()
     await safe_edit(
         call,
-        "⏱ <b>Режим погоды</b>\nВыберите интервал или задайте своё значение.",
-        keyboards.weather_menu(),
+        i18n.t("settings.weather_mode.title", lang, "⏱ <b>Режим погоды</b>") + "\n"
+        + i18n.t("settings.weather_mode.prompt", lang,
+                 "Выберите интервал или задайте своё значение."),
+        keyboards.weather_menu(lang=lang),
     )
 
 
@@ -113,11 +124,18 @@ async def set_interval(call: CallbackQuery, user: dict[str, Any], role: str) -> 
         await call.answer("Недостаточно прав.", show_alert=True)
         return
 
+    lang = i18n.language_of(user)
     subject["weather_mode"] = "interval"
     subject["weather_interval"] = minutes
     subject["last_weather"] = 0
     await storage.save(target or call.from_user.id)
-    await call.answer("Погода отключена" if minutes == 0 else f"Интервал: {minutes} мин")
+    if minutes == 0:
+        await call.answer(i18n.t("settings.weather.disabled", lang, "Погода отключена"))
+    else:
+        await call.answer(
+            f"{i18n.t('settings.weather.interval_set', lang, 'Интервал')}: {minutes} "
+            f"{i18n.t('settings.weather.minutes', lang, 'мин')}"
+        )
 
     if target:
         await send_html(
@@ -129,37 +147,52 @@ async def set_interval(call: CallbackQuery, user: dict[str, Any], role: str) -> 
             call,
             f"✅ Погода пользователя <code>{target}</code>: "
             f"{keyboards.weather_label(subject)}",
-            keyboards.weather_menu(target),
+            keyboards.weather_menu(target, lang),
         )
     else:
-        await safe_edit(call, "⚙️ <b>Оповещения</b>", keyboards.settings_menu(user))
+        await safe_edit(
+            call,
+            f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",
+            keyboards.settings_menu(user),
+        )
 
 
 @router.callback_query(F.data.startswith("set:wthtime"))
-async def ask_time(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_time(call: CallbackQuery, state: FSMContext, role: str,
+                   user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     parts = call.data.split(":")
     target = parts[2] if len(parts) > 2 else ""
     if target and not roles.can_edit_user(role, (storage.get_user(target) or {}).get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", lang, "Недостаточно прав."), show_alert=True)
         return
 
     await call.answer()
     await state.update_data(weather_target=target)
     await state.set_state(Form.weather_time)
-    who = f" для <code>{target}</code>" if target else ""
+    prompt = i18n.t(
+        "settings.weather.ask_time", lang,
+        "⏰ Введите время в формате <code>HH:MM</code> (например, 08:30):")
+    if target:
+        prompt = f"<code>{target}</code>\n{prompt}"
     await safe_edit(
         call,
-        f"⏰ Введите время{who} в формате <code>HH:MM</code> (например, 08:30):",
-        back_kb(f"usr:wth:{target}" if target else "set:weather", "Отмена"),
+        prompt,
+        back_kb(f"usr:wth:{target}" if target else "set:weather",
+                i18n.t("common.cancel", lang, "Отмена")),
     )
 
 
 @router.message(Form.weather_time)
 async def save_time(message: Message, state: FSMContext, user: dict[str, Any],
                     role: str) -> None:
+    lang = i18n.language_of(user)
     value = (message.text or "").strip()
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", value):
-        await message.answer("❌ Неверный формат. Пример: <code>08:30</code>. /cancel — отмена.")
+        await message.answer(i18n.t(
+            "settings.weather.bad_time", lang,
+            "❌ Неверный формат. Пример: <code>08:30</code>. /cancel — отмена."))
         return
     hour, minute = value.split(":")
     value = f"{int(hour):02d}:{minute}"
@@ -187,17 +220,21 @@ async def save_time(message: Message, state: FSMContext, user: dict[str, Any],
         )
     else:
         await message.answer(
-            f"✅ Погода будет приходить ежедневно в <b>{value}</b>.",
+            f"{i18n.t('settings.weather.daily_at', lang, '✅ Погода будет приходить ежедневно в')}"
+            f" <b>{value}</b>.",
             reply_markup=keyboards.settings_menu(user),
         )
 
 
 @router.callback_query(F.data.startswith("set:wthint"))
-async def ask_interval(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_interval(call: CallbackQuery, state: FSMContext, role: str,
+                       user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     parts = call.data.split(":")
     target = parts[2] if len(parts) > 2 else ""
     if target and not roles.can_edit_user(role, (storage.get_user(target) or {}).get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(
+            i18n.t("common.insufficient_rights", lang, "Недостаточно прав."), show_alert=True)
         return
 
     await call.answer()
@@ -205,23 +242,30 @@ async def ask_interval(call: CallbackQuery, state: FSMContext, role: str) -> Non
     await state.set_state(Form.weather_interval)
     await safe_edit(
         call,
-        "⏱ Введите интервал: <code>45</code> (минут) или <code>2ч</code> (часа):",
-        back_kb(f"usr:wth:{target}" if target else "set:weather", "Отмена"),
+        i18n.t("settings.weather.ask_interval", lang,
+               "⏱ Введите интервал: <code>45</code> (минут) или <code>2ч</code> (часа):"),
+        back_kb(f"usr:wth:{target}" if target else "set:weather",
+                i18n.t("common.cancel", lang, "Отмена")),
     )
 
 
 @router.message(Form.weather_interval)
 async def save_interval(message: Message, state: FSMContext, user: dict[str, Any],
                         role: str) -> None:
+    lang = i18n.language_of(user)
     raw = (message.text or "").strip().lower().replace(" ", "")
     match = re.fullmatch(r"(\d+)(ч|h|мин|м|min|m)?", raw)
     if not match:
-        await message.answer("❌ Введите число минут или, например, <code>2ч</code>.")
+        await message.answer(i18n.t(
+            "settings.weather.bad_interval", lang,
+            "❌ Введите число минут или, например, <code>2ч</code>."))
         return
     number = int(match.group(1))
     minutes = number * 60 if match.group(2) in ("ч", "h") else number
     if not 15 <= minutes <= 1440:
-        await message.answer("❌ Допустимый интервал — от 15 минут до 24 часов.")
+        await message.answer(i18n.t(
+            "settings.weather.range", lang,
+            "❌ Допустимый интервал — от 15 минут до 24 часов."))
         return
     target = (await state.get_data()).get("weather_target") or ""
     subject = user
@@ -246,7 +290,9 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
         )
     else:
         await message.answer(
-            f"✅ Интервал: <b>{minutes} мин</b>.", reply_markup=keyboards.settings_menu(user)
+            f"{i18n.t('settings.weather.interval_ok', lang, '✅ Интервал')}: "
+            f"<b>{minutes} {i18n.t('settings.weather.minutes', lang, 'мин')}</b>.",
+            reply_markup=keyboards.settings_menu(user),
         )
 
 
@@ -256,30 +302,47 @@ async def save_interval(message: Message, state: FSMContext, user: dict[str, Any
 
 @router.callback_query(F.data == "set:wformat")
 async def weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     if not features.enabled("weather_image"):
-        await call.answer("Погода картинкой отключена.", show_alert=True)
+        await call.answer(
+            _("settings.wformat.off", "Погода картинкой отключена."), show_alert=True)
         return
 
     await call.answer()
+    title = _("settings.wformat.title", "🖼 <b>Вид сводки погоды</b>")
+    now = _("settings.wformat.now", "Сейчас")
+
     if features.enabled("weather_image_all"):
         await safe_edit(
             call,
-            "🖼 <b>Вид сводки погоды</b>\nСейчас: <b>картинкой</b> — "
-            "так настроено для всех.\n\n"
-            "Личный выбор временно недоступен. Когда администрация снимет "
-            "общую настройку, ваш прежний выбор вернётся.",
-            keyboards.back_to_settings(),
+            f"{title}\n{now}: "
+            f"<b>{_('settings.wformat.image_all', 'картинка (для всех)')}</b>\n\n"
+            + _(
+                "settings.wformat.forced",
+                "Личный выбор временно недоступен. Когда администрация снимет "
+                "общую настройку, ваш прежний выбор вернётся.",
+            ),
+            keyboards.back_to_settings(lang),
         )
         return
 
-    current = "текстом" if user.get("weather_format") == "text" else "картинкой"
+    current = (_("settings.wformat.text", "текстом")
+               if user.get("weather_format") == "text"
+               else _("settings.wformat.image", "картинкой"))
     await safe_edit(
         call,
-        f"🖼 <b>Вид сводки погоды</b>\nСейчас: <b>{current}</b>\n\n"
-        "Картинка нагляднее, но не прогрузится при ограничениях мобильного "
-        "интернета — а это ровно тот случай, ради которого система "
-        "и существует. Текст дойдёт всегда.",
-        keyboards.weather_format_menu(),
+        f"{title}\n{now}: <b>{current}</b>\n\n"
+        + _(
+            "settings.wformat.why",
+            "Картинка нагляднее, но не прогрузится при ограничениях мобильного "
+            "интернета — а это ровно тот случай, ради которого система "
+            "и существует. Текст дойдёт всегда.",
+        ),
+        keyboards.weather_format_menu(lang),
     )
 
 
@@ -290,33 +353,56 @@ async def set_weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
         await call.answer()
         return
 
+    lang = i18n.language_of(user)
     user["weather_format"] = value
     await storage.save(call.from_user.id)
-    await call.answer("Текстом" if value == "text" else "Картинкой")
-    await safe_edit(call, "⚙️ <b>Оповещения</b>", keyboards.settings_menu(user))
+    await call.answer(
+        i18n.t("settings.wformat.as_text", lang, "📄 Текстом") if value == "text"
+        else i18n.t("settings.wformat.as_image", lang, "🖼 Картинкой")
+    )
+    await safe_edit(
+        call,
+        f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",
+        keyboards.settings_menu(user),
+    )
 
 
 @router.callback_query(F.data == "set:quiet")
-async def ask_quiet(call: CallbackQuery, state: FSMContext) -> None:
+async def ask_quiet(call: CallbackQuery, state: FSMContext, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     if not features.enabled("quiet_hours"):
-        await call.answer("Тихие часы отключены.", show_alert=True)
+        await call.answer(
+            _("settings.quiet.disabled", "Тихие часы отключены."), show_alert=True)
         return
 
     await call.answer()
     await state.set_state(Form.quiet_hours)
     await safe_edit(
         call,
-        "🌙 <b>Тихие часы</b>\n\n"
-        "Пришлите интервал, например <code>23:00-07:00</code>.\n"
-        "«-» отключит тихие часы.\n\n"
-        "<b>Военные угрозы и МЧС проходят всегда</b> — придерживаются "
-        "только ЖКХ и погода.\n\n<i>/cancel — отмена.</i>",
-        back_kb("menu:settings", "Отмена"),
+        f"{_('settings.quiet.title', '🌙 <b>Тихие часы</b>')}\n\n"
+        + _(
+            "settings.quiet.prompt",
+            "Пришлите интервал, например <code>23:00-07:00</code>.\n"
+            "«-» отключит тихие часы.",
+        )
+        + "\n\n"
+        + _(
+            "settings.quiet.always",
+            "<b>Военные угрозы и МЧС проходят всегда</b> — придерживаются "
+            "только ЖКХ и погода.",
+        )
+        + "\n\n<i>/cancel</i>",
+        back_kb("menu:settings", _("common.cancel", "Отмена")),
     )
 
 
 @router.message(Form.quiet_hours)
 async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
     text = (message.text or "").strip()
     if text.startswith("/"):
         return
@@ -327,7 +413,8 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         await storage.save(message.from_user.id)
         await state.clear()
         await message.answer(
-            "✅ Тихие часы отключены.", reply_markup=keyboards.settings_menu(user)
+            i18n.t("settings.quiet.cleared", lang, "✅ Тихие часы отключены."),
+            reply_markup=keyboards.settings_menu(user),
         )
         return
 
@@ -335,9 +422,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         r"\s*([01]?\d|2[0-3]):([0-5]\d)\s*[-–—]\s*([01]?\d|2[0-3]):([0-5]\d)\s*", text
     )
     if not match:
-        await message.answer(
-            "❌ Формат: <code>23:00-07:00</code>. «-» отключит. /cancel — отмена."
-        )
+        await message.answer(i18n.t(
+            "settings.quiet.bad_format", lang,
+            "❌ Формат: <code>23:00-07:00</code>. «-» отключит. /cancel — отмена."))
         return
 
     user["quiet_from"] = f"{int(match.group(1)):02d}:{match.group(2)}"
@@ -346,7 +433,11 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
     await state.clear()
 
     await message.answer(
-        f"✅ Тихие часы: <b>{user['quiet_from']} — {user['quiet_to']}</b>\n"
-        "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
+        f"{i18n.t('settings.quiet.set', lang, '✅ Тихие часы')}: "
+        f"<b>{user['quiet_from']} — {user['quiet_to']}</b>\n"
+        + i18n.t(
+            "settings.quiet.note", lang,
+            "<i>Военные угрозы и МЧС будут приходить в любое время.</i>",
+        ),
         reply_markup=keyboards.settings_menu(user),
     )

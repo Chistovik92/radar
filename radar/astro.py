@@ -37,19 +37,19 @@ class Moon:
 
 
 PHASES = (
-    (0.02, "новолуние"),
-    (0.24, "растущий серп"),
-    (0.27, "первая четверть"),
-    (0.48, "растущая луна"),
-    (0.52, "полнолуние"),
-    (0.73, "убывающая луна"),
-    (0.77, "последняя четверть"),
-    (0.98, "убывающий серп"),
-    (1.01, "новолуние"),
+    (0.02, "новолуние", "moon.new"),
+    (0.24, "растущий серп", "moon.waxing_crescent"),
+    (0.27, "первая четверть", "moon.first_quarter"),
+    (0.48, "растущая луна", "moon.waxing_gibbous"),
+    (0.52, "полнолуние", "moon.full"),
+    (0.73, "убывающая луна", "moon.waning_gibbous"),
+    (0.77, "последняя четверть", "moon.last_quarter"),
+    (0.98, "убывающий серп", "moon.waning_crescent"),
+    (1.01, "новолуние", "moon.new"),
 )
 
 
-def moon(moment: datetime | None = None) -> Moon:
+def moon(moment: datetime | None = None, lang: str = "ru") -> Moon:
     """Фаза луны на указанный момент (по умолчанию — сейчас)."""
     if moment is None:
         moment = datetime.now(timezone.utc)
@@ -65,11 +65,14 @@ def moon(moment: datetime | None = None) -> Moon:
 
     illumination = (1 - cos(2 * pi * phase)) / 2
 
-    name = PHASES[-1][1]
-    for edge, title in PHASES:
+    from . import i18n
+
+    russian, key = PHASES[-1][1], PHASES[-1][2]
+    for edge, title, phase_key in PHASES:
         if phase < edge:
-            name = title
+            russian, key = title, phase_key
             break
+    name = i18n.t(key, lang, russian)
 
     return Moon(
         age=age,
@@ -86,7 +89,20 @@ ROSE = (
     "северный", "северо-восточный", "восточный", "юго-восточный",
     "южный", "юго-западный", "западный", "северо-западный",
 )
+ROSE_KEYS = ("wind.n", "wind.ne", "wind.e", "wind.se",
+             "wind.s", "wind.sw", "wind.w", "wind.nw")
 ROSE_SHORT = ("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
+ROSE_SHORT_EN = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+# Границы шкалы Бофорта в м/с и названия: русское — запасной вариант.
+FORCE = (
+    (1.5, "штиль", "wind.calm"),
+    (3.3, "лёгкий", "wind.light"),
+    (7.9, "умеренный", "wind.moderate"),
+    (13.8, "свежий", "wind.fresh"),
+    (20.7, "сильный", "wind.strong"),
+)
+FORCE_TOP = ("штормовой", "wind.storm")
 
 
 def wind_sector(degrees: float | None) -> int | None:
@@ -96,28 +112,32 @@ def wind_sector(degrees: float | None) -> int | None:
     return int((degrees % 360) / 45 + 0.5) % 8
 
 
-def wind_name(degrees: float | None) -> str:
+def wind_name(degrees: float | None, lang: str = "ru") -> str:
+    from . import i18n
+
     sector = wind_sector(degrees)
-    return ROSE[sector] if sector is not None else ""
+    if sector is None:
+        return ""
+    return i18n.t(ROSE_KEYS[sector], lang, ROSE[sector])
 
 
-def wind_short(degrees: float | None) -> str:
+def wind_short(degrees: float | None, lang: str = "ru") -> str:
+    from . import i18n
+
     sector = wind_sector(degrees)
-    return ROSE_SHORT[sector] if sector is not None else ""
+    if sector is None:
+        return ""
+    table = ROSE_SHORT_EN if i18n.normalize(lang) == i18n.EN else ROSE_SHORT
+    return table[sector]
 
 
-def beaufort(speed: float | None) -> str:
+def beaufort(speed: float | None, lang: str = "ru") -> str:
     """Словесная оценка силы ветра в м/с — понятнее голой цифры."""
+    from . import i18n
+
     if speed is None:
         return ""
-    if speed < 1.5:
-        return "штиль"
-    if speed < 3.3:
-        return "лёгкий"
-    if speed < 7.9:
-        return "умеренный"
-    if speed < 13.8:
-        return "свежий"
-    if speed < 20.7:
-        return "сильный"
-    return "штормовой"
+    for limit, russian, key in FORCE:
+        if speed < limit:
+            return i18n.t(key, lang, russian)
+    return i18n.t(FORCE_TOP[1], lang, FORCE_TOP[0])

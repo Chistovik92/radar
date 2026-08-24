@@ -21,7 +21,16 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, exporting, features, keyboards, roles, sourcecheck, storage
+from .. import (
+    config,
+    exporting,
+    features,
+    i18n,
+    keyboards,
+    roles,
+    sourcecheck,
+    storage,
+)
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit, send_html
@@ -37,8 +46,14 @@ def normalize_channel(raw: str) -> str:
 
 
 @router.callback_query(F.data == "src:suggest")
-async def suggest(call: CallbackQuery, state: FSMContext) -> None:
+async def suggest(call: CallbackQuery, state: FSMContext, user: dict) -> None:
+    lang = i18n.language_of(user)
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     await call.answer()
+    title = _("suggest.title", "📢 <b>Предложить источник</b>")
 
     # Флаг «Предложение источников новостей» до 4.7.5 ничего не выключал.
     # Когда он снят, предложения не принимаются вовсе: список источников
@@ -46,38 +61,55 @@ async def suggest(call: CallbackQuery, state: FSMContext) -> None:
     if not features.enabled("digest_suggestions"):
         await safe_edit(
             call,
-            "📢 <b>Предложить источник</b>\n\n"
-            "Приём предложений сейчас закрыт — список источников ведёт "
-            "администрация.",
-            back_kb("menu:main", "Назад"),
+            f"{title}\n\n" + _(
+                "suggest.closed",
+                "Приём предложений сейчас закрыт — список источников ведёт "
+                "администрация.",
+            ),
+            back_kb("menu:main", _("common.back", "Назад")),
         )
         return
 
     await safe_edit(
         call,
-        "📢 <b>Предложить источник</b>\nПришлите юзернейм публичного канала, например "
-        "<code>saratovzhkh</code> или ссылку на него.\n\n"
-        "<i>Подойдут и тематические каналы — про игры, спорт, науку: "
-        "они попадут в новостные подборки.</i>",
-        back_kb("menu:main", "Отмена"),
+        f"{title}\n"
+        + _(
+            "suggest.prompt",
+            "Пришлите юзернейм публичного канала, например "
+            "<code>saratovzhkh</code> или ссылку на него.",
+        )
+        + "\n\n"
+        + _(
+            "suggest.thematic",
+            "<i>Подойдут и тематические каналы — про игры, спорт, науку: "
+            "они попадут в новостные подборки.</i>",
+        ),
+        back_kb("menu:main", _("common.cancel", "Отмена")),
     )
     await state.set_state(Form.suggest_source)
 
 
 @router.message(Form.suggest_source)
-async def save_suggestion(message: Message, state: FSMContext) -> None:
+async def save_suggestion(message: Message, state: FSMContext, user: dict) -> None:
+    lang = i18n.language_of(user)
     channel = normalize_channel(message.text or "")
     await state.clear()
     if not CHANNEL_RE.match(channel):
-        await message.answer("❌ Некорректный юзернейм канала.", reply_markup=back_kb())
+        await message.answer(
+            i18n.t("suggest.bad", lang, "❌ Некорректный юзернейм канала."),
+            reply_markup=back_kb())
         return
     if channel in storage.channels() or channel in storage.pending():
-        await message.answer("ℹ️ Источник уже в базе или в очереди.", reply_markup=back_kb())
+        await message.answer(
+            i18n.t("suggest.already", lang, "ℹ️ Источник уже в базе или в очереди."),
+            reply_markup=back_kb())
         return
     storage.pending().append(channel)
     await storage.save()
     await message.answer(
-        f"✅ Канал @{esc(channel)} отправлен модераторам.", reply_markup=back_kb()
+        i18n.t("suggest.sent", lang, "✅ Канал @{channel} отправлен модераторам.")
+        .format(channel=esc(channel)),
+        reply_markup=back_kb(),
     )
 
 

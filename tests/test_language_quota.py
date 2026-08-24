@@ -138,6 +138,275 @@ class TestMenuTranslation(unittest.TestCase):
         self.assertEqual(len(self.labels("en")), len(self.labels("ru")))
 
 
+class TestRoleTitles(unittest.TestCase):
+    """Название роли видно в /start, /id и разделе «Управление»."""
+
+    def test_english_titles(self):
+        from radar import roles
+
+        self.assertIn("User", roles.title(roles.USER, "en"))
+        self.assertIn("Moderator", roles.title(roles.MODERATOR, "en"))
+        self.assertIn("Administrator", roles.title(roles.ADMIN, "en"))
+        self.assertIn("Superadministrator", roles.title(roles.SUPERADMIN, "en"))
+
+    def test_russian_stays_default(self):
+        from radar import roles
+
+        self.assertIn("Пользователь", roles.title(roles.USER))
+        self.assertIn("Модератор", roles.title(roles.MODERATOR, "ru"))
+
+    def test_unknown_role_falls_back_to_user(self):
+        from radar import roles
+
+        self.assertEqual(roles.title("выдумка", "en"), roles.title(roles.USER, "en"))
+
+    def test_every_role_has_translation(self):
+        from radar import roles
+
+        for role in roles.ORDER:
+            with self.subTest(role=role):
+                self.assertIn(f"role.{role}", i18n.EN_STRINGS)
+
+
+class TestCategoryTitles(unittest.TestCase):
+    """Категории оповещений — экран настроек и заголовки сводок."""
+
+    def test_translated(self):
+        from radar.matching import category_title
+
+        self.assertIn("Drones", category_title("bpla", "en"))
+        self.assertIn("Utilities", category_title("jkh", "en"))
+
+    def test_russian_default(self):
+        from radar.matching import category_title
+
+        self.assertIn("БПЛА", category_title("bpla"))
+
+    def test_every_category_has_translation(self):
+        from radar.matching import CATEGORY_TITLES
+
+        for key in CATEGORY_TITLES:
+            with self.subTest(key=key):
+                self.assertIn(f"category.{key}", i18n.EN_STRINGS)
+
+    def test_unknown_category_returns_key(self):
+        from radar.matching import category_title
+
+        self.assertEqual(category_title("нет_такой", "en"), "нет_такой")
+
+
+class TestWeatherWording(unittest.TestCase):
+    """Погода: описания состояний, дни недели, роза ветров, луна."""
+
+    def test_condition_translated(self):
+        from radar import weather
+
+        name, _icon = weather.describe(0, True, "en")
+        self.assertEqual(name, "clear sky")
+
+    def test_condition_russian_default(self):
+        from radar import weather
+
+        name, _icon = weather.describe(0, True)
+        self.assertEqual(name, "ясно")
+
+    def test_every_wmo_code_has_translation(self):
+        from radar import weather
+
+        for code in weather.CODES:
+            with self.subTest(code=code):
+                self.assertIn(f"weather.wmo.{code}", i18n.EN_STRINGS)
+
+    def test_unknown_code_has_no_name(self):
+        from radar import weather
+
+        name, icon = weather.describe(1234, True, "en")
+        self.assertEqual(name, "")
+        self.assertTrue(icon)
+
+    def test_day_labels_translated(self):
+        from radar import weather
+
+        self.assertEqual(weather._day_label("2026-08-24", 0, "en"), "today")
+        self.assertEqual(weather._day_label("2026-08-25", 1, "en"), "tomorrow")
+        self.assertRegex(weather._day_label("2026-08-26", 2, "en"), r"^[a-z]{3} \d+$")
+
+    def test_weekday_tables_match(self):
+        from radar import weather
+
+        self.assertEqual(len(weather.WEEKDAYS), len(weather.WEEKDAYS_EN))
+
+    def test_wind_rose_translated(self):
+        from radar import astro
+
+        self.assertEqual(astro.wind_name(0, "en"), "northerly")
+        self.assertEqual(astro.wind_name(90, "en"), "easterly")
+        self.assertEqual(astro.wind_name(0), "северный")
+
+    def test_wind_short_translated(self):
+        from radar import astro
+
+        self.assertEqual(astro.wind_short(0, "en"), "N")
+        self.assertEqual(astro.wind_short(0), "С")
+
+    def test_wind_rose_tables_align(self):
+        from radar import astro
+
+        self.assertEqual(len(astro.ROSE), len(astro.ROSE_KEYS))
+        self.assertEqual(len(astro.ROSE), len(astro.ROSE_SHORT_EN))
+
+    def test_no_direction_stays_empty(self):
+        from radar import astro
+
+        self.assertEqual(astro.wind_name(None, "en"), "")
+        self.assertEqual(astro.wind_short(None, "en"), "")
+
+    def test_beaufort_translated(self):
+        from radar import astro
+
+        self.assertEqual(astro.beaufort(0.5, "en"), "calm")
+        self.assertEqual(astro.beaufort(30.0, "en"), "stormy")
+        self.assertEqual(astro.beaufort(0.5), "штиль")
+
+    def test_beaufort_without_speed(self):
+        from radar import astro
+
+        self.assertEqual(astro.beaufort(None, "en"), "")
+
+    def test_moon_phase_translated(self):
+        from radar import astro
+
+        phase = astro.moon(datetime(2026, 8, 24, tzinfo=timezone.utc), lang="en")
+        self.assertTrue(phase.name.isascii(), phase.name)
+
+    def test_moon_phase_russian_default(self):
+        from radar import astro
+
+        phase = astro.moon(datetime(2026, 8, 24, tzinfo=timezone.utc))
+        self.assertFalse(phase.name.isascii())
+
+    def test_every_moon_phase_has_translation(self):
+        from radar import astro
+
+        for _edge, _russian, key in astro.PHASES:
+            with self.subTest(key=key):
+                self.assertIn(key, i18n.EN_STRINGS)
+
+    def test_render_summary_in_english(self):
+        from radar import weather
+
+        data = weather.Weather(ok=True, temp=20.0, feels=25.0, code=0, is_day=True)
+        text = weather.render(data, "", "en")
+        self.assertIn("clear sky", text)
+        self.assertIn("feels like", text)
+
+    def test_error_message_translated(self):
+        from radar import weather
+
+        broken = weather.Weather(ok=False, error="")
+        self.assertIn("no weather data", weather.render(broken, "", "en"))
+
+
+class TestSettingsWording(unittest.TestCase):
+    """Экран «Оповещения» — его видит каждый пользователь."""
+
+    def test_weather_label_translated(self):
+        from radar import keyboards
+
+        self.assertEqual(
+            keyboards.weather_label({"weather_mode": "interval",
+                                     "weather_interval": 0, "lang": "en"}),
+            "off",
+        )
+
+    def test_weather_label_interval(self):
+        from radar import keyboards
+
+        label = keyboards.weather_label(
+            {"weather_mode": "interval", "weather_interval": 120, "lang": "en"})
+        self.assertIn("every", label)
+        self.assertIn("2", label)
+
+    def test_weather_label_fixed_time(self):
+        from radar import keyboards
+
+        label = keyboards.weather_label(
+            {"weather_mode": "time", "weather_time": "08:30", "lang": "en"})
+        self.assertIn("08:30", label)
+        self.assertTrue(label.isascii(), label)
+
+    def test_weather_label_russian_default(self):
+        from radar import keyboards
+
+        self.assertEqual(
+            keyboards.weather_label({"weather_mode": "interval", "weather_interval": 0}),
+            "откл",
+        )
+
+    def test_quiet_summary_translated(self):
+        from radar.quiet import quiet_summary
+
+        self.assertEqual(quiet_summary({"lang": "en"}), "off")
+        self.assertEqual(quiet_summary({}), "не заданы")
+
+    def test_quiet_summary_keeps_interval(self):
+        from radar.quiet import quiet_summary
+
+        user = {"lang": "en", "quiet_from": "23:00", "quiet_to": "07:00"}
+        self.assertIn("23:00", quiet_summary(user))
+
+    def test_settings_menu_is_english(self):
+        from radar import keyboards
+
+        markup = keyboards.settings_menu({"lang": "en", "settings": {}})
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertTrue(any("Drones" in item for item in labels), labels)
+        self.assertTrue(any("Main menu" in item for item in labels), labels)
+
+    def test_settings_menu_russian_stays(self):
+        from radar import keyboards
+
+        markup = keyboards.settings_menu({"settings": {}})
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        self.assertTrue(any("БПЛА" in item for item in labels), labels)
+
+    def test_same_button_count_in_both_languages(self):
+        from radar import keyboards
+
+        russian = keyboards.settings_menu({"settings": {}})
+        english = keyboards.settings_menu({"lang": "en", "settings": {}})
+        self.assertEqual(len(russian.inline_keyboard), len(english.inline_keyboard))
+
+    def test_weather_menu_translated(self):
+        from radar import keyboards
+
+        labels = [b.text for row in keyboards.weather_menu(lang="en").inline_keyboard
+                  for b in row]
+        self.assertTrue(any("Turn off" in item for item in labels), labels)
+
+
+class TestManageMenuTranslation(unittest.TestCase):
+    """Верхний экран «Управление» переведён с 4.7.5.3."""
+
+    def labels(self, lang):
+        from radar import keyboards
+
+        markup = keyboards.manage_menu("superadmin", {"lang": lang})
+        return [b.text for row in markup.inline_keyboard for b in row]
+
+    def test_english_labels(self):
+        labels = self.labels("en")
+        self.assertTrue(any("Sources" in item for item in labels), labels)
+        self.assertTrue(any("Users" in item for item in labels), labels)
+
+    def test_russian_labels(self):
+        labels = self.labels("ru")
+        self.assertTrue(any("Источники" in item for item in labels), labels)
+
+    def test_same_number_of_buttons(self):
+        self.assertEqual(len(self.labels("en")), len(self.labels("ru")))
+
+
 class TestContentTranslation(unittest.TestCase):
     """Тексты, которые пишет человек, переводятся моделью — с кэшем."""
 

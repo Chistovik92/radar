@@ -76,11 +76,13 @@ def should_hold(categories: set[str] | list[str], user: dict[str, Any],
     return not (URGENT & set(categories))
 
 
-def quiet_summary(user: dict[str, Any]) -> str:
+def quiet_summary(user: dict[str, Any], lang: str = "") -> str:
+    from . import i18n
+
     start = str(user.get("quiet_from") or "")
     end = str(user.get("quiet_to") or "")
     if not start or not end:
-        return "не заданы"
+        return i18n.t("settings.quiet.none", lang or i18n.language_of(user), "не заданы")
     return f"{start} — {end}"
 
 
