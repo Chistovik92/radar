@@ -11,11 +11,53 @@ update. So "version" means "the code has arrived," not "the feature is on":
 new things arrive switched off, get turned on on the live system, and can be
 killed with one button if something goes wrong.
 
-**Support for old versions.** Since 4.0 only the 3.x database format is
-read. If a server is still on 2.x — update to 3.3.5 first, let the bot start
-once (it brings `db.json` to its current shape), and only then move to 4.x.
-The intermediate step takes a minute and spares the importer branches that
-cannot be verified against live data.
+**Support for old versions.** Since 4.6.1 the `db.json` importer has been
+removed entirely: migration code from a version nearly two years old had
+never been verified by anyone, and keeping it meant carrying an unverified
+path through every build. So 4.6.0 is the last version that reads the 3.x
+format, and upgrading from it goes in steps: **2.x → 3.3.5 → 4.6.0 →
+current**. The 4.6.0 step cannot be skipped: newer code will not read the
+JSON and will silently start with an empty database. The full upgrade table
+is in [README.en.md](../README.en.md).
+
+---
+
+## Versioning rules
+
+The number lives in `radar/__init__.py`; the installer, the bot and the
+documentation all take it from there. The format is two to four numbers:
+`X.Y`, `X.Y.Z` or `X.Y.Z.W`. The smaller the change, the deeper the
+component:
+
+| Component | Grows when | Example |
+|---|---|---|
+| `X` — major | platform change or data incompatibility | 3.x → 4.0 |
+| `Y` — minor | a large block of work: web panel, digests, server move | 4.6 → 4.7 |
+| `Z` — patch | a finished feature within that block | 4.7.4 → 4.7.5 |
+| `W` — fourth | a small fix, a bug fix, a documentation pass | 4.7.5.3 → 4.7.5.4 |
+
+Three rules that are not worked around:
+
+1. **Only the next number after the existing one.** Versions run
+   consecutively, with no jumps: 4.7.5.3 is followed by 4.7.5.4, not by
+   4.7.6. A skipped number means there is a release somewhere that nobody
+   ever saw.
+2. **Every change is a complete release:** bump the number, commit, push,
+   tag and publish a GitHub release. A half-release — code in `main` with
+   no tag — has already happened (4.6.5 and 4.7.3.2 shipped without one)
+   and it breaks `install.sh --versions`: the installer builds its list
+   from releases, and a version that is not there does not exist as far as
+   it is concerned.
+3. **The number is updated everywhere at once:** `radar/__init__.py`,
+   `README.md`, `README.en.md`, `docs/STATUS.md` (the version history row)
+   and, if the plan changes, `docs/ROADMAP.md` together with
+   `docs/ROADMAP.en.md`. The Russian and English versions of a document are
+   updated together — a divergence is noticed only by a reader, and they
+   have no way to tell which one is correct.
+
+The sections below run in strictly ascending version order, and the
+continuous item numbering is never interrupted: both broke at some point,
+and both times it went unnoticed for a while.
 
 ---
 
@@ -136,25 +178,27 @@ SSH.
 
 ---
 
-## 4.6 — sources, digests and weather as an image
+## 4.6 — sources, digests and weather as an image ✅ implemented
 
-The partner section and promo codes moved to **4.6.5**.
+The partner section and promo codes were planned for here but shipped
+later: the section in **4.6.4**, promo codes in **4.7.0**. Sources and
+digests went ahead of them.
 
 1. **A "Partner projects" section** instead of a single button: a list of
    projects with a description, a link and an icon. The first is
    HydraSite, others are added as data, with no code changes. Order,
    visibility and text are edited by the superadministrator.
-   Flag: `partners`.
+   Flag: `partners`. ✅ implemented in 4.6.4; in 4.6.5 section management
+   was collected into the "Management" menu.
 2. **Personal promo codes.** Generation and issuing — **superadministrator
    only**: create a series, set an expiry and an activation limit, issue it
    to a specific user or segment. A partner project verifies it via a
    signed link with a shared secret — no shared database and no mutual
    availability dependency. The same promo codes also work for a news
    digest subscription.
-   Flag: `promo_codes`.
-3. **The partner section moved to 4.6.5** by a decision made in August
-   2026 — sources and digests went ahead of it.
-4. **News sources and rewrites.** ✅ implemented in 4.6.1.
+   Flag: `promo_codes`. ✅ implemented in 4.7.0 together with the partner
+   export and the web-panel section.
+3. **News sources and rewrites.** ✅ implemented in 4.6.1.
    - Six topics not tied to a city: IT and gaming, science and tech,
      sports, hobbies and cars, films and series, money and markets. Each
      has its own feeds in `presets.THEMATIC` — city channels do not
@@ -165,12 +209,12 @@ The partner section and promo codes moved to **4.6.5**.
      request per topic, not per news item. Flag: `digest_summaries`.
    - Numbered links to sources sit under the summary. A summary you cannot
      verify is a rumor, not news.
-5. **Link shortening.** ✅ implemented in 4.6.1, an internal utility.
+4. **Link shortening.** ✅ implemented in 4.6.1, an internal utility.
    Built into the web panel (`/s/<code>`), no separate certificate needed.
    Only the superadministrator can add links: a public shortener attracts
    phishing, and the domain pays for it — along with the links inside
    danger alerts. Settings: `SHORT_BASE_URL`, `SHORT_SALT`.
-6. **Weather as an image — reworked.** ✅ implemented in 4.6.0.
+5. **Weather as an image — reworked.** ✅ implemented in 4.6.0.
    - A global switch for everyone: the `weather_image_all` flag overrides
      personal choice without erasing it. Turn the flag off and the previous
      choice comes back.
@@ -237,7 +281,7 @@ backup is ever needed for real.
 
 ### 4.7 — installer: languages and version choice
 
-15. **Two installer languages: Russian and English.** Finished in 4.7.3:
+9. **Two installer languages: Russian and English.** Finished in 4.7.3:
     the installer asks for a language at the start (when the terminal is
     interactive), every step heading is translated, along with the move
     procedure, the timing report and the summary. Started in 4.7.2. The
@@ -249,12 +293,16 @@ backup is ever needed for real.
     translating them would double the maintenance burden for no benefit.
     **Still left:** translating the remaining installation screens —
     database choice, keys, diagnostics.
-16. **Documentation in two languages.** `README.en.md` — 4.7.3.1,
+10. **Documentation in two languages.** `README.en.md` — 4.7.3.1,
     `MONETIZATION.en.md` — 4.7.5, `ROADMAP.en.md` — 4.7.5.3.
-    **Still left:** STATUS, API_SETUP and NEWS_DIGEST. Translated
-    gradually; they are the author's working documents, read mostly during
-    development itself, so translating them is the least urgent.
-17. **Choosing which version to install.** Implemented in 4.7.3.1, an
+    **Still left:** STATUS, API_SETUP and NEWS_DIGEST — the author's
+    working documents, read mostly during development itself, so
+    translating them is the least urgent.
+    Since 4.7.5.4 README and ROADMAP are updated **in both languages at
+    once**, together with the change itself: a divergence between the
+    Russian and English text is found only by a reader, and by then they
+    cannot tell which version is the correct one.
+11. **Choosing which version to install.** Implemented in 4.7.3.1, an
     interactive list picker added in 4.7.3.3, and in 4.7.3.5 a question
     about skipping the system package update:
     `--versions` shows the list of GitHub releases, `--version=TAG`
@@ -271,7 +319,7 @@ backup is ever needed for real.
     A caveat that had to be accounted for during implementation: unreleased
     code has not had manual review, so a snapshot is taken before
     installing it (it already is, either way) and a warning is shown.
-18. **TLS for the web panel and short links.** ✅ implemented in 4.7.5, and
+12. **TLS for the web panel and short links.** ✅ implemented in 4.7.5, and
     in 4.7.5.1 wired into the installer: it asks about the domain, checks
     whether a certificate already exists, and **carries the setup through
     to the end** — writes the address into the link shortener and sets up
@@ -293,6 +341,52 @@ backup is ever needed for real.
     the ISP blocks it, issuance silently fails. Before 4.7, link shortening
     works over plain HTTP on whatever address is already up: it does not
     need a certificate.
+
+---
+
+## 4.7 — other work
+
+Collected here is what does not deserve its own version but keeps piling
+up.
+
+13. **Measurements instead of guesses.** The `/perf` command shows how time
+    is spent across the cycle's stages and resource use. ✅ implemented in
+    4.5.7. Next: take readings on the live server under real load and
+    optimize whichever stage actually eats time, not the one that merely
+    looks suspicious.
+14. **Flags with no implementation.** Partly closed in 4.7.2: `weather`,
+    `ai_analysis` (turning it off now switches to the heuristic, as its
+    description promised), `source_telegram`, `source_rss`, `all_clear`,
+    `history` now actually toggle behavior.
+    In 4.7.4.3, five more were closed: `ai_assistant` (checked together
+    with the role), `whitelist_notice` (the check moved inside message
+    assembly — the "check it yourself" agreement already failed once
+    before), `source_export`, `provider_switch`, `egress_proxy` (their
+    buttons hide along with the sections).
+    In 4.7.5, the last three were closed: `digest_suggestions` (closes off
+    accepting suggestions), `platform_max` (the MAX adapter now runs as a
+    separate task behind a flag — the implementation was never verified on
+    a live server and must not interfere with Telegram), and `source_ok`
+    **was removed from the list**: there is no Odnoklassniki code in the
+    project, only keys in the settings existed. A toggle that switches
+    nothing on is worse than no toggle at all — it will come back together
+    with the implementation, not before.
+    **Item closed: every remaining flag toggles something.** A toggle that
+    lies is worse than one that is missing: people rely on it.
+15. **Event log.** The entry point was added in 4.7.2, **it started
+    filling up in 4.7.4.8**: before that, `store_event` and
+    `record_delivery` were never called from anywhere, and the section
+    always showed empty, even when alerts had gone out. A delivery is only
+    logged after it is actually sent: the log has to reflect what was
+    received, not what was planned. Open to everyone — these are records of
+    a person's own alerts. It shows only what a person was actually sent —
+    the log is built from deliveries, not from every event in the system.
+16. **The `radar/platforms/` package** (MAX) is not imported by any module.
+17. **Video download.** Closed in 4.7.2: a "Download video" button in the
+    main menu when the flag is on.
+18. ~~The GitHub repository fell behind.~~ ✅ closed in August 2026: `main`
+    holds the current version, and tags are in place starting from
+    `v3.3.5` and `v4.6.0`, one for every release since.
 
 ---
 
@@ -355,51 +449,6 @@ backup is ever needed for real.
     inline strings in the code, so the first step is moving it into one
     dictionary — otherwise translation has to be assembled piece by piece
     and half the strings stay in Russian.
-
----
-
-## 4.7 — other work
-
-Collected here is what does not deserve its own version but keeps piling
-up.
-
-9. **Measurements instead of guesses.** The `/perf` command shows how time
-    is spent across the cycle's stages and resource use. ✅ implemented in
-    4.5.7. Next: take readings on the live server under real load and
-    optimize whichever stage actually eats time, not the one that merely
-    looks suspicious.
-10. **Flags with no implementation.** Partly closed in 4.7.2: `weather`,
-    `ai_analysis` (turning it off now switches to the heuristic, as its
-    description promised), `source_telegram`, `source_rss`, `all_clear`,
-    `history` now actually toggle behavior.
-    In 4.7.4.3, five more were closed: `ai_assistant` (checked together
-    with the role), `whitelist_notice` (the check moved inside message
-    assembly — the "check it yourself" agreement already failed once
-    before), `source_export`, `provider_switch`, `egress_proxy` (their
-    buttons hide along with the sections).
-    In 4.7.5, the last three were closed: `digest_suggestions` (closes off
-    accepting suggestions), `platform_max` (the MAX adapter now runs as a
-    separate task behind a flag — the implementation was never verified on
-    a live server and must not interfere with Telegram), and `source_ok`
-    **was removed from the list**: there is no Odnoklassniki code in the
-    project, only keys in the settings existed. A toggle that switches
-    nothing on is worse than no toggle at all — it will come back together
-    with the implementation, not before.
-    **Item closed: every remaining flag toggles something.** A toggle that
-    lies is worse than one that is missing: people rely on it.
-11. **Event log.** The entry point was added in 4.7.2, **it started
-    filling up in 4.7.4.8**: before that, `store_event` and
-    `record_delivery` were never called from anywhere, and the section
-    always showed empty, even when alerts had gone out. A delivery is only
-    logged after it is actually sent: the log has to reflect what was
-    received, not what was planned. Open to everyone — these are records of
-    a person's own alerts. It shows only what a person was actually sent —
-    the log is built from deliveries, not from every event in the system.
-12. **The `radar/platforms/` package** (MAX) is not imported by any module.
-13. **Video download.** Closed in 4.7.2: a "Download video" button in the
-    main menu when the flag is on.
-14. ~~The GitHub repository fell behind.~~ ✅ closed in August 2026: `main`
-    holds the current version, and tags `v3.3.5`, `v4.6.0`, `v4.6.1` exist.
 
 ---
 
@@ -539,15 +588,18 @@ builds on code that has already been verified.
 
 Details are in [MONETIZATION.en.md](MONETIZATION.en.md). In short:
 
-| Version | What appears |
-|---|---|
-| 3.3 | a partner-project button in the menu |
-| 4.3 | news digest subscription via Telegram Stars |
-| 4.6.5 | the projects section, personal promo codes, conversion statistics |
-| 4.9 | channel-effectiveness metrics |
-| 4.7.3 | unlimited video download — 10 Stars a month |
-| 4.9.5 | music storage capacity and similar-track suggestions |
-| later | B2B export for management companies |
+Versions run in ascending order — as does everything else in this document.
+
+| Version | What appears | State |
+|---|---|:--:|
+| 3.3 | a partner-project button in the menu | ✅ |
+| 4.4 | news digest subscription via Telegram Stars | ✅ |
+| 4.6.4 | the partner projects section | ✅ |
+| 4.7.0 | personal promo codes, conversion statistics | ✅ |
+| 4.7.3 | unlimited video download — 10 Stars a month | ✅ |
+| 4.9 | channel-effectiveness metrics | planned |
+| 4.9.5 | music storage capacity and similar-track suggestions | planned |
+| later | B2B export for management companies | idea |
 
 ### Video download — monetization (since 4.7.3)
 
