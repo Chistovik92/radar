@@ -1,4 +1,4 @@
-# Radar v4.7.5.2
+# Radar v4.7.5.3
 
 [Русская версия](README.md)
 
@@ -70,13 +70,16 @@ analysed by an AI model, then matched against your locations.
 
 The bot asks which language to use on first contact — both for new users
 and for those who used it before the language choice existed. It can be
-changed later from the menu.
+changed later from the menu ("🌍 Language").
 
-Translation is in progress. Menus, key alert strings and the video
-section are translated; digests, weather, SOS and management screens are
-still Russian. An untranslated string falls back to Russian rather than
-showing a raw key: a Russian line among English ones is unpleasant but
-readable, unlike `menu.title.short`.
+Translation happens key by key: the dictionary lives in `radar/i18n.py`,
+and an untranslated string falls back to Russian rather than showing a
+raw key — a Russian line among English ones is unpleasant but readable,
+unlike `menu.title.short`. As of 4.7.5.3, translated: the main menu, key
+alert strings, the video section, news digests, SOS, the text weather
+summary, `/help`, and the top level of the "Management" section. Still
+Russian: the weather image, the management sub-screens (sources, users,
+AI, network, keys, backups, logs, partners) and role names.
 
 ## Moving to another server
 
@@ -109,13 +112,14 @@ failed.
 
 ## Documentation
 
-* [ROADMAP.md](docs/ROADMAP.md) — what is planned and what is done
+* [ROADMAP.en.md](docs/ROADMAP.en.md) — what is planned and what is done
 * [STATUS.md](docs/STATUS.md) — current state, version history
 * [API_SETUP.md](docs/API_SETUP.md) — where to get every key
 * [MONETIZATION.en.md](docs/MONETIZATION.en.md) — paid features
 * [NEWS_DIGEST.md](docs/NEWS_DIGEST.md) — how digests work
 
-ROADMAP, STATUS, API_SETUP and NEWS_DIGEST are Russian only for now.
+STATUS, API_SETUP and NEWS_DIGEST are Russian only for now — they are the
+author's working documents, read mainly during development itself.
 
 ## Licence
 

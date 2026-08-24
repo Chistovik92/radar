@@ -1,0 +1,615 @@
+# Roadmap
+
+What is being built in which version, in what order, and why. The document
+is updated with every release; current state is in
+[STATUS.md](STATUS.md) (Russian only), the earnings plan is in
+[MONETIZATION.en.md](MONETIZATION.en.md).
+
+Every notable capability is declared as a flag in `radar/features.py` and
+turned on by the superadministrator right inside the bot, without a version
+update. So "version" means "the code has arrived," not "the feature is on":
+new things arrive switched off, get turned on on the live system, and can be
+killed with one button if something goes wrong.
+
+**Support for old versions.** Since 4.0 only the 3.x database format is
+read. If a server is still on 2.x — update to 3.3.5 first, let the bot start
+once (it brings `db.json` to its current shape), and only then move to 4.x.
+The intermediate step takes a minute and spares the importer branches that
+cannot be verified against live data.
+
+---
+
+## 4.0 — foundation ✅ done
+
+1. **A real database instead of JSON.** SQLAlchemy 2.x async. **SQLite** by
+   default — a file next to the bot, no separate container or password;
+   PostgreSQL is enabled via a profile on a more capable machine. Same
+   schema either way: `users`, `locations`, `sources`, `events`,
+   `deliveries`, `features`, `meta`.
+2. **A multi-platform schema from day one.** A user has a surrogate key
+   plus a `(platform, external_id)` pair. Done up front so that 4.2 would
+   not need to migrate production data: the same numeric identifier on
+   Telegram and on MAX belongs to different people.
+3. **Automatic migration** of the 3.x format; the source is kept as
+   `db.json.migrated`.
+4. **Event history** — the `events` and `deliveries` tables.
+5. **Feature toggles** — `/features` for the superadministrator.
+6. **A messenger abstraction** — `radar/platforms/base.py`.
+7. **Author signature** in every source file, checked in CI.
+8. **Renaming**: HydraVPN → HydraSite, `/vpn` → `/partner`.
+
+**Verification:** 165 offline tests, 31 modules, the installer checked
+byte-for-byte.
+
+---
+
+## 4.1 — emergency help and submission ✅ implemented
+
+1. **SOS button** — trusted contacts, geolocation, repeats until stood
+   down. The contact is chosen with Telegram's built-in button: forwarding
+   a message no longer reveals the sender since Bot API 7.0.
+2. **Weather for users, sent by the administration** — mode and frequency
+   are set on the user's behalf.
+3. **Resilience**: 37 checks for corrupted data, empty responses, missing
+   fields.
+
+Moved to 4.3: VK and OK sources — they need keys that were not available
+yet.
+
+---
+
+## 4.2 — media, MAX, alert accuracy ✅ implemented
+
+1. **Video download by link** with a choice of quality, a custom Bot API
+   Server for files up to 2 GB.
+2. **MAX adapter** — written, not verified on a live server.
+3. **Alert geography** — an alert is not sent without a confirmed match on
+   city or region.
+4. **Past events** go into the morning and evening digest instead of an
+   alert.
+5. **Access keys and AI provider comparison** — from the bot, no SSH
+   needed.
+6. **Gemini model selection** — `/models`, `/setmodel`.
+
+---
+
+## 4.3 — network, providers, VKontakte ✅ implemented
+
+1. **VKontakte as a source** — `wall.get` with a service key. VK's quirks
+   are handled: errors arrive with HTTP 200 and an `error` body, codes 6
+   and 9 mean rate limiting (the source is not excluded for that), an empty
+   array without an error does not mean "no news."
+   Flag: `source_vk`.
+2. **Switching the AI provider on the fly** — Gemini or DeepSeek. Access
+   and balance are checked before switching: DeepSeek bills as you go, and
+   a key with a zero balance looks the same as a working one until the
+   first request — and the first request would be a real alert being
+   parsed.
+   Flag: `provider_switch`.
+3. **Its own network egress** via sing-box: subscriptions, VLESS,
+   Shadowsocks, Trojan, SOCKS5. Managed from the bot, configuration is
+   generated automatically. **Adding a key turns nothing on** — the
+   superadministrator picks the server and protocol by hand.
+   Flag: `egress_proxy`.
+
+Moved to 4.4: Odnoklassniki (needs an application key from apiok.ru), news
+digests, weather as an image, quiet hours, anti-spam.
+
+---
+
+## 4.4 — digests and delivery ✅ implemented
+
+1. **News digests** — 12 topics, one message at a chosen time, subscription
+   via Telegram Stars. Prices are set by the superadministrator with
+   `/digestprice`. Design is in [NEWS_DIGEST.md](NEWS_DIGEST.md) (Russian
+   only).
+2. **Weather as an image** — PNG rendering via Pillow. The library is
+   optional: without it, text is used automatically, which matters under
+   mobile-internet restrictions.
+3. **Quiet hours** — non-urgent items wait until morning and are delivered
+   as one batch. Military threats and emergency-service alerts always go
+   through — that is the whole point of the system.
+4. **Anti-spam** — comparison by the stems of significant words, not exact
+   text: city channels retell the same event with different phrasing.
+
+---
+
+## 4.5 — web panel ✅ implemented
+
+1. **A separate process** under the `web_panel` flag: the panel can crash
+   independently of the bot, alerts keep going out.
+2. **Sign-in only via the Telegram Login Widget.** Three things are
+   checked: the `hash` signature by HMAC of the bot token, the freshness of
+   `auth_date`, and the role in the database (administrator or above). No
+   passwords — there is no reason to add one when the account is already
+   verified.
+3. **Sections:** overview, users and locations, sources, events and
+   delivery statistics, feature-toggle state, an action log.
+4. **Security:** `httponly` and `secure` cookies, a 4-hour session, a limit
+   on login attempts, constant-time signature comparison, a log of every
+   sign-in and every rejection.
+
+**There is no server terminal in the panel, and there never will be.**
+Running commands remotely from a browser, if a session leaks, hands over
+the whole server, not just the bot's data. Server management stays over
+SSH.
+
+---
+
+## 4.6 — sources, digests and weather as an image
+
+The partner section and promo codes moved to **4.6.5**.
+
+1. **A "Partner projects" section** instead of a single button: a list of
+   projects with a description, a link and an icon. The first is
+   HydraSite, others are added as data, with no code changes. Order,
+   visibility and text are edited by the superadministrator.
+   Flag: `partners`.
+2. **Personal promo codes.** Generation and issuing — **superadministrator
+   only**: create a series, set an expiry and an activation limit, issue it
+   to a specific user or segment. A partner project verifies it via a
+   signed link with a shared secret — no shared database and no mutual
+   availability dependency. The same promo codes also work for a news
+   digest subscription.
+   Flag: `promo_codes`.
+3. **The partner section moved to 4.6.5** by a decision made in August
+   2026 — sources and digests went ahead of it.
+4. **News sources and rewrites.** ✅ implemented in 4.6.1.
+   - Six topics not tied to a city: IT and gaming, science and tech,
+     sports, hobbies and cars, films and series, money and markets. Each
+     has its own feeds in `presets.THEMATIC` — city channels do not
+     publish this kind of content.
+   - Thematic feeds are polled **only for topics people actually want**:
+     reading a feed nobody subscribes to just burns requests for nothing.
+   - The AI condenses a topic's news into one coherent summary: one
+     request per topic, not per news item. Flag: `digest_summaries`.
+   - Numbered links to sources sit under the summary. A summary you cannot
+     verify is a rumor, not news.
+5. **Link shortening.** ✅ implemented in 4.6.1, an internal utility.
+   Built into the web panel (`/s/<code>`), no separate certificate needed.
+   Only the superadministrator can add links: a public shortener attracts
+   phishing, and the domain pays for it — along with the links inside
+   danger alerts. Settings: `SHORT_BASE_URL`, `SHORT_SALT`.
+6. **Weather as an image — reworked.** ✅ implemented in 4.6.0.
+   - A global switch for everyone: the `weather_image_all` flag overrides
+     personal choice without erasing it. Turn the flag off and the previous
+     choice comes back.
+   - The background changes with time of day **at the location's point**,
+     not by the server's clock: night, dawn, day, sunset. Computed from
+     local time and the local sunrise and sunset.
+   - Wind: a direction arrow, speed, where it is blowing from, a
+     descriptive strength rating, gusts. The arrow shows **where** it is
+     blowing to — that reads more naturally.
+   - The moon, with phase and illumination, drawn when it is visible.
+   - A separate palette for a light daytime sky: white captions on a blue
+     background were unreadable.
+
+---
+
+## 4.7 — verifying backup and restore
+
+Data has to survive any failure — its own or mine. The mechanisms are
+written; this section is about making sure they actually work, before a
+backup is ever needed for real.
+
+1. **A backup with one command.** `install.sh --backup`: a `pg_dump`
+   database dump, `.env`, files from `data/` — into one archive with a
+   manifest. Implemented in 4.0.5. Scheduling and rotation in 4.7.3.5: the
+   `backup_schedule` flag, a nightly backup, the last seven kept.
+   Rotation is not there for tidiness: without it, backups would fill the
+   single-board computer's disk within weeks, and the first thing to break
+   would not be backups — it would be the bot itself, with no room left for
+   the database. The backup is taken inside the monitoring cycle, not as a
+   separate job, so it never fires mid-deployment.
+2. **A restore with one command.** ✅ implemented in 4.7.4.3:
+   `tools/restore.sh` — a separate script that the installer places next to
+   the install (`restore.sh` in the bot's directory). Separate on purpose:
+   restore is needed exactly when the install is broken, and at that
+   moment the installer itself may not run at all. No image builds and no
+   network calls: unpack, put files back, bring it up. `--list` shows the
+   available backups, no arguments takes the latest one.
+   The role used to be played by
+   `install.sh --rollback`: a snapshot of the install and the database is
+   taken before every deployment, the last five are kept. ✅ implemented in
+   4.5.6.
+3. **Rollback on a failed install.** Any interruption after files have been
+   overwritten offers a restore instead of leaving the system half
+   upgraded. ✅ implemented in 4.5.7.
+4. **Full reset** — `install.sh --reset`: back up, remove the database and
+   files, install from scratch. Implemented in 4.0.5.
+5. **A fire drill — the main point of this section.** Restore that has
+   never once been tested should be considered broken. On a clean machine:
+   deploy from scratch, fill it with data, take a backup, tear the install
+   down completely, restore from the backup. Separately — restore on
+   different hardware, since a backup has to survive not only an error but
+   the death of the single-board computer itself.
+6. **Integrity check** — implemented in 4.7.3.5: a "Check integrity" button
+   in the backups section, recounting users, locations and sources, with a
+   warning if there is no data. The same recount runs automatically during
+   a move to another server (4.7.1).
+7. **The PostgreSQL dump loads itself.** ✅ implemented for moving servers
+   in 4.7.1. Still pending for `--rollback`: there the dump is still meant
+   to be loaded by hand with a separate command.
+8. **Maintenance mode.** The bot answers "work in progress," the background
+   cycle is stopped — so alerts are not lost and not double-sent during
+   operations. Flag: `maintenance`. ✅ implemented ahead of schedule in
+   4.5.6.
+
+### 4.7 — installer: languages and version choice
+
+15. **Two installer languages: Russian and English.** Finished in 4.7.3:
+    the installer asks for a language at the start (when the terminal is
+    interactive), every step heading is translated, along with the move
+    procedure, the timing report and the summary. Started in 4.7.2. The
+    language comes from `--lang=ru|en`, the `RADAR_LANG` variable, or the
+    system `LANG`, and is remembered in `.env`. Russian by default.
+    The scope of translation is deliberately limited to what a person
+    reads: step headings, the move procedure, summaries, prompts.
+    Technical log lines stayed in Russian — only the author reads them, and
+    translating them would double the maintenance burden for no benefit.
+    **Still left:** translating the remaining installation screens —
+    database choice, keys, diagnostics.
+16. **Documentation in two languages.** `README.en.md` — 4.7.3.1,
+    `MONETIZATION.en.md` — 4.7.5, `ROADMAP.en.md` — 4.7.5.3.
+    **Still left:** STATUS, API_SETUP and NEWS_DIGEST. Translated
+    gradually; they are the author's working documents, read mostly during
+    development itself, so translating them is the least urgent.
+17. **Choosing which version to install.** Implemented in 4.7.3.1, an
+    interactive list picker added in 4.7.3.3, and in 4.7.3.5 a question
+    about skipping the system package update:
+    `--versions` shows the list of GitHub releases, `--version=TAG`
+    installs the one requested. Installing an older release **is** the
+    rollback — it is not blocked and needs no confirmation: if the new
+    version broke something, you need to go back immediately. When an
+    install fails, "install the previous release from GitHub" appears
+    among the offered actions — for when the code itself is broken and the
+    snapshot cannot help.
+    **By default the code from `main` is installed**, regardless of
+    whether it has been tagged as a release: the author's server should
+    always run the latest version, not the latest one that happens to have
+    a tag.
+    A caveat that had to be accounted for during implementation: unreleased
+    code has not had manual review, so a snapshot is taken before
+    installing it (it already is, either way) and a warning is shown.
+18. **TLS for the web panel and short links.** ✅ implemented in 4.7.5, and
+    in 4.7.5.1 wired into the installer: it asks about the domain, checks
+    whether a certificate already exists, and **carries the setup through
+    to the end** — writes the address into the link shortener and sets up
+    the salt. Getting a certificate alone is not enough: without an address
+    and a salt, short links stay off, and there is no way to tell why. An
+    existing salt is never overwritten — changing it would break links
+    already sent out.
+    Implementation details:
+    `tools/tls.sh domain [email]` brings up Caddy in front of the panel.
+    Caddy was chosen over certbot: it renews the certificate on its own, no
+    cron and no hooks needed — for a machine nobody watches daily, that
+    matters more than flexibility, because a forgotten renewal breaks the
+    panel exactly three months later.
+    The script checks the A record and whether port 80 is free **before**
+    talking to Let's Encrypt: they allow five failures per hour per domain,
+    and it is not worth spending attempts on a check that is bound to fail.
+    Earlier wording of this item: A known complication: the check reaches
+    port 80 **from the outside**, and if the router does not forward it or
+    the ISP blocks it, issuance silently fails. Before 4.7, link shortening
+    works over plain HTTP on whatever address is already up: it does not
+    need a certificate.
+
+---
+
+## 4.7.1 — moving to another server
+
+19. **A full move with one command.** ✅ implemented in 4.7.1.
+    `install.sh --migrate` on the old machine builds a backup and prints
+    the next steps; `install.sh --restore=FILE` on the new one deploys the
+    system, loads the dump before the bot starts, and recounts users,
+    locations and sources.
+    Decisions baked in: the bot on the old machine is **not** shut down
+    automatically — two instances sharing one token get in each other's
+    way, but deciding when to switch over is a human call; a PostgreSQL
+    dump is not loaded into SQLite, and this is stated out loud rather than
+    silently skipped.
+    4.7.2 added transfer by link: `--migrate` brings up a one-time serving
+    of the backup and prints a ready-made command for the new machine —
+    copying files by hand is no longer necessary. Protection for the
+    transfer: a random 32-character path, served exactly once, a hard
+    expiry. Built this way because the backup contains the bot token and
+    database passwords: an open link would mean putting them on the public
+    internet.
+    **The main thing still left is a fire drill:** go through a full move
+    on a clean machine. Until then the mechanism is considered unverified.
+
+---
+
+## 4.7.5 — bot interface language
+
+20. **Russian and English in the bot itself.** In 4.7.5 the news digests
+    were translated, along with the names of all eighteen topics; in
+    4.7.5.2, the SOS section. That is also when a quiet bug turned up:
+    duplicate keys in the dictionary silently overrode one another, and the
+    section showed the wrong text. A test for duplicates was added — Python
+    does not treat a repeated key as an error.
+    In 4.7.5.3 the **text** weather summary was translated (WMO condition
+    descriptions, "today"/"tomorrow", weekday names, "feels like," forecast
+    error messages) — the weather image (`weather_image.py`, the wind rose
+    and moon phases from `astro.py`) still stays in Russian, to be
+    translated separately. `/help` and the top level of the "Management"
+    section were also translated — the heading, the first screen's buttons
+    (`keyboards.manage_menu`), the "insufficient permissions" messages. The
+    subordinate management screens (sources, users, AI, network, keys,
+    backups) were left untouched — that is the next step of the same item.
+    The groundwork was laid in 4.7.3:
+    the `i18n` module, a `lang` field on the user, a language question on
+    first contact — for both new users and those who used the bot before
+    the choice existed (the marker for "not asked yet" is an empty field,
+    so nobody is left silently on Russian). Menus, key alert strings and
+    the video section were translated.
+    In 4.7.3.1 the main menu was translated: it used to be assembled
+    without regard to language, and with an English interface the buttons
+    stayed Russian.
+    **Still left:** the weather image, the subordinate management screens
+    (sources, users, AI, network, keys, backups, logs, partners), role
+    names (`roles.title`). There is a lot of it, and it is translated
+    gradually; an untranslated string falls back to Russian rather than
+    showing a key. It touches everything a person sees.
+    A note for later: the text is currently scattered across modules as
+    inline strings in the code, so the first step is moving it into one
+    dictionary — otherwise translation has to be assembled piece by piece
+    and half the strings stay in Russian.
+
+---
+
+## 4.7 — other work
+
+Collected here is what does not deserve its own version but keeps piling
+up.
+
+9. **Measurements instead of guesses.** The `/perf` command shows how time
+    is spent across the cycle's stages and resource use. ✅ implemented in
+    4.5.7. Next: take readings on the live server under real load and
+    optimize whichever stage actually eats time, not the one that merely
+    looks suspicious.
+10. **Flags with no implementation.** Partly closed in 4.7.2: `weather`,
+    `ai_analysis` (turning it off now switches to the heuristic, as its
+    description promised), `source_telegram`, `source_rss`, `all_clear`,
+    `history` now actually toggle behavior.
+    In 4.7.4.3, five more were closed: `ai_assistant` (checked together
+    with the role), `whitelist_notice` (the check moved inside message
+    assembly — the "check it yourself" agreement already failed once
+    before), `source_export`, `provider_switch`, `egress_proxy` (their
+    buttons hide along with the sections).
+    In 4.7.5, the last three were closed: `digest_suggestions` (closes off
+    accepting suggestions), `platform_max` (the MAX adapter now runs as a
+    separate task behind a flag — the implementation was never verified on
+    a live server and must not interfere with Telegram), and `source_ok`
+    **was removed from the list**: there is no Odnoklassniki code in the
+    project, only keys in the settings existed. A toggle that switches
+    nothing on is worse than no toggle at all — it will come back together
+    with the implementation, not before.
+    **Item closed: every remaining flag toggles something.** A toggle that
+    lies is worse than one that is missing: people rely on it.
+11. **Event log.** The entry point was added in 4.7.2, **it started
+    filling up in 4.7.4.8**: before that, `store_event` and
+    `record_delivery` were never called from anywhere, and the section
+    always showed empty, even when alerts had gone out. A delivery is only
+    logged after it is actually sent: the log has to reflect what was
+    received, not what was planned. Open to everyone — these are records of
+    a person's own alerts. It shows only what a person was actually sent —
+    the log is built from deliveries, not from every event in the system.
+12. **The `radar/platforms/` package** (MAX) is not imported by any module.
+13. **Video download.** Closed in 4.7.2: a "Download video" button in the
+    main menu when the flag is on.
+14. ~~The GitHub repository fell behind.~~ ✅ closed in August 2026: `main`
+    holds the current version, and tags `v3.3.5`, `v4.6.0`, `v4.6.1` exist.
+
+---
+
+## 4.8 — optimizing for the single-board computer
+
+The system stays on the current server. A move is not planned — instead,
+the work is making the existing resources comfortably enough.
+
+1. **Profiling.** The measurement tool — the `/perf` command — was built in
+   4.5.7; what remains is PostgreSQL under real load and conclusions from
+   the readings.
+2. **Tuning PostgreSQL for the actual amount of memory.** In 4.0.5 the
+   settings were already raised for 4 GB (`shared_buffers=256MB`, a 1 GB
+   cache, parallel workers enabled). In 4.6, automatic tuning based on
+   available memory at install time.
+3. **Container limits** — memory caps so that one process cannot drag down
+   the whole system. Set in 4.0.5, refined based on measurement results.
+4. **Cutting network calls:** batching geocoding requests, caching
+   Open-Meteo responses, sensible polling intervals for sources.
+5. **A compact database:** automatic history cleanup by
+   `EVENT_RETENTION_DAYS`, regular `VACUUM`, monitoring size and warning in
+   the bot as it grows.
+6. **A fast start.** The schema is created directly from the models,
+   without running Alembic inside the bot process — mixing synchronous
+   Alembic with an already-running event loop was what hung the startup on
+   ARM.
+
+---
+
+## 4.9 — operations
+
+1. **Zero-downtime updates:** the schema is applied before the restart,
+   rollback to the previous version with one command.
+2. **Metrics:** number of alerts, delivery latency, AI quota spend, share
+   of dead sources — in the panel and in the bot.
+3. **Automatic source checks** on a schedule, with a report.
+4. **Automatic cleanup** of history and logs.
+5. **A system health panel** for the superadministrator right inside the
+   bot: memory, disk, database size, container state.
+
+---
+
+## 4.9.5 — music and playlists
+
+An idea from August 2026: uploading tracks to the bot, personal playlists,
+similar-track suggestions. A subsystem separate from monitoring — placed
+here for exactly that reason: it must never delay danger alerts.
+
+1. **Upload and storage.** A track is sent as a file or a link, sorted
+   into playlists, and plays through Telegram's built-in player. The
+   upload mechanics already exist in `media.py` — reuse them instead of
+   writing them again.
+2. **Sources for suggestions.** Options, from simple to complex:
+   - **your own files** — matching by ID3 tags (artist, genre, year), no
+     external requests at all. Start here: it always works and asks nobody
+     for anything;
+   - **MusicBrainz + ListenBrainz** — open databases, a free license, a
+     public API with no key. They give "similar artists" and genres
+     honestly and legally;
+   - **Last.fm API** — a free key, rich "similar to" links, but the terms
+     of use restrict resale;
+   - **YouTube Music** — tempting, but only reachable through unofficial
+     scrapers: breaks with every layout change and directly violates the
+     service's terms. Not viable as a foundation, at most a manual,
+     one-off import on an explicit command.
+3. **Mixing.** Shuffle what was uploaded, build a selection by genre or
+   artist, continue a playlist with something similar.
+4. **A constraint that cannot be worked around.** Distributing other
+   people's recordings is distribution, not personal listening, and paid
+   access to tracks would turn the bot into a piracy service with all the
+   consequences for the domain and hosting. The safe frame: **everyone
+   listens to what they uploaded themselves**, there is no shared library,
+   and what becomes paid is capacity and convenience (storage volume,
+   number of playlists, similar-track suggestions), not the music itself.
+
+---
+
+## 5.0 — other messengers
+
+Everything that needs someone else's verification and cannot be checked
+without real keys is deliberately grouped here: writing that kind of code
+blind would mean passing off the unverified as finished.
+
+1. **MAX — bringing it to production.** The adapter was written in 4.2, but
+   not a single request has run against a live server. Needed: owner
+   verification (a legal entity, sole proprietor, or self-employed person
+   registered in Russia), a webhook instead of long polling, linking
+   Telegram and MAX accounts, its own FSM on the shared database.
+2. **Odnoklassniki as a source.** There is no public RSS, the API requires
+   registering an application on apiok.ru and signing every request. The
+   `source_ok` flag is declared, the adapter is waiting on keys.
+3. **Discord.** The simplest of the remaining platforms: a bot is created
+   in the Developer Portal in a minute, the token is issued immediately,
+   verification is only needed past 100 servers. Implementation uses the
+   same `Transport` protocol: an adapter over the Gateway (WebSocket) or
+   via discord.py. Telegram's buttons map onto Discord's components almost
+   one to one, but there are differences to account for: a limit of 5
+   buttons per row and 5 rows, a mandatory response to an interaction
+   within 3 seconds, a separate permission to read message content
+   (Message Content Intent). The sensible use case is not address-based
+   alerts but a community channel: summaries and system status.
+
+---
+
+## 5.1 and beyond — under discussion
+
+### Bots on VKontakte and Odnoklassniki
+
+The `Transport` protocol from 4.0 is built for exactly this: the core does
+not know where a message came from, so a new platform is one adapter, not a
+rewrite.
+
+**VKontakte** — a proven path: the bot is attached to a community, the
+access key is issued in the "Working with API" section, events arrive via
+the Callback API (a webhook, needs a static IP — which we have) or via Long
+Poll with no external address. Buttons and keyboards map onto the `Button`
+concept almost one to one.
+
+**Odnoklassniki** — harder: the bot is created by registering an
+application on apiok.ru, confirmation and request signing are required.
+Worth taking on after the VK adapter has run for a season.
+
+The sensible order is: VK as a **source** first (4.1), then VK as a
+**messenger**, and only after that OK in both roles — that way every step
+builds on code that has already been verified.
+
+- Viber, Discord — over the same protocol, if there is demand.
+- Mini Apps: a map of locations and event history inside the messenger.
+- Expansion to new cities as users show up there.
+- Replacing or duplicating the AI provider based on the `bench/` stand's
+  results.
+- Exporting summaries for management companies — a first step toward B2B.
+
+---
+
+## Monetization by version
+
+Details are in [MONETIZATION.en.md](MONETIZATION.en.md). In short:
+
+| Version | What appears |
+|---|---|
+| 3.3 | a partner-project button in the menu |
+| 4.3 | news digest subscription via Telegram Stars |
+| 4.6.5 | the projects section, personal promo codes, conversion statistics |
+| 4.9 | channel-effectiveness metrics |
+| 4.7.3 | unlimited video download — 10 Stars a month |
+| 4.9.5 | music storage capacity and similar-track suggestions |
+| later | B2B export for management companies |
+
+### Video download — monetization (since 4.7.3)
+
+Downloads are open to every role. The limit moved from role-based to
+quota-based:
+
+* **20 clips a day for free**, the counter resets daily;
+* **10 Stars — a month with no daily cap.**
+
+Counting by pieces, not megabytes: "17 of 20 left" is clear to a person,
+while "380 MB left" requires guessing a clip's size in advance beforehand.
+What is expensive here is not traffic but the single-board computer's CPU
+time.
+
+**The 50 MB size limit is not lifted by the subscription** — and the
+purchase description says so plainly. This is a limit of the Telegram Bot
+API: a bot physically cannot send a larger file through
+`api.telegram.org`. You cannot sell what you cannot deliver.
+
+How the limit will be lifted in later versions — **a custom Bot API
+Server.** Telegram gives out its source code, and running through your own
+server raises the limit from 50 MB to 2 GB. Support is already in place:
+the `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_API_SERVER`
+variables, and `media.size_limit_mb()` already returns a different limit
+depending on whether it is a custom server or the shared one. What is
+left: deploying it as a container next to the bot, automating that in the
+installer, and accounting for the fact that a custom server needs
+noticeably more disk (files are cached locally) — on the RK3318 that is a
+separate question that has to be measured, not assumed.
+
+---
+
+### Link shortening — why it is not in that table
+
+The idea of selling shortening limits was discussed in August 2026 and
+rejected. The reasons, so as not to circle back to it:
+
+* **There is nobody to pay for it.** Bitly and a dozen alternatives offer
+  shortening for free with no limits. Selling where a competitor offers
+  unlimited for free is not a business. Digests are the opposite in this
+  sense: there is no ready-made alternative.
+* **A public shortener is bait for abuse.** Within a week of opening it up,
+  it would start being used for phishing, and the domain would land in
+  Safe Browsing. Along with it, the links inside danger alerts would stop
+  opening, and HydraSite on the same domain would suffer too.
+
+So the service stays internal: it shortens links inside digests and
+operates on the superadministrator's command.
+
+Earnings are built on the **author's own projects**, not third-party
+advertising: the partner section leads to HydraSite and other projects,
+promo codes track conversion. There are no direct sales inside "Radar"
+itself.
+
+---
+
+## Principles that do not change
+
+1. **Danger alerts are always free.** No subscription for an alert, ever.
+2. **Ads never appear inside danger messages.** Trust is worth more than
+   any conversion.
+3. **New things arrive switched off** and get turned on deliberately.
+4. **The phrase "this system does not replace official warning channels"**
+   stays everywhere: sources are public, classification is probabilistic,
+   delivery depends on the messenger.
