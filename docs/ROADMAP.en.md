@@ -38,10 +38,12 @@ component:
 
 Three rules that are not worked around:
 
-1. **Only the next number after the existing one.** Versions run
-   consecutively, with no jumps: 4.7.5.3 is followed by 4.7.5.4, not by
-   4.7.6. A skipped number means there is a release somewhere that nobody
-   ever saw.
+1. **The number only grows and is never reused.** Going back to a lower
+   number, or publishing the same one twice, is not allowed: the
+   installer builds its list from releases, and nobody could tell which
+   of the two they installed. Gaps in the fourth component are fine and
+   are the author's call — the history has 4.7.3.5 right after 4.7.3.3
+   and 4.7.4.3 right after 4.7.4.
 2. **Every change is a complete release:** bump the number, commit, push,
    tag and publish a GitHub release. A half-release — code in `main` with
    no tag — has already happened (4.6.5 and 4.7.3.2 shipped without one)
@@ -271,9 +273,18 @@ backup is ever needed for real.
    in the backups section, recounting users, locations and sources, with a
    warning if there is no data. The same recount runs automatically during
    a move to another server (4.7.1).
-7. **The PostgreSQL dump loads itself.** ✅ implemented for moving servers
-   in 4.7.1. Still pending for `--rollback`: there the dump is still meant
-   to be loaded by hand with a separate command.
+7. **The PostgreSQL dump loads itself.** ✅ fully closed: for server moves
+   in 4.7.1, for rollback in 4.7.6.5. Previously `--rollback` printed a
+   `docker exec … psql …` command and suggested running it by hand — that
+   is, at exactly the moment the installation is already broken and psql
+   is the last thing on anyone's mind. Loading moved into a shared
+   `load_pg_dump` function: two separate implementations would inevitably
+   drift apart — one gets fixed, the other is forgotten. The dump is
+   loaded **before** the bot starts, otherwise the bot creates an empty
+   schema and the dump lands on top of it half-way. It also turned out
+   that rollback on a PostgreSQL installation brought the bot up without
+   the `postgres` profile — that is, without the database itself — fixed
+   in the same place.
 8. **Maintenance mode.** The bot answers "work in progress," the background
    cycle is stopped — so alerts are not lost and not double-sent during
    operations. Flag: `maintenance`. ✅ implemented ahead of schedule in
@@ -291,8 +302,18 @@ backup is ever needed for real.
     reads: step headings, the move procedure, summaries, prompts.
     Technical log lines stayed in Russian — only the author reads them, and
     translating them would double the maintenance burden for no benefit.
-    **Still left:** translating the remaining installation screens —
-    database choice, keys, diagnostics.
+    **Closed in 4.7.6.5:** the remaining screens are translated — the
+    database choice with all its explanations, database maintenance, the
+    "what to do with the existing installation" menu, the `.env` question
+    and the diagnostics line. That is also when a trap surfaced:
+    `info`/`ok`/`warn` already go through the `tr_msg` mechanism, where
+    the Russian string itself is the key, and the log always receives the
+    Russian original. Putting `$(t …)` inside them would have broken that
+    — the log would have become bilingual. So menus and prompts go
+    through the dictionary, while `info`/`ok`/`warn` messages go through
+    `tr_msg`. Dictionary completeness is now checked by
+    `tools/lint_installer.py`: a key defined in only one language used to
+    silently return an empty string.
 10. **Documentation in two languages.** `README.en.md` — 4.7.3.1,
     `MONETIZATION.en.md` — 4.7.5, `ROADMAP.en.md` — 4.7.5.3.
     **Still left:** STATUS, API_SETUP and NEWS_DIGEST — the author's
@@ -381,7 +402,12 @@ up.
     received, not what was planned. Open to everyone — these are records of
     a person's own alerts. It shows only what a person was actually sent —
     the log is built from deliveries, not from every event in the system.
-16. **The `radar/platforms/` package** (MAX) is not imported by any module.
+16. ~~**The `radar/platforms/` package** (MAX) is not imported by any
+    module.~~ ✅ closed in 4.7.5 together with the `platform_max` flag:
+    `main.py` starts `MaxTransport` as a separate task when the flag is
+    on and `MAX_BOT_TOKEN` is set. The entry sat here already-fixed until
+    4.7.6.5 — a small thing in itself, but a roadmap that lies about what
+    is done devalues its other entries too.
 17. **Video download.** Closed in 4.7.2: a "Download video" button in the
     main menu when the flag is on.
 18. ~~The GitHub repository fell behind.~~ ✅ closed in August 2026: `main`

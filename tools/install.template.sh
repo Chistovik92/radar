@@ -238,6 +238,34 @@ t() {                  # t <ключ> [подстановка]
             migrate_note_port)   value="Port $extra must be reachable from the new server." ;;
             migrate_note_secret) value="The copy contains your bot token and passwords — do not share this link." ;;
             migrate_note_stop)   value="When the new bot answers in Telegram, stop the old one:" ;;
+            db_title)            value="Which database should be used?" ;;
+            db_sqlite_note)      value="(recommended)" ;;
+            db_sqlite_line1)     value="a data/radar.db file next to the bot, no separate container," ;;
+            db_sqlite_line2)     value="no password, no waiting for startup — fits 1–2 GB of RAM" ;;
+            db_postgres_line)    value="a separate container, +300–500 MB of memory; for a beefier machine" ;;
+            db_current)          value="Currently selected:" ;;
+            db_switch_confirm)   value="Continue switching the database?" ;;
+            dbmaint_title)       value="Database maintenance" ;;
+            dbmaint_nothing)     value="Do nothing (default)" ;;
+            dbmaint_backup)      value="Back up the database" ;;
+            dbmaint_recreate)    value="Back up, drop and recreate the database" ;;
+            dbmaint_restore)     value="Restore the database from a backup (available:" ;;
+            existing_title)      value="What should happen to the existing installation?" ;;
+            existing_update)     value="Update" ;;
+            existing_update_note1) value="the current version updates to the new one from the repository," ;;
+            existing_update_note2) value="database, settings and the built image are kept" ;;
+            existing_reinstall)  value="Reinstall" ;;
+            existing_reinstall_note1) value="the image and project files are rebuilt from scratch," ;;
+            existing_reinstall_note2) value="the database and .env are kept" ;;
+            existing_clean)      value="Clean slate" ;;
+            existing_clean_note) value="wipe all data and install with fresh setup" ;;
+            existing_backup)     value="Backup only" ;;
+            existing_backup_note) value="make a copy and exit without changing anything" ;;
+            existing_note)       value="A backup is taken before any of these." ;;
+            existing_diagnosis)  value="Diagnostics" ;;
+            existing_recommended) value="suggested option" ;;
+            env_exists)          value="The .env file already exists" ;;
+            env_reuse_ask)       value="Use the current settings? (Y/n):" ;;
             migrate_waiting)     value="Waiting for the download… press Ctrl+C to cancel." ;;
             migrate_serve_failed) value="Could not start the temporary server — falling back to manual copying" ;;
             migrate_manual)      value="Copy the files by hand:" ;;
@@ -330,6 +358,34 @@ t() {                  # t <ключ> [подстановка]
             migrate_note_port)   value="Порт $extra должен быть доступен с нового сервера." ;;
             migrate_note_secret) value="В копии токен бота и пароли — никому не пересылайте эту ссылку." ;;
             migrate_note_stop)   value="Когда новый бот ответит в Telegram, остановите старый:" ;;
+            db_title)            value="Какую базу данных использовать?" ;;
+            db_sqlite_note)      value="(рекомендуется)" ;;
+            db_sqlite_line1)     value="файл data/radar.db рядом с ботом, отдельный контейнер не нужен," ;;
+            db_sqlite_line2)     value="ни пароля, ни ожидания запуска — подходит для 1–2 ГБ ОЗУ" ;;
+            db_postgres_line)    value="отдельный контейнер, +300–500 МБ памяти; нужен на машине помощнее" ;;
+            db_current)          value="Сейчас выбрано:" ;;
+            db_switch_confirm)   value="Продолжить смену базы?" ;;
+            dbmaint_title)       value="Обслуживание базы данных" ;;
+            dbmaint_nothing)     value="Ничего не делать (по умолчанию)" ;;
+            dbmaint_backup)      value="Снять копию базы" ;;
+            dbmaint_recreate)    value="Снять копию, удалить базу и создать заново" ;;
+            dbmaint_restore)     value="Восстановить базу из копии (доступно:" ;;
+            existing_title)      value="Как поступить с существующей установкой?" ;;
+            existing_update)     value="Обновление" ;;
+            existing_update_note1) value="текущая версия обновится до новой из репозитория," ;;
+            existing_update_note2) value="база, настройки и собранный образ сохраняются" ;;
+            existing_reinstall)  value="Переустановка" ;;
+            existing_reinstall_note1) value="образ и файлы проекта соберутся заново," ;;
+            existing_reinstall_note2) value="база данных и .env сохраняются" ;;
+            existing_clean)      value="С чистого листа" ;;
+            existing_clean_note) value="удаление всех данных и установка с настройкой заново" ;;
+            existing_backup)     value="Только резервная копия" ;;
+            existing_backup_note) value="снять копию и выйти, ничего не меняя" ;;
+            existing_note)       value="Перед любым из вариантов снимается резервная копия." ;;
+            existing_diagnosis)  value="Диагностика" ;;
+            existing_recommended) value="рекомендуется вариант" ;;
+            env_exists)          value="Файл .env уже существует" ;;
+            env_reuse_ask)       value="Использовать текущие настройки? (Y/n):" ;;
             migrate_waiting)     value="Жду скачивания… Ctrl+C — отменить." ;;
             migrate_serve_failed) value="Временный сервер не запустился — переношу копию вручную" ;;
             migrate_manual)      value="Скопируйте файлы руками:" ;;
@@ -666,6 +722,18 @@ tr_msg() {
         "Найдена предыдущая установка") printf '%s' "Found a previous installation" ;;
         "Текущая установка работоспособна") printf '%s' "The current installation is healthy" ;;
         "Использую существующий .env") printf '%s' "Using the existing .env" ;;
+        "Файл .env уже существует") printf '%s' "The .env file already exists" ;;
+        "Найден том PostgreSQL") printf '%s' "Found a PostgreSQL volume" ;;
+        "Найден том PostgreSQL от прежней версии") printf '%s' "Found a PostgreSQL volume from the previous version" ;;
+        "Данные будут перенесены заново из data/db.json") printf '%s' "Data will be imported again from data/db.json" ;;
+        "Содержимое прежней базы в новую автоматически не переносится") printf '%s' "Contents of the old database are NOT copied over automatically" ;;
+        "Старая база остаётся на диске — вернуть выбор можно тем же меню") printf '%s' "The old database stays on disk — the same menu brings it back" ;;
+        "База удалена, будет создана заново при запуске") printf '%s' "Database removed, it will be recreated on start" ;;
+        "Удаляю базу") printf '%s' "Removing the database" ;;
+        "Найдены данные версии 3.x — будут перенесены в базу") printf '%s' "Found 3.x data — it will be imported into the database" ;;
+        "Контейнер бота не найден") printf '%s' "Bot container not found" ;;
+        "Предыдущих установок не найдено") printf '%s' "No previous installation found" ;;
+        "Способ задан ключом командной строки") printf '%s' "The mode was set by a command-line flag" ;;
         "Обновление поверх существующей установки") printf '%s' "Updating over the existing installation" ;;
         "Собираю резервную копию (перед установкой)") printf '%s' "Making a backup (before installing)" ;;
         "Контейнер базы не запущен — дамп пропущен") printf '%s' "Database container is not running — dump skipped" ;;
@@ -956,12 +1024,12 @@ choose_database() {
     [ -d "$APP_DIR/data/postgres" ] && [ -n "$(ls -A "$APP_DIR/data/postgres" 2>/dev/null)" ] && has_pg=true
 
     echo
-    printf "  %sКакую базу данных использовать?%s\n\n" "$C_BOLD" "$C_RESET"
-    printf "    1) SQLite %s(рекомендуется)%s\n" "$C_GREEN" "$C_RESET"
-    printf "       %sфайл data/radar.db рядом с ботом, отдельный контейнер не нужен,%s\n" "$C_DIM" "$C_RESET"
-    printf "       %sни пароля, ни ожидания запуска — подходит для 1–2 ГБ ОЗУ%s\n" "$C_DIM" "$C_RESET"
+    printf "  %s%s%s\n\n" "$C_BOLD" "$(t db_title)" "$C_RESET"
+    printf "    1) SQLite %s%s%s\n" "$C_GREEN" "$(t db_sqlite_note)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t db_sqlite_line1)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t db_sqlite_line2)" "$C_RESET"
     printf "    2) PostgreSQL\n"
-    printf "       %sотдельный контейнер, +300–500 МБ памяти; нужен на машине помощнее%s\n" "$C_DIM" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t db_postgres_line)" "$C_RESET"
 
     if [ "$has_sqlite" = true ] || [ "$has_pg" = true ]; then
         echo
@@ -972,8 +1040,8 @@ choose_database() {
     local default_choice=1
     [ "$current" = "postgres" ] && default_choice=2
 
-    printf "\n  Сейчас выбрано: %s%s%s\n" "$C_BOLD" "$current" "$C_RESET"
-    printf "  Выбор [%d]: " "$default_choice"
+    printf "\n  %s %s%s%s\n" "$(t db_current)" "$C_BOLD" "$current" "$C_RESET"
+    printf "  %s [%d]: " "$(t action_choice)" "$default_choice"
     read -r db_choice < /dev/tty || db_choice="$default_choice"
     : "${db_choice:=$default_choice}"
 
@@ -992,7 +1060,7 @@ choose_database() {
              { [ "$current" = "postgres" ] && [ "$has_pg" = true ]; }; then
             warn "Содержимое прежней базы в новую автоматически не переносится"
             info "Старая база остаётся на диске — вернуть выбор можно тем же меню"
-            printf "  %sПродолжить смену базы?%s (y/N): " "$C_BOLD" "$C_RESET"
+            printf "  %s%s%s (y/N): " "$C_BOLD" "$(t db_switch_confirm)" "$C_RESET"
             read -r confirm_db < /dev/tty || confirm_db="n"
             case "${confirm_db:-n}" in
                 [Yy]*) : ;;
@@ -1096,6 +1164,47 @@ latest_snapshot() {
     ls -1t "$APP_DIR/backups"/rollback-*.tar.gz 2>/dev/null | head -1 || true
 }
 
+# Заливка дампа PostgreSQL. Общая для переезда и отката намеренно:
+# переезд научился делать это сам ещё в 4.7.1, а откат до 4.7.6.5
+# печатал команду и предлагал выполнить её руками — то есть ровно
+# в тот момент, когда установка уже сломана и человеку не до psql.
+# Две отдельные реализации разошлись бы: одну поправят, вторую забудут.
+load_pg_dump() {      # load_pg_dump <файл дампа>
+    local dump="$1" db_user db_name ready=false
+
+    [ -n "$dump" ] && [ -f "$dump" ] || return 1
+
+    db_user="$(get_env_value DB_USER)"; : "${db_user:=radar}"
+    db_name="$(get_env_value DB_NAME)"; : "${db_name:=radar}"
+
+    # Ждём готовности: psql в ещё не поднявшийся контейнер уйдёт впустую,
+    # а дамп будет считаться залитым.
+    for _ in $(seq 1 45); do
+        if docker exec radar_db pg_isready -U "$db_user" >/dev/null 2>&1; then
+            ready=true
+            break
+        fi
+        sleep 2
+    done
+    if [ "$ready" != true ]; then
+        warn "PostgreSQL не поднялся — дамп не залит"
+        return 1
+    fi
+
+    info "Заливаю базу из копии"
+    if docker exec -i radar_db psql -U "$db_user" -d "$db_name" \
+            < "$dump" >>"$LOG_FILE" 2>&1; then
+        ok "База развёрнута из копии"
+        # Переименовываем, чтобы повторный запуск не залил дамп поверх
+        # уже работающей базы.
+        mv "$dump" "$dump.applied" 2>/dev/null || true
+        return 0
+    fi
+
+    warn "Залить дамп не удалось — смотрите журнал"
+    return 1
+}
+
 do_rollback() {       # do_rollback [путь к снимку]
     local archive="${1:-$(latest_snapshot)}"
     if [ -z "$archive" ] || [ ! -f "$archive" ]; then
@@ -1117,18 +1226,37 @@ do_rollback() {       # do_rollback [путь к снимку]
     fi
     spinner_stop "Файлы и база восстановлены"
 
-    # Дамп PostgreSQL из снимка заливается после подъёма контейнера
-    if [ -f "$APP_DIR/data/postgres-dump.sql" ]; then
-        info "В снимке есть дамп PostgreSQL — залейте его после запуска:"
-        info "  docker exec -i radar_db psql -U radar radar < data/postgres-dump.sql"
-    fi
-
     info "Пересобираю образ прежней версии"
     if ! (cd "$APP_DIR" && run $COMPOSE build); then
         fail "Сборка прежней версии не удалась"
         return 1
     fi
-    if ! (cd "$APP_DIR" && run $COMPOSE up -d); then
+
+    local snapshot_dump="$APP_DIR/data/postgres-dump.sql"
+    local backend compose_args=""
+    backend="$(get_env_value DB_BACKEND)"; : "${backend:=sqlite}"
+    [ "$backend" = "postgres" ] && compose_args="--profile postgres"
+
+    # Дамп заливается ДО старта бота: иначе бот создаст пустую схему,
+    # и дамп ляжет поверх наполовину — часть таблиц из копии, часть новых.
+    # Поэтому сперва поднимаем одну базу.
+    if [ -f "$snapshot_dump" ] && [ "$backend" = "postgres" ]; then
+        if (cd "$APP_DIR" && run $COMPOSE $compose_args up -d postgres); then
+            load_pg_dump "$snapshot_dump" \
+                || warn "Откат продолжается, но данные остались прежними"
+        else
+            warn "PostgreSQL не запустился — дамп из снимка не залит"
+        fi
+    elif [ -f "$snapshot_dump" ]; then
+        # Дамп есть, а база теперь SQLite: залить нельзя — разные диалекты.
+        # Промолчать тоже нельзя, иначе человек решит, что данные вернулись.
+        warn "В снимке дамп PostgreSQL, а выбрана SQLite — залить нельзя"
+        info "Дамп остался на месте: data/postgres-dump.sql"
+    fi
+
+    # Профиль postgres нужен и здесь: без него откат на установке
+    # с PostgreSQL поднимал бота без базы.
+    if ! (cd "$APP_DIR" && run $COMPOSE $compose_args up -d); then
         fail "Запуск прежней версии не удался"
         return 1
     fi
@@ -1767,7 +1895,16 @@ elif command -v apt-get >/dev/null 2>&1; then
 
     # --- 2. сами пакеты ---
     upd_step "проверка обновлений"
-    UPGRADABLE=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst' || echo 0)
+    # grep -c печатает «0» и при этом выходит с кодом 1, когда совпадений
+    # нет. Прежняя конструкция «grep -c ... || echo 0» дописывала второй
+    # ноль, переменная становилась «0\n0», и сравнение падало с
+    # «integer expression expected». Ошибка не останавливала установку,
+    # но печаталась в отчёт при каждом запуске на актуальной системе.
+    UPGRADABLE=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst' || true)
+    # Пояс поверх подтяжек: что бы ни пришло, в сравнение уйдёт число.
+    case "$UPGRADABLE" in
+        ''|*[!0-9]*) UPGRADABLE=0 ;;
+    esac
     if [ "$UPGRADABLE" -gt 0 ]; then
         info "Доступно обновлений: $UPGRADABLE"
         upd_step "установка пакетов ($UPGRADABLE)"
@@ -1891,25 +2028,26 @@ elif [ "$MODE" = "новая установка" ]; then
     CHOICE=1
 else
     echo
-    printf "  %sКак поступить с существующей установкой?%s\n\n" "$C_BOLD" "$C_RESET"
-    printf "    %s1) Обновление%s\n" "$C_BOLD" "$C_RESET"
-    printf "       %sтекущая версия обновится до новой из репозитория,%s\n" "$C_DIM" "$C_RESET"
-    printf "       %sбаза, настройки и собранный образ сохраняются%s\n" "$C_DIM" "$C_RESET"
-    printf "    %s2) Переустановка%s\n" "$C_BOLD" "$C_RESET"
-    printf "       %sобраз и файлы проекта соберутся заново,%s\n" "$C_DIM" "$C_RESET"
-    printf "       %sбаза данных и .env сохраняются%s\n" "$C_DIM" "$C_RESET"
-    printf "    %s3) С чистого листа%s\n" "$C_BOLD" "$C_RESET"
-    printf "       %sудаление всех данных и установка с настройкой заново%s\n" "$C_DIM" "$C_RESET"
-    printf "    %s4) Только резервная копия%s\n" "$C_BOLD" "$C_RESET"
-    printf "       %sснять копию и выйти, ничего не меняя%s\n" "$C_DIM" "$C_RESET"
-    printf "\n  %sПеред любым из вариантов снимается резервная копия.%s\n\n" "$C_DIM" "$C_RESET"
+    printf "  %s%s%s\n\n" "$C_BOLD" "$(t existing_title)" "$C_RESET"
+    printf "    %s1) %s%s\n" "$C_BOLD" "$(t existing_update)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t existing_update_note1)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t existing_update_note2)" "$C_RESET"
+    printf "    %s2) %s%s\n" "$C_BOLD" "$(t existing_reinstall)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t existing_reinstall_note1)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t existing_reinstall_note2)" "$C_RESET"
+    printf "    %s3) %s%s\n" "$C_BOLD" "$(t existing_clean)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t existing_clean_note)" "$C_RESET"
+    printf "    %s4) %s%s\n" "$C_BOLD" "$(t existing_backup)" "$C_RESET"
+    printf "       %s%s%s\n" "$C_DIM" "$(t existing_backup_note)" "$C_RESET"
+    printf "\n  %s%s%s\n\n" "$C_DIM" "$(t existing_note)" "$C_RESET"
 
     if [ "$HEALTHY" != true ] && [ -n "$DIAGNOSIS" ]; then
-        printf "  %sДиагностика: %s → рекомендуется вариант %d%s\n" \
-            "$C_YELLOW" "$DIAGNOSIS" "$RECOMMENDED" "$C_RESET"
+        printf "  %s%s: %s → %s %d%s\n" \
+            "$C_YELLOW" "$(t existing_diagnosis)" "$DIAGNOSIS" \
+            "$(t existing_recommended)" "$RECOMMENDED" "$C_RESET"
     fi
 
-    printf "  Выбор [%d]: " "$RECOMMENDED"
+    printf "  %s [%d]: " "$(t action_choice)" "$RECOMMENDED"
     read -r CHOICE < /dev/tty || CHOICE="$RECOMMENDED"
     : "${CHOICE:=$RECOMMENDED}"
     log_raw "Выбран способ установки: $CHOICE (рекомендовался $RECOMMENDED)"
@@ -2360,7 +2498,7 @@ ask() { # ask <подсказка> <переменная> <regexp> <обязат
 
 if [ -f .env ] && [ "$RECREATE_ENV" = false ]; then
     info "Файл .env уже существует"
-    read -r -p "  Использовать текущие настройки? (Y/n): " reply < /dev/tty || true
+    read -r -p "  $(t env_reuse_ask) " reply < /dev/tty || true
     case "${reply:-y}" in
         [Nn]*) RECREATE_ENV=true ;;
         *) ok "Использую существующий .env" ;;
@@ -2469,13 +2607,13 @@ database_menu() {
     fi
 
     echo
-    printf "  %sОбслуживание базы данных%s\n\n" "$C_BOLD" "$C_RESET"
-    printf "    1) Ничего не делать %s(по умолчанию)%s\n" "$C_DIM" "$C_RESET"
-    printf "    2) Снять копию базы\n"
-    printf "    3) Снять копию, удалить базу и создать заново\n"
-    printf "    4) Восстановить базу из копии %s(доступно: %s)%s\n" \
-        "$C_DIM" "$snapshots" "$C_RESET"
-    printf "  Выбор [1]: "
+    printf "  %s%s%s\n\n" "$C_BOLD" "$(t dbmaint_title)" "$C_RESET"
+    printf "    1) %s\n" "$(t dbmaint_nothing)"
+    printf "    2) %s\n" "$(t dbmaint_backup)"
+    printf "    3) %s\n" "$(t dbmaint_recreate)"
+    printf "    4) %s%s %s)%s\n" \
+        "$(t dbmaint_restore)" "$C_DIM" "$snapshots" "$C_RESET"
+    printf "  %s [1]: " "$(t action_choice)"
 
     local answer=""
     read -r answer < /dev/tty || answer="1"
@@ -2718,18 +2856,11 @@ if [ "$DB_BACKEND_VALUE" = "postgres" ]; then
 
     # Заливка дампа при переезде. Делается до старта бота: иначе он создаст
     # пустую схему, и дамп ляжет поверх наполовину — часть таблиц из копии,
-    # часть новых.
+    # часть новых. Логика общая с откатом — см. load_pg_dump.
     if [ -n "$MIGRATION_DUMP" ] && [ -f "$MIGRATION_DUMP" ]; then
-        info "Заливаю базу из копии"
-        db_user="$(get_env_value DB_USER)"; : "${db_user:=radar}"
-        db_name="$(get_env_value DB_NAME)"; : "${db_name:=radar}"
-        if docker exec -i radar_db psql -U "$db_user" -d "$db_name" \
-                < "$MIGRATION_DUMP" >>"$LOG_FILE" 2>&1; then
-            ok "База развёрнута из копии"
-            mv "$MIGRATION_DUMP" "$MIGRATION_DUMP.applied" 2>/dev/null || true
+        if load_pg_dump "$MIGRATION_DUMP"; then
             MIGRATION_DUMP="$MIGRATION_DUMP.applied"
         else
-            warn "Залить дамп не удалось — смотрите журнал"
             warn "Система поднимется с пустой базой; данные остались в копии"
         fi
     fi
