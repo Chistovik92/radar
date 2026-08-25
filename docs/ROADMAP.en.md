@@ -65,6 +65,21 @@ numbered from one.
 
 ---
 
+## Status markers
+
+| Marker | Meaning |
+|---|---|
+| ✅ | done and verified in operation |
+| ⚠️ | code written, never exercised on a live server |
+| ❌ | rejected, with the reason stated |
+
+The third marker appeared in 4.8 and exists precisely because of what sets
+this project apart: installation, migration and restore cannot be verified
+from a workstation — only on the author's server. Marking those with a tick
+would promise verification where only code exists.
+
+---
+
 ## 4.0 — foundation ✅ done
 
 1. **A real database instead of JSON.** SQLAlchemy 2.x async. **SQLite** by
@@ -265,7 +280,7 @@ backup is ever needed for real.
    upgraded. ✅ implemented in 4.5.7.
 4. **Full reset** — `install.sh --reset`: back up, remove the database and
    files, install from scratch. Implemented in 4.0.5.
-5. **A fire drill — the main point of this section.** Restore that has
+5. ⚠️ **A fire drill — the main point of this section.** Restore that has
    never once been tested should be considered broken. On a clean machine:
    deploy from scratch, fill it with data, take a backup, tear the install
    down completely, restore from the backup. Separately — restore on
@@ -341,11 +356,15 @@ backup is ever needed for real.
     `tr_msg`. Dictionary completeness is now checked by
     `tools/lint_installer.py`: a key defined in only one language used to
     silently return an empty string.
-10. **Documentation in two languages.** `README.en.md` — 4.7.3.1,
-    `MONETIZATION.en.md` — 4.7.5, `ROADMAP.en.md` — 4.7.5.3.
-    **Still left:** STATUS, API_SETUP and NEWS_DIGEST — the author's
-    working documents, read mostly during development itself, so
-    translating them is the least urgent.
+10. **Documentation in two languages.** ✅ closed in 4.8.
+    `README.en.md` — 4.7.3.1, `MONETIZATION.en.md` — 4.7.5,
+    `ROADMAP.en.md` — 4.7.5.3.
+    **Decision of August 2026: STATUS, API_SETUP and NEWS_DIGEST are not
+    translated.** They are the author's internal documents: they get read
+    while the code is being changed, and one person reads them.
+    Translating would double the maintenance burden without a single
+    reader — the same reason the installer's technical log lines (item 9)
+    and the superadministrator screens (item 20) stayed in Russian.
     Since 4.7.5.4 README and ROADMAP are updated **in both languages at
     once**, together with the change itself: a divergence between the
     Russian and English text is found only by a reader, and by then they
@@ -502,7 +521,7 @@ up.
 
 ## 4.7.1 — moving to another server
 
-19. **A full move with one command.** ✅ implemented in 4.7.1.
+19. ⚠️ **A full move with one command.** The code has been ready since 4.7.1; the fire drill has not been run.
     `install.sh --migrate` on the old machine builds a backup and prints
     the next steps; `install.sh --restore=FILE` on the new one deploys the
     system, loads the dump before the bot starts, and recounts users,
@@ -654,7 +673,8 @@ became item 21.
     author's decision: a person should not have to reassemble the video
     themselves. Recording it beats quietly not doing it: a rejected option
     with a stated reason does not come back around for discussion.
-25. **Re-encoding to a target size.** ✅ implemented in 4.7.12, flag
+25. **Re-encoding to a target size.** ✅ implemented in 4.7.12,
+    ⚠️ never run on live ARM — the time estimates are computed. Flag
     `media_transcode`, off by default.
 
     A variant larger than the limit is no longer simply refused: the bot
@@ -688,7 +708,7 @@ became item 21.
     built ffmpeg and a device passed into the container — the
     `python:3.11-slim` image has neither.
 26. **Its own Bot API Server.** ✅ brought into working order in
-    4.7.12.5. Raises the limit to 2 GB and makes item 25 almost
+    4.7.12.5, ⚠️ never brought up on a live server. Raises the limit to 2 GB and makes item 25 almost
     unnecessary.
 
     It turned out the path was **dead**: the container has been described
@@ -741,27 +761,48 @@ became item 21.
 
 ## 4.8 — optimizing for the single-board computer
 
-The system stays on the current server. A move is not planned — instead,
-the work is making the existing resources comfortably enough.
+1. **Profiling.** The measurement tool — `/perf` — was built in 4.5.7,
+   readings were taken in 4.7.6.5, and they produced the parallel source
+   walk and moving parsing off the event loop (4.7.7). What remains is
+   PostgreSQL under real load: the server currently runs SQLite, so there
+   is nothing to measure.
+2. **Tuning PostgreSQL for the actual amount of memory.** Settings were
+   raised for 4 GB in 4.0.5. Automatic tuning at install time — not done.
+3. **Container limits** — set in 4.0.5, refined from measurements.
+4. **Cutting network calls.** ✅ implemented in 4.8.
 
-1. **Profiling.** The measurement tool — the `/perf` command — was built in
-   4.5.7; what remains is PostgreSQL under real load and conclusions from
-   the readings.
-2. **Tuning PostgreSQL for the actual amount of memory.** In 4.0.5 the
-   settings were already raised for 4 GB (`shared_buffers=256MB`, a 1 GB
-   cache, parallel workers enabled). In 4.6, automatic tuning based on
-   available memory at install time.
-3. **Container limits** — memory caps so that one process cannot drag down
-   the whole system. Set in 4.0.5, refined based on measurement results.
-4. **Cutting network calls:** batching geocoding requests, caching
-   Open-Meteo responses, sensible polling intervals for sources.
+   The measurement showed the cycle spends almost all its time waiting on
+   the network. Part of that waiting was redundant: the same thing was
+   being asked several times over.
+
+   - **Weather.** Fetched for every location group of every user.
+     Neighbours in one building give identical coordinates to two decimal
+     places — and just as many identical requests in a row. The response is
+     now cached for fifteen minutes (Open-Meteo refreshes hourly, so the
+     margin is double; holding it longer is not an option — the summary
+     carries local time, and it would drift).
+   - **Geocoding.** Nominatim allows **one request per second**, which is
+     stricter than any timeout of ours. Reverse geocoding is cached for a
+     day: addresses do not move. Forward search for an hour: a new building
+     can appear in Nominatim's data, and remembering "no such address"
+     forever would be wrong.
+
+   The decision that shaped the design: the cache holds the **raw**
+   response, not the parsed one. Parsing depends on the user's language,
+   and caching it would mean a copy per language for one shared request.
+
+   What must not be cached: failures. Remembering "could not reach it"
+   means locking in that failure for the entry's whole lifetime.
+
+   Hits are visible in `/perf` — otherwise "the cache works" and "there is
+   no cache" look identical from outside.
 5. **A compact database:** automatic history cleanup by
-   `EVENT_RETENTION_DAYS`, regular `VACUUM`, monitoring size and warning in
-   the bot as it grows.
-6. **A fast start.** The schema is created directly from the models,
-   without running Alembic inside the bot process — mixing synchronous
-   Alembic with an already-running event loop was what hung the startup on
-   ARM.
+   `EVENT_RETENTION_DAYS`, regular `VACUUM`, size monitoring and a warning
+   as it grows.
+6. **A fast start.** ✅ done in 4.0.5: the schema is created directly from
+   the models, without running Alembic inside the bot process — mixing
+   synchronous Alembic with a running event loop was what hung startup
+   on ARM.
 
 ---
 

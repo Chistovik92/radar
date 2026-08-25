@@ -15,11 +15,32 @@ from typing import Any
 
 import aiohttp
 
-from . import config
+from . import config, netcache
 
 log = logging.getLogger("radar.geocode")
 
 _URL = "https://nominatim.openstreetmap.org/reverse"
+
+# Адреса не переезжают, поэтому обратное геокодирование держим сутки:
+# при ограничении Nominatim в один запрос в секунду каждое попадание
+# в кэш — это секунда, возвращённая циклу.
+REVERSE_TTL = 24 * 3600
+# Прямой поиск живёт меньше: новый дом в базе Nominatim может появиться,
+# и запомнить «такого адреса нет» на сутки было бы неверно.
+FORWARD_TTL = 3600
+
+_REVERSE = netcache.TTLCache(REVERSE_TTL, limit=2000)
+_FORWARD = netcache.TTLCache(FORWARD_TTL, limit=500)
+
+
+def cache_stats() -> dict:
+    """Для /perf: сколько запросов к Nominatim удалось не делать."""
+    return {"reverse": _REVERSE.stats(), "forward": _FORWARD.stats()}
+
+
+def forget_cache() -> None:
+    _REVERSE.clear()
+    _FORWARD.clear()
 _gate = asyncio.Lock()
 _last_call = 0.0
 
@@ -36,6 +57,15 @@ async def reverse(
     session: aiohttp.ClientSession, lat: float, lon: float
 ) -> dict[str, str]:
     """Возвращает словарь с ключами name/city/district/region/street/house."""
+    # Nominatim разрешает один запрос в секунду, и это жёстче любого
+    # нашего таймаута: повторный разбор тех же координат — секунда,
+    # отнятая у всего остального цикла. Адреса при этом не меняются,
+    # поэтому держим их долго.
+    key = netcache.round_point(lat, lon)
+    cached = _REVERSE.get(key)
+    if cached is not None:
+        return dict(cached)
+
     await _throttle()
     params = {
         "lat": f"{lat}",
@@ -88,7 +118,7 @@ async def reverse(
     if city and city not in label:
         label = f"{label} ({city})"
 
-    return {
+    result = {
         "name": label,
         "street": street,
         "house": house,
@@ -96,6 +126,11 @@ async def reverse(
         "district": district,
         "region": region,
     }
+    # Запасной вариант не кэшируем: он означает «не дозвонились», и
+    # запомнить его — значит закрепить неудачу на сутки. Сюда мы
+    # доходим только с настоящим ответом.
+    _REVERSE.put(key, dict(result))
+    return result
 
 
 def _fallback(lat: float, lon: float) -> dict[str, str]:
@@ -124,6 +159,13 @@ async def forward(
         return []
     if city_hint and city_hint.lower() not in text.lower():
         text = f"{text}, {city_hint}"
+
+    # Администрация добавляет локации пачками и нередко повторяет одну
+    # и ту же улицу. Каждый повтор — секунда ожидания у Nominatim.
+    key = text.lower()
+    cached = _FORWARD.get(key)
+    if cached is not None:
+        return [dict(item) for item in cached]
 
     await _throttle()
     params = {
@@ -188,4 +230,9 @@ async def forward(
                 "region": address.get("state") or "",
             }
         )
+
+    # Пустую выдачу тоже запоминаем: «такого адреса нет» — это ответ,
+    # и переспрашивать его каждую секунду незачем. Но ненадолго:
+    # в Nominatim адреса появляются.
+    _FORWARD.put(key, [dict(item) for item in results])
     return results

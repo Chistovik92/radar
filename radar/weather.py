@@ -24,9 +24,17 @@ from typing import Any
 
 import aiohttp
 
+from . import netcache
+
 log = logging.getLogger("radar.weather")
 
 _URL = "https://api.open-meteo.com/v1/forecast"
+
+# Open-Meteo обновляет прогноз раз в час, поэтому четверть часа — запас
+# с двойным перекрытием. Дольше держать не стоит: в сводке есть местное
+# время, и оно начнёт заметно отставать.
+CACHE_TTL = 900
+_CACHE = netcache.TTLCache(CACHE_TTL, limit=400)
 
 # Коды погоды WMO: описание и значок (день / ночь).
 CODES: dict[int, tuple[str, str, str]] = {
@@ -142,21 +150,40 @@ async def fetch(
         "forecast_days": "4",
         "wind_speed_unit": "ms",
     }
-    try:
-        async with session.get(_URL, params=params) as response:
-            if response.status != 200:
-                status_text = i18n.t(
-                    "weather.error.bad_status", lang, "сервис погоды вернул код"
-                )
-                return Weather(ok=False, error=f"{status_text} {response.status}")
-            data = await response.json(content_type=None)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Погода недоступна: %s", exc)
-        return Weather(ok=False, error=i18n.t(
-            "weather.error.fetch_failed", lang, "сбой получения погоды"
-        ))
+    # Кэш держит СЫРОЙ ответ, а не разобранный: разбор зависит от языка,
+    # и кэшировать его значило бы хранить по копии на язык при общем
+    # сетевом запросе. Соседи по дому дают одинаковые координаты
+    # с точностью до сотых — и столько же одинаковых запросов подряд.
+    key = netcache.round_point(lat, lon)
+    data = _CACHE.get(key)
+
+    if data is None:
+        try:
+            async with session.get(_URL, params=params) as response:
+                if response.status != 200:
+                    status_text = i18n.t(
+                        "weather.error.bad_status", lang, "сервис погоды вернул код"
+                    )
+                    return Weather(ok=False, error=f"{status_text} {response.status}")
+                data = await response.json(content_type=None)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Погода недоступна: %s", exc)
+            return Weather(ok=False, error=i18n.t(
+                "weather.error.fetch_failed", lang, "сбой получения погоды"
+            ))
+        _CACHE.put(key, data)
 
     return parse(data, hours, lang)
+
+
+def cache_stats() -> dict:
+    """Для /perf: видно ли, что кэш вообще работает."""
+    return _CACHE.stats()
+
+
+def forget_cache() -> None:
+    """Сброс — в тестах и после смены настроек."""
+    _CACHE.clear()
 
 
 def parse(data: dict, hours: int = 8, lang: str = "ru") -> Weather:

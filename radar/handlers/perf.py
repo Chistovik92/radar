@@ -97,6 +97,33 @@ def _report() -> str:
     lines.append(f"Наблюдение идёт: <b>{_uptime(profiling.uptime())}</b>")
     lines.append(f"Интервал опроса: <b>{config.POLL_INTERVAL} с</b>")
 
+    # Кэш внешних служб. Без этих строк непонятно, работает ли экономия
+    # запросов вообще: снаружи «кэш попадает» и «кэша нет» выглядят
+    # одинаково — просто цикл идёт чуть быстрее или чуть медленнее.
+    try:
+        from .. import geocode, weather
+
+        sky = weather.cache_stats()
+        places = geocode.cache_stats()
+        lines.append("")
+        lines.append("💾 <b>Кэш внешних служб</b>")
+        lines.append(
+            f"Погода: <b>{sky['hits']}</b> из кэша, {sky['misses']} запросов "
+            f"({sky['ratio'] * 100:.0f}% попаданий)"
+        )
+        lines.append(
+            f"Адреса: <b>{places['reverse']['hits']}</b> из кэша, "
+            f"{places['reverse']['misses']} запросов к Nominatim"
+        )
+        lines.append(
+            "<i>Nominatim разрешает один запрос в секунду — каждое "
+            "попадание возвращает циклу секунду.</i>"
+        )
+    except Exception:  # noqa: BLE001
+        # Отчёт о производительности не должен падать из-за самого себя.
+        lines.append("")
+        lines.append("💾 <i>Статистика кэша недоступна.</i>")
+
     # Состояние пула подборок: пустой пул и сломанный сбор снаружи
     # выглядят одинаково, и разница обнаруживалась только чтением кода.
     try:
