@@ -171,6 +171,10 @@ MEDIA_COOKIES: str = (os.getenv("MEDIA_COOKIES") or "").strip()
 # Сколько одновременных загрузок допускается: на одноплатнике больше одной
 # означает деградацию всего бота
 MEDIA_CONCURRENCY: int = max(1, _int("MEDIA_CONCURRENCY", 1))
+# Предел времени на сжатие ролика, секунд. Зависшее кодирование не должно
+# занимать одноплатник до перезагрузки, а ждать дольше получаса человек
+# всё равно не станет.
+TRANSCODE_TIMEOUT: int = max(60, _int("TRANSCODE_TIMEOUT", 1800))
 # Кому доступна загрузка: user | moderator | admin | superadmin
 MEDIA_MIN_ROLE: str = (os.getenv("MEDIA_MIN_ROLE") or "moderator").strip().lower()
 

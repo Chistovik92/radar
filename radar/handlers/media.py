@@ -29,7 +29,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, features, media, mediaquota, roles, storage
+from .. import config, features, media, mediaquota, roles, storage, transcode
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -120,6 +120,9 @@ async def handle_link(message: Message, role: str) -> None:
         "title": media.safe_filename(str(info.get("title") or "video")),
         "owner": message.from_user.id,
         "created": time.time(),
+        # Длительность нужна сжатию: битрейт под целевой размер считается
+        # именно из неё.
+        "duration": int(info.get("duration") or 0),
     }
 
     lines = [media.describe(info), "", "🎯 <b>Выберите качество:</b>"]
@@ -155,8 +158,55 @@ async def drop_request(call: CallbackQuery) -> None:
     await safe_edit(call, "Загрузка отменена.", back_kb())
 
 
+def _compression_offer(token: str, index: int, request: dict,
+                       chosen: media.Format, limit_mb: int):
+    """Предложение сжать. None — предлагать нечего, пусть идёт обычный путь.
+
+    Отдельной функцией, чтобы решение «можно ли и сколько это займёт»
+    проверялось без запуска бота.
+    """
+    if not features.enabled("media_transcode"):
+        return None
+
+    duration = int(request.get("duration") or 0)
+    if duration <= 0:
+        return None
+
+    plan = transcode.plan(duration, limit_mb, chosen.height)
+    if plan is None:
+        # Длительность такова, что сжимать бессмысленно. Сказать правду
+        # честнее, чем выдать нечитаемое видео.
+        return (
+            f"📏 {esc(transcode.too_long_message(duration, limit_mb))}",
+            back_kb(),
+        )
+
+    spent = transcode.human_time(transcode.estimate_seconds(plan))
+    text = (
+        f"🗜 <b>Ролик не поместится: {chosen.size_mb:.0f} МБ при пределе "
+        f"{limit_mb} МБ.</b>\n\n"
+        f"Его можно сжать до {plan.height}p — получится примерно "
+        f"{limit_mb} МБ.\n"
+        f"Займёт <b>{spent}</b>: процессор одноплатника слабый, и сжатие "
+        f"идёт с пониженным приоритетом, чтобы не задерживать оповещения.\n\n"
+        f"<i>Можно и просто выбрать качество ниже — это мгновенно.</i>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🗜 Сжать ({spent})",
+                              callback_data=f"med:zip:{token}:{index}")],
+        [InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                              callback_data=f"med:back:{token}")],
+    ])
+    return text, keyboard
+
+
 @router.callback_query(F.data.startswith("med:get:"))
+@router.callback_query(F.data.startswith("med:zip:"))
 async def download(call: CallbackQuery, role: str, user: dict) -> None:
+    # med:zip — тот же путь, но с последующим сжатием. Разделять их
+    # раньше загрузки нельзя: решение влияет на то, ставить ли предел
+    # размера самой загрузке (см. ниже).
+    compress = call.data.startswith("med:zip:")
     quota = mediaquota.quota_of(user, role)
     if not quota.allowed(mediaquota.today()):
         await call.answer(
@@ -186,6 +236,18 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
     chosen: media.Format = request["formats"][index]
     await call.answer(f"Качество: {chosen.label}")
 
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    # Вариант крупнее предела: вместо отказа предлагаем сжать. Спрашиваем
+    # ДО загрузки, потому что от ответа зависит, ставить ли ей предел
+    # размера: для сжатия нужен полный исходник, а обычной загрузке
+    # выкачивать заведомо лишнее незачем.
+    if not compress and chosen.size_mb and chosen.size_mb > limit_mb:
+        offer = _compression_offer(token, index, request, chosen, limit_mb)
+        if offer is not None:
+            await safe_edit(call, offer[0], offer[1])
+            return
+
     if _slots.locked():
         await safe_edit(
             call,
@@ -213,7 +275,12 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
 
     async with _slots:
         try:
-            path = await _run_download(request["url"], chosen, target, progress, status)
+            # При сжатии предел загрузке не ставим: нужен полный исходник,
+            # иначе обрывать его на половине — значит сжимать половину.
+            path = await _run_download(
+                request["url"], chosen, target, progress, status,
+                limit_mb=0 if compress else limit_mb,
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("Скачивание не удалось: %s", exc)
             await _safe_text(status, f"❌ {esc(media.friendly_error(exc))}")
@@ -229,7 +296,21 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
         mediaquota.store_quota(user, quota)
         await storage.save()
 
+        # Исходник запоминаем отдельно: после сжатия path указывает
+        # на новый файл, и без этого исходный остался бы на диске —
+        # то есть ровно та беда, от которой мы бережём одноплатник.
+        source_path = path
+        shrunk = ""
         try:
+            if compress:
+                shrunk, complaint = await _run_transcode(
+                    path, request, chosen, limit_mb, status
+                )
+                if not shrunk:
+                    await _safe_text(status, f"❌ {esc(complaint)}")
+                    return
+                path = shrunk
+
             size = os.path.getsize(path)
             oversize, reason = media.too_big(size, config.uses_local_api())
             if oversize:
@@ -248,16 +329,87 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             except TelegramBadRequest:
                 pass
         finally:
-            # Диск одноплатника кончается быстро — убираем сразу
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            # Диск одноплатника кончается быстро — убираем сразу и оба
+            # файла: исходник и сжатый.
+            for leftover in {source_path, shrunk, path}:
+                if not leftover:
+                    continue
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
             _pending.pop(token, None)
 
 
+async def _run_transcode(source: str, request: dict, chosen: media.Format,
+                         limit_mb: int, status: Message) -> tuple[str, str]:
+    """Сжимает скачанный файл. Возвращает (путь, объяснение отказа)."""
+    duration = int(request.get("duration") or 0)
+    plan = transcode.plan(duration, limit_mb, chosen.height)
+    if plan is None:
+        return "", transcode.too_long_message(duration, limit_mb)
+
+    target = f"{os.path.splitext(source)[0]}_small.mp4"
+    spent = transcode.human_time(transcode.estimate_seconds(plan))
+    loop = asyncio.get_running_loop()
+    last = 0.0
+
+    def on_progress(share: float) -> None:
+        # Правим сообщение не чаще раза в несколько процентов: сжатие идёт
+        # минутами, а Telegram ограничивает частоту правок.
+        nonlocal last
+        if share - last < 0.05 and share < 1.0:
+            return
+        last = share
+        asyncio.run_coroutine_threadsafe(
+            _safe_text(
+                status,
+                f"🗜 <b>Сжимаю до {plan.height}p</b> — {share * 100:.0f}%\n"
+                f"<i>Всего {spent}. Оповещения при этом идут как обычно.</i>",
+            ),
+            loop,
+        )
+
+    await _safe_text(
+        status,
+        f"🗜 <b>Сжимаю до {plan.height}p</b>\n"
+        f"<i>Займёт {spent}. Оповещения при этом идут как обычно.</i>",
+    )
+
+    done, complaint = await transcode.run(
+        source, target, plan,
+        timeout_s=config.TRANSCODE_TIMEOUT,
+        on_progress=on_progress,
+    )
+    if not done:
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        return "", complaint
+    return target, ""
+
+
+@router.callback_query(F.data.startswith("med:back:"))
+async def back_to_formats(call: CallbackQuery) -> None:
+    """Возврат к выбору качества из предложения сжать."""
+    token = call.data.split(":")[2]
+    request = _pending.get(token)
+    if request is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    await call.answer()
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+    await safe_edit(
+        call,
+        "🎯 <b>Выберите качество:</b>",
+        _keyboard(token, request["formats"], limit_mb),
+    )
+
+
 async def _run_download(url: str, chosen: media.Format, target: str,
-                        progress: media.Progress, status: Message) -> str | None:
+                        progress: media.Progress, status: Message,
+                        *, limit_mb: int = 0) -> str | None:
     """Скачивание в потоке с передачей прогресса в чат."""
     import yt_dlp
 
@@ -278,8 +430,8 @@ async def _run_download(url: str, chosen: media.Format, target: str,
 
     # Предел передаём и в выбор формата, и в саму загрузку: первое
     # отсеивает заведомо неподходящие варианты, второе обрывает загрузку,
-    # если размер выяснился только по ходу дела.
-    limit_mb = media.size_limit_mb(config.uses_local_api())
+    # если размер выяснился только по ходу дела. При сжатии предел равен
+    # нулю — исходник нужен целиком.
     options = media.build_options(
         target,
         chosen.selector_for(limit_mb),

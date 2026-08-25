@@ -650,14 +650,40 @@ became item 21.
     The opposite case is handled separately: if free space cannot be
     determined, the download is **allowed**. Forbidding work on a guess is
     worse than skipping the check.
-24. **Splitting into 50 MB parts.** Full quality with no re-encoding, at the
-    cost of the person reassembling the file themselves.
-25. **Re-encoding to a target size.** A last resort, and here is why. The
-    RK3318 has four Cortex-A53 cores; software x264 encoding runs at 5–15
-    frames per second there, so a ten-minute 720p clip takes twenty minutes
-    to an hour and occupies the CPU entirely — the same CPU that is meant to
-    be parsing threat messages at that moment. So: only behind an explicit
-    button, with an honest time estimate, with `nice` and a hard timeout.
+24. ~~**Splitting into 50 MB parts.**~~ ❌ rejected in 4.7.12 by the
+    author's decision: a person should not have to reassemble the video
+    themselves. Recording it beats quietly not doing it: a rejected option
+    with a stated reason does not come back around for discussion.
+25. **Re-encoding to a target size.** ✅ implemented in 4.7.12, flag
+    `media_transcode`, off by default.
+
+    A variant larger than the limit is no longer simply refused: the bot
+    offers to compress it, naming the resolution and the time. If the person
+    agrees, the source is downloaded in full (the download limit is **not**
+    applied then — otherwise there would be nothing to compress) and handed
+    to ffmpeg.
+
+    How the plan is computed: the bitrate follows from duration and target
+    size, the resolution is picked from a ladder (1500 kbps — 720p, 800 —
+    480p, 400 — 360p, 200 — 240p), and the remainder goes to audio. No
+    upscaling: raising the resolution during compression spends bitrate on
+    invented pixels.
+
+    **Refusing matters more than delivering.** The bitrate is dictated by
+    duration and no arithmetic gets around it: 50 MB for an hour of video is
+    110 kbps, which is not enough for any resolution. The boundary sits near
+    24 minutes; past it the bot explains the arithmetic and points at a local
+    Bot API Server instead of producing unwatchable mush. Handing over mush
+    instead of video betrays the expectation rather than fulfilling the
+    request.
+
+    To keep this from harming the main job: `nice -n 19`, two threads out of
+    four cores, a hard `TRANSCODE_TIMEOUT` (half an hour by default). When
+    the CPU is short, the clip should suffer, not the alerts. The time is
+    stated up front — "please wait" without a number is not a warning. In
+    practice it comes out at 3–8 minutes: a longer clip gets a smaller
+    resolution, and that encodes faster.
+
     The RK3318 does have a hardware encoder (rkmpp), but it needs a specially
     built ffmpeg and a device passed into the container — the
     `python:3.11-slim` image has neither.

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.11 — автономный установщик.
+# Система «Радар» v4.7.12 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.11"
+VERSION="4.7.12"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2135,7 +2135,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=86
+FILE_COUNT=87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2431,6 +2431,18 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.7.12", [
+        "🗜 <b>Крупное видео можно сжать.</b> Вариант, не помещающийся "
+        "в предел, больше не отвергается: бот предлагает сжатие, называя "
+        "разрешение и время. Обычно это 3–8 минут — сжатие идёт "
+        "с пониженным приоритетом и не задерживает оповещения.",
+        "📏 <b>Длинные ролики честно отвергаются.</b> Битрейт задаётся "
+        "длительностью: 50 МБ на час видео — это 110 кбит/с, чего "
+        "не хватит ни на какое разрешение. Вместо нечитаемого мыла бот "
+        "показывает расчёт. Граница проходит около 24 минут.",
+        "✂️ Разрезание на части отклонено: собирать видео обратно "
+        "вручную человек не должен.",
+    ]),
     ("4.7.11", [
         "📣 <b>Это сообщение снова показывает то, что нужно.</b> Список "
         "выпусков в коде отстал на восемь версий: после каждого обновления "
@@ -3105,7 +3117,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.11"
+__version__ = "4.7.12"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -3289,6 +3301,10 @@ MEDIA_COOKIES: str = (os.getenv("MEDIA_COOKIES") or "").strip()
 # Сколько одновременных загрузок допускается: на одноплатнике больше одной
 # означает деградацию всего бота
 MEDIA_CONCURRENCY: int = max(1, _int("MEDIA_CONCURRENCY", 1))
+# Предел времени на сжатие ролика, секунд. Зависшее кодирование не должно
+# занимать одноплатник до перезагрузки, а ждать дольше получаса человек
+# всё равно не станет.
+TRANSCODE_TIMEOUT: int = max(60, _int("TRANSCODE_TIMEOUT", 1800))
 # Кому доступна загрузка: user | moderator | admin | superadmin
 MEDIA_MIN_ROLE: str = (os.getenv("MEDIA_MIN_ROLE") or "moderator").strip().lower()
 
@@ -4796,6 +4812,11 @@ FLAGS: tuple[Flag, ...] = (
     Flag("maintenance", "Режим обслуживания",
          "Бот отвечает «идут работы», фоновый цикл остановлен.",
          group="Инфраструктура", since="4.5", default=False),
+    Flag("media_transcode", "Сжатие видео под предел",
+         "Ролик крупнее предела можно сжать. На одноплатнике это занимает "
+         "процессор на десятки минут, поэтому идёт с пониженным "
+         "приоритетом: оповещения важнее ролика.",
+         group="Инфраструктура", since="4.7.12", default=False),
     Flag("restart_notice", "Ответ написавшим во время работ",
          "После перезапуска бот пишет тем, кто обращался, пока он был "
          "выключен: их сообщения Telegram не сохраняет, и без этого "
@@ -6568,8 +6589,299 @@ def choose_default(formats: Iterable[Format], limit_mb: int) -> Format | None:
     ordered = sorted(items, key=lambda value: value.height)
     return ordered[0] if ordered else None
 RADAR_FILE_18
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/transcode.py"
+cat > "radar/transcode.py" <<'RADAR_FILE_19'
+"""Сжатие ролика под предел отправки.
+
+Последнее средство из раздела 4.7.9 дорожной карты, и относиться к нему
+надо соответственно. Разрезание на части было отвергнуто раньше: человек
+не должен собирать видео обратно сам.
+
+**Чего это стоит на одноплатнике.** RK3318 — четыре Cortex-A53. Программное
+кодирование x264 идёт на нём 5–15 кадров в секунду, то есть десятиминутный
+ролик 720p сжимается от двадцати минут до часа. Тот самый процессор в это
+время должен разбирать сообщения об угрозах. Поэтому:
+
+* сжатие включается флагом и запускается только по явной кнопке;
+* ffmpeg идёт с `nice` и ограниченным числом потоков — оповещения важнее
+  ролика, и при нехватке процессора страдать должен ролик;
+* есть жёсткий таймаут: зависшее кодирование не должно занимать машину
+  до перезагрузки;
+* время называется заранее. «Ждите» без числа — это не предупреждение.
+
+**Предел, который нельзя обойти арифметикой.** Битрейт определяется
+длительностью: 50 МБ на час видео — это 110 кбит/с, а столько не хватает
+ни на какое разрешение. Поэтому длинные ролики отвергаются с объяснением,
+а не сжимаются в нечитаемую кашу. Отдать мыло вместо видео — обмануть
+ожидание, а не выполнить просьбу.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+log = logging.getLogger("radar.transcode")
+
+# Запас под контейнер и погрешность кодировщика: ffmpeg держит средний
+# битрейт, но не попадает в целевой размер до байта.
+SAFETY = 0.92
+# Звук. 96 кбит/с — разборчивая речь; ниже опускаемся только когда
+# на видео иначе не остаётся ничего.
+AUDIO_KBPS = 96
+AUDIO_KBPS_LOW = 64
+# Порог, ниже которого на звук уходит слишком большая доля.
+LOW_AUDIO_BUDGET_KBPS = 400
+
+# Разрешение по достижимому битрейту. Ниже нижней границы сжимать
+# бессмысленно: получится не видео, а набор квадратов.
+LADDER = (
+    (1500, 720),
+    (800, 480),
+    (400, 360),
+    (200, 240),
+)
+MIN_VIDEO_KBPS = LADDER[-1][0]
+
+# Скорость кодирования на одном ядре A53, кадров в секунду, по высоте
+# кадра. Числа грубые и намеренно пессимистичные: обещать сорок минут
+# и уложиться в двадцать лучше, чем наоборот.
+FPS_BY_HEIGHT = ((240, 45.0), (360, 28.0), (480, 18.0), (720, 9.0), (1080, 4.0))
+ASSUMED_FPS = 30          # исходная частота кадров, когда её не сообщили
+THREADS = 2               # из четырёх ядер: два оставляем циклу оповещений
+
+
+@dataclass(frozen=True)
+class Plan:
+    """Что и с какими параметрами кодировать."""
+
+    height: int              # целевая высота кадра
+    video_kbps: int
+    audio_kbps: int
+    target_mb: float
+    duration_s: int
+
+    @property
+    def total_kbps(self) -> int:
+        return self.video_kbps + self.audio_kbps
+
+
+def budget_kbps(target_mb: float, duration_s: int) -> int:
+    """Сколько килобит в секунду помещается в целевой размер."""
+    if duration_s <= 0:
+        return 0
+    bits = target_mb * SAFETY * 1024 * 1024 * 8
+    return max(0, int(bits / duration_s / 1000))
+
+
+def plan(duration_s: int, target_mb: float, source_height: int = 0) -> Plan | None:
+    """Подбирает параметры или возвращает None, если смысла нет.
+
+    None означает «сжимать нечего смысла», а не «ошибка»: битрейта
+    не хватит даже на 240p. Такой ролик надо не сжимать, а сказать
+    человеку правду о его длительности.
+    """
+    if duration_s <= 0 or target_mb <= 0:
+        return None
+
+    total = budget_kbps(target_mb, duration_s)
+    audio = AUDIO_KBPS if total >= LOW_AUDIO_BUDGET_KBPS else AUDIO_KBPS_LOW
+    video = total - audio
+    if video < MIN_VIDEO_KBPS:
+        return None
+
+    height = LADDER[-1][1]
+    for need, candidate in LADDER:
+        if video >= need:
+            height = candidate
+            break
+
+    # Вверх не растягиваем: увеличение разрешения при сжатии — это
+    # трата битрейта на выдуманные пиксели.
+    if source_height:
+        height = min(height, source_height)
+
+    return Plan(
+        height=height,
+        video_kbps=video,
+        audio_kbps=audio,
+        target_mb=target_mb,
+        duration_s=duration_s,
+    )
+
+
+def estimate_seconds(plan_: Plan, fps: float = ASSUMED_FPS,
+                     cores: int = THREADS) -> int:
+    """Сколько примерно займёт кодирование. Оценка пессимистичная."""
+    per_core = FPS_BY_HEIGHT[-1][1]
+    for height, speed in FPS_BY_HEIGHT:
+        if plan_.height <= height:
+            per_core = speed
+            break
+
+    rate = per_core * max(1, cores)
+    frames = plan_.duration_s * max(1.0, fps)
+    return max(5, int(frames / rate))
+
+
+def human_time(seconds: int) -> str:
+    """«около 25 минут» — человеку нужен порядок, а не точность."""
+    if seconds < 90:
+        return "меньше минуты"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"около {minutes} мин"
+    hours = minutes / 60
+    return f"около {hours:.1f} ч".replace(".0 ", " ")
+
+
+def ffmpeg_args(source: str, target: str, plan_: Plan,
+                nice: bool = True) -> list[str]:
+    """Командная строка ffmpeg.
+
+    Один проход, а не два: два дают лучшее качество при заданном размере,
+    но удваивают время, а времени тут и так нет. `maxrate` с `bufsize`
+    удерживают пики, чтобы файл не вылез за предел на сложных сценах.
+    """
+    command: list[str] = []
+    if nice:
+        # Оповещения важнее ролика: при нехватке процессора уступает он.
+        command += ["nice", "-n", "19"]
+
+    command += [
+        "ffmpeg", "-y",
+        "-i", source,
+        "-c:v", "libx264",
+        # На A53 всё, что медленнее veryfast, превращает минуты в часы.
+        "-preset", "veryfast",
+        "-threads", str(THREADS),
+        "-b:v", f"{plan_.video_kbps}k",
+        "-maxrate", f"{int(plan_.video_kbps * 1.5)}k",
+        "-bufsize", f"{plan_.video_kbps * 2}k",
+        "-vf", f"scale=-2:{plan_.height}",
+        "-c:a", "aac",
+        "-b:a", f"{plan_.audio_kbps}k",
+        # h264 + aac + faststart — то, что Telegram проигрывает встроенным
+        # проигрывателем без оговорок. Ради этого всё и затевалось.
+        "-movflags", "+faststart",
+        "-progress", "pipe:1",
+        "-nostats",
+        "-loglevel", "error",
+        target,
+    ]
+    return command
+
+
+def parse_progress(line: str, duration_s: int) -> float | None:
+    """Доля выполненного из строки `-progress`. None — строка не о том.
+
+    ffmpeg с `-progress` печатает `out_time_us=12345678` — микросекунды
+    обработанного материала.
+    """
+    text = (line or "").strip()
+    if not text.startswith("out_time_us="):
+        return None
+    if duration_s <= 0:
+        return None
+
+    raw = text.split("=", 1)[1].strip()
+    try:
+        microseconds = int(raw)
+    except ValueError:
+        return None
+    if microseconds < 0:
+        return 0.0
+    return min(1.0, microseconds / 1_000_000 / duration_s)
+
+
+async def run(source: str, target: str, plan_: Plan, *,
+              timeout_s: int, on_progress=None) -> tuple[bool, str]:
+    """Запускает ffmpeg. Возвращает (получилось, объяснение отказа).
+
+    Таймаут обязателен: зависшее кодирование не должно занимать
+    одноплатник до перезагрузки. При срыве процесс убивается, а недоделок
+    на диске не остаётся — их убирает вызывающая сторона.
+    """
+    import asyncio
+    import os
+    import shutil
+
+    command = ffmpeg_args(source, target, plan_, nice=bool(shutil.which("nice")))
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return False, "ffmpeg недоступен — сжатие невозможно."
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ffmpeg не запустился: %s", exc)
+        return False, "Не удалось запустить сжатие."
+
+    async def pump() -> None:
+        assert process.stdout is not None
+        while True:
+            raw = await process.stdout.readline()
+            if not raw:
+                return
+            share = parse_progress(raw.decode("utf-8", "replace"),
+                                   plan_.duration_s)
+            if share is not None and on_progress is not None:
+                on_progress(share)
+
+    reader = asyncio.create_task(pump())
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        reader.cancel()
+        return False, (
+            f"Сжатие не уложилось в {human_time(timeout_s)} и остановлено. "
+            f"Выберите качество ниже."
+        )
+    finally:
+        reader.cancel()
+
+    if process.returncode != 0:
+        stderr = b""
+        if process.stderr is not None:
+            try:
+                stderr = await process.stderr.read()
+            except Exception:  # noqa: BLE001
+                pass
+        log.warning("ffmpeg вернул %s: %s", process.returncode,
+                    stderr.decode("utf-8", "replace")[:400])
+        return False, "Сжатие не удалось — подробности в журнале."
+
+    if not os.path.exists(target) or os.path.getsize(target) == 0:
+        return False, "Сжатие завершилось, но файл не появился."
+
+    return True, ""
+
+
+def too_long_message(duration_s: int, target_mb: float) -> str:
+    """Объяснение отказа: почему ролик не сжать под предел."""
+    total = budget_kbps(target_mb, duration_s)
+    minutes = max(1, round(duration_s / 60))
+    return (
+        f"Ролик идёт {minutes} мин, и чтобы уложить его в {target_mb:.0f} МБ, "
+        f"пришлось бы сжать до {total} кбит/с. Этого не хватит даже "
+        f"на 240p — вместо видео получится набор квадратов. "
+        f"Скачайте часть ролика или поднимите собственный Bot API Server: "
+        f"с ним предел станет 2 ГБ."
+    )
+RADAR_FILE_19
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/secrets.py"
-cat > "radar/secrets.py" <<'RADAR_FILE_19'
+cat > "radar/secrets.py" <<'RADAR_FILE_20'
 """Секреты, которые задаются из бота: ключи ИИ, доступы к площадкам, Bot API.
 
 Значения пишутся в `.env` рядом с ботом — тот же файл, что читает установщик.
@@ -6793,9 +7105,9 @@ def writable() -> bool:
     if os.path.exists(ENV_PATH):
         return os.access(ENV_PATH, os.W_OK)
     return os.access(target, os.W_OK)
-RADAR_FILE_19
+RADAR_FILE_20
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/aibench.py"
-cat > "radar/aibench.py" <<'RADAR_FILE_20'
+cat > "radar/aibench.py" <<'RADAR_FILE_21'
 """Сравнение провайдеров ИИ прямо из бота.
 
 Раньше это был отдельный стенд в `bench/`, который на сервере никто
@@ -7222,9 +7534,9 @@ def render(report: Report) -> str:
         lines.append("Ни один провайдер не ответил. Проверьте ключи и доступ в сеть.")
 
     return "\n".join(lines)
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/proxy.py"
-cat > "radar/proxy.py" <<'RADAR_FILE_21'
+cat > "radar/proxy.py" <<'RADAR_FILE_22'
 """Выход бота в интернет через внешний узел: подписки, ключи, выбор сервера.
 
 Как это устроено
@@ -7610,9 +7922,9 @@ def describe(state: ProxyState) -> str:
             "и протокол вручную.</i>"
         )
     return "\n".join(lines)
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/provider.py"
-cat > "radar/provider.py" <<'RADAR_FILE_22'
+cat > "radar/provider.py" <<'RADAR_FILE_23'
 """Выбор провайдера ИИ на лету: Google Gemini или DeepSeek.
 
 Зачем
@@ -7869,9 +8181,9 @@ def render(results: dict[str, Health]) -> str:
         lines.append("⚠️ <i>Остаток на исходе — разбор скоро переключится "
                      "на эвристику по ключевым словам.</i>")
     return "\n".join(lines).strip()
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/digest.py"
-cat > "radar/digest.py" <<'RADAR_FILE_23'
+cat > "radar/digest.py" <<'RADAR_FILE_24'
 """Новостные подборки: тематики, подписки, сборка сообщения.
 
 Отличие от оповещений принципиальное. Оповещение означает «происходит
@@ -8369,9 +8681,9 @@ def describe(subscription: Subscription, lang: str = "ru") -> str:
         "всегда и от подписки не зависят.",
     ) + "</i>")
     return "\n".join(lines)
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/quiet.py"
-cat > "radar/quiet.py" <<'RADAR_FILE_24'
+cat > "radar/quiet.py" <<'RADAR_FILE_25'
 """Тихие часы и антиспам оповещений.
 
 Две разные задачи с общей целью — чтобы сигналы бота оставались значимыми.
@@ -8573,9 +8885,9 @@ def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
 
 def held_count() -> int:
     return len(_held)
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/profiling.py"
-cat > "radar/profiling.py" <<'RADAR_FILE_25'
+cat > "radar/profiling.py" <<'RADAR_FILE_26'
 """Замер стадий цикла мониторинга и ресурсов контейнера.
 
 Оптимизировать наугад — тратить время не там. Модуль отвечает на один
@@ -8704,9 +9016,9 @@ def load_average() -> tuple[float, float, float]:
 
 def cpu_count() -> int:
     return os.cpu_count() or 1
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/astro.py"
-cat > "radar/astro.py" <<'RADAR_FILE_26'
+cat > "radar/astro.py" <<'RADAR_FILE_27'
 """Фаза луны и роза ветров.
 
 Расчёты вынесены отдельно: они чистые, не зависят ни от сети, ни от
@@ -8850,9 +9162,9 @@ def beaufort(speed: float | None, lang: str = "ru") -> str:
         if speed < limit:
             return i18n.t(key, lang, russian)
     return i18n.t(FORCE_TOP[1], lang, FORCE_TOP[0])
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/restartnotice.py"
-cat > "radar/restartnotice.py" <<'RADAR_FILE_27'
+cat > "radar/restartnotice.py" <<'RADAR_FILE_28'
 """Ответ тем, кто писал боту, пока он был выключен.
 
 Зачем это нужно. При обновлении контейнер останавливается на несколько
@@ -8969,9 +9281,9 @@ async def notify(bot: Any, users: dict[str, Any], sender: Any,
     if sent:
         log.info("Уведомлено о технических работах: %d", sent)
     return sent
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/shortener.py"
-cat > "radar/shortener.py" <<'RADAR_FILE_28'
+cat > "radar/shortener.py" <<'RADAR_FILE_29'
 """Сокращение ссылок.
 
 Служебный сервис, не публичный. Сокращаются два вида ссылок:
@@ -9074,9 +9386,9 @@ _CODE_RE = re.compile(r"^[" + ALPHABET + r"]{1,16}$")
 
 def valid_code(code: str) -> bool:
     return bool(_CODE_RE.match(code or ""))
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/partners.py"
-cat > "radar/partners.py" <<'RADAR_FILE_29'
+cat > "radar/partners.py" <<'RADAR_FILE_30'
 """Партнёрские проекты.
 
 Раздел со списком проектов автора вместо одной кнопки. Проекты хранятся
@@ -9397,9 +9709,9 @@ async def remember_click(slug: str) -> None:
             except Exception:  # noqa: BLE001
                 log.debug("Счётчик переходов не сохранился")
             return
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/promo.py"
-cat > "radar/promo.py" <<'RADAR_FILE_30'
+cat > "radar/promo.py" <<'RADAR_FILE_31'
 """Промокоды партнёрских проектов.
 
 Правило одно и жёсткое: **один код на человека на проект**. Повторное
@@ -9527,9 +9839,9 @@ def render_csv(rows: list[dict[str, str]]) -> str:
     lines = ["code,issued"]
     lines.extend(f"{row['code']},{row['issued']}" for row in rows)
     return "\n".join(lines) + "\n"
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n.py"
-cat > "radar/i18n.py" <<'RADAR_FILE_31'
+cat > "radar/i18n.py" <<'RADAR_FILE_32'
 """Язык интерфейса бота.
 
 Русский по умолчанию, английский по выбору. Выбор хранится у пользователя
@@ -10095,9 +10407,9 @@ async def translate(text: str, lang: str) -> str:
 def forget_translations() -> None:
     """Сбросить кэш — после правки описаний и в тестах."""
     _CACHE.clear()
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mediaquota.py"
-cat > "radar/mediaquota.py" <<'RADAR_FILE_32'
+cat > "radar/mediaquota.py" <<'RADAR_FILE_33'
 """Квоты загрузки видео.
 
 Загрузка открыта всем, но не безгранично: двадцать роликов в сутки
@@ -10258,9 +10570,9 @@ def describe(quota: Quota, lang: str = "ru") -> str:
         "media.quota.left", lang,
         f"Осталось сегодня: {left} из {FREE_PER_DAY}",
     )
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/subscription.py"
-cat > "radar/subscription.py" <<'RADAR_FILE_33'
+cat > "radar/subscription.py" <<'RADAR_FILE_34'
 """Единая подписка.
 
 Подписок в системе две — на новостные подборки и на загрузку видео без
@@ -10352,9 +10664,9 @@ def describe(user: dict[str, Any] | None, role: str | None = None) -> str:
     if paid(user):
         return f"✅ Подписка активна, осталось дней: {days_left(user)}"
     return "Подписка не оформлена."
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_34'
+cat > "radar/backup.py" <<'RADAR_FILE_35'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -10658,9 +10970,9 @@ async def run_scheduled(now: datetime) -> str:
     removed = rotate()
     log.info("Копия по расписанию: %s, удалено старых: %d", path.name, len(removed))
     return path.name
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_35'
+cat > "radar/weather_image.py" <<'RADAR_FILE_36'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -11262,9 +11574,9 @@ def _strip_tags(text: str) -> str:
         elif not inside:
             result.append(char)
     return "".join(result).strip()
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_36'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_37'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -11279,9 +11591,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_37'
+cat > "radar/web/auth.py" <<'RADAR_FILE_38'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -11463,9 +11775,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_37
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_38'
+cat > "radar/web/audit.py" <<'RADAR_FILE_39'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -11532,9 +11844,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_39'
+cat > "radar/web/panel.py" <<'RADAR_FILE_40'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -12128,9 +12440,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_40'
+cat > "radar/web/backup.py" <<'RADAR_FILE_41'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -12173,9 +12485,9 @@ def body() -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_41'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_42'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -12208,9 +12520,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_42'
+cat > "radar/db/models.py" <<'RADAR_FILE_43'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -12507,9 +12819,9 @@ class PromoCode(Base):
     issued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_43'
+cat > "radar/db/engine.py" <<'RADAR_FILE_44'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -13023,9 +13335,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_43
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_44'
+cat > "radar/db/repo.py" <<'RADAR_FILE_45'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -13687,9 +13999,9 @@ async def count_sources() -> int:
     async with session() as active:
         result = await active.execute(select(func.count()).select_from(Source))
         return int(result.scalar_one() or 0)
-RADAR_FILE_44
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_45'
+cat > "radar/db/importer.py" <<'RADAR_FILE_46'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -13838,9 +14150,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_45
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_46'
+cat > "radar/doctor.py" <<'RADAR_FILE_47'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -14322,9 +14634,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_46
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_47'
+cat > "migrations/env.py" <<'RADAR_FILE_48'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -14384,9 +14696,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_47
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_48'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_49'
 """${message}
 
 Revision ID: ${up_revision}
@@ -14411,9 +14723,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_48
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_49'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_50'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -14580,9 +14892,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_49
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_50'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_51'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -14622,9 +14934,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_50
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_51'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_52'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -14672,9 +14984,9 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_51
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
-cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_52'
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_53'
 """Язык интерфейса и квоты загрузки видео.
 
 Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
@@ -14719,9 +15031,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("media_quota")
     op.drop_column("users", "lang")
-RADAR_FILE_52
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_53'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_54'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -14747,9 +15059,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_53
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_54'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_55'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -14874,9 +15186,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_54
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_55'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_56'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -15140,9 +15452,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_55
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_56'
+cat > "radar/storage.py" <<'RADAR_FILE_57'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -15327,9 +15639,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_56
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_57'
+cat > "radar/exporting.py" <<'RADAR_FILE_58'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -15535,9 +15847,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_57
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_58'
+cat > "radar/ai.py" <<'RADAR_FILE_59'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -16279,9 +16591,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_58
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_59'
+cat > "radar/geocode.py" <<'RADAR_FILE_60'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -16473,9 +16785,9 @@ async def forward(
             }
         )
     return results
-RADAR_FILE_59
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_60'
+cat > "radar/weather.py" <<'RADAR_FILE_61'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -16904,9 +17216,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title, lang), markup)
-RADAR_FILE_60
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_61'
+cat > "radar/sources.py" <<'RADAR_FILE_62'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -17230,9 +17542,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_61
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_62'
+cat > "radar/tg.py" <<'RADAR_FILE_63'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -17349,9 +17661,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_62
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_63'
+cat > "radar/keyboards.py" <<'RADAR_FILE_64'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -17863,9 +18175,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_63
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_64'
+cat > "radar/states.py" <<'RADAR_FILE_65'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -17895,9 +18207,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_64
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_65'
+cat > "radar/middlewares.py" <<'RADAR_FILE_66'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -18043,9 +18355,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_65
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_66'
+cat > "radar/monitor.py" <<'RADAR_FILE_67'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -18665,9 +18977,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_66
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_67'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_68'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -18725,9 +19037,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_67
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_68'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_69'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -19142,9 +19454,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_69'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_70'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -19310,9 +19622,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_71'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -19756,9 +20068,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_71'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_72'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -20257,9 +20569,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_72'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_73'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -20626,9 +20938,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_74'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -20775,9 +21087,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_75'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -21065,9 +21377,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_76'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -21222,9 +21534,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_77'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -21331,9 +21643,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_78'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -21908,9 +22220,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_79'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -22011,9 +22323,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_80'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -22103,9 +22415,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_81'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -22526,9 +22838,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_82'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -22560,7 +22872,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, features, media, mediaquota, roles, storage
+from .. import config, features, media, mediaquota, roles, storage, transcode
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -22651,6 +22963,9 @@ async def handle_link(message: Message, role: str) -> None:
         "title": media.safe_filename(str(info.get("title") or "video")),
         "owner": message.from_user.id,
         "created": time.time(),
+        # Длительность нужна сжатию: битрейт под целевой размер считается
+        # именно из неё.
+        "duration": int(info.get("duration") or 0),
     }
 
     lines = [media.describe(info), "", "🎯 <b>Выберите качество:</b>"]
@@ -22686,8 +23001,55 @@ async def drop_request(call: CallbackQuery) -> None:
     await safe_edit(call, "Загрузка отменена.", back_kb())
 
 
+def _compression_offer(token: str, index: int, request: dict,
+                       chosen: media.Format, limit_mb: int):
+    """Предложение сжать. None — предлагать нечего, пусть идёт обычный путь.
+
+    Отдельной функцией, чтобы решение «можно ли и сколько это займёт»
+    проверялось без запуска бота.
+    """
+    if not features.enabled("media_transcode"):
+        return None
+
+    duration = int(request.get("duration") or 0)
+    if duration <= 0:
+        return None
+
+    plan = transcode.plan(duration, limit_mb, chosen.height)
+    if plan is None:
+        # Длительность такова, что сжимать бессмысленно. Сказать правду
+        # честнее, чем выдать нечитаемое видео.
+        return (
+            f"📏 {esc(transcode.too_long_message(duration, limit_mb))}",
+            back_kb(),
+        )
+
+    spent = transcode.human_time(transcode.estimate_seconds(plan))
+    text = (
+        f"🗜 <b>Ролик не поместится: {chosen.size_mb:.0f} МБ при пределе "
+        f"{limit_mb} МБ.</b>\n\n"
+        f"Его можно сжать до {plan.height}p — получится примерно "
+        f"{limit_mb} МБ.\n"
+        f"Займёт <b>{spent}</b>: процессор одноплатника слабый, и сжатие "
+        f"идёт с пониженным приоритетом, чтобы не задерживать оповещения.\n\n"
+        f"<i>Можно и просто выбрать качество ниже — это мгновенно.</i>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🗜 Сжать ({spent})",
+                              callback_data=f"med:zip:{token}:{index}")],
+        [InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                              callback_data=f"med:back:{token}")],
+    ])
+    return text, keyboard
+
+
 @router.callback_query(F.data.startswith("med:get:"))
+@router.callback_query(F.data.startswith("med:zip:"))
 async def download(call: CallbackQuery, role: str, user: dict) -> None:
+    # med:zip — тот же путь, но с последующим сжатием. Разделять их
+    # раньше загрузки нельзя: решение влияет на то, ставить ли предел
+    # размера самой загрузке (см. ниже).
+    compress = call.data.startswith("med:zip:")
     quota = mediaquota.quota_of(user, role)
     if not quota.allowed(mediaquota.today()):
         await call.answer(
@@ -22717,6 +23079,18 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
     chosen: media.Format = request["formats"][index]
     await call.answer(f"Качество: {chosen.label}")
 
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    # Вариант крупнее предела: вместо отказа предлагаем сжать. Спрашиваем
+    # ДО загрузки, потому что от ответа зависит, ставить ли ей предел
+    # размера: для сжатия нужен полный исходник, а обычной загрузке
+    # выкачивать заведомо лишнее незачем.
+    if not compress and chosen.size_mb and chosen.size_mb > limit_mb:
+        offer = _compression_offer(token, index, request, chosen, limit_mb)
+        if offer is not None:
+            await safe_edit(call, offer[0], offer[1])
+            return
+
     if _slots.locked():
         await safe_edit(
             call,
@@ -22744,7 +23118,12 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
 
     async with _slots:
         try:
-            path = await _run_download(request["url"], chosen, target, progress, status)
+            # При сжатии предел загрузке не ставим: нужен полный исходник,
+            # иначе обрывать его на половине — значит сжимать половину.
+            path = await _run_download(
+                request["url"], chosen, target, progress, status,
+                limit_mb=0 if compress else limit_mb,
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("Скачивание не удалось: %s", exc)
             await _safe_text(status, f"❌ {esc(media.friendly_error(exc))}")
@@ -22760,7 +23139,21 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
         mediaquota.store_quota(user, quota)
         await storage.save()
 
+        # Исходник запоминаем отдельно: после сжатия path указывает
+        # на новый файл, и без этого исходный остался бы на диске —
+        # то есть ровно та беда, от которой мы бережём одноплатник.
+        source_path = path
+        shrunk = ""
         try:
+            if compress:
+                shrunk, complaint = await _run_transcode(
+                    path, request, chosen, limit_mb, status
+                )
+                if not shrunk:
+                    await _safe_text(status, f"❌ {esc(complaint)}")
+                    return
+                path = shrunk
+
             size = os.path.getsize(path)
             oversize, reason = media.too_big(size, config.uses_local_api())
             if oversize:
@@ -22779,16 +23172,87 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             except TelegramBadRequest:
                 pass
         finally:
-            # Диск одноплатника кончается быстро — убираем сразу
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            # Диск одноплатника кончается быстро — убираем сразу и оба
+            # файла: исходник и сжатый.
+            for leftover in {source_path, shrunk, path}:
+                if not leftover:
+                    continue
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
             _pending.pop(token, None)
 
 
+async def _run_transcode(source: str, request: dict, chosen: media.Format,
+                         limit_mb: int, status: Message) -> tuple[str, str]:
+    """Сжимает скачанный файл. Возвращает (путь, объяснение отказа)."""
+    duration = int(request.get("duration") or 0)
+    plan = transcode.plan(duration, limit_mb, chosen.height)
+    if plan is None:
+        return "", transcode.too_long_message(duration, limit_mb)
+
+    target = f"{os.path.splitext(source)[0]}_small.mp4"
+    spent = transcode.human_time(transcode.estimate_seconds(plan))
+    loop = asyncio.get_running_loop()
+    last = 0.0
+
+    def on_progress(share: float) -> None:
+        # Правим сообщение не чаще раза в несколько процентов: сжатие идёт
+        # минутами, а Telegram ограничивает частоту правок.
+        nonlocal last
+        if share - last < 0.05 and share < 1.0:
+            return
+        last = share
+        asyncio.run_coroutine_threadsafe(
+            _safe_text(
+                status,
+                f"🗜 <b>Сжимаю до {plan.height}p</b> — {share * 100:.0f}%\n"
+                f"<i>Всего {spent}. Оповещения при этом идут как обычно.</i>",
+            ),
+            loop,
+        )
+
+    await _safe_text(
+        status,
+        f"🗜 <b>Сжимаю до {plan.height}p</b>\n"
+        f"<i>Займёт {spent}. Оповещения при этом идут как обычно.</i>",
+    )
+
+    done, complaint = await transcode.run(
+        source, target, plan,
+        timeout_s=config.TRANSCODE_TIMEOUT,
+        on_progress=on_progress,
+    )
+    if not done:
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        return "", complaint
+    return target, ""
+
+
+@router.callback_query(F.data.startswith("med:back:"))
+async def back_to_formats(call: CallbackQuery) -> None:
+    """Возврат к выбору качества из предложения сжать."""
+    token = call.data.split(":")[2]
+    request = _pending.get(token)
+    if request is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    await call.answer()
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+    await safe_edit(
+        call,
+        "🎯 <b>Выберите качество:</b>",
+        _keyboard(token, request["formats"], limit_mb),
+    )
+
+
 async def _run_download(url: str, chosen: media.Format, target: str,
-                        progress: media.Progress, status: Message) -> str | None:
+                        progress: media.Progress, status: Message,
+                        *, limit_mb: int = 0) -> str | None:
     """Скачивание в потоке с передачей прогресса в чат."""
     import yt_dlp
 
@@ -22809,8 +23273,8 @@ async def _run_download(url: str, chosen: media.Format, target: str,
 
     # Предел передаём и в выбор формата, и в саму загрузку: первое
     # отсеивает заведомо неподходящие варианты, второе обрывает загрузку,
-    # если размер выяснился только по ходу дела.
-    limit_mb = media.size_limit_mb(config.uses_local_api())
+    # если размер выяснился только по ходу дела. При сжатии предел равен
+    # нулю — исходник нужен целиком.
     options = media.build_options(
         target,
         chosen.selector_for(limit_mb),
@@ -22976,9 +23440,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_83'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -23614,9 +24078,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_84'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -24137,9 +24601,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_85'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -24505,9 +24969,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_86'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -24652,7 +25116,7 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_85
+RADAR_FILE_86
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
