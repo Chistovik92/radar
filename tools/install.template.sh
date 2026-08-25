@@ -264,6 +264,19 @@ t() {                  # t <ключ> [подстановка]
             existing_note)       value="A backup is taken before any of these." ;;
             existing_diagnosis)  value="Diagnostics" ;;
             existing_recommended) value="suggested option" ;;
+            botapi_title)        value="Own Bot API Server" ;;
+            botapi_why)          value="Raises the sending limit from 50 MB to 2 GB." ;;
+            botapi_cost)         value="Needs api_id and api_hash from my.telegram.org, and caches files on disk." ;;
+            botapi_ask)          value="Set it up now? [y/N]" ;;
+            botapi_skip)         value="Skipped — the limit stays at 50 MB. The question returns on the next run." ;;
+            botapi_where)        value="Get the keys at: my.telegram.org -> API development tools" ;;
+            botapi_id_ask)       value="api_id (digits only):" ;;
+            botapi_hash_ask)     value="api_hash (32 characters):" ;;
+            botapi_id_bad)       value="api_id must be digits — skipping" ;;
+            botapi_hash_bad)     value="api_hash does not look right — skipping" ;;
+            botapi_ready)        value="Own Bot API Server configured: the limit is now 2 GB" ;;
+            botapi_have)         value="Own Bot API Server already configured" ;;
+            botapi_disk)         value="Note: it caches files locally and needs noticeably more disk." ;;
             env_exists)          value="The .env file already exists" ;;
             env_reuse_ask)       value="Use the current settings? (Y/n):" ;;
             migrate_waiting)     value="Waiting for the download… press Ctrl+C to cancel." ;;
@@ -384,6 +397,19 @@ t() {                  # t <ключ> [подстановка]
             existing_note)       value="Перед любым из вариантов снимается резервная копия." ;;
             existing_diagnosis)  value="Диагностика" ;;
             existing_recommended) value="рекомендуется вариант" ;;
+            botapi_title)        value="Собственный Bot API Server" ;;
+            botapi_why)          value="Поднимает предел отправки с 50 МБ до 2 ГБ." ;;
+            botapi_cost)         value="Нужны api_id и api_hash с my.telegram.org, и он кэширует файлы на диск." ;;
+            botapi_ask)          value="Настроить сейчас? [д/Н]" ;;
+            botapi_skip)         value="Пропущено — предел остаётся 50 МБ. Вопрос вернётся при следующем запуске." ;;
+            botapi_where)        value="Ключи берутся на my.telegram.org -> API development tools" ;;
+            botapi_id_ask)       value="api_id (только цифры):" ;;
+            botapi_hash_ask)     value="api_hash (32 знака):" ;;
+            botapi_id_bad)       value="api_id должен быть числом — пропускаю" ;;
+            botapi_hash_bad)     value="api_hash не похож на настоящий — пропускаю" ;;
+            botapi_ready)        value="Свой Bot API Server настроен: предел стал 2 ГБ" ;;
+            botapi_have)         value="Свой Bot API Server уже настроен" ;;
+            botapi_disk)         value="Учтите: он кэширует файлы локально и требует заметно больше диска." ;;
             env_exists)          value="Файл .env уже существует" ;;
             env_reuse_ask)       value="Использовать текущие настройки? (Y/n):" ;;
             migrate_waiting)     value="Жду скачивания… Ctrl+C — отменить." ;;
@@ -522,6 +548,80 @@ ask_action() {
     esac
 
     ask_updates
+}
+
+# Собственный Bot API Server поднимает предел отправки с 50 МБ до 2 ГБ.
+# Спрашиваем, но не настаиваем: ключи берутся на стороннем сайте, и человек
+# может не иметь их под рукой прямо сейчас. Отказ ничего не записывает —
+# значит при следующем запуске вопрос появится снова, и внести ключи можно
+# будет когда угодно. Настойчивость здесь навредила бы: установка не должна
+# упираться в то, за чем надо идти в браузер.
+ask_bot_api_server() {
+    local id_now hash_now answer api_id api_hash
+
+    id_now="$(get_env_value TELEGRAM_API_ID)"
+    hash_now="$(get_env_value TELEGRAM_API_HASH)"
+    if [ -n "$id_now" ] && [ -n "$hash_now" ]; then
+        # Уже настроено — доводим до конца, если адрес сервера не прописан.
+        if [ -z "$(get_env_value TELEGRAM_API_SERVER)" ]; then
+            set_env_value TELEGRAM_API_SERVER "http://telegram-bot-api:8081"
+            set_env_value MEDIA_ENABLED 1
+        fi
+        ok "$(t botapi_have)"
+        return 0
+    fi
+
+    # Без живого терминала спрашивать некого.
+    if [ ! -t 0 ] && [ ! -e /dev/tty ]; then
+        return 0
+    fi
+
+    echo
+    printf "  %s%s%s\n" "$C_BOLD" "$(t botapi_title)" "$C_RESET"
+    printf "  %s%s%s\n" "$C_DIM" "$(t botapi_why)" "$C_RESET"
+    printf "  %s%s%s\n" "$C_DIM" "$(t botapi_cost)" "$C_RESET"
+    printf "  %s " "$(t botapi_ask)"
+    read -r answer < /dev/tty || answer="n"
+
+    # Перечисление, а не скобочное выражение: в bash `[YyДд]` сравнивает
+    # БАЙТЫ, а все кириллические буквы начинаются с 0xD0 — и «нет»
+    # попадало бы в набор наравне с «да». Проверено на живом bash.
+    case "$answer" in
+        y|Y|yes|д|Д|да|ДА) : ;;
+        *) info "$(t botapi_skip)"; return 0 ;;
+    esac
+
+    printf "  %s%s%s\n" "$C_DIM" "$(t botapi_where)" "$C_RESET"
+
+    printf "  %s " "$(t botapi_id_ask)"
+    read -r api_id < /dev/tty || api_id=""
+    case "$api_id" in
+        ''|*[!0-9]*) warn "$(t botapi_id_bad)"; return 0 ;;
+    esac
+
+    printf "  %s " "$(t botapi_hash_ask)"
+    read -r api_hash < /dev/tty || api_hash=""
+    # Хэш всегда 32 знака шестнадцатеричных. Проверяем длину и состав:
+    # опечатка здесь выяснилась бы только при первой крупной отправке.
+    if [ "${#api_hash}" -ne 32 ]; then
+        warn "$(t botapi_hash_bad)"
+        return 0
+    fi
+    case "$api_hash" in
+        *[!0-9a-fA-F]*) warn "$(t botapi_hash_bad)"; return 0 ;;
+    esac
+
+    set_env_value TELEGRAM_API_ID "$api_id"
+    set_env_value TELEGRAM_API_HASH "$api_hash"
+    # Без адреса бот продолжал бы ходить в общий Telegram: контейнер
+    # поднят, а толку нет. До 4.7.13 эта строка не выставлялась нигде,
+    # и весь путь со своим сервером был мёртвым.
+    set_env_value TELEGRAM_API_SERVER "http://telegram-bot-api:8081"
+    set_env_value MEDIA_ENABLED 1
+
+    ok "$(t botapi_ready)"
+    info "$(t botapi_disk)"
+    return 0
 }
 
 ask_updates() {
@@ -2876,6 +2976,8 @@ fi
 
 # Профиль media поднимает собственный Bot API Server: он снимает предел
 # отправки с 50 МБ до 2 ГБ, но требует ключей с my.telegram.org.
+ask_bot_api_server
+
 MEDIA_VALUE="$(get_env_value MEDIA_ENABLED)"
 if [ "$MEDIA_VALUE" = "1" ]; then
     API_ID_VALUE="$(get_env_value TELEGRAM_API_ID)"

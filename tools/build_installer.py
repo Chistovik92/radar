@@ -46,6 +46,7 @@ MANIFEST = [
     "radar/sos.py",
     "radar/media.py",
     "radar/transcode.py",
+    "radar/images.py",
     "radar/secrets.py",
     "radar/aibench.py",
     "radar/proxy.py",

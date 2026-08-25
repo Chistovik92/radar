@@ -29,7 +29,16 @@ from aiogram.types import (
     Message,
 )
 
-from .. import config, features, media, mediaquota, roles, storage, transcode
+from .. import (
+    config,
+    features,
+    images,
+    media,
+    mediaquota,
+    roles,
+    storage,
+    transcode,
+)
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -63,7 +72,8 @@ def _cleanup_pending() -> None:
         _pending.pop(key, None)
 
 
-def _keyboard(token: str, formats: list[media.Format], limit_mb: int) -> InlineKeyboardMarkup:
+def _keyboard(token: str, formats: list[media.Format], limit_mb: int,
+              has_text: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for index, item in enumerate(formats):
         mark = ""
@@ -74,6 +84,9 @@ def _keyboard(token: str, formats: list[media.Format], limit_mb: int) -> InlineK
                 text=f"{item.title}{mark}", callback_data=f"med:get:{token}:{index}"
             )
         ])
+    if has_text:
+        rows.append([InlineKeyboardButton(
+            text="📝 Текст описания", callback_data=f"med:txt:{token}")])
     rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"med:drop:{token}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -97,6 +110,13 @@ async def handle_link(message: Message, role: str) -> None:
         return
 
     url = (message.text or "").strip()
+
+    # Картинка перехватывается раньше: гнать её через yt-dlp значило бы
+    # обвешать простую задачу выбором качества и склейкой.
+    if images.looks_like_image(url):
+        await _send_image(message, url)
+        return
+
     notice = await message.answer("🔎 <b>Смотрю, что за ссылка…</b>")
 
     try:
@@ -123,6 +143,9 @@ async def handle_link(message: Message, role: str) -> None:
         # Длительность нужна сжатию: битрейт под целевой размер считается
         # именно из неё.
         "duration": int(info.get("duration") or 0),
+        # Метаданные держим целиком: из них берётся текст описания.
+        # Живут не дольше самого запроса — четверть часа.
+        "info": info,
     }
 
     lines = [media.describe(info), "", "🎯 <b>Выберите качество:</b>"]
@@ -131,7 +154,67 @@ async def handle_link(message: Message, role: str) -> None:
             f"<i>Предел отправки — {limit_mb} МБ. Отмеченные ⚠️ варианты "
             "не поместятся.</i>"
         )
-    await notice.edit_text("\n".join(lines), reply_markup=_keyboard(token, formats, limit_mb))
+    await notice.edit_text(
+        "\n".join(lines),
+        reply_markup=_keyboard(token, formats, limit_mb,
+                               has_text=bool(images.description_of(info))),
+    )
+
+
+async def _send_image(message: Message, url: str) -> None:
+    """Скачивает картинку и отдаёт её фотографией или документом."""
+    import aiohttp
+    from aiogram.types import BufferedInputFile
+
+    notice = await message.answer("🖼 <b>Скачиваю картинку…</b>")
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    timeout = aiohttp.ClientTimeout(total=120)
+    headers = {"User-Agent": config.USER_AGENT}
+    connector = None
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers,
+                                     connector=connector) as session:
+        data, complaint = await images.fetch(session, url, limit_mb)
+
+    if not data:
+        await notice.edit_text(f"❌ {esc(complaint)}")
+        return
+
+    name = images.filename_from(url)
+    size_mb = len(data) / 1024 / 1024
+    file = BufferedInputFile(data, filename=name)
+
+    try:
+        if images.as_photo(len(data)):
+            await message.answer_photo(file, caption=f"🖼 {esc(name)}")
+        else:
+            # Крупнее 10 МБ фотографией не уходит — отдаём документом.
+            # Откроется так же, просто без предпросмотра в ленте.
+            await message.answer_document(
+                file,
+                caption=f"🖼 {esc(name)} · {size_mb:.1f} МБ\n"
+                        f"<i>Крупные картинки Telegram принимает только "
+                        f"файлом, без предпросмотра.</i>",
+            )
+        try:
+            await notice.delete()
+        except TelegramBadRequest:
+            pass
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Картинка не отправлена: %s", exc)
+        await notice.edit_text("❌ Картинку скачал, но отправить не удалось.")
+
+
+@router.callback_query(F.data.startswith("med:txt:"))
+async def send_description(call: CallbackQuery) -> None:
+    """Текст описания публикации отдельным сообщением."""
+    token = call.data.split(":")[2]
+    request = _pending.get(token)
+    if request is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    await call.answer()
+    await call.message.answer(images.format_description(request.get("info") or {}))
 
 
 async def _probe(url: str) -> dict:

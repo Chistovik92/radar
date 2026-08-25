@@ -687,13 +687,55 @@ became item 21.
     The RK3318 does have a hardware encoder (rkmpp), but it needs a specially
     built ffmpeg and a device passed into the container — the
     `python:3.11-slim` image has neither.
-26. **Its own Bot API Server.** Raises the limit to 2 GB and makes items 24
-    and 25 almost unnecessary. Support is already in place:
-    `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_API_SERVER`, and
-    `media.size_limit_mb()` already returns a different limit. What remains
-    is deploying it as a container and automating that in the installer.
-    Caveat: a local server caches files on disk and needs noticeably more
-    space — on the RK3318 that has to be measured, not assumed.
+26. **Its own Bot API Server.** ✅ brought into working order in
+    4.7.12.5. Raises the limit to 2 GB and makes item 25 almost
+    unnecessary.
+
+    It turned out the path was **dead**: the container has been described
+    in `docker-compose` since 4.2 and the bot knows how to talk to a local
+    server, but the `TELEGRAM_API_SERVER` variable was never set anywhere
+    — not by the installer, not otherwise. So the profile would come up
+    and the bot would still call the public Telegram. The only visible
+    symptom was that the limit did not change.
+
+    The installer now **asks** about a local server and, given consent,
+    writes everything at once: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
+    `TELEGRAM_API_SERVER` and `MEDIA_ENABLED`. The keys are validated on
+    the spot: `api_id` digits only, `api_hash` exactly 32 hexadecimal
+    characters. A typo would otherwise surface at the first large upload.
+
+    **Declining writes nothing**, and the question returns on the next
+    run: the keys come from a third-party site, and a person may not have
+    them at hand right now. Installation must not stall on something that
+    requires going to a browser.
+
+    The caveat stands: a local server caches files on disk and needs
+    noticeably more space. Compose clears cache older than six hours and
+    when the disk fills past 85 percent, but how much that is on an RK3318
+    has to be measured, not assumed.
+
+---
+
+## 4.7.12.5 — images and captions
+
+27. **Downloading images by link.** Deliberately separate from video: the
+    mechanics differ. Video goes through yt-dlp with quality selection,
+    merging and compression; an image is one request and one file, and
+    routing it the same way would burden a simple task with the lot.
+    A large image is not refused — it goes as a **document**: Telegram
+    accepts photos only up to 10 MB, while documents get the same 50 MB as
+    video. The file opens fine, just without an inline preview. Refusing
+    would be worse: the person asked for a file, not a preview.
+    Disk protection sits in two places and both are needed: the declared
+    `Content-Length` rejects the plainly oversized **before** downloading,
+    and the actual volume is counted as it arrives and aborted on excess.
+    A server can declare one size and send another, and a link can lead to
+    an endless stream; a filled disk on a single-board computer stops not
+    the images but the alerts.
+28. **Caption and description text.** The "📝 Description" button appears
+    only when a description actually exists — an empty button would
+    promise for nothing. Long text is trimmed at 3500 characters with an
+    explicit note: Telegram would have cut it silently mid-word.
 
 ---
 
