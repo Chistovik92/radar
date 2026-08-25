@@ -1,4 +1,4 @@
-# Radar v4.7.9
+# Radar v4.7.10
 
 [Русская версия](README.md)
 

@@ -94,15 +94,37 @@ class Format:
     note: str = ""
     vcodec: str = ""           # семейство кодека: av1, vp9, h265, h264
 
+    def selector_for(self, limit_mb: int = 0) -> str:
+        """Строка выбора формата для yt-dlp.
+
+        При заданном пределе первыми идут варианты, которые в него заведомо
+        помещаются. Записи с неизвестным размером не отбрасываются: у части
+        площадок он не приходит вовсе, и жёсткое условие оставило бы
+        человека вообще без вариантов. Для этого используется `<?` —
+        сравнение, которое пропускает формат, если поля нет.
+
+        Хвост цепочки — прежние варианты без ограничения размера. Если под
+        предел не попадает ничего, лучше скачать заведомо крупное и честно
+        сказать об этом, чем ответить «форматы не найдены».
+        """
+        height = f"[height<={self.height}]" if self.height else ""
+
+        chain: list[str] = []
+        if limit_mb > 0:
+            budget = max(1, limit_mb - audio_reserve_mb(limit_mb))
+            chain.append(f"bestvideo{height}[filesize<?{budget}M]+bestaudio")
+            chain.append(f"best{height}[filesize<?{limit_mb}M]")
+
+        chain.append(f"bestvideo{height}+bestaudio")
+        if height:
+            chain.append(f"best{height}")
+        chain.append("best")
+        return "/".join(chain)
+
     @property
     def selector(self) -> str:
-        """Строка выбора формата для yt-dlp."""
-        if self.height:
-            return (
-                f"bestvideo[height<={self.height}]+bestaudio/"
-                f"best[height<={self.height}]/best"
-            )
-        return "bestvideo+bestaudio/best"
+        """Совместимость: выбор без учёта предела размера."""
+        return self.selector_for(0)
 
     @property
     def risky_codec(self) -> bool:
@@ -132,6 +154,21 @@ def safe_filename(title: str, limit: int = 60) -> str:
 
 def size_limit_mb(local_server: bool) -> int:
     return LOCAL_LIMIT_MB if local_server else CLOUD_LIMIT_MB
+
+
+def audio_reserve_mb(limit_mb: int) -> int:
+    """Сколько оставить под звук, подбирая видеопоток.
+
+    yt-dlp качает видео и звук отдельными файлами и сверяет `max_filesize`
+    с каждым по отдельности, а не с суммой. Поэтому под потолок нужно
+    подбирать видео с запасом — иначе видео уложится ровно в предел,
+    а после склейки со звуком его превысит.
+
+    Доля, а не константа: при потолке 50 МБ запас в 5 МБ разумен, при 1900
+    он был бы смешным. Сверху ограничен, чтобы на собственном Bot API
+    Server не отрезать двести мегабайт впустую.
+    """
+    return max(3, min(20, round(limit_mb * 0.1)))
 
 
 def _better(candidate: Format, current: Format) -> bool:
@@ -317,6 +354,7 @@ def build_options(
     proxy: str = "",
     cookies: str = "",
     limit_rate: str = "",
+    limit_mb: int = 0,
 ) -> dict[str, Any]:
     """Параметры yt-dlp. Вынесены отдельно, чтобы их можно было проверить."""
     options: dict[str, Any] = {
@@ -331,6 +369,17 @@ def build_options(
         "retries": 3,
         "socket_timeout": 30,
     }
+    if limit_mb > 0:
+        # Ограничитель на случай, когда размер заранее неизвестен: yt-dlp
+        # прервёт загрузку, как только файл перерастёт предел. До 4.7.10
+        # размер проверялся уже после полной загрузки — двухгигабайтный
+        # ролик выкачивался целиком, чтобы затем получить отказ. На канале
+        # одноплатника это десятки минут и весь трафик впустую.
+        #
+        # Это именно предохранитель, а не гарантия точного попадания:
+        # предел сверяется с каждым файлом отдельно, а Telegram смотрит
+        # на склеенный. Точная проверка остаётся после склейки.
+        options["max_filesize"] = int(limit_mb * 1024 * 1024)
     if proxy:
         options["proxy"] = proxy
     if cookies:
@@ -359,6 +408,15 @@ def friendly_error(error: BaseException | str) -> str:
     """Переводит типичные ошибки yt-dlp в понятное объяснение."""
     text = str(error).lower()
 
+    # Сработал предохранитель max_filesize: загрузка прервана на середине,
+    # и это хорошая новость — трафик не потрачен целиком. Человеку важно
+    # понять, что делать дальше, а не увидеть внутреннюю формулировку.
+    if "max-filesize" in text or "larger than max" in text:
+        return (
+            "Файл оказался больше предела отправки — загрузка остановлена "
+            "на середине, чтобы не тратить трафик впустую. Выберите "
+            "качество ниже."
+        )
     if "unsupported url" in text:
         return f"Площадка не поддерживается. Работают: {SUPPORTED_HINT}."
     if "private" in text or "login required" in text or "sign in" in text:

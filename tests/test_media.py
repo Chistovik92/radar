@@ -137,6 +137,92 @@ class TestSmallerFilePreferred(unittest.TestCase):
         self.assertNotIn("h264", item.title)
 
 
+class TestSizeAwareSelector(unittest.TestCase):
+    """Не качать то, что заведомо не влезет.
+
+    До 4.7.10 размер проверялся уже после полной загрузки: двухгигабайтный
+    ролик выкачивался целиком, чтобы затем получить отказ. На канале
+    одноплатника это десятки минут и весь трафик впустую.
+    """
+
+    def test_limit_appears_first_in_chain(self):
+        selector = media.Format(label="720p", height=720).selector_for(50)
+        first = selector.split("/")[0]
+        self.assertIn("filesize<?", first)
+        self.assertIn("height<=720", first)
+
+    def test_audio_reserve_subtracted_from_video_budget(self):
+        """Видео подбирается с запасом: yt-dlp сверяет предел с каждым
+        файлом отдельно, а Telegram смотрит на склеенный."""
+        selector = media.Format(label="720p", height=720).selector_for(50)
+        reserve = media.audio_reserve_mb(50)
+        self.assertIn(f"filesize<?{50 - reserve}M", selector)
+
+    def test_unlimited_chain_kept_as_fallback(self):
+        """Если под предел не проходит ничего, лучше скачать крупное
+        и честно сказать, чем ответить «форматы не найдены»."""
+        selector = media.Format(label="720p", height=720).selector_for(50)
+        self.assertTrue(selector.endswith("best"))
+        self.assertIn("bestvideo[height<=720]+bestaudio", selector)
+
+    def test_optional_comparison_used(self):
+        """«<?» пропускает формат, если размер не пришёл вовсе."""
+        selector = media.Format(label="720p", height=720).selector_for(50)
+        self.assertNotIn("filesize<5", selector.replace("filesize<?", ""))
+
+    def test_without_limit_behaviour_unchanged(self):
+        item = media.Format(label="720p", height=720)
+        self.assertEqual(item.selector_for(0), item.selector)
+        self.assertNotIn("filesize", item.selector)
+
+    def test_works_without_known_height(self):
+        selector = media.Format(label="Максимальное", height=0).selector_for(50)
+        self.assertIn("filesize<?", selector)
+        self.assertNotIn("height", selector)
+
+    def test_reserve_scales_but_is_capped(self):
+        self.assertGreaterEqual(media.audio_reserve_mb(50), 3)
+        self.assertLess(media.audio_reserve_mb(50), 50)
+        # На собственном сервере отрезать двести мегабайт впустую нельзя.
+        self.assertLessEqual(media.audio_reserve_mb(1900), 20)
+
+    def test_reserve_never_zero(self):
+        for limit in (1, 5, 10):
+            with self.subTest(limit=limit):
+                self.assertGreaterEqual(media.audio_reserve_mb(limit), 3)
+
+    def test_budget_stays_positive_on_tiny_limit(self):
+        """Предел меньше запаса не должен давать отрицательный бюджет."""
+        selector = media.Format(label="720p", height=720).selector_for(2)
+        self.assertNotIn("-", selector.split("filesize<?")[1][:4])
+
+
+class TestMaxFilesizeGuard(unittest.TestCase):
+    def test_limit_passed_to_ytdlp(self):
+        options = media.build_options("/tmp/x", "best", limit_mb=50)
+        self.assertEqual(options["max_filesize"], 50 * 1024 * 1024)
+
+    def test_absent_without_limit(self):
+        self.assertNotIn("max_filesize", media.build_options("/tmp/x", "best"))
+
+    def test_other_options_intact(self):
+        options = media.build_options("/tmp/x", "best", limit_mb=50)
+        self.assertEqual(options["format"], "best")
+        self.assertTrue(options["noplaylist"])
+        self.assertEqual(options["merge_output_format"], "mp4")
+
+    def test_abort_explained_plainly(self):
+        text = media.friendly_error(
+            "ERROR: File is larger than max-filesize (900 bytes > 500 bytes)"
+        )
+        self.assertIn("качество ниже", text)
+        self.assertNotIn("max-filesize", text)
+
+    def test_abort_message_mentions_saved_traffic(self):
+        text = media.friendly_error("File is larger than max-filesize")
+        self.assertIn("трафик", text)
+
+
 class TestChooseDefault(unittest.TestCase):
     """По умолчанию человек получает работающее видео."""
 

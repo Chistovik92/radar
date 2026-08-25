@@ -614,9 +614,30 @@ became item 21.
     The `MIN_SANE_MB` floor: some sites carry stubs of a few dozen kilobytes
     at the same frame height, and without it "prefer smaller" would slide
     straight to those.
-22. **A size filter in the yt-dlp selector itself.** Do not download what
-    plainly will not fit: the size is currently checked only after the
-    download, wasting both traffic and time.
+22. **A size filter in the yt-dlp selector itself.** ✅ implemented in
+    4.7.10. Before that the size was checked only after the download had
+    finished: a two-gigabyte clip was fetched in full only to be rejected.
+    On a single-board computer's link that is tens of minutes and all the
+    traffic, wasted.
+
+    Two distinct mechanisms went in, and they should not be conflated:
+
+    - **format selection.** Size conditions were added to the selector,
+      using the `<?` comparison — which lets a format through when the size
+      field is absent. Some sites do not report a size at all, and a strict
+      condition would have left the person with no options. The chain ends
+      with the previous unconstrained variants: if nothing fits the limit,
+      it is better to download something plainly large and say so honestly
+      than to answer "no formats found";
+    - **`max_filesize` — a safety catch.** It aborts the download once the
+      size becomes apparent mid-flight. This is **not** a guarantee of an
+      exact fit: yt-dlp checks the limit against each file separately, while
+      Telegram looks at the merged one. So the video stream is picked with
+      room reserved for audio (`audio_reserve_mb`), and the exact check
+      stays after the merge.
+
+    The quota is not spent on an aborted download — it was already only
+    charged once a finished file existed.
 23. **A free-space check before downloading.** A clear refusal instead of a
     filled disk. On a single-board computer, running out of space breaks not
     the video download but the whole bot — there is no room left for the

@@ -267,12 +267,17 @@ async def _run_download(url: str, chosen: media.Format, target: str,
             if filename:
                 result["path"] = filename
 
+    # Предел передаём и в выбор формата, и в саму загрузку: первое
+    # отсеивает заведомо неподходящие варианты, второе обрывает загрузку,
+    # если размер выяснился только по ходу дела.
+    limit_mb = media.size_limit_mb(config.uses_local_api())
     options = media.build_options(
         target,
-        chosen.selector,
+        chosen.selector_for(limit_mb),
         proxy=config.EGRESS_PROXY,
         cookies=config.MEDIA_COOKIES,
         limit_rate=config.MEDIA_RATE_LIMIT,
+        limit_mb=limit_mb,
     )
     options["progress_hooks"] = [hook]
 
