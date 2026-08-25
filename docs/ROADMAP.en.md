@@ -638,10 +638,18 @@ became item 21.
 
     The quota is not spent on an aborted download — it was already only
     charged once a finished file existed.
-23. **A free-space check before downloading.** A clear refusal instead of a
-    filled disk. On a single-board computer, running out of space breaks not
-    the video download but the whole bot — there is no room left for the
-    database.
+23. **A free-space check before downloading.** ✅ implemented in 4.7.11.
+    A clear refusal instead of a filled disk.
+    **Three times** the clip's size plus headroom is required, and that is
+    not over-caution: yt-dlp downloads video and audio as separate files and
+    then merges them into a third — at peak all three sit on disk at once.
+    Refusing matters more than convenience here. On a single-board computer,
+    running out of space breaks not the video download but the whole bot:
+    the database has nowhere to write, and alerts stop. The clip can wait,
+    an alert cannot.
+    The opposite case is handled separately: if free space cannot be
+    determined, the download is **allowed**. Forbidding work on a guess is
+    worse than skipping the check.
 24. **Splitting into 50 MB parts.** Full quality with no re-encoding, at the
     cost of the person reassembling the file themselves.
 25. **Re-encoding to a target size.** A last resort, and here is why. The

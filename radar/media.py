@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -39,6 +40,13 @@ LOCAL_LIMIT_MB = 1900
 # С 4.7.9 из двух вариантов берётся меньший, и без этого порога выбор
 # скатывался бы именно к таким огрызкам.
 MIN_SANE_MB = 0.3
+# Запас сверх утроенного размера: размер известен приблизительно, а место
+# на диске нужно не только видео — туда же пишется база.
+DISK_HEADROOM_MB = 200
+# Ниже этого свободного объёма не начинаем загрузку вообще, каким бы мелким
+# ни был ролик. На одноплатнике переполнение диска ломает не видео,
+# а весь бот: базе некуда писать, и оповещения прекращаются.
+MIN_FREE_MB = 300
 
 # Как часто разрешено править сообщение с прогрессом: Telegram считает
 # частые правки флудом и отвечает 429.
@@ -154,6 +162,60 @@ def safe_filename(title: str, limit: int = 60) -> str:
 
 def size_limit_mb(local_server: bool) -> int:
     return LOCAL_LIMIT_MB if local_server else CLOUD_LIMIT_MB
+
+
+def free_space_mb(path: str) -> float:
+    """Свободно мегабайт в каталоге. При любой неясности — бесконечность.
+
+    Неизвестное место не повод отказывать в загрузке: если `statvfs`
+    недоступен или каталога ещё нет, честнее пропустить проверку, чем
+    запретить работу по догадке.
+    """
+    import shutil
+
+    probe = path
+    while probe and not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+
+    try:
+        return shutil.disk_usage(probe or ".").free / (1024 * 1024)
+    except OSError:
+        return float("inf")
+
+
+def space_needed_mb(size_mb: float) -> float:
+    """Сколько места нужно под загрузку ролика в `size_mb`.
+
+    Втрое с небольшим, и это не перестраховка. yt-dlp качает видео и звук
+    отдельными файлами, а затем склеивает их в третий — в пике на диске
+    лежат все три сразу. Плюс запас: размер известен приблизительно.
+    """
+    return max(MIN_FREE_MB, size_mb * 3 + DISK_HEADROOM_MB)
+
+
+def enough_space(size_mb: float, path: str) -> tuple[bool, str]:
+    """Хватит ли места. Второе значение — объяснение при отказе.
+
+    Отказ здесь важнее удобства: на одноплатнике переполнение диска ломает
+    не загрузку видео, а весь бот — базе некуда писать, и оповещения
+    прекращаются. Ролик подождёт, тревоги нет.
+    """
+    free = free_space_mb(path)
+    if free == float("inf"):
+        return True, ""
+
+    need = space_needed_mb(size_mb)
+    if free >= need:
+        return True, ""
+
+    return False, (
+        f"На диске свободно {free:.0f} МБ, а под загрузку нужно около "
+        f"{need:.0f} МБ: видео и звук качаются отдельно и склеиваются "
+        f"в третий файл. Выберите качество ниже или освободите место."
+    )
 
 
 def audio_reserve_mb(limit_mb: int) -> int:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -221,6 +222,57 @@ class TestMaxFilesizeGuard(unittest.TestCase):
     def test_abort_message_mentions_saved_traffic(self):
         text = media.friendly_error("File is larger than max-filesize")
         self.assertIn("трафик", text)
+
+
+class TestDiskSpace(unittest.TestCase):
+    """Переполнение диска на одноплатнике ломает не видео, а весь бот:
+    базе некуда писать, и оповещения прекращаются."""
+
+    def test_needs_triple_size(self):
+        """Видео и звук качаются отдельно и склеиваются в третий файл —
+        в пике на диске лежат все три."""
+        need = media.space_needed_mb(100)
+        self.assertGreaterEqual(need, 300)
+
+    def test_headroom_added(self):
+        self.assertGreater(media.space_needed_mb(100), 100 * 3)
+
+    def test_floor_for_tiny_clips(self):
+        """Даже под крошечный ролик нужен минимум свободного места."""
+        self.assertGreaterEqual(media.space_needed_mb(1), media.MIN_FREE_MB)
+
+    def test_refuses_when_tight(self):
+        with mock.patch.object(media, "free_space_mb", return_value=100.0):
+            fits, complaint = media.enough_space(200.0, "/tmp")
+        self.assertFalse(fits)
+        self.assertIn("100", complaint)
+        self.assertIn("качество ниже", complaint)
+
+    def test_allows_when_roomy(self):
+        with mock.patch.object(media, "free_space_mb", return_value=50_000.0):
+            fits, complaint = media.enough_space(200.0, "/tmp")
+        self.assertTrue(fits)
+        self.assertEqual(complaint, "")
+
+    def test_unknown_space_does_not_block(self):
+        """Нечитаемое место — не повод запрещать работу по догадке."""
+        with mock.patch.object(media, "free_space_mb", return_value=float("inf")):
+            fits, _ = media.enough_space(9999.0, "/tmp")
+        self.assertTrue(fits)
+
+    def test_unknown_size_still_needs_floor(self):
+        """Размер неизвестен — всё равно требуем минимум."""
+        with mock.patch.object(media, "free_space_mb", return_value=10.0):
+            fits, _ = media.enough_space(0.0, "/tmp")
+        self.assertFalse(fits)
+
+    def test_free_space_walks_up_to_existing_parent(self):
+        """Каталога ещё нет — смотрим на ближайший существующий."""
+        missing = os.path.join(ROOT, "нет-такого", "и-такого")
+        self.assertGreater(media.free_space_mb(missing), 0)
+
+    def test_free_space_survives_nonsense(self):
+        self.assertGreater(media.free_space_mb(""), 0)
 
 
 class TestChooseDefault(unittest.TestCase):

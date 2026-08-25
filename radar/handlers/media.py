@@ -196,6 +196,15 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
         return
 
     os.makedirs(config.MEDIA_DIR, exist_ok=True)
+
+    # Место проверяем до начала: забитый диск на одноплатнике ломает
+    # не загрузку видео, а весь бот — базе некуда писать, и оповещения
+    # прекращаются. Ролик подождёт, тревоги нет.
+    fits, complaint = media.enough_space(chosen.size_mb, config.MEDIA_DIR)
+    if not fits:
+        await safe_edit(call, f"💾 {esc(complaint)}", back_kb())
+        return
+
     target = os.path.join(
         config.MEDIA_DIR, f"{request['title'][:40]}_{token}.%(ext)s"
     )
