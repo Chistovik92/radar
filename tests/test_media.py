@@ -46,6 +46,131 @@ YOUTUBE_LIKE = {
 TIKTOK_LIKE = {"title": "Клип", "formats": [{"ext": "mp4", "url": "..."}]}
 
 
+class TestCodecFamily(unittest.TestCase):
+    """Имя кодека из yt-dlp приводится к семейству."""
+
+    def test_known_codecs(self):
+        cases = {
+            "av01.0.05M.08": "av1",
+            "vp09.00.51.08": "vp9",
+            "vp9": "vp9",
+            "hev1.1.6.L93": "h265",
+            "hvc1.2.4.L120": "h265",
+            "avc1.640028": "h264",
+            "h264": "h264",
+            "vp8": "vp8",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(media.codec_family(raw), expected)
+
+    def test_absent_codec(self):
+        for raw in ("", "none", "null", None):
+            with self.subTest(raw=raw):
+                self.assertEqual(media.codec_family(raw), "")
+
+    def test_h264_is_safe_others_are_not(self):
+        self.assertFalse(media.Format(label="x", vcodec="h264").risky_codec)
+        self.assertFalse(media.Format(label="x", vcodec="").risky_codec)
+        self.assertTrue(media.Format(label="x", vcodec="av1").risky_codec)
+        self.assertTrue(media.Format(label="x", vcodec="vp9").risky_codec)
+
+
+class TestSmallerFilePreferred(unittest.TestCase):
+    """До 4.7.9 из вариантов одной высоты брался САМЫЙ БОЛЬШОЙ.
+
+    Для системы с потолком отправки в 50 МБ это ровно наоборот: чем
+    меньше файл при той же высоте, тем выше качество удастся отдать.
+    """
+
+    def info(self, *formats):
+        return {"title": "Ролик", "formats": list(formats)}
+
+    def test_smaller_of_two_wins(self):
+        info = self.info(
+            {"height": 1080, "ext": "mp4", "filesize": 180 * 1024 * 1024,
+             "vcodec": "avc1.640028"},
+            {"height": 1080, "ext": "webm", "filesize": 90 * 1024 * 1024,
+             "vcodec": "av01.0.05M.08"},
+        )
+        best = media.parse_formats(info)[0]
+        self.assertAlmostEqual(best.size_mb, 90.0, places=0)
+        self.assertEqual(best.vcodec, "av1")
+
+    def test_known_size_beats_unknown(self):
+        """«~48 МБ» позволяет решить, влезет ли. Пустое место — нет."""
+        info = self.info(
+            {"height": 720, "ext": "mp4", "vcodec": "avc1.640028"},
+            {"height": 720, "ext": "webm", "filesize": 48 * 1024 * 1024,
+             "vcodec": "vp09.00.51.08"},
+        )
+        best = media.parse_formats(info)[0]
+        self.assertAlmostEqual(best.size_mb, 48.0, places=0)
+
+    def test_tiny_stub_rejected(self):
+        """Обрезок в десятки килобайт не должен побеждать только за малость."""
+        info = self.info(
+            {"height": 720, "ext": "mp4", "filesize": 60 * 1024 * 1024,
+             "vcodec": "avc1.640028"},
+            {"height": 720, "ext": "mp4", "filesize": 40 * 1024,
+             "vcodec": "avc1.640028"},
+        )
+        best = media.parse_formats(info)[0]
+        self.assertAlmostEqual(best.size_mb, 60.0, places=0)
+
+    def test_codec_decides_when_sizes_equal(self):
+        info = self.info(
+            {"height": 720, "ext": "mp4", "filesize": 50 * 1024 * 1024,
+             "vcodec": "avc1.640028"},
+            {"height": 720, "ext": "webm", "filesize": 50 * 1024 * 1024,
+             "vcodec": "av01.0.05M.08"},
+        )
+        self.assertEqual(media.parse_formats(info)[0].vcodec, "av1")
+
+    def test_risky_codec_shown_in_button(self):
+        item = media.Format(label="1080p", height=1080, size_mb=42.0, vcodec="av1")
+        self.assertIn("av1", item.title)
+        self.assertIn("1080p", item.title)
+
+    def test_safe_codec_not_mentioned(self):
+        item = media.Format(label="720p", height=720, size_mb=30.0, vcodec="h264")
+        self.assertNotIn("h264", item.title)
+
+
+class TestChooseDefault(unittest.TestCase):
+    """По умолчанию человек получает работающее видео."""
+
+    def test_highest_that_fits(self):
+        formats = [
+            media.Format(label="1080p", height=1080, size_mb=180.0, vcodec="h264"),
+            media.Format(label="720p", height=720, size_mb=45.0, vcodec="h264"),
+            media.Format(label="480p", height=480, size_mb=20.0, vcodec="h264"),
+        ]
+        self.assertEqual(media.choose_default(formats, 50).height, 720)
+
+    def test_playable_wins_at_equal_height(self):
+        """При равной высоте — то, что точно проиграется."""
+        formats = [
+            media.Format(label="720p", height=720, size_mb=30.0, vcodec="av1"),
+            media.Format(label="720p", height=720, size_mb=45.0, vcodec="h264"),
+        ]
+        self.assertEqual(media.choose_default(formats, 50).vcodec, "h264")
+
+    def test_nothing_fits_returns_smallest(self):
+        formats = [
+            media.Format(label="1080p", height=1080, size_mb=300.0),
+            media.Format(label="720p", height=720, size_mb=200.0),
+        ]
+        self.assertEqual(media.choose_default(formats, 50).height, 720)
+
+    def test_no_formats(self):
+        self.assertIsNone(media.choose_default([], 50))
+
+    def test_unknown_sizes_fall_back(self):
+        formats = [media.Format(label="Максимальное", height=0)]
+        self.assertIsNotNone(media.choose_default(formats, 50))
+
+
 class TestFormatParsing(unittest.TestCase):
     def test_heights_collected(self):
         formats = media.parse_formats(YOUTUBE_LIKE)

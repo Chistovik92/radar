@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.7.8 — автономный установщик.
+# Система «Радар» v4.7.9 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.7.8"
+VERSION="4.7.9"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3031,7 +3031,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.7.8"
+__version__ = "4.7.9"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6009,6 +6009,11 @@ log = logging.getLogger("radar.media")
 # Лимит обычного Bot API. С собственным сервером поднимается до 2000 МБ.
 CLOUD_LIMIT_MB = 50
 LOCAL_LIMIT_MB = 1900
+# Ниже этого размера вариант считается обрезком, а не роликом: у части
+# площадок встречаются заготовки в десятки килобайт с той же высотой кадра.
+# С 4.7.9 из двух вариантов берётся меньший, и без этого порога выбор
+# скатывался бы именно к таким огрызкам.
+MIN_SANE_MB = 0.3
 
 # Как часто разрешено править сообщение с прогрессом: Telegram считает
 # частые правки флудом и отвечает 429.
@@ -6022,6 +6027,37 @@ _URL_RE = re.compile(r"^https?://[^\s]+$", re.I)
 _UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
 
 
+# Кодеки по убыванию эффективности сжатия: тот же кадр в av1 весит примерно
+# вдвое меньше, чем в h264. Для потолка в 50 МБ это разница между 1080p
+# и 480p, поэтому кодек важен не меньше высоты кадра.
+#
+# Но встроенный проигрыватель Telegram надёжно понимает только h264: av1
+# и vp9 он на части устройств отдаёт файлом, а не видео. Поэтому эффективный
+# кодек мы предпочитаем, а о возможной беде с проигрыванием предупреждаем —
+# молча отдать нечитаемый файл хуже, чем отдать меньшее качество.
+CODEC_RANK = ("av1", "vp9", "h265", "h264", "vp8", "")
+# Проигрывается везде без оговорок.
+CODEC_SAFE = {"h264", ""}
+
+
+def codec_family(raw: str) -> str:
+    """Приводит имя кодека из yt-dlp к семейству: av01.0.05M -> av1."""
+    name = (raw or "").split(".")[0].strip().lower()
+    if name in ("none", "null"):
+        return ""
+    if name.startswith("av01") or name == "av1":
+        return "av1"
+    if name.startswith("vp9") or name.startswith("vp09"):
+        return "vp9"
+    if name.startswith(("hev1", "hvc1", "h265", "hevc")):
+        return "h265"
+    if name.startswith(("avc1", "avc3", "h264")):
+        return "h264"
+    if name.startswith("vp8"):
+        return "vp8"
+    return name
+
+
 @dataclass
 class Format:
     """Один вариант качества."""
@@ -6031,6 +6067,7 @@ class Format:
     size_mb: float = 0.0       # 0 — размер неизвестен
     ext: str = "mp4"
     note: str = ""
+    vcodec: str = ""           # семейство кодека: av1, vp9, h265, h264
 
     @property
     def selector(self) -> str:
@@ -6043,10 +6080,18 @@ class Format:
         return "bestvideo+bestaudio/best"
 
     @property
+    def risky_codec(self) -> bool:
+        """Может не проиграться встроенным проигрывателем Telegram."""
+        return bool(self.vcodec) and self.vcodec not in CODEC_SAFE
+
+    @property
     def title(self) -> str:
+        parts = [self.label]
         if self.size_mb:
-            return f"{self.label} · ~{self.size_mb:.0f} МБ"
-        return self.label
+            parts.append(f"~{self.size_mb:.0f} МБ")
+        if self.risky_codec:
+            parts.append(self.vcodec)
+        return " · ".join(parts)
 
 
 def looks_like_url(text: str) -> bool:
@@ -6062,6 +6107,32 @@ def safe_filename(title: str, limit: int = 60) -> str:
 
 def size_limit_mb(local_server: bool) -> int:
     return LOCAL_LIMIT_MB if local_server else CLOUD_LIMIT_MB
+
+
+def _better(candidate: Format, current: Format) -> bool:
+    """Какой из двух вариантов одной высоты брать.
+
+    До 4.7.9 брался САМЫЙ БОЛЬШОЙ файл — для системы с потолком отправки
+    это ровно наоборот. Теперь порядок такой:
+
+    1. известный размер лучше неизвестного: «~48 МБ» позволяет решить,
+       влезет ли, а пустое место не позволяет ничего;
+    2. при известных размерах — меньший файл;
+    3. при равных размерах — эффективнее кодек.
+
+    Оговорка про подозрительно мелкие файлы: у части площадок попадаются
+    обрезки в десятки килобайт с той же высотой кадра. Меньший размер
+    сам по себе не повод их брать, поэтому такие отбрасываются.
+    """
+    if candidate.size_mb and candidate.size_mb < MIN_SANE_MB:
+        return False
+    if bool(candidate.size_mb) != bool(current.size_mb):
+        return bool(candidate.size_mb)
+    if candidate.size_mb and current.size_mb and candidate.size_mb != current.size_mb:
+        return candidate.size_mb < current.size_mb
+
+    ranks = {name: index for index, name in enumerate(CODEC_RANK)}
+    return ranks.get(candidate.vcodec, 99) < ranks.get(current.vcodec, 99)
 
 
 def parse_formats(info: dict[str, Any], limit: int = 6) -> list[Format]:
@@ -6084,14 +6155,17 @@ def parse_formats(info: dict[str, Any], limit: int = 6) -> list[Format]:
         size = item.get("filesize") or item.get("filesize_approx") or 0
         size_mb = round(size / (1024 * 1024), 1) if isinstance(size, (int, float)) else 0.0
 
+        candidate = Format(
+            label=f"{height}p",
+            height=height,
+            size_mb=size_mb,
+            ext=str(item.get("ext") or "mp4"),
+            vcodec=codec_family(str(item.get("vcodec") or "")),
+        )
+
         current = best.get(height)
-        if current is None or (size_mb and size_mb > current.size_mb):
-            best[height] = Format(
-                label=f"{height}p",
-                height=height,
-                size_mb=size_mb,
-                ext=str(item.get("ext") or "mp4"),
-            )
+        if current is None or _better(candidate, current):
+            best[height] = candidate
 
     if not best:
         return [Format(label="Максимальное доступное", height=0)]
@@ -6286,12 +6360,18 @@ def friendly_error(error: BaseException | str) -> str:
 
 
 def choose_default(formats: Iterable[Format], limit_mb: int) -> Format | None:
-    """Качество по умолчанию: лучшее из помещающихся в лимит."""
-    known = [item for item in formats if item.size_mb]
-    for item in sorted(known, key=lambda value: value.height, reverse=True):
-        if item.size_mb <= limit_mb:
-            return item
-    ordered = sorted(formats, key=lambda value: value.height)
+    """Качество по умолчанию: лучшее из помещающихся в лимит.
+
+    При равной высоте предпочитается вариант, который точно проиграется
+    встроенным проигрывателем. Смысл в том, что по умолчанию человек
+    получает работающее видео; если ему нужен файл поменьше ценой риска,
+    он выберет его сам — варианты видны в списке.
+    """
+    items = list(formats)
+    known = [item for item in items if item.size_mb and item.size_mb <= limit_mb]
+    if known:
+        return max(known, key=lambda value: (value.height, not value.risky_codec))
+    ordered = sorted(items, key=lambda value: value.height)
     return ordered[0] if ordered else None
 RADAR_FILE_18
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/secrets.py"

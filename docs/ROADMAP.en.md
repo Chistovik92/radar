@@ -57,9 +57,11 @@ Three rules that are not worked around:
    updated together — a divergence is noticed only by a reader, and they
    have no way to tell which one is correct.
 
-The sections below run in strictly ascending version order, and the
-continuous item numbering is never interrupted: both broke at some point,
-and both times it went unnoticed for a while.
+The sections below run in strictly ascending version order — that broke
+once and went unnoticed for a while. Items in the 4.7 block share one
+continuous sequence (1–26), because the work there ran interleaved and
+referring to a number is easier. Sections 4.8 and later are plans, each
+numbered from one.
 
 ---
 
@@ -576,6 +578,70 @@ up.
 
 ---
 
+## 4.7.9 — the 50 MB sending limit
+
+Telegram does not let bots send files larger than 50 MB through
+`api.telegram.org`. There are only two honest ways around it: fit the clip
+under the limit, or run your own Bot API Server. This section covers both,
+in order of cost.
+
+The prompt for it was a review of [Cliply](https://github.com/Cliply/Cliply),
+a cross-platform downloader built on Electron. **Not a single line was taken
+from it, and that was deliberate:** Cliply is written in JavaScript and
+TypeScript and is a desktop shell around the same `yt-dlp` and `ffmpeg` that
+already run here. There is nothing to port. Its licence is GPL-3.0 — the same
+as ours, so borrowing would have been lawful; no licence change was needed.
+
+What proved valuable was not a solution but an observation from
+`ytdlp-mappers.js`: the codec matters as much as the frame height. That idea
+became item 21.
+
+21. **Codec, and the smaller file at the same height.** ✅ implemented in
+    4.7.9. A plain bug surfaced: among several variants of the same height
+    the **largest** was picked. For a system with a sending ceiling that is
+    exactly backwards. The order of preference is now: a known size beats an
+    unknown one ("~48 MB" lets you decide whether it fits, blank space lets
+    you decide nothing), then the smaller file, then the more efficient
+    codec (`av1 > vp9 > h265 > h264`).
+    The same frame in av1 weighs roughly half what it does in h264 — under a
+    50 MB ceiling that is the difference between 1080p and 480p.
+    **The caveat that stops an efficient codec being chosen silently:**
+    Telegram's built-in player reliably handles only h264, while av1 and vp9
+    arrive as a file rather than a video on some devices. So a risky codec is
+    shown in the button caption, and at equal height the default goes to
+    whatever is certain to play. Handing over an unplayable file is worse
+    than handing over lower quality.
+    The `MIN_SANE_MB` floor: some sites carry stubs of a few dozen kilobytes
+    at the same frame height, and without it "prefer smaller" would slide
+    straight to those.
+22. **A size filter in the yt-dlp selector itself.** Do not download what
+    plainly will not fit: the size is currently checked only after the
+    download, wasting both traffic and time.
+23. **A free-space check before downloading.** A clear refusal instead of a
+    filled disk. On a single-board computer, running out of space breaks not
+    the video download but the whole bot — there is no room left for the
+    database.
+24. **Splitting into 50 MB parts.** Full quality with no re-encoding, at the
+    cost of the person reassembling the file themselves.
+25. **Re-encoding to a target size.** A last resort, and here is why. The
+    RK3318 has four Cortex-A53 cores; software x264 encoding runs at 5–15
+    frames per second there, so a ten-minute 720p clip takes twenty minutes
+    to an hour and occupies the CPU entirely — the same CPU that is meant to
+    be parsing threat messages at that moment. So: only behind an explicit
+    button, with an honest time estimate, with `nice` and a hard timeout.
+    The RK3318 does have a hardware encoder (rkmpp), but it needs a specially
+    built ffmpeg and a device passed into the container — the
+    `python:3.11-slim` image has neither.
+26. **Its own Bot API Server.** Raises the limit to 2 GB and makes items 24
+    and 25 almost unnecessary. Support is already in place:
+    `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_API_SERVER`, and
+    `media.size_limit_mb()` already returns a different limit. What remains
+    is deploying it as a container and automating that in the installer.
+    Caveat: a local server caches files on disk and needs noticeably more
+    space — on the RK3318 that has to be measured, not assumed.
+
+---
+
 ## 4.8 — optimizing for the single-board computer
 
 The system stays on the current server. A move is not planned — instead,
@@ -650,56 +716,106 @@ here for exactly that reason: it must never delay danger alerts.
 
 ---
 
-## 5.0 — other messengers
+## 5.5 — Discord
 
-Everything that needs someone else's verification and cannot be checked
-without real keys is deliberately grouped here: writing that kind of code
-blind would mean passing off the unverified as finished.
-
-1. **MAX — bringing it to production.** The adapter was written in 4.2, but
-   not a single request has run against a live server. Needed: owner
-   verification (a legal entity, sole proprietor, or self-employed person
-   registered in Russia), a webhook instead of long polling, linking
-   Telegram and MAX accounts, its own FSM on the shared database.
-2. **Odnoklassniki as a source.** There is no public RSS, the API requires
-   registering an application on apiok.ru and signing every request. The
-   `source_ok` flag is declared, the adapter is waiting on keys.
-3. **Discord.** The simplest of the remaining platforms: a bot is created
-   in the Developer Portal in a minute, the token is issued immediately,
-   verification is only needed past 100 servers. Implementation uses the
-   same `Transport` protocol: an adapter over the Gateway (WebSocket) or
-   via discord.py. Telegram's buttons map onto Discord's components almost
-   one to one, but there are differences to account for: a limit of 5
-   buttons per row and 5 rows, a mandatory response to an interaction
-   within 3 seconds, a separate permission to read message content
-   (Message Content Intent). The sensible use case is not address-based
-   alerts but a community channel: summaries and system status.
-
----
-
-## 5.1 and beyond — under discussion
-
-### Bots on VKontakte and Odnoklassniki
+The "other messengers" section is split per platform: they differ not in the
+amount of work but in what someone else's API allows at all. Putting them in
+one version would promise the same thing where the capabilities are not the
+same.
 
 The `Transport` protocol from 4.0 is built for exactly this: the core does
 not know where a message came from, so a new platform is one adapter, not a
 rewrite.
 
-**VKontakte** — a proven path: the bot is attached to a community, the
-access key is issued in the "Working with API" section, events arrive via
-the Callback API (a webhook, needs a static IP — which we have) or via Long
-Poll with no external address. Buttons and keyboards map onto the `Button`
-concept almost one to one.
+1. **Discord.** The simplest of the remaining platforms: a bot is created in
+   the Developer Portal in a minute, the token is issued immediately,
+   verification is only needed past 100 servers. An adapter over the Gateway
+   (WebSocket) or via discord.py.
+   Telegram's buttons map onto Discord's components almost one to one, but
+   there are differences: a limit of 5 buttons per row and 5 rows, a
+   mandatory response to an interaction within 3 seconds, and a separate
+   permission to read message content (Message Content Intent).
+   The sensible use case is not address-based alerts but a community
+   channel: summaries and system status.
 
-**Odnoklassniki** — harder: the bot is created by registering an
-application on apiok.ru, confirmation and request signing are required.
-Worth taking on after the VK adapter has run for a season.
+---
 
-The sensible order is: VK as a **source** first (4.1), then VK as a
-**messenger**, and only after that OK in both roles — that way every step
-builds on code that has already been verified.
+## 5.6 — Viber
 
-- Viber, Discord — over the same protocol, if there is demand.
+1. **Viber.** A public account is registered without a legal entity, and the
+   Bot API works over a webhook — HTTPS arrived here in 4.7.5, so there is no
+   external obstacle. Buttons and keyboards map onto `Button` closely to how
+   it works in Telegram.
+   The constraint to account for: Viber counts as a subscriber only someone
+   who subscribed to the account themselves, and writing first to anyone who
+   has not is not allowed. For alerts that means the same order as SOS in
+   Telegram: subscription first, alerts after.
+
+---
+
+## 6.0 — MAX
+
+1. **MAX — bringing it to production.** The adapter was written in 4.2, but
+   not a single request has run against a live server. Needed: owner
+   verification (a legal entity, sole proprietor, or self-employed person
+   registered in Russia), a webhook instead of long polling, linking Telegram
+   and MAX accounts, its own FSM on the shared database. The blockers here
+   are not in the code — the code can be finished in a day, the verification
+   cannot.
+   Plus a platform limit: **reading other people's public channels on MAX is
+   not possible** — the API is bot-centric. MAX is a delivery channel, not a
+   source.
+
+---
+
+## 6.5 — WhatsApp, deliberately reduced
+
+1. **WhatsApp.** To be implemented, but in a knowingly limited form, and the
+   limitation is stated out loud — that is the main point of this item.
+
+   **Alerts will not work over WhatsApp.** The Cloud API forbids proactive
+   messages outside a 24-hour window from the person's last contact.
+   Everything outside that window must be a pre-approved Meta template with
+   fixed text and a couple of substitutions. Our alerts are by definition
+   sudden, arbitrary in wording, and arrive when the person has written
+   nothing. That is not "hard" — it is incompatible by the platform's design.
+
+   What is genuinely available: **news digests and scheduled summaries**
+   through approved templates, replies to enquiries inside the 24-hour
+   window, help and system status.
+
+   So inside the WhatsApp version the bot **openly offers a move to
+   Telegram**, explaining that danger alerts arrive there instantly and
+   without templates. Staying silent about this is not an option: someone who
+   signed up for alerts and never receives them ends up worse off than if
+   they had never signed up. The line "this system does not replace official
+   warning channels" gains a second one here: **WhatsApp does not replace the
+   Telegram version of this bot.**
+
+   Needed: business verification with Meta, a phone number, approval of each
+   template. None of those conditions is closed by writing code.
+
+---
+
+## 7.0 — VKontakte and Odnoklassniki as messengers
+
+1. **VKontakte as a messenger.** A proven path: the bot is attached to a
+   community, the access key is issued in the "Working with API" section,
+   events arrive via the Callback API (a webhook, and we do have a static IP)
+   or via Long Poll with no external address. Buttons map onto `Button`
+   almost one to one. Placed this far out deliberately: VK already works here
+   **as a source** (4.3) and pays off daily, whereas VK as a messenger is a
+   convenience for people who are not on Telegram.
+2. **Odnoklassniki.** Harder: the application is registered on apiok.ru, and
+   confirmation plus a signature on every request are required. Both as a
+   source (the `source_ok` flag was removed in 4.7.5 — there must be no
+   toggle without an implementation) and as a messenger. Worth taking on
+   after the VK adapter has run for a season.
+
+---
+
+## Further out — under discussion
+
 - Mini Apps: a map of locations and event history inside the messenger.
 - Expansion to new cities as users show up there.
 - Replacing or duplicating the AI provider based on the `bench/` stand's
