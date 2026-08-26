@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8 — автономный установщик.
+# Система «Радар» v4.8.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8"
+VERSION="4.8.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2235,7 +2235,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=89
+FILE_COUNT=90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2531,6 +2531,15 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.1", [
+        "🗄 <b>База перестала расти без остановки.</b> Чистка истории "
+        "вызывалась только при старте — бот, работающий месяцами, "
+        "не чистил её вовсе. Теперь чистка и сжатие идут ночью.",
+        "💡 <b>Важное про SQLite:</b> удаление строк НЕ возвращает место "
+        "на диск, файл не уменьшается никогда. Поэтому после чистки "
+        "выполняется сжатие — иначе освободилось бы ноль байт.",
+        "📊 <b>Размер базы виден в /perf</b> с предупреждением при росте.",
+    ]),
     ("4.8", [
         "⚡️ <b>Меньше ожиданий сети — быстрее цикл.</b> Погода и адреса "
         "кэшируются: соседи по дому давали одинаковые запросы подряд, "
@@ -3240,7 +3249,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8"
+__version__ = "4.8.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -11409,8 +11418,229 @@ async def run_scheduled(now: datetime) -> str:
     log.info("Копия по расписанию: %s, удалено старых: %d", path.name, len(removed))
     return path.name
 RADAR_FILE_37
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dbcare.py"
+cat > "radar/dbcare.py" <<'RADAR_FILE_38'
+"""Компактность базы: чистка истории, сжатие файла, контроль размера.
+
+Пункт 5 раздела 4.8. Три отдельные задачи, и каждая нужна по своей
+причине.
+
+**Чистка истории.** `purge_old_events` существовала с 4.0, но вызывалась
+только при старте. Бот, работающий месяцами без перезапуска, не чистил
+историю вовсе — а это ровно тот режим, ради которого он написан.
+
+**Сжатие файла.** Здесь суть, которую легко упустить: **SQLite не отдаёт
+место операционной системе после DELETE.** Строки помечаются свободными
+и переиспользуются внутри файла, но сам файл не уменьшается никогда.
+То есть чистка истории без `VACUUM` не освобождает ни байта на диске —
+она лишь замедляет дальнейший рост. На одноплатнике, где место кончается
+раньше терпения, это разница между «работает» и «база не пишется».
+
+**PostgreSQL сжимаем иначе — то есть не сжимаем.** Там есть autovacuum,
+который делает то же самое сам, а `VACUUM FULL` берёт исключительную
+блокировку на всю таблицу: для системы оповещения это недопустимо.
+Поэтому явное сжатие делается только для SQLite.
+
+**Когда сжимать.** Только после того, как что-то действительно удалено:
+`VACUUM` переписывает файл целиком и на большой базе занимает время,
+в течение которого база заблокирована. Гонять его вхолостую каждую ночь
+значило бы платить блокировкой ни за что.
+
+**Место на диске.** `VACUUM` строит новый файл рядом со старым, поэтому
+на время работы нужно вдвое больше места. Если его нет, сжатие
+пропускается: попытка «освободить место» не должна быть тем, что
+переполнит диск окончательно.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime
+
+log = logging.getLogger("radar.dbcare")
+
+# Ночью: переписывание файла заметно нагружает слабый процессор,
+# а в четыре утра городские каналы молчат.
+SCHEDULE_HOUR = 4
+# Порог предупреждения. Полгигабайта на одноплатнике — уже повод
+# посмотреть, что происходит: при обычной нагрузке база столько
+# не набирает.
+WARN_SIZE_MB = 500
+# Ниже этого размера сжимать нечего: выигрыш меньше, чем стоимость
+# блокировки.
+MIN_VACUUM_MB = 5
+
+
+def due_today(last_run: str, now: datetime) -> bool:
+    """Пора ли обслуживать базу.
+
+    Сравнение по дате, а не по часам: если сервер был выключен в четыре
+    утра, обслуживание пройдёт при первой возможности, а не пропадёт
+    до следующих суток. Та же логика, что у резервных копий.
+    """
+    if now.hour < SCHEDULE_HOUR:
+        return False
+    return last_run != now.strftime("%Y-%m-%d")
+
+
+def format_size(size_bytes: float) -> str:
+    """«12.4 МБ» — человеку нужен порядок, а не байты."""
+    units = (("ГБ", 1024 ** 3), ("МБ", 1024 ** 2), ("КБ", 1024))
+    for name, scale in units:
+        if size_bytes >= scale:
+            return f"{size_bytes / scale:.1f} {name}"
+    return f"{int(size_bytes)} Б"
+
+
+def sqlite_files(path: str) -> list[str]:
+    """Файл базы и его спутники.
+
+    В режиме WAL рядом лежат `-wal` и `-shm`, и журнал может весить
+    больше самой базы. Считать только основной файл — значит показывать
+    размер, не совпадающий с тем, что видно в `du`.
+    """
+    return [path, f"{path}-wal", f"{path}-shm"]
+
+
+def measure_sqlite(path: str) -> int:
+    """Суммарный размер базы SQLite в байтах. Нет файла — ноль."""
+    total = 0
+    for name in sqlite_files(path):
+        try:
+            total += os.path.getsize(name)
+        except OSError:
+            continue
+    return total
+
+
+def free_space(path: str) -> float:
+    """Свободно байт там, где лежит база. Неизвестно — бесконечность."""
+    import shutil
+
+    probe = os.path.dirname(os.path.abspath(path)) or "."
+    try:
+        return float(shutil.disk_usage(probe).free)
+    except OSError:
+        return float("inf")
+
+
+def can_vacuum(size_bytes: int, free_bytes: float) -> tuple[bool, str]:
+    """Хватит ли места на сжатие и есть ли в нём смысл.
+
+    `VACUUM` строит новый файл рядом со старым — нужно вдвое больше
+    места. Попытка освободить место не должна стать тем, что окончательно
+    переполнит диск.
+    """
+    if size_bytes < MIN_VACUUM_MB * 1024 * 1024:
+        return False, "база меньше порога — сжимать нечего"
+    if free_bytes < size_bytes * 2:
+        return False, (
+            f"нужно {format_size(size_bytes * 2)} свободного места, "
+            f"а есть {format_size(free_bytes)}"
+        )
+    return True, ""
+
+
+def size_report(size_bytes: int, backend: str) -> str:
+    """Строка о размере базы для отчёта и предупреждения."""
+    text = f"База ({backend}): {format_size(size_bytes)}"
+    if size_bytes >= WARN_SIZE_MB * 1024 * 1024:
+        text += (
+            f"\n⚠️ Это больше {WARN_SIZE_MB} МБ. Проверьте "
+            f"EVENT_RETENTION_DAYS и место на диске."
+        )
+    return text
+
+
+async def vacuum_sqlite() -> tuple[int, int, str]:
+    """Сжимает базу. Возвращает (было, стало, объяснение отказа).
+
+    Перед сжатием переносим журнал WAL в основной файл: иначе `-wal`
+    остаётся раздутым, и суммарный размер почти не меняется — самая
+    обидная разновидность «сделали и не помогло».
+    """
+    from . import config
+    from .db import engine as db_engine
+
+    path = config.DB_FILE
+    before = measure_sqlite(path)
+
+    allowed, why = can_vacuum(before, free_space(path))
+    if not allowed:
+        return before, before, why
+
+    try:
+        from sqlalchemy import text
+
+        raw = db_engine.get_engine()
+        # VACUUM не выполняется внутри транзакции, поэтому нужен режим
+        # AUTOCOMMIT — иначе SQLAlchemy обернёт его в BEGIN и получит
+        # «cannot VACUUM from within a transaction».
+        async with raw.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            await connection.execute(text("VACUUM"))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Сжатие базы не удалось: %s", exc)
+        return before, measure_sqlite(path), "сжатие не удалось, подробности в журнале"
+
+    after = measure_sqlite(path)
+    log.info("База сжата: %s -> %s", format_size(before), format_size(after))
+    return before, after, ""
+
+
+async def run_scheduled(now: datetime) -> str:
+    """Ежедневное обслуживание. Пустая строка — не время или нечего делать."""
+    from . import config
+    from .db import repo
+
+    try:
+        last_run = str(await repo.get_meta("dbcare_last_run", "") or "")
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось прочитать отметку об обслуживании базы")
+        return ""
+
+    if not due_today(last_run, now):
+        return ""
+
+    parts: list[str] = []
+
+    try:
+        removed = await repo.purge_old_events()
+    except Exception:  # noqa: BLE001
+        log.exception("Чистка истории не удалась")
+        removed = 0
+    if removed:
+        parts.append(f"удалено событий: {removed}")
+
+    # Сжимаем только SQLite и только если что-то удалено: VACUUM
+    # переписывает файл целиком и на время блокирует базу. Гонять его
+    # вхолостую каждую ночь — платить блокировкой ни за что.
+    if config.is_sqlite() and removed:
+        before, after, why = await vacuum_sqlite()
+        if why:
+            parts.append(f"без сжатия ({why})")
+        elif after < before:
+            parts.append(f"освобождено {format_size(before - after)}")
+
+    try:
+        await repo.set_meta("dbcare_last_run", now.strftime("%Y-%m-%d"))
+    except Exception:  # noqa: BLE001
+        # Отметку не записали — завтра обслужим ещё раз. Это безвреднее,
+        # чем не обслужить вовсе.
+        log.warning("Отметка об обслуживании базы не сохранилась")
+
+    return "; ".join(parts)
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_38'
+cat > "radar/weather_image.py" <<'RADAR_FILE_39'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -12012,9 +12242,9 @@ def _strip_tags(text: str) -> str:
         elif not inside:
             result.append(char)
     return "".join(result).strip()
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_39'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_40'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -12029,9 +12259,9 @@ from . import audit, auth
 from .panel import create_app, run
 
 __all__ = ["audit", "auth", "create_app", "run"]
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_40'
+cat > "radar/web/auth.py" <<'RADAR_FILE_41'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -12213,9 +12443,9 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_41'
+cat > "radar/web/audit.py" <<'RADAR_FILE_42'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -12282,9 +12512,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_42'
+cat > "radar/web/panel.py" <<'RADAR_FILE_43'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -12878,9 +13108,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_43'
+cat > "radar/web/backup.py" <<'RADAR_FILE_44'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -12923,9 +13153,9 @@ def body() -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_43
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_44'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_45'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -12958,9 +13188,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_44
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_45'
+cat > "radar/db/models.py" <<'RADAR_FILE_46'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -13257,9 +13487,9 @@ class PromoCode(Base):
     issued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-RADAR_FILE_45
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_46'
+cat > "radar/db/engine.py" <<'RADAR_FILE_47'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -13773,9 +14003,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_46
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_47'
+cat > "radar/db/repo.py" <<'RADAR_FILE_48'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -14437,9 +14667,9 @@ async def count_sources() -> int:
     async with session() as active:
         result = await active.execute(select(func.count()).select_from(Source))
         return int(result.scalar_one() or 0)
-RADAR_FILE_47
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_48'
+cat > "radar/db/importer.py" <<'RADAR_FILE_49'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -14588,9 +14818,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_48
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_49'
+cat > "radar/doctor.py" <<'RADAR_FILE_50'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -15072,9 +15302,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_49
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_50'
+cat > "migrations/env.py" <<'RADAR_FILE_51'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -15134,9 +15364,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_50
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_51'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_52'
 """${message}
 
 Revision ID: ${up_revision}
@@ -15161,9 +15391,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_51
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_52'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_53'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -15330,9 +15560,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_52
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_53'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_54'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -15372,9 +15602,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_53
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_54'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_55'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -15422,9 +15652,9 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_54
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
-cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_55'
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_56'
 """Язык интерфейса и квоты загрузки видео.
 
 Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
@@ -15469,9 +15699,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("media_quota")
     op.drop_column("users", "lang")
-RADAR_FILE_55
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_56'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_57'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -15497,9 +15727,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_56
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_57'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_58'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -15624,9 +15854,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_57
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_58'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_59'
 """Адаптер мессенджера MAX.
 
 ⚠️ РЕАЛИЗОВАНО, НО НЕ ПРОВЕРЕНО В РАБОТЕ.
@@ -15890,9 +16120,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_58
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_59'
+cat > "radar/storage.py" <<'RADAR_FILE_60'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -16077,9 +16307,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_59
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_60'
+cat > "radar/exporting.py" <<'RADAR_FILE_61'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -16285,9 +16515,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_60
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_61'
+cat > "radar/ai.py" <<'RADAR_FILE_62'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -17029,9 +17259,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_61
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_62'
+cat > "radar/geocode.py" <<'RADAR_FILE_63'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -17270,9 +17500,9 @@ async def forward(
     # в Nominatim адреса появляются.
     _FORWARD.put(key, [dict(item) for item in results])
     return results
-RADAR_FILE_62
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_63'
+cat > "radar/weather.py" <<'RADAR_FILE_64'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -17728,9 +17958,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title, lang), markup)
-RADAR_FILE_63
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_64'
+cat > "radar/sources.py" <<'RADAR_FILE_65'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -18054,9 +18284,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_64
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_65'
+cat > "radar/tg.py" <<'RADAR_FILE_66'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -18173,9 +18403,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_65
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_66'
+cat > "radar/keyboards.py" <<'RADAR_FILE_67'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -18687,9 +18917,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_66
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_67'
+cat > "radar/states.py" <<'RADAR_FILE_68'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -18719,9 +18949,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_67
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_68'
+cat > "radar/middlewares.py" <<'RADAR_FILE_69'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -18867,9 +19097,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_69'
+cat > "radar/monitor.py" <<'RADAR_FILE_70'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -18892,6 +19122,7 @@ from . import (
     ai,
     backup,
     config,
+    dbcare,
     digest,
     features,
     geocode,
@@ -19478,6 +19709,17 @@ async def run() -> None:
                 except Exception:  # noqa: BLE001
                     log.exception("Копия по расписанию не удалась")
 
+                # Обслуживание базы — после копии, а не до: если сжатие
+                # что-то испортит, копия уже снята со здоровой базы.
+                # SQLite не отдаёт место после DELETE, поэтому чистка
+                # истории без VACUUM не освобождает ни байта.
+                try:
+                    tidied = await dbcare.run_scheduled(now_moment)
+                    if tidied:
+                        log.info("Обслуживание базы: %s", tidied)
+                except Exception:  # noqa: BLE001
+                    log.exception("Обслуживание базы не удалось")
+
                 await repeat_sos()
                 await release_held(now_moment)
                 await send_recap(now_moment)
@@ -19489,9 +19731,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_71'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -19549,9 +19791,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_71'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_72'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -19966,9 +20208,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_72'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_73'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -20134,9 +20376,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_74'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -20580,9 +20822,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_75'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -21081,9 +21323,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_76'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -21450,9 +21692,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_77'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -21599,9 +21841,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_78'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -21889,9 +22131,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_79'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -22018,6 +22260,31 @@ def _report() -> str:
         lines.append("")
         lines.append("💾 <i>Статистика кэша недоступна.</i>")
 
+    # Размер базы. На одноплатнике место кончается раньше терпения,
+    # и рост базы надо видеть до того, как ей станет некуда писать.
+    try:
+        from .. import dbcare
+
+        lines.append("")
+        if config.is_sqlite():
+            size = dbcare.measure_sqlite(config.DB_FILE)
+            lines.append(f"🗄 <b>{dbcare.size_report(size, 'SQLite')}</b>")
+            lines.append(
+                f"<i>Чистка истории и сжатие — ночью, после "
+                f"{dbcare.SCHEDULE_HOUR}:00. Хранение событий: "
+                f"{config.EVENT_RETENTION_DAYS} дн.</i>"
+            )
+        else:
+            lines.append("🗄 <b>База: PostgreSQL</b>")
+            lines.append(
+                "<i>Место возвращает autovacuum. Явное сжатие не делаем: "
+                "VACUUM FULL берёт исключительную блокировку на таблицу, "
+                "а оповещения ждать не могут.</i>"
+            )
+    except Exception:  # noqa: BLE001
+        lines.append("")
+        lines.append("🗄 <i>Размер базы определить не удалось.</i>")
+
     # Состояние пула подборок: пустой пул и сломанный сбор снаружи
     # выглядят одинаково, и разница обнаруживалась только чтением кода.
     try:
@@ -22073,9 +22340,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_80'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -22182,9 +22449,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_81'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -22759,9 +23026,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_82'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -22862,9 +23129,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_83'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -22954,9 +23221,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_84'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -23377,9 +23644,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_85'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -24062,9 +24329,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_86'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -24700,9 +24967,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_87'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -25223,9 +25490,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_88'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -25591,9 +25858,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_89'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -25738,7 +26005,7 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_88
+RADAR_FILE_89
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

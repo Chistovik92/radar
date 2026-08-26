@@ -124,6 +124,31 @@ def _report() -> str:
         lines.append("")
         lines.append("💾 <i>Статистика кэша недоступна.</i>")
 
+    # Размер базы. На одноплатнике место кончается раньше терпения,
+    # и рост базы надо видеть до того, как ей станет некуда писать.
+    try:
+        from .. import dbcare
+
+        lines.append("")
+        if config.is_sqlite():
+            size = dbcare.measure_sqlite(config.DB_FILE)
+            lines.append(f"🗄 <b>{dbcare.size_report(size, 'SQLite')}</b>")
+            lines.append(
+                f"<i>Чистка истории и сжатие — ночью, после "
+                f"{dbcare.SCHEDULE_HOUR}:00. Хранение событий: "
+                f"{config.EVENT_RETENTION_DAYS} дн.</i>"
+            )
+        else:
+            lines.append("🗄 <b>База: PostgreSQL</b>")
+            lines.append(
+                "<i>Место возвращает autovacuum. Явное сжатие не делаем: "
+                "VACUUM FULL берёт исключительную блокировку на таблицу, "
+                "а оповещения ждать не могут.</i>"
+            )
+    except Exception:  # noqa: BLE001
+        lines.append("")
+        lines.append("🗄 <i>Размер базы определить не удалось.</i>")
+
     # Состояние пула подборок: пустой пул и сломанный сбор снаружи
     # выглядят одинаково, и разница обнаруживалась только чтением кода.
     try:

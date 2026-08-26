@@ -20,6 +20,7 @@ from . import (
     ai,
     backup,
     config,
+    dbcare,
     digest,
     features,
     geocode,
@@ -605,6 +606,17 @@ async def run() -> None:
                         log.info("Резервная копия создана: %s", saved)
                 except Exception:  # noqa: BLE001
                     log.exception("Копия по расписанию не удалась")
+
+                # Обслуживание базы — после копии, а не до: если сжатие
+                # что-то испортит, копия уже снята со здоровой базы.
+                # SQLite не отдаёт место после DELETE, поэтому чистка
+                # истории без VACUUM не освобождает ни байта.
+                try:
+                    tidied = await dbcare.run_scheduled(now_moment)
+                    if tidied:
+                        log.info("Обслуживание базы: %s", tidied)
+                except Exception:  # noqa: BLE001
+                    log.exception("Обслуживание базы не удалось")
 
                 await repeat_sos()
                 await release_held(now_moment)

@@ -1,4 +1,4 @@
-# Система «Радар» v4.8
+# Система «Радар» v4.8.1
 
 [English version](README.en.md)
 

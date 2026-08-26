@@ -796,9 +796,40 @@ became item 21.
 
    Hits are visible in `/perf` — otherwise "the cache works" and "there is
    no cache" look identical from outside.
-5. **A compact database:** automatic history cleanup by
-   `EVENT_RETENTION_DAYS`, regular `VACUUM`, size monitoring and a warning
-   as it grows.
+5. **A compact database.** ✅ implemented in 4.8.1.
+
+   The point that is easy to miss: **SQLite does not return space to the
+   operating system after `DELETE`.** Rows are marked free and reused
+   inside the file, but the file itself never shrinks. So cleaning history
+   without `VACUUM` frees not one byte — it merely slows further growth.
+   On a single-board computer that is the difference between "it works"
+   and "the database cannot write". The claim is pinned by a test against
+   a real SQLite file: if it ever stops being true, that should come from
+   a test, not from guesswork.
+
+   What was fixed:
+
+   - **Cleanup only ran at startup.** `purge_old_events` had existed since
+     4.0, but a bot running for months without a restart never cleaned its
+     history at all — which is precisely the mode it was written for.
+     Cleanup now runs at night inside the monitoring cycle, like backups.
+   - **There was no compaction at all.** Added, but for SQLite only and
+     only after something was actually deleted: `VACUUM` rewrites the whole
+     file and locks the database while it does, and running it empty every
+     night means paying with a lock for nothing.
+   - **The WAL journal** is checkpointed into the main file before
+     compaction. Without that the `-wal` stays bloated and the total size
+     barely moves — the most galling flavour of "did it and it did not
+     help".
+   - **Size is visible in `/perf`** with a warning past 500 MB.
+
+   **PostgreSQL is handled differently — that is, not compacted.** It has
+   autovacuum, and `VACUUM FULL` takes an exclusive lock on the whole
+   table: unacceptable for an alerting system.
+
+   Free space is checked beforehand: `VACUUM` builds a new file next to the
+   old one and needs twice the room. An attempt to free space must not
+   become the thing that fills the disk for good.
 6. **A fast start.** ✅ done in 4.0.5: the schema is created directly from
    the models, without running Alembic inside the bot process — mixing
    synchronous Alembic with a running event loop was what hung startup
