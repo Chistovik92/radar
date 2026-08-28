@@ -1,4 +1,4 @@
-"""Выбор провайдера ИИ на лету: Google Gemini или DeepSeek.
+"""Выбор провайдера ИИ на лету и модели у него.
 
 Зачем
 -----
@@ -6,6 +6,24 @@
 Раньше результат оставался справкой: переключиться можно было только правкой
 `.env` и перезапуском. Теперь провайдер меняется кнопкой, и следующий же
 разбор идёт через выбранного.
+
+Девять провайдеров вместо двух (с 4.8.2)
+----------------------------------------
+До 4.8.2 в списке были только Gemini и DeepSeek — при том что `.env`
+предлагал завести ключи OpenRouter, Mistral, Moonshot, Qwen, Z.ai,
+Cerebras и OpenAI. Ключ завести было можно, а выбрать провайдера нельзя:
+**ключ, который никуда не подключается, ничем не лучше тумблера,
+не включающего функцию.**
+
+Все они, кроме Gemini, говорят совместимым с OpenAI протоколом, поэтому
+различаются одним полем `kind`, а не отдельной реализацией на каждого.
+
+Свой агент
+----------
+`CUSTOM` — любой сервис с совместимым интерфейсом: локальная модель,
+корпоративный шлюз, собственный прокси. Адрес задаётся человеком
+в `CUSTOM_AI_URL`. Без адреса провайдер в списке не показывается: ключ
+без адреса никуда не ведёт.
 
 Проверка баланса
 ----------------
@@ -35,6 +53,22 @@ log = logging.getLogger("radar.provider")
 
 GEMINI = "gemini"
 DEEPSEEK = "deepseek"
+OPENROUTER = "openrouter"
+MISTRAL = "mistral"
+MOONSHOT = "moonshot"
+DASHSCOPE = "dashscope"
+ZAI = "zai"
+OPENAI = "openai"
+CEREBRAS = "cerebras"
+CUSTOM = "custom"
+
+# Два способа разговаривать с моделью. У Gemini свой протокол, у всех
+# остальных — совместимый с OpenAI `/chat/completions`. Различие
+# в одном поле, а не в отдельной реализации на каждого: провайдеров
+# стало восемь, и писать восемь почти одинаковых функций значило бы
+# восемь раз повторить одну ошибку.
+KIND_GEMINI = "gemini"
+KIND_OPENAI = "openai"
 
 TIMEOUT = 25
 
@@ -46,18 +80,88 @@ class ProviderInfo:
     env: str
     note: str
     paid: bool
+    kind: str = KIND_OPENAI
+    # Основание адреса без `/chat/completions`. Пусто у Gemini (свой
+    # протокол) и у своего агента — там адрес задаёт человек.
+    base_url: str = ""
+    default_model: str = ""
 
+    @property
+    def custom(self) -> bool:
+        return self.key == CUSTOM
+
+    def url(self) -> str:
+        """Адрес совместимого с OpenAI эндпоинта."""
+        base = secrets.get(CUSTOM_URL_ENV) if self.custom else self.base_url
+        return (base or "").rstrip("/")
+
+
+# Настройки своего агента. Вынесены в имена, а не зашиты строками:
+# на них ссылается и установщик, и раздел ключей в боте.
+CUSTOM_URL_ENV = "CUSTOM_AI_URL"
+CUSTOM_KEY_ENV = "CUSTOM_AI_KEY"
 
 PROVIDERS: dict[str, ProviderInfo] = {
     GEMINI: ProviderInfo(
         GEMINI, "Google Gemini", "GEMINI_API_KEY",
         "Бесплатный тариф с ограничением по запросам. Умеет поиск в интернете.",
-        paid=False,
+        paid=False, kind=KIND_GEMINI,
     ),
     DEEPSEEK: ProviderInfo(
         DEEPSEEK, "DeepSeek", "DEEPSEEK_API_KEY",
         "Оплата по факту, очень низкая цена. Поиска в интернете нет.",
+        paid=True, base_url="https://api.deepseek.com/v1",
+        default_model="deepseek-chat",
+    ),
+    OPENROUTER: ProviderInfo(
+        OPENROUTER, "OpenRouter", "OPENROUTER_API_KEY",
+        "Один ключ на десятки моделей, среди них есть бесплатные. "
+        "Модель выбирается из списка.",
+        paid=True, base_url="https://openrouter.ai/api/v1",
+        default_model="",
+    ),
+    MISTRAL: ProviderInfo(
+        MISTRAL, "Mistral", "MISTRAL_API_KEY",
+        "Европейская юрисдикция, бесплатный тариф с жёстким пределом частоты.",
+        paid=False, base_url="https://api.mistral.ai/v1",
+        default_model="mistral-small-latest",
+    ),
+    MOONSHOT: ProviderInfo(
+        MOONSHOT, "Moonshot Kimi", "MOONSHOT_API_KEY",
+        "До тысячи запросов в сутки бесплатно.",
+        paid=False, base_url="https://api.moonshot.ai/v1",
+        default_model="moonshot-v1-8k",
+    ),
+    DASHSCOPE: ProviderInfo(
+        DASHSCOPE, "Alibaba Qwen", "DASHSCOPE_API_KEY",
+        "Международный эндпоинт DashScope, модели Qwen.",
         paid=True,
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        default_model="qwen-plus",
+    ),
+    ZAI: ProviderInfo(
+        ZAI, "Z.ai / GLM", "ZAI_API_KEY",
+        "Модели GLM, часть доступна бесплатно.",
+        paid=False, base_url="https://api.z.ai/api/paas/v4",
+        default_model="glm-4-flash",
+    ),
+    OPENAI: ProviderInfo(
+        OPENAI, "OpenAI", "OPENAI_API_KEY",
+        "Платный, без бесплатного тарифа.",
+        paid=True, base_url="https://api.openai.com/v1",
+        default_model="gpt-4o-mini",
+    ),
+    CEREBRAS: ProviderInfo(
+        CEREBRAS, "Cerebras", "CEREBRAS_API_KEY",
+        "Открытые модели, около миллиона токенов в сутки бесплатно.",
+        paid=False, base_url="https://api.cerebras.ai/v1",
+        default_model="llama3.1-8b",
+    ),
+    CUSTOM: ProviderInfo(
+        CUSTOM, "Свой агент", CUSTOM_KEY_ENV,
+        "Любой сервис с совместимым с OpenAI интерфейсом: локальная модель, "
+        "корпоративный шлюз, собственный прокси. Задаётся адресом и ключом.",
+        paid=False, base_url="", default_model="",
     ),
 }
 
@@ -66,7 +170,99 @@ _selected: str = ""
 
 
 def available() -> list[ProviderInfo]:
-    return [item for item in PROVIDERS.values() if secrets.get(item.env)]
+    """Провайдеры, у которых есть ключ.
+
+    Свой агент требует ещё и адреса: ключ без адреса никуда не ведёт,
+    и показывать такой провайдер в списке значило бы предложить выбрать
+    заведомо неработающее.
+    """
+    ready: list[ProviderInfo] = []
+    for item in PROVIDERS.values():
+        if not secrets.get(item.env):
+            continue
+        if item.custom and not item.url():
+            continue
+        ready.append(item)
+    return ready
+
+
+# --------------------------------------------------------------------------
+#  Выбор модели
+# --------------------------------------------------------------------------
+#
+# У OpenRouter моделей десятки, и вписывать имя руками — верный способ
+# опечататься так, что выяснится это при первом разборе настоящей тревоги.
+# Поэтому список забирается у самого провайдера, а выбор запоминается.
+
+def model_env(name: str) -> str:
+    """Имя настройки с выбранной моделью провайдера."""
+    return f"AI_MODEL_{name.upper()}"
+
+
+def model_of(name: str) -> str:
+    """Выбранная модель или значение по умолчанию."""
+    info = PROVIDERS.get(name)
+    if info is None:
+        return ""
+    chosen = (secrets.get(model_env(name)) or "").strip()
+    return chosen or info.default_model
+
+
+def set_model(name: str, model: str) -> bool:
+    if name not in PROVIDERS:
+        return False
+    return secrets.write(model_env(name), (model or "").strip())
+
+
+async def list_models(name: str, limit: int = 60) -> list[str]:
+    """Список моделей у провайдера. Пусто — не спросить или не поддерживает.
+
+    Формат ответа общий для совместимых с OpenAI служб:
+    `{"data": [{"id": "..."}]}`. Gemini сюда не попадает — у него свой
+    протокол и свой `ai.discover_models`.
+    """
+    info = PROVIDERS.get(name)
+    if info is None or info.kind != KIND_OPENAI:
+        return []
+
+    base = info.url()
+    key = secrets.get(info.env)
+    if not base or not key:
+        return []
+
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                f"{base}/models",
+                headers={"Authorization": f"Bearer {key}"},
+            ) as response:
+                if response.status != 200:
+                    log.info("%s: список моделей вернул %s", name, response.status)
+                    return []
+                payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        log.info("%s: список моделей не получен: %s", name, exc)
+        return []
+
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    names: list[str] = []
+    for row in rows or []:
+        found = row.get("id") if isinstance(row, dict) else row
+        if isinstance(found, str) and found.strip():
+            names.append(found.strip())
+
+    # Сортировка по имени: у OpenRouter порядок выдачи произвольный,
+    # и одна и та же модель каждый раз оказывалась бы в другом месте
+    # списка — выбирать в таком неудобно.
+    return sorted(set(names))[:limit]
+
+
+def free_first(names: list[str]) -> list[str]:
+    """Бесплатные модели вперёд — их у OpenRouter помечают суффиксом."""
+    free = [item for item in names if item.endswith(":free")]
+    rest = [item for item in names if not item.endswith(":free")]
+    return free + rest
 
 
 def current() -> str:

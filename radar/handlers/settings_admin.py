@@ -551,6 +551,12 @@ async def backup_download(call: CallbackQuery, role: str) -> None:
 #  Единый раздел управления ИИ
 # --------------------------------------------------------------------------
 
+# Список моделей на человека: в callback_data имя модели не влезает
+# (предел Telegram — 64 байта), поэтому передаётся номер в списке,
+# а сам список держится здесь до следующего открытия.
+_model_choices: dict[int, list[str]] = {}
+
+
 def _ai_overview() -> str:
     from .. import provider
 
@@ -596,6 +602,95 @@ async def ai_menu(call: CallbackQuery, state: FSMContext, role: str) -> None:
 
     await state.clear()
     await call.answer()
+    await safe_edit(call, _ai_overview(), keyboards.ai_menu())
+
+
+@router.callback_query(F.data == "ai:pickmodel")
+async def ai_pick_model(call: CallbackQuery, role: str) -> None:
+    """Список моделей у выбранного провайдера.
+
+    Вписывать имя руками — верный способ опечататься так, что выяснится
+    это при первом разборе настоящей тревоги. Поэтому список берётся
+    у самого провайдера.
+    """
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    from .. import provider
+
+    name = provider.current()
+    info = provider.PROVIDERS.get(name)
+    if info is None or info.kind != provider.KIND_OPENAI:
+        await call.answer(
+            "У Gemini свой список моделей — он в разделе «Модели и квота».",
+            show_alert=True,
+        )
+        return
+
+    await call.answer("Запрашиваю список моделей…")
+    names = provider.free_first(await provider.list_models(name))
+
+    if not names:
+        await safe_edit(
+            call,
+            f"🤖 <b>{esc(info.title)}</b>\n\n"
+            "Список моделей получить не удалось: сервис его не отдаёт или "
+            "ключ не принят. Модель можно задать вручную в разделе "
+            "«Ключи доступа» — настройка "
+            f"<code>{esc(provider.model_env(name))}</code>.",
+            back_kb("ai:menu", "◀️ К управлению ИИ"),
+        )
+        return
+
+    current_model = provider.model_of(name)
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, model in enumerate(names[:20]):
+        mark = "✅ " if model == current_model else ""
+        # В callback_data имя модели не влезает целиком (предел 64 байта
+        # у Telegram), поэтому передаём номер в списке.
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{model[:55]}",
+            callback_data=f"ai:setmodel:{index}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="◀️ К управлению ИИ", callback_data="ai:menu")])
+
+    _model_choices[call.from_user.id] = names[:20]
+
+    free = sum(1 for item in names if item.endswith(":free"))
+    note = f"\n<i>Бесплатных среди них: {free}.</i>" if free else ""
+    await safe_edit(
+        call,
+        f"🤖 <b>Модели {esc(info.title)}</b>\n"
+        f"Сейчас: <code>{esc(current_model or 'не выбрана')}</code>\n"
+        f"Доступно: {len(names)}, показаны первые {len(names[:20])}.{note}",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("ai:setmodel:"))
+async def ai_set_model(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    from .. import keyboards, provider
+
+    choices = _model_choices.get(call.from_user.id) or []
+    try:
+        index = int(call.data.split(":")[2])
+        model = choices[index]
+    except (IndexError, ValueError):
+        await call.answer("Список устарел — откройте его заново.", show_alert=True)
+        return
+
+    name = provider.current()
+    if not provider.set_model(name, model):
+        await call.answer("Не удалось сохранить выбор.", show_alert=True)
+        return
+
+    await call.answer(f"Модель: {model[:40]}")
     await safe_edit(call, _ai_overview(), keyboards.ai_menu())
 
 

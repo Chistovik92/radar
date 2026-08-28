@@ -66,6 +66,15 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("OPENAI_API_KEY", "OpenAI", "Платный.", "ИИ", where="platform.openai.com"),
     Setting("ANTHROPIC_API_KEY", "Anthropic Claude", "Платный.", "ИИ",
             where="console.anthropic.com"),
+    # Свой агент: любой сервис с совместимым с OpenAI интерфейсом —
+    # локальная модель, корпоративный шлюз, собственный прокси. Адрес
+    # обязателен: ключ без адреса никуда не ведёт.
+    Setting("CUSTOM_AI_URL", "Свой агент: адрес",
+            "Основание адреса без /chat/completions, например "
+            "http://ollama:11434/v1", "ИИ", where="ваш сервис"),
+    Setting("CUSTOM_AI_KEY", "Свой агент: ключ",
+            "Если сервис не требует ключа, впишите любое непустое значение.",
+            "ИИ", where="ваш сервис"),
 
     # --- источники ---
     Setting("VK_SERVICE_TOKEN", "ВКонтакте", "Сервисный ключ сообщества для чтения стен.",

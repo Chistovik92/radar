@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.1 — автономный установщик.
+# Система «Радар» v4.8.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.1"
+VERSION="4.8.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2531,6 +2531,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.2", [
+        "🧠 <b>Провайдеров ИИ стало девять вместо двух.</b> Ключи "
+        "OpenRouter, Mistral, Moonshot, Qwen, Z.ai, Cerebras и OpenAI "
+        "предлагалось завести и раньше, но выбрать их было нельзя — "
+        "ключ никуда не подключался.",
+        "🤖 <b>Модель выбирается из списка</b>, а не вписывается руками: "
+        "список берётся у самого провайдера, бесплатные показаны первыми. "
+        "У OpenRouter моделей десятки, и опечатка выяснилась бы при первом "
+        "разборе настоящей тревоги.",
+        "🔌 <b>Свой агент.</b> Любой сервис с совместимым с OpenAI "
+        "интерфейсом — локальная модель, корпоративный шлюз, свой прокси. "
+        "Задаётся адресом и ключом в разделе «Ключи доступа».",
+    ]),
     ("4.8.1", [
         "🗄 <b>База перестала расти без остановки.</b> Чистка истории "
         "вызывалась только при старте — бот, работающий месяцами, "
@@ -3249,7 +3262,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.1"
+__version__ = "4.8.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7397,6 +7410,15 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("OPENAI_API_KEY", "OpenAI", "Платный.", "ИИ", where="platform.openai.com"),
     Setting("ANTHROPIC_API_KEY", "Anthropic Claude", "Платный.", "ИИ",
             where="console.anthropic.com"),
+    # Свой агент: любой сервис с совместимым с OpenAI интерфейсом —
+    # локальная модель, корпоративный шлюз, собственный прокси. Адрес
+    # обязателен: ключ без адреса никуда не ведёт.
+    Setting("CUSTOM_AI_URL", "Свой агент: адрес",
+            "Основание адреса без /chat/completions, например "
+            "http://ollama:11434/v1", "ИИ", where="ваш сервис"),
+    Setting("CUSTOM_AI_KEY", "Свой агент: ключ",
+            "Если сервис не требует ключа, впишите любое непустое значение.",
+            "ИИ", where="ваш сервис"),
 
     # --- источники ---
     Setting("VK_SERVICE_TOKEN", "ВКонтакте", "Сервисный ключ сообщества для чтения стен.",
@@ -8372,7 +8394,7 @@ def describe(state: ProxyState) -> str:
 RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/provider.py"
 cat > "radar/provider.py" <<'RADAR_FILE_25'
-"""Выбор провайдера ИИ на лету: Google Gemini или DeepSeek.
+"""Выбор провайдера ИИ на лету и модели у него.
 
 Зачем
 -----
@@ -8380,6 +8402,24 @@ cat > "radar/provider.py" <<'RADAR_FILE_25'
 Раньше результат оставался справкой: переключиться можно было только правкой
 `.env` и перезапуском. Теперь провайдер меняется кнопкой, и следующий же
 разбор идёт через выбранного.
+
+Девять провайдеров вместо двух (с 4.8.2)
+----------------------------------------
+До 4.8.2 в списке были только Gemini и DeepSeek — при том что `.env`
+предлагал завести ключи OpenRouter, Mistral, Moonshot, Qwen, Z.ai,
+Cerebras и OpenAI. Ключ завести было можно, а выбрать провайдера нельзя:
+**ключ, который никуда не подключается, ничем не лучше тумблера,
+не включающего функцию.**
+
+Все они, кроме Gemini, говорят совместимым с OpenAI протоколом, поэтому
+различаются одним полем `kind`, а не отдельной реализацией на каждого.
+
+Свой агент
+----------
+`CUSTOM` — любой сервис с совместимым интерфейсом: локальная модель,
+корпоративный шлюз, собственный прокси. Адрес задаётся человеком
+в `CUSTOM_AI_URL`. Без адреса провайдер в списке не показывается: ключ
+без адреса никуда не ведёт.
 
 Проверка баланса
 ----------------
@@ -8409,6 +8449,22 @@ log = logging.getLogger("radar.provider")
 
 GEMINI = "gemini"
 DEEPSEEK = "deepseek"
+OPENROUTER = "openrouter"
+MISTRAL = "mistral"
+MOONSHOT = "moonshot"
+DASHSCOPE = "dashscope"
+ZAI = "zai"
+OPENAI = "openai"
+CEREBRAS = "cerebras"
+CUSTOM = "custom"
+
+# Два способа разговаривать с моделью. У Gemini свой протокол, у всех
+# остальных — совместимый с OpenAI `/chat/completions`. Различие
+# в одном поле, а не в отдельной реализации на каждого: провайдеров
+# стало восемь, и писать восемь почти одинаковых функций значило бы
+# восемь раз повторить одну ошибку.
+KIND_GEMINI = "gemini"
+KIND_OPENAI = "openai"
 
 TIMEOUT = 25
 
@@ -8420,18 +8476,88 @@ class ProviderInfo:
     env: str
     note: str
     paid: bool
+    kind: str = KIND_OPENAI
+    # Основание адреса без `/chat/completions`. Пусто у Gemini (свой
+    # протокол) и у своего агента — там адрес задаёт человек.
+    base_url: str = ""
+    default_model: str = ""
 
+    @property
+    def custom(self) -> bool:
+        return self.key == CUSTOM
+
+    def url(self) -> str:
+        """Адрес совместимого с OpenAI эндпоинта."""
+        base = secrets.get(CUSTOM_URL_ENV) if self.custom else self.base_url
+        return (base or "").rstrip("/")
+
+
+# Настройки своего агента. Вынесены в имена, а не зашиты строками:
+# на них ссылается и установщик, и раздел ключей в боте.
+CUSTOM_URL_ENV = "CUSTOM_AI_URL"
+CUSTOM_KEY_ENV = "CUSTOM_AI_KEY"
 
 PROVIDERS: dict[str, ProviderInfo] = {
     GEMINI: ProviderInfo(
         GEMINI, "Google Gemini", "GEMINI_API_KEY",
         "Бесплатный тариф с ограничением по запросам. Умеет поиск в интернете.",
-        paid=False,
+        paid=False, kind=KIND_GEMINI,
     ),
     DEEPSEEK: ProviderInfo(
         DEEPSEEK, "DeepSeek", "DEEPSEEK_API_KEY",
         "Оплата по факту, очень низкая цена. Поиска в интернете нет.",
+        paid=True, base_url="https://api.deepseek.com/v1",
+        default_model="deepseek-chat",
+    ),
+    OPENROUTER: ProviderInfo(
+        OPENROUTER, "OpenRouter", "OPENROUTER_API_KEY",
+        "Один ключ на десятки моделей, среди них есть бесплатные. "
+        "Модель выбирается из списка.",
+        paid=True, base_url="https://openrouter.ai/api/v1",
+        default_model="",
+    ),
+    MISTRAL: ProviderInfo(
+        MISTRAL, "Mistral", "MISTRAL_API_KEY",
+        "Европейская юрисдикция, бесплатный тариф с жёстким пределом частоты.",
+        paid=False, base_url="https://api.mistral.ai/v1",
+        default_model="mistral-small-latest",
+    ),
+    MOONSHOT: ProviderInfo(
+        MOONSHOT, "Moonshot Kimi", "MOONSHOT_API_KEY",
+        "До тысячи запросов в сутки бесплатно.",
+        paid=False, base_url="https://api.moonshot.ai/v1",
+        default_model="moonshot-v1-8k",
+    ),
+    DASHSCOPE: ProviderInfo(
+        DASHSCOPE, "Alibaba Qwen", "DASHSCOPE_API_KEY",
+        "Международный эндпоинт DashScope, модели Qwen.",
         paid=True,
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        default_model="qwen-plus",
+    ),
+    ZAI: ProviderInfo(
+        ZAI, "Z.ai / GLM", "ZAI_API_KEY",
+        "Модели GLM, часть доступна бесплатно.",
+        paid=False, base_url="https://api.z.ai/api/paas/v4",
+        default_model="glm-4-flash",
+    ),
+    OPENAI: ProviderInfo(
+        OPENAI, "OpenAI", "OPENAI_API_KEY",
+        "Платный, без бесплатного тарифа.",
+        paid=True, base_url="https://api.openai.com/v1",
+        default_model="gpt-4o-mini",
+    ),
+    CEREBRAS: ProviderInfo(
+        CEREBRAS, "Cerebras", "CEREBRAS_API_KEY",
+        "Открытые модели, около миллиона токенов в сутки бесплатно.",
+        paid=False, base_url="https://api.cerebras.ai/v1",
+        default_model="llama3.1-8b",
+    ),
+    CUSTOM: ProviderInfo(
+        CUSTOM, "Свой агент", CUSTOM_KEY_ENV,
+        "Любой сервис с совместимым с OpenAI интерфейсом: локальная модель, "
+        "корпоративный шлюз, собственный прокси. Задаётся адресом и ключом.",
+        paid=False, base_url="", default_model="",
     ),
 }
 
@@ -8440,7 +8566,99 @@ _selected: str = ""
 
 
 def available() -> list[ProviderInfo]:
-    return [item for item in PROVIDERS.values() if secrets.get(item.env)]
+    """Провайдеры, у которых есть ключ.
+
+    Свой агент требует ещё и адреса: ключ без адреса никуда не ведёт,
+    и показывать такой провайдер в списке значило бы предложить выбрать
+    заведомо неработающее.
+    """
+    ready: list[ProviderInfo] = []
+    for item in PROVIDERS.values():
+        if not secrets.get(item.env):
+            continue
+        if item.custom and not item.url():
+            continue
+        ready.append(item)
+    return ready
+
+
+# --------------------------------------------------------------------------
+#  Выбор модели
+# --------------------------------------------------------------------------
+#
+# У OpenRouter моделей десятки, и вписывать имя руками — верный способ
+# опечататься так, что выяснится это при первом разборе настоящей тревоги.
+# Поэтому список забирается у самого провайдера, а выбор запоминается.
+
+def model_env(name: str) -> str:
+    """Имя настройки с выбранной моделью провайдера."""
+    return f"AI_MODEL_{name.upper()}"
+
+
+def model_of(name: str) -> str:
+    """Выбранная модель или значение по умолчанию."""
+    info = PROVIDERS.get(name)
+    if info is None:
+        return ""
+    chosen = (secrets.get(model_env(name)) or "").strip()
+    return chosen or info.default_model
+
+
+def set_model(name: str, model: str) -> bool:
+    if name not in PROVIDERS:
+        return False
+    return secrets.write(model_env(name), (model or "").strip())
+
+
+async def list_models(name: str, limit: int = 60) -> list[str]:
+    """Список моделей у провайдера. Пусто — не спросить или не поддерживает.
+
+    Формат ответа общий для совместимых с OpenAI служб:
+    `{"data": [{"id": "..."}]}`. Gemini сюда не попадает — у него свой
+    протокол и свой `ai.discover_models`.
+    """
+    info = PROVIDERS.get(name)
+    if info is None or info.kind != KIND_OPENAI:
+        return []
+
+    base = info.url()
+    key = secrets.get(info.env)
+    if not base or not key:
+        return []
+
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                f"{base}/models",
+                headers={"Authorization": f"Bearer {key}"},
+            ) as response:
+                if response.status != 200:
+                    log.info("%s: список моделей вернул %s", name, response.status)
+                    return []
+                payload = await response.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        log.info("%s: список моделей не получен: %s", name, exc)
+        return []
+
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    names: list[str] = []
+    for row in rows or []:
+        found = row.get("id") if isinstance(row, dict) else row
+        if isinstance(found, str) and found.strip():
+            names.append(found.strip())
+
+    # Сортировка по имени: у OpenRouter порядок выдачи произвольный,
+    # и одна и та же модель каждый раз оказывалась бы в другом месте
+    # списка — выбирать в таком неудобно.
+    return sorted(set(names))[:limit]
+
+
+def free_first(names: list[str]) -> list[str]:
+    """Бесплатные модели вперёд — их у OpenRouter помечают суффиксом."""
+    free = [item for item in names if item.endswith(":free")]
+    rest = [item for item in names if not item.endswith(":free")]
+    return free + rest
 
 
 def current() -> str:
@@ -17034,44 +17252,75 @@ def _fallback(text: str, source: str, link: str = "") -> Analysis:
     return analysis
 
 
-async def _deepseek_batch(prompt: str) -> str:
-    """Пакетный разбор через DeepSeek. Формат ответа тот же, что у Gemini."""
+async def _openai_batch(prompt: str, name: str = "") -> str:
+    """Пакетный разбор через совместимый с OpenAI сервис.
+
+    Одна функция на всех: DeepSeek, OpenRouter, Mistral, Moonshot, Qwen,
+    Z.ai, OpenAI и свой агент говорят одним протоколом. Восемь почти
+    одинаковых функций означали бы восемь мест, где придётся повторить
+    одну и ту же правку — и одно, где о ней забудут.
+    """
     import aiohttp
 
-    from . import secrets
+    from . import provider, secrets
 
-    api_key = secrets.get("DEEPSEEK_API_KEY")
+    name = name or provider.current()
+    info = provider.PROVIDERS.get(name)
+    if info is None or info.kind != provider.KIND_OPENAI:
+        raise AIError(f"провайдер {name} не совместим с OpenAI")
+
+    base = info.url()
+    if not base:
+        raise AIError(f"{info.title}: не задан адрес сервиса")
+
+    api_key = secrets.get(info.env)
     if not api_key:
-        raise AIError("ключ DeepSeek не задан")
+        raise AIError(f"{info.title}: ключ не задан")
 
-    payload = {
-        "model": "deepseek-chat",
+    model = provider.model_of(name)
+    if not model:
+        # У OpenRouter модели по умолчанию нет: их десятки, и выбрать
+        # за человека значило бы потратить его деньги на своё усмотрение.
+        raise AIError(f"{info.title}: модель не выбрана — задайте её в разделе ИИ")
+
+    payload: dict[str, Any] = {
+        "model": model,
         "messages": [
             {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
         "max_tokens": 2000,
-        "response_format": {"type": "json_object"},
     }
+    # Строгий JSON поддерживают не все совместимые сервисы, и на тех, кто
+    # не поддерживает, поле роняет запрос целиком. Просим его только там,
+    # где точно умеют; остальных дисциплинирует системная строка выше.
+    if name in ("deepseek", "openai", "mistral"):
+        payload["response_format"] = {"type": "json_object"}
+
     timeout = aiohttp.ClientTimeout(total=90)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            "https://api.deepseek.com/v1/chat/completions",
+            f"{base}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {api_key}"},
         ) as response:
             body = await response.text()
             if response.status != 200:
                 detail = body[:200]
-                raise AIError(f"DeepSeek HTTP {response.status}: {detail}")
+                raise AIError(f"{info.title} HTTP {response.status}: {detail}")
             data = json.loads(body)
 
     for choice in data.get("choices") or []:
         content = (choice.get("message") or {}).get("content")
         if content:
             return content
-    raise AIError("DeepSeek вернул пустой ответ")
+    raise AIError(f"{info.title} вернул пустой ответ")
+
+
+async def _deepseek_batch(prompt: str) -> str:
+    """Совместимость: имя осталось от версий, где провайдер был один."""
+    return await _openai_batch(prompt, "deepseek")
 
 
 async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
@@ -17123,8 +17372,14 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             # со следующего разбора, перезапуск не нужен.
             from . import provider as provider_choice
 
-            if provider_choice.current() == provider_choice.DEEPSEEK:
-                raw = await _deepseek_batch(ANALYST_PROMPT.format(items=listing))
+            active = provider_choice.current()
+            chosen = provider_choice.PROVIDERS.get(active)
+            # Всё, кроме Gemini, говорит совместимым с OpenAI протоколом.
+            # Раньше здесь проверялся один DeepSeek, и любой добавленный
+            # провайдер молча уходил бы в Gemini — то есть выбор в боте
+            # ничего бы не менял.
+            if chosen is not None and chosen.kind == provider_choice.KIND_OPENAI:
+                raw = await _openai_batch(ANALYST_PROMPT.format(items=listing), active)
             else:
                 raw = await generate(
                     ANALYST_PROMPT.format(items=listing),
@@ -18714,6 +18969,7 @@ def ai_menu() -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="🤖 Провайдер разбора", callback_data="prov:menu")])
     rows.extend([
+        [InlineKeyboardButton(text="🤖 Модель провайдера", callback_data="ai:pickmodel")],
         [InlineKeyboardButton(text="🧪 Сравнить провайдеров", callback_data="bench:menu")],
         [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
         [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],
@@ -24885,6 +25141,12 @@ async def backup_download(call: CallbackQuery, role: str) -> None:
 #  Единый раздел управления ИИ
 # --------------------------------------------------------------------------
 
+# Список моделей на человека: в callback_data имя модели не влезает
+# (предел Telegram — 64 байта), поэтому передаётся номер в списке,
+# а сам список держится здесь до следующего открытия.
+_model_choices: dict[int, list[str]] = {}
+
+
 def _ai_overview() -> str:
     from .. import provider
 
@@ -24930,6 +25192,95 @@ async def ai_menu(call: CallbackQuery, state: FSMContext, role: str) -> None:
 
     await state.clear()
     await call.answer()
+    await safe_edit(call, _ai_overview(), keyboards.ai_menu())
+
+
+@router.callback_query(F.data == "ai:pickmodel")
+async def ai_pick_model(call: CallbackQuery, role: str) -> None:
+    """Список моделей у выбранного провайдера.
+
+    Вписывать имя руками — верный способ опечататься так, что выяснится
+    это при первом разборе настоящей тревоги. Поэтому список берётся
+    у самого провайдера.
+    """
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    from .. import provider
+
+    name = provider.current()
+    info = provider.PROVIDERS.get(name)
+    if info is None or info.kind != provider.KIND_OPENAI:
+        await call.answer(
+            "У Gemini свой список моделей — он в разделе «Модели и квота».",
+            show_alert=True,
+        )
+        return
+
+    await call.answer("Запрашиваю список моделей…")
+    names = provider.free_first(await provider.list_models(name))
+
+    if not names:
+        await safe_edit(
+            call,
+            f"🤖 <b>{esc(info.title)}</b>\n\n"
+            "Список моделей получить не удалось: сервис его не отдаёт или "
+            "ключ не принят. Модель можно задать вручную в разделе "
+            "«Ключи доступа» — настройка "
+            f"<code>{esc(provider.model_env(name))}</code>.",
+            back_kb("ai:menu", "◀️ К управлению ИИ"),
+        )
+        return
+
+    current_model = provider.model_of(name)
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, model in enumerate(names[:20]):
+        mark = "✅ " if model == current_model else ""
+        # В callback_data имя модели не влезает целиком (предел 64 байта
+        # у Telegram), поэтому передаём номер в списке.
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{model[:55]}",
+            callback_data=f"ai:setmodel:{index}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="◀️ К управлению ИИ", callback_data="ai:menu")])
+
+    _model_choices[call.from_user.id] = names[:20]
+
+    free = sum(1 for item in names if item.endswith(":free"))
+    note = f"\n<i>Бесплатных среди них: {free}.</i>" if free else ""
+    await safe_edit(
+        call,
+        f"🤖 <b>Модели {esc(info.title)}</b>\n"
+        f"Сейчас: <code>{esc(current_model or 'не выбрана')}</code>\n"
+        f"Доступно: {len(names)}, показаны первые {len(names[:20])}.{note}",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("ai:setmodel:"))
+async def ai_set_model(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    from .. import keyboards, provider
+
+    choices = _model_choices.get(call.from_user.id) or []
+    try:
+        index = int(call.data.split(":")[2])
+        model = choices[index]
+    except (IndexError, ValueError):
+        await call.answer("Список устарел — откройте его заново.", show_alert=True)
+        return
+
+    name = provider.current()
+    if not provider.set_model(name, model):
+        await call.answer("Не удалось сохранить выбор.", show_alert=True)
+        return
+
+    await call.answer(f"Модель: {model[:40]}")
     await safe_edit(call, _ai_overview(), keyboards.ai_menu())
 
 

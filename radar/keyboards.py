@@ -306,6 +306,7 @@ def ai_menu() -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="🤖 Провайдер разбора", callback_data="prov:menu")])
     rows.extend([
+        [InlineKeyboardButton(text="🤖 Модель провайдера", callback_data="ai:pickmodel")],
         [InlineKeyboardButton(text="🧪 Сравнить провайдеров", callback_data="bench:menu")],
         [InlineKeyboardButton(text="📊 Модели и квота", callback_data="ai:models")],
         [InlineKeyboardButton(text="🔑 Ключи ИИ", callback_data="key:group:ИИ")],

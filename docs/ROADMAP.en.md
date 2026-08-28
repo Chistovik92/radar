@@ -761,14 +761,20 @@ became item 21.
 
 ## 4.8 — optimizing for the single-board computer
 
-1. **Profiling.** The measurement tool — `/perf` — was built in 4.5.7,
-   readings were taken in 4.7.6.5, and they produced the parallel source
-   walk and moving parsing off the event loop (4.7.7). What remains is
-   PostgreSQL under real load: the server currently runs SQLite, so there
-   is nothing to measure.
-2. **Tuning PostgreSQL for the actual amount of memory.** Settings were
-   raised for 4 GB in 4.0.5. Automatic tuning at install time — not done.
-3. **Container limits** — set in 4.0.5, refined from measurements.
+1. ⚠️ **Profiling.** The measurement tool — `/perf` — was built in 4.5.7,
+   readings were taken in 4.7.6.5, and they produced the parallel source walk
+   and moving parsing off the event loop (4.7.7). **PostgreSQL under load
+   stays unverified:** the server runs SQLite, so there is nothing to
+   measure.
+2. ⚠️ **Tuning PostgreSQL for the actual amount of memory.** Settings were
+   raised for 4 GB in 4.0.5 (`shared_buffers=256MB`, 1 GB cache). Automatic
+   tuning at install time is **not done and deliberately deferred:** the
+   server runs SQLite, there is no way to verify the tuning, and writing
+   blind the parameters a database start depends on is exactly what this
+   project avoids.
+3. ⚠️ **Container limits** — memory caps were set in 4.0.5 so one process
+   cannot drag down the whole system. Refining them from measurements runs
+   into the same PostgreSQL that is not on the server.
 4. **Cutting network calls.** ✅ implemented in 4.8.
 
    The measurement showed the cycle spends almost all its time waiting on
@@ -834,6 +840,40 @@ became item 21.
    the models, without running Alembic inside the bot process — mixing
    synchronous Alembic with a running event loop was what hung startup
    on ARM.
+7. **A custom agent and model selection.** ✅ implemented in 4.8.2.
+
+   The provider list held two — Gemini and DeepSeek — while `.env` offered
+   keys for OpenRouter, Mistral, Moonshot, Qwen, Z.ai, Cerebras and OpenAI.
+   So a key could be entered but the provider could not be chosen: **a key
+   that connects to nothing is no better than a toggle that switches
+   nothing on.**
+
+   All seven are now wired up. Every one of them except Gemini speaks the
+   same protocol — OpenAI-compatible `/chat/completions` — so instead of
+   eight nearly identical functions there is one: eight copies would mean
+   eight places to repeat a fix, and one where it gets forgotten.
+
+   **The custom agent** is any service with a compatible interface: a local
+   model, a corporate gateway, your own proxy. It is defined by an address
+   (`CUSTOM_AI_URL`) and a key. Without the address the provider does not
+   appear in the list: a key with no address leads nowhere, and offering
+   that choice would be offering something knowingly broken.
+
+   **Model selection from a list.** OpenRouter has dozens of models, and
+   typing a name by hand is a sure way to make the kind of typo that
+   surfaces during the first real alert. The list is fetched from the
+   provider itself, free models are shown first, and the choice is
+   remembered.
+
+   Details that shaped the implementation: OpenRouter has **no default
+   model** (choosing for someone means spending their money on your own
+   judgement); strict JSON is requested only from services that support it,
+   because for the others that field fails the whole request; and a model
+   name does not fit into Telegram's `callback_data`, so an index is passed
+   instead.
+
+   Anthropic deliberately stays without a provider: its protocol is its
+   own, not OpenAI-compatible.
 
 ---
 

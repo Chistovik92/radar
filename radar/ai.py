@@ -514,44 +514,75 @@ def _fallback(text: str, source: str, link: str = "") -> Analysis:
     return analysis
 
 
-async def _deepseek_batch(prompt: str) -> str:
-    """Пакетный разбор через DeepSeek. Формат ответа тот же, что у Gemini."""
+async def _openai_batch(prompt: str, name: str = "") -> str:
+    """Пакетный разбор через совместимый с OpenAI сервис.
+
+    Одна функция на всех: DeepSeek, OpenRouter, Mistral, Moonshot, Qwen,
+    Z.ai, OpenAI и свой агент говорят одним протоколом. Восемь почти
+    одинаковых функций означали бы восемь мест, где придётся повторить
+    одну и ту же правку — и одно, где о ней забудут.
+    """
     import aiohttp
 
-    from . import secrets
+    from . import provider, secrets
 
-    api_key = secrets.get("DEEPSEEK_API_KEY")
+    name = name or provider.current()
+    info = provider.PROVIDERS.get(name)
+    if info is None or info.kind != provider.KIND_OPENAI:
+        raise AIError(f"провайдер {name} не совместим с OpenAI")
+
+    base = info.url()
+    if not base:
+        raise AIError(f"{info.title}: не задан адрес сервиса")
+
+    api_key = secrets.get(info.env)
     if not api_key:
-        raise AIError("ключ DeepSeek не задан")
+        raise AIError(f"{info.title}: ключ не задан")
 
-    payload = {
-        "model": "deepseek-chat",
+    model = provider.model_of(name)
+    if not model:
+        # У OpenRouter модели по умолчанию нет: их десятки, и выбрать
+        # за человека значило бы потратить его деньги на своё усмотрение.
+        raise AIError(f"{info.title}: модель не выбрана — задайте её в разделе ИИ")
+
+    payload: dict[str, Any] = {
+        "model": model,
         "messages": [
             {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
         "max_tokens": 2000,
-        "response_format": {"type": "json_object"},
     }
+    # Строгий JSON поддерживают не все совместимые сервисы, и на тех, кто
+    # не поддерживает, поле роняет запрос целиком. Просим его только там,
+    # где точно умеют; остальных дисциплинирует системная строка выше.
+    if name in ("deepseek", "openai", "mistral"):
+        payload["response_format"] = {"type": "json_object"}
+
     timeout = aiohttp.ClientTimeout(total=90)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            "https://api.deepseek.com/v1/chat/completions",
+            f"{base}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {api_key}"},
         ) as response:
             body = await response.text()
             if response.status != 200:
                 detail = body[:200]
-                raise AIError(f"DeepSeek HTTP {response.status}: {detail}")
+                raise AIError(f"{info.title} HTTP {response.status}: {detail}")
             data = json.loads(body)
 
     for choice in data.get("choices") or []:
         content = (choice.get("message") or {}).get("content")
         if content:
             return content
-    raise AIError("DeepSeek вернул пустой ответ")
+    raise AIError(f"{info.title} вернул пустой ответ")
+
+
+async def _deepseek_batch(prompt: str) -> str:
+    """Совместимость: имя осталось от версий, где провайдер был один."""
+    return await _openai_batch(prompt, "deepseek")
 
 
 async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
@@ -603,8 +634,14 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             # со следующего разбора, перезапуск не нужен.
             from . import provider as provider_choice
 
-            if provider_choice.current() == provider_choice.DEEPSEEK:
-                raw = await _deepseek_batch(ANALYST_PROMPT.format(items=listing))
+            active = provider_choice.current()
+            chosen = provider_choice.PROVIDERS.get(active)
+            # Всё, кроме Gemini, говорит совместимым с OpenAI протоколом.
+            # Раньше здесь проверялся один DeepSeek, и любой добавленный
+            # провайдер молча уходил бы в Gemini — то есть выбор в боте
+            # ничего бы не менял.
+            if chosen is not None and chosen.kind == provider_choice.KIND_OPENAI:
+                raw = await _openai_batch(ANALYST_PROMPT.format(items=listing), active)
             else:
                 raw = await generate(
                     ANALYST_PROMPT.format(items=listing),
