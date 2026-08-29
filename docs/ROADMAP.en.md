@@ -566,6 +566,13 @@ up.
     a countdown. A warning about forwarding port 8899 on the router was
     added: without it the link does not open, and twice during a live
     move the cause was not obvious.
+    4.8.3.1 gave the move two explicit options, and the choice is
+    honest: manual transfer (the archive travels by any means, and on
+    the new machine the installer runs with a bare --restore that picks
+    the archive from the current directory) — the reliable way; the
+    one-time link is more convenient but marked "not verified on a live
+    move" and offered as option two. tools/restore.sh without arguments
+    also looks for a copy next to itself first.
     **The main thing still left is a fire drill:** go through a full move
     on a clean machine. Until then the mechanism is considered unverified.
 

@@ -18,6 +18,10 @@
 #   bash tools/restore.sh ФАЙЛ.tar.gz         конкретная
 #   bash tools/restore.sh --list              что вообще есть
 #
+# Без аргумента скрипт сначала ищет копию рядом с собой (с 4.8.3.1 —
+# ручной переезд: положил архив в каталог, запустил скрипт), затем —
+# в backups работающей установки.
+#
 # На сервере репозитория нет — установщик разворачивает только код бота.
 # Скрипт самодостаточен и скачивается одной командой:
 #   curl -fsSLo restore.sh https://raw.githubusercontent.com/Chistovik92/radar/main/tools/restore.sh
@@ -59,8 +63,12 @@ fi
 
 ARCHIVE="${1:-}"
 if [ -z "$ARCHIVE" ]; then
-    ARCHIVE="$(listing | head -1)"
-    [ -n "$ARCHIVE" ] || die "Копий не найдено в $BACKUPS"
+    # Сначала — рядом со скриптом (ручной переезд: архив положили
+    # в каталог и запустили), затем — в backups работающей установки.
+    ARCHIVE="$(find . -maxdepth 1 -name 'radar-backup-*.tar.gz' 2>/dev/null \
+        | sort -r | head -1 || true)"
+    [ -n "$ARCHIVE" ] || ARCHIVE="$(listing | head -1)"
+    [ -n "$ARCHIVE" ] || die "Копий не найдено: ни рядом со скриптом, ни в $BACKUPS"
     printf "  Беру последнюю: %s\n" "$(basename "$ARCHIVE")"
 fi
 case "$ARCHIVE" in

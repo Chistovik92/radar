@@ -28,6 +28,7 @@
 #   --versions       показать доступные версии
 #   --restore-url=…  развернуть систему по ссылке со старого сервера
 #   --migrate        собрать всё для переезда на другую машину
+#   --restore        развернуть систему из копии рядом с установщиком
 #   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
 #   --rollback       вернуть предыдущую версию из последнего снимка
 #   --skip-updates   не обновлять пакеты системы
@@ -65,6 +66,7 @@ MIGRATE_OUT=false
 TARGET_VERSION=""
 LIST_VERSIONS=false
 RESTORE_FROM=""
+RESTORE_AUTO=false
 RESTORE_URL=""
 RESTORED=false
 INSTALLER_URL="https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
@@ -106,6 +108,7 @@ show_help() {
   --versions       показать доступные версии
   --restore-url=…  развернуть систему по ссылке со старого сервера
   --migrate        собрать всё для переезда на другую машину
+  --restore        развернуть систему из копии рядом с установщиком
   --restore=ФАЙЛ   развернуть систему из копии (переезд, часть вторая)
   --rollback       вернуть предыдущую версию из последнего снимка
   --skip-updates   не обновлять пакеты системы
@@ -129,6 +132,7 @@ for arg in "$@"; do
         --versions)     LIST_VERSIONS=true ;;
         --lang=*)       RADAR_LANG="${arg#*=}" ;;
         --restore-url=*) RESTORE_URL="${arg#*=}" ;;
+        --restore)      RESTORE_AUTO=true ;;
         --restore=*)    RESTORE_FROM="${arg#*=}" ;;
         --skip-updates) SKIP_UPDATES=true ;;
         --uninstall)    UNINSTALL=true ;;
@@ -302,9 +306,18 @@ t() {                  # t <ключ> [подстановка]
             migrate_manual_old)  value="On the OLD server:" ;;
             migrate_manual_new)  value="On the NEW server:" ;;
             migrate_manual_host) value="user@new-server" ;;
+            migrate_manual_note) value="--restore without a filename picks the archive from the current directory; Docker is required on the new server" ;;
+            migrate_mode_title)  value="How do you want to transfer the copy to the new server?" ;;
+            migrate_mode_manual) value="By hand — copy the archive yourself (the reliable way)" ;;
+            migrate_mode_manual_note) value="the file travels by any means (scp, a USB stick) and is deployed by the installer on the spot" ;;
+            migrate_mode_link)   value="By a one-time link from this server (⚠️ not yet verified on a live move)" ;;
+            migrate_mode_link_note) value="port 8899 must be reachable from the new server" ;;
+            migrate_mode_choice) value="Choice [1]: " ;;
             step_restore)        value="Restoring from a copy" ;;
             restore_downloading) value="Downloading the copy" ;;
             restore_selfextract) value="Migration bundle detected: extracting the embedded copy" ;;
+            restore_auto_empty)  value="No radar-backup-*.tar.gz next to the installer — put the archive in this directory or name it: --restore=FILE" ;;
+            restore_auto_found)  value="Copy found next to the installer" ;;
             restore_download_failed) value="Download failed — is the link still alive?" ;;
             restore_unpacking)   value="Unpacking the copy" ;;
             restore_broken)      value="Could not unpack the copy — the file may be damaged" ;;
@@ -447,9 +460,18 @@ t() {                  # t <ключ> [подстановка]
             migrate_manual_old)  value="На СТАРОМ сервере:" ;;
             migrate_manual_new)  value="На НОВОМ сервере:" ;;
             migrate_manual_host) value="пользователь@новый-сервер" ;;
+            migrate_manual_note) value="--restore без имени возьмёт архив из текущего каталога; на новом сервере нужен Docker" ;;
+            migrate_mode_title)  value="Как передать копию на новый сервер?" ;;
+            migrate_mode_manual) value="Вручную — скопировать архив самому (надёжный путь)" ;;
+            migrate_mode_manual_note) value="файл едет любым способом (scp, флешка), установщик на месте развернёт его сам" ;;
+            migrate_mode_link)   value="Одноразовой ссылкой с этого сервера (⚠️ на живом переезде ещё не проверено)" ;;
+            migrate_mode_link_note) value="порт 8899 должен быть доступен новому серверу снаружи" ;;
+            migrate_mode_choice) value="Выбор [1]: " ;;
             step_restore)        value="Разворачивание из копии" ;;
             restore_downloading) value="Скачиваю копию" ;;
             restore_selfextract) value="Обнаружен пакет переезда: извлекаю вложенную копию" ;;
+            restore_auto_empty)  value="Рядом с установщиком нет файла radar-backup-*.tar.gz — положите архив в этот каталог или укажите имя: --restore=ФАЙЛ" ;;
+            restore_auto_found)  value="Найдена копия рядом с установщиком" ;;
             restore_download_failed) value="Скачать не удалось — ссылка ещё жива?" ;;
             restore_unpacking)   value="Распаковываю копию" ;;
             restore_broken)      value="Не удалось распаковать копию — файл повреждён?" ;;
@@ -1743,6 +1765,16 @@ if [ -n "$SELF_PAYLOAD_LINE" ]; then
         || die "$(t restore_broken)"
 fi
 
+# --restore без имени: копия ищется рядом с установщиком (с 4.8.3.1).
+# Ручной переезд сводится к «положил архив в каталог — запустил скрипт».
+# Разрешается здесь, до любых переходов в другие каталоги.
+if [ "$RESTORE_AUTO" = true ]; then
+    RESTORE_FROM="$(find . -maxdepth 1 -name 'radar-backup-*.tar.gz' 2>/dev/null \
+        | sort -r | head -n 1 || true)"
+    [ -n "$RESTORE_FROM" ] || die "$(t restore_auto_empty)"
+    ok "$(t restore_auto_found): $(basename "$RESTORE_FROM")"
+fi
+
 if [ -n "$RESTORE_URL" ]; then
     banner
     step "$(t step_restore)"
@@ -1797,16 +1829,18 @@ kill_stale_serve() {
 
 print_manual_migration() {
     # Ручной перенос — путь на случай, когда раздача не поднялась:
-    # сервер не запустился или порт занят чужим процессом. Прежняя
-    # подсказка не говорила, какая команда на каком сервере выполняется,
-    # и тащила install.sh по относительному пути, которого могло не быть.
+    # сервер не запустился или порт занят чужим процессом. С 4.8.3.1
+    # это и самостоятельный способ переезда: установщик спрашивает,
+    # как передавать копию, и ручной — вариант по умолчанию.
+    # Команды разделены по серверам, а на новой машине установщику
+    # достаточно --restore без имени: архив берётся из текущего каталога.
     printf "\n  %s\n\n" "$(t migrate_manual)"
     printf "  %s\n" "$(t migrate_manual_old)"
     printf "    scp %s %s:~/\n" "$BACKUP_PATH" "$(t migrate_manual_host)"
     printf "\n  %s\n" "$(t migrate_manual_new)"
     printf "    curl -fsSLo radar-install.sh %s\n" "$INSTALLER_URL"
-    printf "    sudo bash radar-install.sh --restore=%s\n\n" \
-        "$(basename "$BACKUP_PATH")"
+    printf "    sudo bash radar-install.sh --restore\n\n"
+    printf "  %s\n\n" "$(t migrate_manual_note)"
 }
 
 build_migration_bundle() {   # build_migration_bundle <копия>
@@ -2015,6 +2049,27 @@ cleanup_migration_files() {
     return 0
 }
 
+ask_migration_mode() {   # печатает manual | link
+    # Способ переезда спрашивается явно (с 4.8.3.1). Ручной перенос —
+    # путь проверенный: файл едет scp-ом, установщик на новой машине
+    # разворачивает его сам, портов и раздач не нужно. Ссылка удобнее,
+    # но на живом переезде ещё не проверена — и человек должен знать,
+    # что выбирает. По умолчанию ручной.
+    printf "\n  %s\n\n" "$(t migrate_mode_title)"
+    printf "  1) %s\n" "$(t migrate_mode_manual)"
+    printf "     %s\n" "$(t migrate_mode_manual_note)"
+    printf "  2) %s\n" "$(t migrate_mode_link)"
+    printf "     %s\n\n" "$(t migrate_mode_link_note)"
+    printf "  %s" "$(t migrate_mode_choice)"
+    local answer="1"
+    read -r answer < /dev/tty || answer="1"
+    printf "\n"
+    case "$answer" in
+        2|link|ссылка) printf '%s' "link" ;;
+        *)             printf '%s' "manual" ;;
+    esac
+}
+
 # --------------------------------------------------------------------------
 #  Установка выбранной версии из GitHub (с 4.7.3.1)
 # --------------------------------------------------------------------------
@@ -2041,6 +2096,19 @@ if [ "$MIGRATE_OUT" = true ]; then
     step "$(t step_migrate)"
 
     make_backup "переезд" || die "$(t migrate_backup_failed)"
+
+    # Способ передачи копии спрашиваем явно; без терминала — ссылка,
+    # как было: там выбора всё равно не показать.
+    MIGRATE_MODE="link"
+    if ( : < /dev/tty ) 2>/dev/null; then
+        MIGRATE_MODE="$(ask_migration_mode)"
+    fi
+    if [ "$MIGRATE_MODE" = "manual" ]; then
+        print_manual_migration
+        log_raw "MIGRATE ручной перенос, копия: $BACKUP_PATH"
+        timing_report
+        exit 0
+    fi
 
     SERVE_PORT="${MIGRATE_PORT:-8899}"
     SERVE_MINUTES="${MIGRATE_MINUTES:-30}"
@@ -3602,6 +3670,13 @@ offer_migration() {
         *) return 0 ;;
     esac
 
+    # Способ передачи копии спрашивается и здесь: переезд предложен
+    # в конце установки, но выбирать способ человек должен сам.
+    local mode="link"
+    if ( : < /dev/tty ) 2>/dev/null; then
+        mode="$(ask_migration_mode)"
+    fi
+
     local port="${MIGRATE_PORT:-8899}"
     local minutes="${MIGRATE_MINUTES:-30}"
     SERVE_TOKEN=""
@@ -3619,6 +3694,12 @@ offer_migration() {
         return 0
     fi
     ok "$(t migrate_copy_ready): $(basename "$BACKUP_PATH")"
+
+    if [ "$mode" = "manual" ]; then
+        print_manual_migration
+        log_raw "MIGRATE ручной перенос, копия: $BACKUP_PATH"
+        return 0
+    fi
 
     kill_stale_serve
 
