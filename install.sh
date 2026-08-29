@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.2.1 — автономный установщик.
+# Система «Радар» v4.8.2.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.2.1"
+VERSION="4.8.2.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -295,6 +295,8 @@ t() {                  # t <ключ> [подстановка]
             restore_data)        value="Data files restored" ;;
             restore_dump)        value="Database dump ready to load" ;;
             restore_no_dump)     value="No database dump in the copy" ;;
+            restore_bot_db)      value="Database files from a bot-made copy restored" ;;
+            restore_no_data)     value="No dump or data files found in the copy — the bot will start with an empty database" ;;
             restore_continues)   value="A normal installation follows — it will bring the system up on this data" ;;
             step_integrity)      value="Integrity check after migration" ;;
             integrity_ok)        value="Data is in place" ;;
@@ -431,6 +433,8 @@ t() {                  # t <ключ> [подстановка]
             restore_data)        value="Файлы данных перенесены" ;;
             restore_dump)        value="Дамп базы готов к заливке" ;;
             restore_no_dump)     value="В копии нет дампа базы" ;;
+            restore_bot_db)      value="Файлы базы из копии бота перенесены" ;;
+            restore_no_data)     value="В копии нет ни дампа базы, ни файлов данных — бот поднимется с пустой базой" ;;
             restore_continues)   value="Дальше идёт обычная установка — она поднимет систему на этих данных" ;;
             step_integrity)      value="Проверка целостности после переезда" ;;
             integrity_ok)        value="Данные на месте" ;;
@@ -1627,7 +1631,7 @@ fi
 # переезд использует уже проверенный код, а не отдельную ветку, которую
 # никто не запускает.
 unpack_migration() {   # unpack_migration <архив>
-    local archive="$1" staging
+    local archive="$1" staging flat
     [ -f "$archive" ] || die "Файл копии не найден: $archive"
 
     staging="$(mktemp -d)"
@@ -1656,12 +1660,37 @@ unpack_migration() {   # unpack_migration <архив>
         ok "$(t restore_data)"
     fi
 
+    # Копии, снятые самим ботом (radar/backup.py — ночные и из панели),
+    # кладут файлы базы россыпью в корень архива: radar.db, radar.db-wal,
+    # radar.db-shm, db.json. Каталога data/ в них нет. До 4.8.2.2
+    # установщик молча выбрасывал эти файлы: .env переносился, бот
+    # поднимался с теми же токенами, но с пустой базой — без
+    # пользователей, локаций и источников. Нашлось на живом переезде.
+    flat=""
+    for dbfile in radar.db radar.db-wal radar.db-shm db.json; do
+        if [ -f "$staging/$dbfile" ]; then
+            cp "$staging/$dbfile" "$APP_DIR/data/$dbfile"
+            flat="$flat $dbfile"
+        fi
+    done
+    if [ -n "$flat" ]; then
+        ok "$(t restore_bot_db):$flat"
+    fi
+
     if [ -f "$staging/database.sql" ]; then
         cp "$staging/database.sql" "$APP_DIR/data/migration-database.sql"
         MIGRATION_DUMP="$APP_DIR/data/migration-database.sql"
         ok "$(t restore_dump): $(du -h "$MIGRATION_DUMP" | cut -f1)"
     else
         warn "$(t restore_no_dump)"
+    fi
+
+    # Молчаливый пропуск данных — то, из-за чего эта правка существует.
+    # Если в копии нет ни одного известного носителя данных, говорим
+    # об этом вслух, а не позволяем бот подняться с пустой базой.
+    if [ -z "$flat" ] && [ ! -d "$staging/data" ] \
+        && [ ! -f "$staging/database.sql" ]; then
+        warn "$(t restore_no_data)"
     fi
 
     rm -rf "$staging"
@@ -2566,6 +2595,18 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.2.2", [
+        "🗄 <b>Копии, снятые самим ботом, теперь разворачиваются.</b> "
+        "Ночная копия и копия из панели хранят базу иначе, чем копия "
+        "установщика, — и при разворачивании через --restore база "
+        "молча выбрасывалась: бот поднимался с теми же токенами, "
+        "но пустым, без пользователей, локаций и источников. "
+        "Нашлось на живом переезде.",
+        "📣 <b>Пустая копия больше не проходит молча.</b> Если в архиве "
+        "нет ни дампа базы, ни файлов данных, установщик говорит "
+        "об этом вслух, а не позволяет обнаружить пропажу "
+        "по пустому списку пользователей.",
+    ]),
     ("4.8.2.1", [
         "📦 <b>Переезд на другой сервер починен.</b> Команда, которую "
         "установщик печатал для новой машины, не работала ни разу: "
@@ -3315,7 +3356,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.2.1"
+__version__ = "4.8.2.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"

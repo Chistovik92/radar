@@ -115,11 +115,32 @@ if [ -d "$STAGING/data" ]; then
     ok "Файлы данных восстановлены"
 fi
 
+# Копии, снятые самим ботом (radar/backup.py — ночные и из панели),
+# кладут файлы базы россыпью в корень архива, без каталога data/.
+# До 4.8.2.2 restore.sh, как и установщик, молча их выбрасывал.
+found_db=false
+for dbfile in radar.db radar.db-wal radar.db-shm db.json; do
+    if [ -f "$STAGING/$dbfile" ]; then
+        cp "$STAGING/$dbfile" "$APP_DIR/data/"
+        found_db=true
+    fi
+done
+if [ "$found_db" = true ]; then
+    ok "База из копии бота восстановлена"
+fi
+
 if [ -f "$STAGING/database.sql" ]; then
     cp "$STAGING/database.sql" "$APP_DIR/data/restore-database.sql"
     warn "В копии дамп PostgreSQL — залейте его после запуска:"
     printf "    docker exec -i radar_db psql -U radar radar < %s\n" \
         "$APP_DIR/data/restore-database.sql"
+fi
+
+# Пустую копию не пропускаем молча: бот поднялся бы с чистой базой,
+# и заметно это стало бы только по пропавшим пользователям.
+if [ "$found_db" != true ] && [ ! -d "$STAGING/data" ] \
+    && [ ! -f "$STAGING/database.sql" ]; then
+    warn "В копии нет ни дампа базы, ни файлов данных — бот поднимется с пустой базой"
 fi
 
 printf "\n"

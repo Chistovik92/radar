@@ -546,6 +546,12 @@ up.
     manual transfer instructions are split per server; re-running the
     migration shuts down the previous serving, which used to hold the port
     for up to half an hour.
+    4.8.2.2 closed the second hole of the same move: backups taken by the
+    bot itself (nightly and from the web panel) keep the database files
+    flat in the archive root, and --restore silently discarded them — the
+    bot came up with the same tokens but empty. The format is now
+    recognised, a copy with no data warns out loud; tools/restore.sh is
+    fixed the same way.
     **The main thing still left is a fire drill:** go through a full move
     on a clean machine. Until then the mechanism is considered unverified.
 
