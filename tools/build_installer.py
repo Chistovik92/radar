@@ -155,7 +155,12 @@ def main() -> None:
     if "@@FILES@@" not in template:
         sys.exit("В шаблоне нет маркера @@FILES@@")
     result = template.replace("@@VERSION@@", current).replace("@@FILES@@", render_files())
-    OUTPUT.write_text(result, encoding="utf-8")
+    # newline="\n" обязателен: без него write_text на Windows переводит
+    # строки в CRLF, и рабочий install.sh перестаёт запускаться на
+    # сервере (bash видит \r в shebang). В git файл нормализуется
+    # .gitattributes, но проверка из CLAUDE.md требует LF и в рабочей
+    # копии — на ней и ловится.
+    OUTPUT.write_text(result, encoding="utf-8", newline="\n")
     OUTPUT.chmod(0o755)
     print(
         f"install.sh собран: версия {current}, файлов {len(MANIFEST)}, "

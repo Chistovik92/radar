@@ -538,6 +538,14 @@ up.
     expiry. Built this way because the backup contains the bot token and
     database passwords: an open link would mean putting them on the public
     internet.
+    4.8.2.1 fixed the command the installer printed for the new machine:
+    `bash -c "$(curl …)"` exceeds the kernel limit on a single argument's
+    length (128 KiB), and install.sh has been over a megabyte since 4.7.2 —
+    the link never worked, which only came to light during a real move.
+    The installer is now downloaded to a file and run as a file; the
+    manual transfer instructions are split per server; re-running the
+    migration shuts down the previous serving, which used to hold the port
+    for up to half an hour.
     **The main thing still left is a fire drill:** go through a full move
     on a clean machine. Until then the mechanism is considered unverified.
 

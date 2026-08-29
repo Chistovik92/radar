@@ -282,6 +282,9 @@ t() {                  # t <ключ> [подстановка]
             migrate_waiting)     value="Waiting for the download… press Ctrl+C to cancel." ;;
             migrate_serve_failed) value="Could not start the temporary server — falling back to manual copying" ;;
             migrate_manual)      value="Copy the files by hand:" ;;
+            migrate_manual_old)  value="On the OLD server:" ;;
+            migrate_manual_new)  value="On the NEW server:" ;;
+            migrate_manual_host) value="user@new-server" ;;
             step_restore)        value="Restoring from a copy" ;;
             restore_downloading) value="Downloading the copy" ;;
             restore_download_failed) value="Download failed — is the link still alive?" ;;
@@ -415,6 +418,9 @@ t() {                  # t <ключ> [подстановка]
             migrate_waiting)     value="Жду скачивания… Ctrl+C — отменить." ;;
             migrate_serve_failed) value="Временный сервер не запустился — переношу копию вручную" ;;
             migrate_manual)      value="Скопируйте файлы руками:" ;;
+            migrate_manual_old)  value="На СТАРОМ сервере:" ;;
+            migrate_manual_new)  value="На НОВОМ сервере:" ;;
+            migrate_manual_host) value="пользователь@новый-сервер" ;;
             step_restore)        value="Разворачивание из копии" ;;
             restore_downloading) value="Скачиваю копию" ;;
             restore_download_failed) value="Скачать не удалось — ссылка ещё жива?" ;;
@@ -1703,6 +1709,32 @@ fi
 #   * живёт ограниченное время и гасится по таймауту, даже если о ней забыли;
 #   * работает по HTTP без шифрования — поэтому ссылка одноразовая
 #     и короткоживущая, а не «пусть повисит».
+kill_stale_serve() {
+    # Повторный запуск переезда гасит раздачу прошлой попытки: та живёт
+    # до получаса после выдачи ссылки и всё это время держит порт.
+    # Случилось на живом сервере: повтор упёрся в занятый порт и ушёл
+    # в ручной перенос, хотя человеку была нужна новая ссылка.
+    if command -v pkill >/dev/null 2>&1 \
+        && pkill -f "$APP_DIR/.migrate-serve.py" 2>/dev/null; then
+        sleep 1
+    fi
+    return 0
+}
+
+print_manual_migration() {
+    # Ручной перенос — путь на случай, когда раздача не поднялась:
+    # сервер не запустился или порт занят чужим процессом. Прежняя
+    # подсказка не говорила, какая команда на каком сервере выполняется,
+    # и тащила install.sh по относительному пути, которого могло не быть.
+    printf "\n  %s\n\n" "$(t migrate_manual)"
+    printf "  %s\n" "$(t migrate_manual_old)"
+    printf "    scp %s %s:~/\n" "$BACKUP_PATH" "$(t migrate_manual_host)"
+    printf "\n  %s\n" "$(t migrate_manual_new)"
+    printf "    curl -fsSLo radar-install.sh %s\n" "$INSTALLER_URL"
+    printf "    sudo bash radar-install.sh --restore=%s\n\n" \
+        "$(basename "$BACKUP_PATH")"
+}
+
 serve_migration() {   # serve_migration <файл> <порт> <минут>
     local file="$1" port="$2" minutes="$3" token
     token="$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)"
@@ -1829,15 +1861,21 @@ if [ "$MIGRATE_OUT" = true ]; then
     SERVE_TOKEN=""
     SERVE_PID=""
 
+    kill_stale_serve
     if serve_migration "$BACKUP_PATH" "$SERVE_PORT" "$SERVE_MINUTES"; then
         ADDRESS="$(detect_address)"
         LINK="http://$ADDRESS:$SERVE_PORT/$SERVE_TOKEN"
 
         line
         printf "  %s%s%s\n\n" "$C_BOLD" "$(t migrate_ready)" "$C_RESET"
+        # Однострочник «bash -c "$(curl …)"» не проходит лимит ядра на
+        # длину одного аргумента (128 КиБ), а установщик с 4.7.2 крупнее
+        # мегабайта — команда падала с «Argument list too long» на любом
+        # сервере. Скачиваем в файл, запускаем файлом.
+        printf "  %s%s%s\n" "$C_CYAN" \
+            "curl -fsSLo radar-install.sh $INSTALLER_URL" "$C_RESET"
         printf "  %s%s%s\n\n" "$C_CYAN" \
-            "sudo bash -c \"\$(curl -fsSL $INSTALLER_URL)\" -- --restore-url=$LINK" \
-            "$C_RESET"
+            "sudo bash radar-install.sh --restore-url=$LINK" "$C_RESET"
         line
         printf "  %s\n" "$(t migrate_note_once)"
         printf "  %s\n" "$(t migrate_note_time "$SERVE_MINUTES")"
@@ -1849,10 +1887,7 @@ if [ "$MIGRATE_OUT" = true ]; then
         log_raw "MIGRATE ссылка выдана, порт $SERVE_PORT, срок $SERVE_MINUTES мин"
     else
         warn "$(t migrate_serve_failed)"
-        printf "\n  %s\n" "$(t migrate_manual)"
-        printf "    scp %s install.sh пользователь@новый-сервер:~/\n" "$BACKUP_PATH"
-        printf "    sudo bash install.sh --restore=%s\n\n" \
-            "$(basename "$BACKUP_PATH")"
+        print_manual_migration
     fi
     timing_report
     exit 0
@@ -3378,19 +3413,20 @@ offer_migration() {
     fi
     ok "$(t migrate_copy_ready): $(basename "$BACKUP_PATH")"
 
-    # Порт мог остаться занятым от прошлой попытки: молча промахнуться
-    # мимо этого нельзя, ссылка тогда просто не откроется.
+    kill_stale_serve
+
+    # Порт может быть занят чужим процессом: молча промахнуться мимо
+    # этого нельзя, ссылка тогда просто не откроется. Своя прошлая
+    # раздача уже погашена выше.
     if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":$port "; then
         warn "$(t migrate_port_busy) $port"
+        print_manual_migration
         return 0
     fi
 
     if ! serve_migration "$BACKUP_PATH" "$port" "$minutes"; then
         warn "$(t migrate_serve_failed)"
-        printf "\n  %s\n" "$(t migrate_manual)"
-        printf "    scp %s install.sh пользователь@новый-сервер:~/\n" "$BACKUP_PATH"
-        printf "    sudo bash install.sh --restore=%s\n\n" \
-            "$(basename "$BACKUP_PATH")"
+        print_manual_migration
         return 0
     fi
 
@@ -3400,9 +3436,12 @@ offer_migration() {
 
     line
     printf "  %s%s%s\n\n" "${C_BOLD:-}" "$(t migrate_ready)" "${C_RESET:-}"
+    # Про лимит ядра на длину аргумента — см. комментарий у раздачи
+    # в --migrate: скачиваем установщик в файл и запускаем файлом.
+    printf "  %s%s%s\n" "${C_CYAN:-}" \
+        "curl -fsSLo radar-install.sh $INSTALLER_URL" "${C_RESET:-}"
     printf "  %s%s%s\n\n" "${C_CYAN:-}" \
-        "sudo bash -c \"\$(curl -fsSL $INSTALLER_URL)\" -- --restore-url=$link" \
-        "${C_RESET:-}"
+        "sudo bash radar-install.sh --restore-url=$link" "${C_RESET:-}"
     line
     printf "  %s\n" "$(t migrate_note_once)"
     printf "  %s\n" "$(t migrate_note_time "$minutes")"
