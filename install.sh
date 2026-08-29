@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.4 — автономный установщик.
+# Система «Радар» v4.8.4.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.4"
+VERSION="4.8.4.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -319,6 +319,7 @@ t() {                  # t <ключ> [подстановка]
             restore_auto_empty)  value="No radar-backup-*.tar.gz next to the installer — put the archive in this directory or name it: --restore=FILE" ;;
             restore_auto_found)  value="Copy found next to the installer" ;;
             restore_download_failed) value="Download failed — is the link still alive?" ;;
+            restore_url_cached)  value="The link did not open — using the copy downloaded by the previous run" ;;
             restore_unpacking)   value="Unpacking the copy" ;;
             restore_broken)      value="Could not unpack the copy — the file may be damaged" ;;
             restore_env)         value="Settings restored" ;;
@@ -473,6 +474,7 @@ t() {                  # t <ключ> [подстановка]
             restore_auto_empty)  value="Рядом с установщиком нет файла radar-backup-*.tar.gz — положите архив в этот каталог или укажите имя: --restore=ФАЙЛ" ;;
             restore_auto_found)  value="Найдена копия рядом с установщиком" ;;
             restore_download_failed) value="Скачать не удалось — ссылка ещё жива?" ;;
+            restore_url_cached)  value="Ссылка не открылась — использую копию, скачанную прошлым запуском" ;;
             restore_unpacking)   value="Распаковываю копию" ;;
             restore_broken)      value="Не удалось распаковать копию — файл повреждён?" ;;
             restore_env)         value="Настройки перенесены" ;;
@@ -1810,9 +1812,18 @@ if [ -n "$RESTORE_URL" ]; then
     info "$(t restore_downloading)"
     # --fail: сервер отдаёт 404 на просроченную или уже использованную
     # ссылку, и без этого флага curl сохранил бы страницу ошибки как архив.
-    if ! curl -fsSL --max-time 900 -o "$RESTORE_FROM" "$RESTORE_URL"; then
-        rm -f "$RESTORE_FROM"
-        die "$(t restore_download_failed)"
+    # Скачиваем во временный файл: прямая запись затирала бы копию,
+    # скачанную прошлым запуском, — а повторный запуск после установки
+    # Docker должен уметь обойтись без новой ссылки.
+    if ! curl -fsSL --max-time 900 -o "$RESTORE_FROM.tmp" "$RESTORE_URL"; then
+        rm -f "$RESTORE_FROM.tmp"
+        if [ -f "$RESTORE_FROM" ]; then
+            warn "$(t restore_url_cached)"
+        else
+            die "$(t restore_download_failed)"
+        fi
+    else
+        mv -f "$RESTORE_FROM.tmp" "$RESTORE_FROM"
     fi
     ok "$(t restore_downloading): $(du -h "$RESTORE_FROM" | cut -f1)"
 fi
@@ -2288,6 +2299,16 @@ if [ "$check_ok" != true ]; then
     echo
     printf "  Установите недостающее и повторите запуск:\n"
     printf "    curl -fsSL https://get.docker.com | sh\n"
+    # При разворачивании из копии повторный запуск ничего не теряет:
+    # пакет переезда и скачанная копия — локальные файлы, новая ссылка
+    # со старого сервера не нужна. Молчание об этом стоило живого
+    # переезда: человек упёрся в отсутствие Docker и унёс файлы руками.
+    if [ "$RESTORED" = true ]; then
+        echo
+        printf "  %s\n" "Данные из копии уже развёрнуты в $APP_DIR."
+        printf "  %s\n" "После установки Docker запустите тот же файл той же командой —"
+        printf "  %s\n" "новая ссылка и повторный перенос не нужны."
+    fi
     die "Не хватает обязательных компонентов"
 fi
 
@@ -2868,6 +2889,21 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.4.1", [
+        "🔬 <b>Журналы живого переезда изучены.</b> Картина оказалась "
+        "не той, за какую приняли: сторона старого сервера отработала "
+        "безупречно — копия, самодостаточный пакет, ссылка, отсчёт. "
+        "Передаче помешал непроброшенный порт 8899 на роутере. Пакет "
+        "прогнан локально от начала до конца: самораспаковка и разворот "
+        "копии работают, остановка только на требовании Docker.",
+        "💡 <b>Подсказка у стены Docker.</b> Если при разворачивании "
+        "копии не хватило Docker, установщик теперь говорит: после его "
+        "установки запустите тот же файл той же командой — данные уже "
+        "развёрнуты, новая ссылка не нужна.",
+        "🔁 <b>--restore-url переживает погасшую ссылку.</b> Повторный "
+        "запуск использует копию, скачанную прошлым запуском, вместо "
+        "падения с «ссылка ещё жива?».",
+    ]),
     ("4.8.4", [
         "🗑 <b>Скрипт полного удаления.</b> Одна команда сносит контейнеры, "
         "образ и каталог установки целиком — базу, настройки, копии. "
@@ -3686,7 +3722,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.4"
+__version__ = "4.8.4.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"

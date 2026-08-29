@@ -573,15 +573,22 @@ up.
     one-time link is more convenient but marked "not verified on a live
     move" and offered as option two. tools/restore.sh without arguments
     also looks for a copy next to itself first.
-    **The live check happened — and the path failed.** During the move
-    to a new server the scripted transfer did not work; the manual path
-    saved the day: the files and `.env` were copied by hand and the
-    installer was run on top. The cause of the crash is unknown — the
-    log was not kept. Until it is found and fixed, the path counts as
-    broken, not "unverified". The two-step manual transfer (scp + a bare
-    `--restore`) worked and is now the recommended one.
-    **The main thing left is to fix the scripted path from the crash log
-    and repeat a full fire drill** on a clean machine.
+    **The live check happened — and cleared the fog.** Journals from
+    both ends showed: on 29.08 at 22:57 `--migrate` on the old server
+    ran to the end — the copy, the self-contained bundle, the link,
+    the real waiting with a countdown; cancelled by Ctrl+C three minutes
+    in, because the new server could not connect: port 8899 was not
+    forwarded on the router. The source-side code is alive, there was
+    no crash. The receiving side over the link never ran at all that
+    time — there was no download; a local end-to-end run of the bundle
+    (4.8.4.1) confirmed: self-extraction, unpacking the copy and a clean
+    stop at the Docker requirement. The move itself was finished by
+    hand. 4.8.4.1 removed two splinters of that scenario: the hint
+    "after installing Docker, run the same file again — no new link
+    needed", and a re-run of `--restore-url` with the already downloaded
+    copy when the link has burned out.
+    **Still left:** forward the port on a live move and walk the whole
+    path end to end.
     on a clean machine. Until then the mechanism is considered unverified.
 
 ---

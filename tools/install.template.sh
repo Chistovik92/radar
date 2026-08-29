@@ -319,6 +319,7 @@ t() {                  # t <ключ> [подстановка]
             restore_auto_empty)  value="No radar-backup-*.tar.gz next to the installer — put the archive in this directory or name it: --restore=FILE" ;;
             restore_auto_found)  value="Copy found next to the installer" ;;
             restore_download_failed) value="Download failed — is the link still alive?" ;;
+            restore_url_cached)  value="The link did not open — using the copy downloaded by the previous run" ;;
             restore_unpacking)   value="Unpacking the copy" ;;
             restore_broken)      value="Could not unpack the copy — the file may be damaged" ;;
             restore_env)         value="Settings restored" ;;
@@ -473,6 +474,7 @@ t() {                  # t <ключ> [подстановка]
             restore_auto_empty)  value="Рядом с установщиком нет файла radar-backup-*.tar.gz — положите архив в этот каталог или укажите имя: --restore=ФАЙЛ" ;;
             restore_auto_found)  value="Найдена копия рядом с установщиком" ;;
             restore_download_failed) value="Скачать не удалось — ссылка ещё жива?" ;;
+            restore_url_cached)  value="Ссылка не открылась — использую копию, скачанную прошлым запуском" ;;
             restore_unpacking)   value="Распаковываю копию" ;;
             restore_broken)      value="Не удалось распаковать копию — файл повреждён?" ;;
             restore_env)         value="Настройки перенесены" ;;
@@ -1810,9 +1812,18 @@ if [ -n "$RESTORE_URL" ]; then
     info "$(t restore_downloading)"
     # --fail: сервер отдаёт 404 на просроченную или уже использованную
     # ссылку, и без этого флага curl сохранил бы страницу ошибки как архив.
-    if ! curl -fsSL --max-time 900 -o "$RESTORE_FROM" "$RESTORE_URL"; then
-        rm -f "$RESTORE_FROM"
-        die "$(t restore_download_failed)"
+    # Скачиваем во временный файл: прямая запись затирала бы копию,
+    # скачанную прошлым запуском, — а повторный запуск после установки
+    # Docker должен уметь обойтись без новой ссылки.
+    if ! curl -fsSL --max-time 900 -o "$RESTORE_FROM.tmp" "$RESTORE_URL"; then
+        rm -f "$RESTORE_FROM.tmp"
+        if [ -f "$RESTORE_FROM" ]; then
+            warn "$(t restore_url_cached)"
+        else
+            die "$(t restore_download_failed)"
+        fi
+    else
+        mv -f "$RESTORE_FROM.tmp" "$RESTORE_FROM"
     fi
     ok "$(t restore_downloading): $(du -h "$RESTORE_FROM" | cut -f1)"
 fi
@@ -2288,6 +2299,16 @@ if [ "$check_ok" != true ]; then
     echo
     printf "  Установите недостающее и повторите запуск:\n"
     printf "    curl -fsSL https://get.docker.com | sh\n"
+    # При разворачивании из копии повторный запуск ничего не теряет:
+    # пакет переезда и скачанная копия — локальные файлы, новая ссылка
+    # со старого сервера не нужна. Молчание об этом стоило живого
+    # переезда: человек упёрся в отсутствие Docker и унёс файлы руками.
+    if [ "$RESTORED" = true ]; then
+        echo
+        printf "  %s\n" "Данные из копии уже развёрнуты в $APP_DIR."
+        printf "  %s\n" "После установки Docker запустите тот же файл той же командой —"
+        printf "  %s\n" "новая ссылка и повторный перенос не нужны."
+    fi
     die "Не хватает обязательных компонентов"
 fi
 
