@@ -1,4 +1,4 @@
-# Radar v4.8.2.2
+# Radar v4.8.3
 
 [Русская версия](README.md)
 
@@ -108,18 +108,48 @@ maintenance burden without a single reader.
 
 ## Moving to another server
 
-On the **old** machine:
+On the **old** machine — one command, no full installation:
 
 ```bash
-sudo bash install.sh --migrate
+curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+sudo bash radar-install.sh --migrate
 ```
 
-It takes a backup, serves it over a one-time link and prints a ready
-command for the new machine. Run that command there.
+It takes a backup (database, `.env`, data files), welds it onto itself
+into **one self-contained file** and brings up a one-time serving. While
+the link is alive the installer waits with a countdown; Ctrl+C cancels,
+closing the terminal does not — the serving finishes its lifetime in
+the background.
 
-The link works **once** and expires after 30 minutes. This matters: the
-backup contains your bot token, database password and API keys — an open
-link would put all of it on the public internet.
+It then prints two commands for the **new** machine:
+
+```bash
+curl -fsSLo radar-restore.sh http://OLD-SERVER-ADDRESS:8899/TOKEN
+sudo bash radar-restore.sh
+```
+
+The downloaded file carries both the bot's code and the data — the new
+server needs neither GitHub nor the full installer, only Docker
+(`curl -fsSL https://get.docker.com | sh`). A normal installation follows
+on this data: the dump is loaded **before** the bot starts, and after the
+start the system recounts users, locations and sources and reports
+whether it adds up.
+
+The link works **once** and expires after 30 minutes. **Port 8899 must be
+forwarded on the old server's router to the machine itself** — without
+forwarding the new server cannot connect. If forwarding is not an option,
+copy the backup by hand:
+
+```bash
+# on the old machine:
+scp /root/radar_bot/backups/radar-backup-YYYYMMDD-HHMMSS.tar.gz user@new-server:~/
+# on the new one:
+curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+sudo bash radar-install.sh --restore=radar-backup-YYYYMMDD-HHMMSS.tar.gz
+```
+
+The link carries the bot token, database password and API keys — do not
+share it.
 
 The old bot is **not** stopped automatically. Two instances sharing one
 token steal updates from each other, but deciding when to switch is your

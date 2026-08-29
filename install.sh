@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.2.2 — автономный установщик.
+# Система «Радар» v4.8.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -46,7 +46,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.2.2"
+VERSION="4.8.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -72,6 +72,17 @@ LOG_FILE=""
 START_TS=$(date +%s)
 
 ORIGINAL_ARGS="$*"
+
+# Абсолютный путь к файлу запущенного установщика. При `bash <(curl …)`
+# это поток, и пути нет. Захватывается ДО любых переходов в другие
+# каталоги: нужен для сборки самодостаточного пакета переезда.
+SELF_PATH=""
+if [ -f "$0" ]; then
+    case "$0" in
+        /*) SELF_PATH="$0" ;;
+        *)  SELF_PATH="$(pwd)/$0" ;;
+    esac
+fi
 
 # Справка печатается из кода, а не вычитывается из собственного файла:
 # при запуске через `bash <(curl ...)` файл — это поток, и перечитать его нельзя.
@@ -238,6 +249,13 @@ t() {                  # t <ключ> [подстановка]
             migrate_note_port)   value="Port $extra must be reachable from the new server." ;;
             migrate_note_secret) value="The copy contains your bot token and passwords — do not share this link." ;;
             migrate_note_stop)   value="When the new bot answers in Telegram, stop the old one:" ;;
+            migrate_note_nat)    value="Cannot connect? Forward port $extra on the old server's router to this machine — without forwarding the link will not open." ;;
+            migrate_bundle_ok)   value="Self-contained bundle built: code and data in one file" ;;
+            migrate_downloaded)  value="The copy has been downloaded by the new server — transfer complete" ;;
+            migrate_expired)     value="The link has expired, the copy was not downloaded" ;;
+            migrate_stopped)     value="The serving stopped before its time" ;;
+            migrate_cancelled)   value="Waiting cancelled, serving stopped" ;;
+            migrate_waiting_left) value="Waiting for the download… time left" ;;
             db_title)            value="Which database should be used?" ;;
             db_sqlite_note)      value="(recommended)" ;;
             db_sqlite_line1)     value="a data/radar.db file next to the bot, no separate container," ;;
@@ -279,7 +297,6 @@ t() {                  # t <ключ> [подстановка]
             botapi_disk)         value="Note: it caches files locally and needs noticeably more disk." ;;
             env_exists)          value="The .env file already exists" ;;
             env_reuse_ask)       value="Use the current settings? (Y/n):" ;;
-            migrate_waiting)     value="Waiting for the download… press Ctrl+C to cancel." ;;
             migrate_serve_failed) value="Could not start the temporary server — falling back to manual copying" ;;
             migrate_manual)      value="Copy the files by hand:" ;;
             migrate_manual_old)  value="On the OLD server:" ;;
@@ -287,6 +304,7 @@ t() {                  # t <ключ> [подстановка]
             migrate_manual_host) value="user@new-server" ;;
             step_restore)        value="Restoring from a copy" ;;
             restore_downloading) value="Downloading the copy" ;;
+            restore_selfextract) value="Migration bundle detected: extracting the embedded copy" ;;
             restore_download_failed) value="Download failed — is the link still alive?" ;;
             restore_unpacking)   value="Unpacking the copy" ;;
             restore_broken)      value="Could not unpack the copy — the file may be damaged" ;;
@@ -376,6 +394,13 @@ t() {                  # t <ключ> [подстановка]
             migrate_note_port)   value="Порт $extra должен быть доступен с нового сервера." ;;
             migrate_note_secret) value="В копии токен бота и пароли — никому не пересылайте эту ссылку." ;;
             migrate_note_stop)   value="Когда новый бот ответит в Telegram, остановите старый:" ;;
+            migrate_note_nat)    value="Не подключается? На роутере старого сервера пробросьте порт $extra на эту машину — без проброса ссылка не откроется." ;;
+            migrate_bundle_ok)   value="Собран самодостаточный пакет: код и данные одним файлом" ;;
+            migrate_downloaded)  value="Копия скачана новым сервером — перенос завершён" ;;
+            migrate_expired)     value="Срок ссылки истёк, копия не скачана" ;;
+            migrate_stopped)     value="Раздача остановилась раньше срока" ;;
+            migrate_cancelled)   value="Ожидание отменено, раздача остановлена" ;;
+            migrate_waiting_left) value="Жду скачивания… осталось" ;;
             db_title)            value="Какую базу данных использовать?" ;;
             db_sqlite_note)      value="(рекомендуется)" ;;
             db_sqlite_line1)     value="файл data/radar.db рядом с ботом, отдельный контейнер не нужен," ;;
@@ -417,7 +442,6 @@ t() {                  # t <ключ> [подстановка]
             botapi_disk)         value="Учтите: он кэширует файлы локально и требует заметно больше диска." ;;
             env_exists)          value="Файл .env уже существует" ;;
             env_reuse_ask)       value="Использовать текущие настройки? (Y/n):" ;;
-            migrate_waiting)     value="Жду скачивания… Ctrl+C — отменить." ;;
             migrate_serve_failed) value="Временный сервер не запустился — переношу копию вручную" ;;
             migrate_manual)      value="Скопируйте файлы руками:" ;;
             migrate_manual_old)  value="На СТАРОМ сервере:" ;;
@@ -425,6 +449,7 @@ t() {                  # t <ключ> [подстановка]
             migrate_manual_host) value="пользователь@новый-сервер" ;;
             step_restore)        value="Разворачивание из копии" ;;
             restore_downloading) value="Скачиваю копию" ;;
+            restore_selfextract) value="Обнаружен пакет переезда: извлекаю вложенную копию" ;;
             restore_download_failed) value="Скачать не удалось — ссылка ещё жива?" ;;
             restore_unpacking)   value="Распаковываю копию" ;;
             restore_broken)      value="Не удалось распаковать копию — файл повреждён?" ;;
@@ -1698,6 +1723,26 @@ unpack_migration() {   # unpack_migration <архив>
 
 MIGRATION_DUMP=""
 
+# Самодостаточный пакет переезда (с 4.8.3). Старый сервер отдаёт по
+# ссылке файл: обычный install.sh, к которому сзади приклеены
+# строка-маркер и сама копия. Новому серверу не нужен ни GitHub,
+# ни выбор способа установки: скачал один файл — запустил файлом.
+# Здесь установщик находит маркер в самом себе, отрезает копию
+# и дальше идёт штатный путь --restore.
+SELF_PAYLOAD_LINE=""
+if [ -f "$SELF_PATH" ] && grep -q '^RADAR_MIGRATION_PAYLOAD_BELOW$' "$SELF_PATH" 2>/dev/null; then
+    # -a обязателен: у пакета позади маркера лежит бинарная копия,
+    # и без него grep печатает «Binary file matches» вместо номера строки.
+    SELF_PAYLOAD_LINE="$(grep -an '^RADAR_MIGRATION_PAYLOAD_BELOW$' "$SELF_PATH" 2>/dev/null | head -n 1 | cut -d: -f1)"
+fi
+if [ -n "$SELF_PAYLOAD_LINE" ]; then
+    mkdir -p "$APP_DIR"
+    RESTORE_FROM="$APP_DIR/migration-incoming.tar.gz"
+    info "$(t restore_selfextract)"
+    tail -n +"$((SELF_PAYLOAD_LINE + 1))" "$SELF_PATH" > "$RESTORE_FROM" \
+        || die "$(t restore_broken)"
+fi
+
 if [ -n "$RESTORE_URL" ]; then
     banner
     step "$(t step_restore)"
@@ -1764,6 +1809,47 @@ print_manual_migration() {
         "$(basename "$BACKUP_PATH")"
 }
 
+build_migration_bundle() {   # build_migration_bundle <копия>
+    # Склейка самодостаточного пакета: установщик + маркер + копия одним
+    # файлом. Если собрать не вышло (установщик запущен потоком, а GitHub
+    # недоступен), вернём неудачу — раздача пойдёт простой копией
+    # с командами из GitHub, как раньше.
+    local backup="$1" src=""
+    MIGRATION_BUNDLE=""
+
+    if [ -n "$SELF_PATH" ]; then
+        src="$SELF_PATH"
+    else
+        curl -fsSL --max-time 60 -o "$APP_DIR/.migrate-installer.sh" \
+            "$INSTALLER_URL" 2>>"$LOG_FILE" || true
+        if [ -s "$APP_DIR/.migrate-installer.sh" ] \
+            && head -c 2 "$APP_DIR/.migrate-installer.sh" | grep -q '#!'; then
+            src="$APP_DIR/.migrate-installer.sh"
+        fi
+    fi
+    [ -n "$src" ] || return 1
+
+    MIGRATION_BUNDLE="$APP_DIR/.migrate-bundle.sh"
+    # Источник сам может оказаться пакетом (переезд запустили из
+    # скачанного пакета): отрезаем его собственный хвост, иначе
+    # в новом файле оказалось бы два маркера и две копии.
+    # grep с -a: бинарный хвост пакета иначе даёт «Binary file matches».
+    if grep -q '^RADAR_MIGRATION_PAYLOAD_BELOW$' "$src" 2>/dev/null; then
+        local cut_at
+        cut_at="$(grep -an '^RADAR_MIGRATION_PAYLOAD_BELOW$' "$src" | head -n 1 | cut -d: -f1)"
+        head -n "$((cut_at - 1))" "$src" > "$MIGRATION_BUNDLE" \
+            || { MIGRATION_BUNDLE=""; return 1; }
+    else
+        cat "$src" > "$MIGRATION_BUNDLE" \
+            || { MIGRATION_BUNDLE=""; return 1; }
+    fi
+    printf '\nRADAR_MIGRATION_PAYLOAD_BELOW\n' >> "$MIGRATION_BUNDLE"
+    cat "$backup" >> "$MIGRATION_BUNDLE" \
+        || { MIGRATION_BUNDLE=""; return 1; }
+    [ -s "$MIGRATION_BUNDLE" ] || { MIGRATION_BUNDLE=""; return 1; }
+    return 0
+}
+
 serve_migration() {   # serve_migration <файл> <порт> <минут>
     local file="$1" port="$2" minutes="$3" token
     token="$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)"
@@ -1793,6 +1879,7 @@ PATH = "/" + sys.argv[1]
 FILE = sys.argv[2]
 PORT = int(sys.argv[3])
 TIMEOUT = int(sys.argv[4]) * 60
+DONE = sys.argv[5] if len(sys.argv) > 5 else ""
 
 done = threading.Event()
 
@@ -1808,7 +1895,8 @@ class Once(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/gzip")
         self.send_header("Content-Length", str(size))
         self.send_header(
-            "Content-Disposition", 'attachment; filename="radar-migration.tar.gz"'
+            "Content-Disposition",
+            'attachment; filename="%s"' % os.path.basename(FILE),
         )
         self.end_headers()
         with open(FILE, "rb") as handle:
@@ -1817,6 +1905,14 @@ class Once(http.server.BaseHTTPRequestHandler):
                 if not chunk:
                     break
                 self.wfile.write(chunk)
+        # Отметка для установщика на этой машине: он ждёт скачивания
+        # с обратным отсчётом и по этому файлу понимает, что всё получилось.
+        if DONE:
+            try:
+                with open(DONE, "w") as handle:
+                    handle.write("ok")
+            except OSError:
+                pass
         threading.Timer(1.0, server.shutdown).start()
 
     def log_message(self, *_args):
@@ -1828,20 +1924,32 @@ threading.Timer(TIMEOUT, server.shutdown).start()
 server.serve_forever()
 RADAR_SERVE_EOF
 
+    mkdir -p "$APP_DIR/.migrate-state"
+    rm -f "$APP_DIR/.migrate-state/done"
+    SERVE_DONE="$APP_DIR/.migrate-state/done"
+
     if [ "$runner" = "python3" ]; then
         nohup python3 "$APP_DIR/.migrate-serve.py" \
-            "$token" "$file" "$port" "$minutes" >>"$LOG_FILE" 2>&1 &
+            "$token" "$file" "$port" "$minutes" "$SERVE_DONE" >>"$LOG_FILE" 2>&1 &
     else
         nohup docker run --rm -p "$port:$port" \
             -v "$file:/copy.tar.gz:ro" \
             -v "$APP_DIR/.migrate-serve.py:/serve.py:ro" \
-            radar:latest python /serve.py "$token" /copy.tar.gz "$port" "$minutes" \
+            -v "$APP_DIR/.migrate-state:/state" \
+            radar:latest python /serve.py "$token" /copy.tar.gz "$port" "$minutes" /state/done \
             >>"$LOG_FILE" 2>&1 &
     fi
 
     SERVE_PID=$!
     sleep 1
     kill -0 "$SERVE_PID" 2>/dev/null || return 1
+    # Процесс жив — но мог не открыть сокет (порт перехвачен между
+    # проверкой занятости и стартом, не хватило прав). Ссылка тогда
+    # мертва, и узнать об этом лучше сейчас, а не по «не подключается»
+    # на новом сервере.
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | grep -q ":$port " || return 1
+    fi
     SERVE_TOKEN="$token"
     return 0
 }
@@ -1856,6 +1964,55 @@ detect_address() {
         address="$(hostname -I 2>/dev/null | awk '{print $1}')"
     fi
     printf '%s' "${address:-АДРЕС-СТАРОГО-СЕРВЕРА}"
+}
+
+wait_for_download() {   # wait_for_download <pid> <минуты>
+    # До 4.8.3 здесь печаталось «Жду скачивания… Ctrl+C — отменить» —
+    # и скрипт немедленно выходил: раздача жила в фоне, а человек видел
+    # приглашение оболочки и делал вывод, что всё закончилось. Сообщение
+    # обещало ожидание, которого не было. Теперь ожидание настоящее:
+    # обратный отсчёт, отметка о скачивании, Ctrl+C действительно отменяет.
+    local pid="$1" total=$(( $2 * 60 )) elapsed=0 left result=0
+    trap 'kill "$pid" 2>/dev/null; printf "\n\n"; warn "$(t migrate_cancelled)"; exit 130' INT
+    while :; do
+        if [ -f "$SERVE_DONE" ]; then
+            rm -f "$SERVE_DONE"
+            printf "\n\n"
+            ok "$(t migrate_downloaded)"
+            result=0
+            break
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            printf "\n\n"
+            warn "$(t migrate_stopped)"
+            result=1
+            break
+        fi
+        if [ "$elapsed" -ge "$total" ]; then
+            printf "\n\n"
+            warn "$(t migrate_expired)"
+            kill "$pid" 2>/dev/null || true
+            result=1
+            break
+        fi
+        left=$(( total - elapsed ))
+        printf "\r  %s %02d:%02d\033[K" "$(t migrate_waiting_left)" \
+            "$((left / 60))" "$((left % 60))"
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    trap - INT
+    return "$result"
+}
+
+cleanup_migration_files() {
+    # Вызывается, когда раздача закончилась: временные файлы не нужны.
+    # Без терминала ожидание пропускается, раздача продолжает жить —
+    # там чистить нельзя, файл ещё раздаётся.
+    rm -f "$APP_DIR/.migrate-serve.py" "$APP_DIR/.migrate-bundle.sh" \
+        "$APP_DIR/.migrate-installer.sh" 2>/dev/null || true
+    rm -rf "$APP_DIR/.migrate-state" 2>/dev/null || true
+    return 0
 }
 
 # --------------------------------------------------------------------------
@@ -1889,31 +2046,52 @@ if [ "$MIGRATE_OUT" = true ]; then
     SERVE_MINUTES="${MIGRATE_MINUTES:-30}"
     SERVE_TOKEN=""
     SERVE_PID=""
+    SERVE_FILE="$BACKUP_PATH"
+    SERVE_BUNDLE=false
 
     kill_stale_serve
-    if serve_migration "$BACKUP_PATH" "$SERVE_PORT" "$SERVE_MINUTES"; then
+    if build_migration_bundle "$BACKUP_PATH"; then
+        SERVE_FILE="$MIGRATION_BUNDLE"
+        SERVE_BUNDLE=true
+        ok "$(t migrate_bundle_ok)"
+    fi
+    if serve_migration "$SERVE_FILE" "$SERVE_PORT" "$SERVE_MINUTES"; then
         ADDRESS="$(detect_address)"
         LINK="http://$ADDRESS:$SERVE_PORT/$SERVE_TOKEN"
 
         line
         printf "  %s%s%s\n\n" "$C_BOLD" "$(t migrate_ready)" "$C_RESET"
-        # Однострочник «bash -c "$(curl …)"» не проходит лимит ядра на
-        # длину одного аргумента (128 КиБ), а установщик с 4.7.2 крупнее
-        # мегабайта — команда падала с «Argument list too long» на любом
-        # сервере. Скачиваем в файл, запускаем файлом.
-        printf "  %s%s%s\n" "$C_CYAN" \
-            "curl -fsSLo radar-install.sh $INSTALLER_URL" "$C_RESET"
-        printf "  %s%s%s\n\n" "$C_CYAN" \
-            "sudo bash radar-install.sh --restore-url=$LINK" "$C_RESET"
+        if [ "$SERVE_BUNDLE" = true ]; then
+            # Пакет самодостаточен: код бота и данные одним файлом,
+            # GitHub новому серверу не нужен. Про лимит ядра на длину
+            # аргумента — см. комментарий выше: качаем в файл,
+            # запускаем файлом.
+            printf "  %s%s%s\n" "$C_CYAN" \
+                "curl -fsSLo radar-restore.sh $LINK" "$C_RESET"
+            printf "  %s%s%s\n\n" "$C_CYAN" \
+                "sudo bash radar-restore.sh" "$C_RESET"
+        else
+            printf "  %s%s%s\n" "$C_CYAN" \
+                "curl -fsSLo radar-install.sh $INSTALLER_URL" "$C_RESET"
+            printf "  %s%s%s\n\n" "$C_CYAN" \
+                "sudo bash radar-install.sh --restore-url=$LINK" "$C_RESET"
+        fi
         line
         printf "  %s\n" "$(t migrate_note_once)"
         printf "  %s\n" "$(t migrate_note_time "$SERVE_MINUTES")"
         printf "  %s\n" "$(t migrate_note_port "$SERVE_PORT")"
+        printf "  %s\n" "$(t migrate_note_nat "$SERVE_PORT")"
         printf "  %s\n\n" "$(t migrate_note_secret)"
         printf "  %s\n" "$(t migrate_note_stop)"
         printf "    cd %s && docker compose down\n\n" "$APP_DIR"
-        printf "  %s%s%s\n\n" "$C_DIM" "$(t migrate_waiting)" "$C_RESET"
-        log_raw "MIGRATE ссылка выдана, порт $SERVE_PORT, срок $SERVE_MINUTES мин"
+        log_raw "MIGRATE ссылка выдана, порт $SERVE_PORT, срок $SERVE_MINUTES мин, пакет: $SERVE_BUNDLE"
+        # Ожидание — только при живом терминале: без него скрипт
+        # закончит работу, а фоновая раздача продолжит жить свой срок.
+        if ( : < /dev/tty ) 2>/dev/null; then
+            wait_for_download "$SERVE_PID" "$SERVE_MINUTES" \
+                || print_manual_migration
+            cleanup_migration_files
+        fi
     else
         warn "$(t migrate_serve_failed)"
         print_manual_migration
@@ -2595,6 +2773,36 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.3", [
+        "📦 <b>Переезд — один файл и одна команда.</b> Старый сервер "
+        "теперь отдаёт самодостаточный пакет: установщик и копия данных "
+        "склеены в один файл. Новому серверу не нужен ни GitHub, ни "
+        "выбор способа установки: скачал файл — запустил файлом.",
+        "⏳ <b>«Жду скачивания» стало правдой.</b> Установщик печатал "
+        "это сообщение и немедленно выходил — раздача жила в фоне, "
+        "а человек видел приглашение оболочки и решал, что всё "
+        "закончилось. Теперь настоящий обратный отсчёт, отметка "
+        "о скачивании и Ctrl+C, который действительно отменяет.",
+        "🧭 <b>Подсказка о пробросе порта.</b> Новый сервер дважды "
+        "не мог подключиться при живом переезде: ссылка не открывается "
+        "без проброса порта 8899 на роутере старого сервера, но об этом "
+        "не говорилось ничего. Теперь предупреждение печатается вместе "
+        "со ссылкой, а по истечении срока установщик сам предлагает "
+        "ручной перенос через scp.",
+    ]),
+    ("4.8.2.3", [
+        "🔁 <b>tools/restore.sh поднимает бота сам.</b> Скрипт обещал "
+        "«распаковать, положить на место, поднять», но останавливался "
+        "на печати подсказки: восстановление после поломки требовало "
+        "ещё одну команду руками. Теперь он останавливает контейнеры, "
+        "кладёт данные и запускает бота, собрав профили из .env "
+        "той же логикой, что установщик.",
+        "🗄 <b>Дамп PostgreSQL заливается до старта бота</b> — иначе бот "
+        "создаёт пустую схему, и дамп ложится поверх наполовину. "
+        "Несовпадения вроде «в .env PostgreSQL, а из копии пришли "
+        "файлы SQLite» предупреждаются вслух, а не позволяют боту "
+        "молча подняться с пустой базой.",
+    ]),
     ("4.8.2.2", [
         "🗄 <b>Копии, снятые самим ботом, теперь разворачиваются.</b> "
         "Ночная копия и копия из панели хранят базу иначе, чем копия "
@@ -3356,7 +3564,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.2.2"
+__version__ = "4.8.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -27605,7 +27813,14 @@ offer_migration() {
         return 0
     fi
 
-    if ! serve_migration "$BACKUP_PATH" "$port" "$minutes"; then
+    local serve_file="$BACKUP_PATH" serve_bundle=false
+    if build_migration_bundle "$BACKUP_PATH"; then
+        serve_file="$MIGRATION_BUNDLE"
+        serve_bundle=true
+        ok "$(t migrate_bundle_ok)"
+    fi
+
+    if ! serve_migration "$serve_file" "$port" "$minutes"; then
         warn "$(t migrate_serve_failed)"
         print_manual_migration
         return 0
@@ -27617,21 +27832,31 @@ offer_migration() {
 
     line
     printf "  %s%s%s\n\n" "${C_BOLD:-}" "$(t migrate_ready)" "${C_RESET:-}"
-    # Про лимит ядра на длину аргумента — см. комментарий у раздачи
-    # в --migrate: скачиваем установщик в файл и запускаем файлом.
-    printf "  %s%s%s\n" "${C_CYAN:-}" \
-        "curl -fsSLo radar-install.sh $INSTALLER_URL" "${C_RESET:-}"
-    printf "  %s%s%s\n\n" "${C_CYAN:-}" \
-        "sudo bash radar-install.sh --restore-url=$link" "${C_RESET:-}"
+    # Про лимит ядра на длину аргумента и самодостаточный пакет —
+    # см. комментарий у раздачи в --migrate: качаем в файл,
+    # запускаем файлом.
+    if [ "$serve_bundle" = true ]; then
+        printf "  %s%s%s\n" "${C_CYAN:-}" \
+            "curl -fsSLo radar-restore.sh $link" "${C_RESET:-}"
+        printf "  %s%s%s\n\n" "${C_CYAN:-}" \
+            "sudo bash radar-restore.sh" "${C_RESET:-}"
+    else
+        printf "  %s%s%s\n" "${C_CYAN:-}" \
+            "curl -fsSLo radar-install.sh $INSTALLER_URL" "${C_RESET:-}"
+        printf "  %s%s%s\n\n" "${C_CYAN:-}" \
+            "sudo bash radar-install.sh --restore-url=$link" "${C_RESET:-}"
+    fi
     line
     printf "  %s\n" "$(t migrate_note_once)"
     printf "  %s\n" "$(t migrate_note_time "$minutes")"
     printf "  %s\n" "$(t migrate_note_port "$port")"
+    printf "  %s\n" "$(t migrate_note_nat "$port")"
     printf "  %s\n\n" "$(t migrate_note_secret)"
     printf "  %s\n" "$(t migrate_note_stop)"
     printf "    cd %s && docker compose down\n\n" "$APP_DIR"
-    printf "  %s%s%s\n\n" "${C_DIM:-}" "$(t migrate_waiting)" "${C_RESET:-}"
-    log_raw "MIGRATE ссылка выдана, порт $port, срок $minutes мин"
+    log_raw "MIGRATE ссылка выдана, порт $port, срок $minutes мин, пакет: $serve_bundle"
+    wait_for_download "$SERVE_PID" "$minutes" || print_manual_migration
+    cleanup_migration_files
     return 0
 }
 
@@ -27645,6 +27870,9 @@ fi
 
 }   # конец radar_installer_main
 
-# Единственная исполняемая строка файла. Если скачивание оборвалось,
+# Единственная исполняемая пара строк файла. Если скачивание оборвалось,
 # до неё дело не дойдёт — bash упадёт на разборе незакрытой функции.
+# exit обязателен: у пакета переезда позади этих строк лежит бинарная
+# копия, и без явного выхода bash взялся бы разбирать её как команды.
 radar_installer_main "$@"
+exit $?

@@ -552,6 +552,20 @@ up.
     bot came up with the same tokens but empty. The format is now
     recognised, a copy with no data warns out loud; tools/restore.sh is
     fixed the same way.
+    4.8.2.3 finished tools/restore.sh's own job: it stopped containers
+    and restored the data — then printed a hint instead of starting the
+    bot. Now it brings the system up itself: compose profiles are taken
+    from .env, a PostgreSQL dump is loaded before the bot starts, and a
+    mismatch between the database and the copy warns out loud.
+    4.8.3 brought the move down to the promised "two commands": the old
+    server hands out a self-contained bundle — the installer with the
+    copy welded on — so the new server needs neither GitHub nor the full
+    installer. The "waiting for the download… Ctrl+C to cancel" lie is
+    fixed too: the message used to print, the script exited at once, and
+    the serving lived in the background — now the waiting is real, with
+    a countdown. A warning about forwarding port 8899 on the router was
+    added: without it the link does not open, and twice during a live
+    move the cause was not obvious.
     **The main thing still left is a fire drill:** go through a full move
     on a clean machine. Until then the mechanism is considered unverified.
 
