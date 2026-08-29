@@ -1658,6 +1658,33 @@ if [ "$BACKUP_ONLY" = true ]; then
     exit 0
 fi
 
+# Удаление с сохранением данных. До 4.8.4 флаг парсился, но ветки
+# исполнения не было вовсе: молчаливый no-op — флаг из справки,
+# который ничего не делает. Удаляются контейнеры и образ; база, .env
+# и копии остаются в каталоге установки. Для удаления всего целиком
+# существует отдельный скрипт — он печатается подсказкой ниже.
+if [ "$UNINSTALL" = true ]; then
+    COMPOSE="docker compose"
+    docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
+    step "Удаление «Радара» (данные сохраняются)"
+    if command -v docker >/dev/null 2>&1; then
+        if [ -d "$APP_DIR" ]; then
+            (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
+        fi
+        run docker rm -f "$CONTAINER_NAME" radar_db radar_bot_api radar_singbox 2>/dev/null || true
+        run docker rmi -f "$IMAGE_NAME" 2>/dev/null || true
+        ok "Контейнеры и образ удалены"
+    else
+        warn "Docker не найден — контейнеры и образ, если они есть, остались"
+    fi
+    info "Данные и настройки сохранены в $APP_DIR"
+    printf "\n  %s\n" "Полное удаление вместе с данными:"
+    printf "    curl -fsSLo uninstall.sh https://raw.githubusercontent.com/Chistovik92/radar/main/tools/uninstall.sh\n"
+    printf "    bash uninstall.sh\n\n"
+    log_raw "UNINSTALL: контейнеры и образ удалены, данные сохранены"
+    exit 0
+fi
+
 # --------------------------------------------------------------------------
 #  Переезд на другую машину (с 4.7.1)
 # --------------------------------------------------------------------------

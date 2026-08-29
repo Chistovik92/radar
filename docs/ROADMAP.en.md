@@ -573,7 +573,15 @@ up.
     one-time link is more convenient but marked "not verified on a live
     move" and offered as option two. tools/restore.sh without arguments
     also looks for a copy next to itself first.
-    **The main thing still left is a fire drill:** go through a full move
+    **The live check happened — and the path failed.** During the move
+    to a new server the scripted transfer did not work; the manual path
+    saved the day: the files and `.env` were copied by hand and the
+    installer was run on top. The cause of the crash is unknown — the
+    log was not kept. Until it is found and fixed, the path counts as
+    broken, not "unverified". The two-step manual transfer (scp + a bare
+    `--restore`) worked and is now the recommended one.
+    **The main thing left is to fix the scripted path from the crash log
+    and repeat a full fire drill** on a clean machine.
     on a clean machine. Until then the mechanism is considered unverified.
 
 ---

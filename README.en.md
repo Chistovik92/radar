@@ -1,4 +1,4 @@
-# Radar v4.8.3.1
+# Radar v4.8.4
 
 [Русская версия](README.md)
 
@@ -159,6 +159,23 @@ The old bot is **not** stopped automatically. Two instances sharing one
 token steal updates from each other, but deciding when to switch is your
 call: an automatic shutdown would leave both systems silent if the move
 failed.
+
+## Full removal
+
+The installer's `--uninstall` flag stops and removes the containers and
+the image while **keeping** the database and settings. To remove the
+whole system — database, `.env`, backups, logs, the install directory:
+
+```bash
+curl -fsSLo uninstall.sh https://raw.githubusercontent.com/Chistovik92/radar/main/tools/uninstall.sh
+bash uninstall.sh
+```
+
+The script is self-contained: it works on a broken installation too,
+neither network nor repository required. It asks for an explicit "yes"
+and can take one last backup before deleting (without the video cache
+and logs). Use `--yes` for automation; `RADAR_HOME=/path` for a
+non-standard directory.
 
 ## Requirements
 
