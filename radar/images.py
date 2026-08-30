@@ -248,6 +248,49 @@ class _MetaReader(HTMLParser):
             self.found.append(content)
 
 
+# Ключи, которыми площадки перечисляют картинки записи внутри встроенного
+# JSON. Метаданные предпросмотра отдают только ПЕРВУЮ картинку, а в посте
+# их бывает десяток: карусель в Instagram, несколько фотографий в твите.
+# Человек присылает ссылку на запись целиком и ждёт всю запись.
+_JSON_KEYS = ("display_url", "displayUrl", "media_url_https")
+
+_JSON_IMAGE = re.compile(
+    r'"(?:' + "|".join(_JSON_KEYS) + r')"\s*:\s*"([^"]{8,600}?)"'
+)
+
+
+def _unescape_json_url(value: str) -> str:
+    """Адрес из встроенного JSON: экранированные слэши и юникод вместо &."""
+    return (value
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&"))
+
+
+def from_json(markup: str) -> list[str]:
+    """Картинки, перечисленные во встроенном JSON страницы.
+
+    Разбор нарочно грубый — по ключам, а не по структуре: разметку соцсети
+    меняют часто, и полноценный разбор их JSON ломался бы каждый месяц.
+    Здесь же худший случай — не найти ничего, и тогда остаются метаданные.
+    """
+    found: list[str] = []
+    for raw in _JSON_IMAGE.findall(markup or ""):
+        value = _unescape_json_url(raw)
+        if not value.lower().startswith(("http://", "https://")):
+            continue
+        # Отбрасываем всё, что не картинка: по этим же ключам иногда
+        # лежат ссылки на профиль и на видео.
+        path = value.split("?")[0].lower()
+        if not path.endswith(EXTENSIONS):
+            continue
+        if value not in found:
+            found.append(value)
+        if len(found) >= MAX_FROM_PAGE:
+            break
+    return found
+
+
 def from_page(markup: str, base_url: str = "") -> list[str]:
     """Ссылки на картинки из метаданных страницы записи.
 
@@ -266,7 +309,9 @@ def from_page(markup: str, base_url: str = "") -> list[str]:
         log.debug("Разметка страницы разобрана не полностью", exc_info=True)
 
     links: list[str] = []
-    for value in reader.found:
+    # Метаданные идут первыми: там лежит главная картинка записи, и она
+    # должна прийти человеку первой. Остальные добираются из JSON.
+    for value in list(reader.found) + from_json(markup):
         # Относительный адрес встречается у зеркал и самодельных страниц.
         if base_url:
             value = urljoin(base_url, value)

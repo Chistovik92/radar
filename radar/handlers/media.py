@@ -171,14 +171,13 @@ async def handle_link(message: Message, role: str) -> None:
 async def _send_post_images(message: Message, url: str, notice) -> bool:
     """Картинки из записи, в которой нет видео. False — не вышло.
 
-    Разбор идёт по метаданным страницы (`og:image`, `twitter:image`):
-    их заполняют все крупные площадки, потому что по ним строится
-    предпросмотр ссылки в мессенджерах. Способ не всесильный — закрытая
-    запись отдаст страницу входа, и картинок в ней не будет. Тогда
-    возвращаем False, и человек увидит обычное объяснение.
+    Разбор идёт по метаданным страницы и по встроенному JSON: первые дают
+    главную картинку, второй — остальные снимки карусели. Способ
+    не всесильный — закрытая запись отдаёт страницу входа, и картинок
+    в ней не будет. Тогда возвращаем False, и человек увидит объяснение.
     """
     import aiohttp
-    from aiogram.types import BufferedInputFile
+    from aiogram.types import BufferedInputFile, InputMediaPhoto
 
     await notice.edit_text("🖼 <b>Видео нет — ищу картинки в записи…</b>")
 
@@ -192,8 +191,11 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
         ),
         "Accept-Language": "ru,en;q=0.8",
     }
-    timeout = aiohttp.ClientTimeout(total=45)
+    timeout = aiohttp.ClientTimeout(total=90)
     limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    photos: list[tuple[bytes, str]] = []
+    heavy: list[tuple[bytes, str]] = []
 
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         markup = await images.fetch_page(session, url)
@@ -201,22 +203,65 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
         if not links:
             return False
 
-        sent = 0
         for link in links:
             data, _complaint = await images.fetch(session, link, limit_mb)
             if not data:
                 continue
             name = images.filename_from(link)
-            file = BufferedInputFile(data, filename=name)
-            try:
-                if images.as_photo(len(data)):
-                    await message.answer_photo(file, caption=f"🖼 {esc(name)}")
-                else:
-                    await message.answer_document(file, caption=f"🖼 {esc(name)}")
-                sent += 1
-            except Exception:  # noqa: BLE001
-                log.warning("Картинка из записи не отправлена: %s", link)
-            await asyncio.sleep(0.3)
+            # Крупная картинка альбомом не уходит: у фотографий свой
+            # предел в 10 МБ. Такие отправляем отдельно, файлом.
+            (photos if images.as_photo(len(data)) else heavy).append((data, name))
+
+    if not photos and not heavy:
+        return False
+
+    sent = 0
+    # Альбомом, а не вереницей сообщений: карусель из десяти снимков
+    # десятью сообщениями превращает переписку в ленту. Telegram берёт
+    # не больше десяти вложений за раз.
+    for start in range(0, len(photos), 10):
+        chunk = photos[start:start + 10]
+        try:
+            if len(chunk) == 1:
+                data, name = chunk[0]
+                await message.answer_photo(
+                    BufferedInputFile(data, filename=name),
+                    caption=f"🖼 {esc(name)}",
+                )
+            else:
+                await message.answer_media_group([
+                    InputMediaPhoto(
+                        media=BufferedInputFile(data, filename=name),
+                        caption=(f"🖼 Картинок в записи: {len(photos)}"
+                                 if index == 0 and start == 0 else None),
+                    )
+                    for index, (data, name) in enumerate(chunk)
+                ])
+            sent += len(chunk)
+        except Exception:  # noqa: BLE001
+            log.warning("Альбом не отправлен, шлю по одной")
+            for data, name in chunk:
+                try:
+                    await message.answer_photo(
+                        BufferedInputFile(data, filename=name),
+                        caption=f"🖼 {esc(name)}",
+                    )
+                    sent += 1
+                except Exception:  # noqa: BLE001
+                    log.warning("Картинка из записи не отправлена: %s", name)
+                await asyncio.sleep(0.3)
+        await asyncio.sleep(0.3)
+
+    for data, name in heavy:
+        try:
+            await message.answer_document(
+                BufferedInputFile(data, filename=name),
+                caption=f"🖼 {esc(name)} · {len(data) / 1024 / 1024:.1f} МБ",
+            )
+            sent += 1
+        except Exception:  # noqa: BLE001
+            log.warning("Крупная картинка не отправлена: %s", name)
+        await asyncio.sleep(0.3)
 
     if not sent:
         return False
@@ -226,6 +271,7 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
         pass
     log.info("Из записи отправлено картинок: %d", sent)
     return True
+
 
 
 async def _send_image(message: Message, url: str) -> None:

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.4.7 — автономный установщик.
+# Система «Радар» v4.8.4.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.4.7"
+VERSION="4.8.4.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2958,6 +2958,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.4.8", [
+        "🖼 <b>Карусель приходит целиком.</b> Из записи "
+        "с несколькими снимками приходила одна: метаданные страницы "
+        "отдают только обложку — картинку для предпросмотра ссылки. "
+        "Остальные теперь берутся из встроенного JSON, а несколько "
+        "снимков уходят альбомом, а не вереницей сообщений.",
+        "🧹 <b>Уборка рабочего каталога.</b> Успешная отправка "
+        "убирала за собой и раньше, но до неё доходит не всё: загрузку "
+        "обрывает предел размера, площадка отваливается, контейнер "
+        "перезапускают посреди работы. Недокачанное копилось до тех пор, "
+        "пока не кончится диск — а вместе с ним встали бы и оповещения. "
+        "Теперь остатки старше шести часов убираются раз в цикл.",
+    ]),
     ("4.8.4.7", [
         "🖼 <b>Картинки из записей.</b> Ссылка на пост "
         "с фотографией — в Instagram, твит с картинкой, сообщение "
@@ -3874,7 +3887,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.4.7"
+__version__ = "4.8.4.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7452,6 +7465,47 @@ def looks_like_no_video(error: BaseException | str) -> bool:
     return any(marker in text for marker in NO_VIDEO_MARKERS)
 
 
+# Сколько держать забытое в рабочем каталоге. Шесть часов — заведомо
+# больше самой долгой загрузки на медленном канале и заведомо меньше
+# суток, за которые мусор успел бы съесть диск.
+SWEEP_AFTER_HOURS = 6
+
+
+def sweep(directory: str, older_than_hours: int = SWEEP_AFTER_HOURS) -> int:
+    """Убирает из рабочего каталога то, что осталось от прерванных загрузок.
+
+    Успешная отправка удаляет за собой сама, в `finally`. Но до `finally`
+    доходит не всё: загрузка обрывается предохранителем размера, площадка
+    отваливается по таймауту, контейнер перезапускают посреди работы —
+    и yt-dlp оставляет `.part`, недосклеенные дорожки и сам файл. Ничем
+    не убираемые, они копятся до тех пор, пока на диске не кончится место,
+    а вместе с местом остановятся и оповещения.
+
+    Возвращает число удалённых файлов.
+    """
+    import time as time_module
+
+    if not directory or not os.path.isdir(directory):
+        return 0
+
+    edge = time_module.time() - older_than_hours * 3600
+    removed = 0
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        try:
+            if not os.path.isfile(path) or os.path.getmtime(path) > edge:
+                continue
+            os.remove(path)
+            removed += 1
+        except OSError:
+            # Файл могли удалить между listdir и remove, а могло не хватить
+            # прав. Ни то ни другое не повод останавливать уборку.
+            continue
+    if removed:
+        log.info("Убрано из рабочего каталога: %d файлов", removed)
+    return removed
+
+
 def friendly_error(error: BaseException | str) -> str:
     """Переводит типичные ошибки yt-dlp в понятное объяснение."""
     text = str(error).lower()
@@ -8061,6 +8115,49 @@ class _MetaReader(HTMLParser):
             self.found.append(content)
 
 
+# Ключи, которыми площадки перечисляют картинки записи внутри встроенного
+# JSON. Метаданные предпросмотра отдают только ПЕРВУЮ картинку, а в посте
+# их бывает десяток: карусель в Instagram, несколько фотографий в твите.
+# Человек присылает ссылку на запись целиком и ждёт всю запись.
+_JSON_KEYS = ("display_url", "displayUrl", "media_url_https")
+
+_JSON_IMAGE = re.compile(
+    r'"(?:' + "|".join(_JSON_KEYS) + r')"\s*:\s*"([^"]{8,600}?)"'
+)
+
+
+def _unescape_json_url(value: str) -> str:
+    """Адрес из встроенного JSON: экранированные слэши и юникод вместо &."""
+    return (value
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&"))
+
+
+def from_json(markup: str) -> list[str]:
+    """Картинки, перечисленные во встроенном JSON страницы.
+
+    Разбор нарочно грубый — по ключам, а не по структуре: разметку соцсети
+    меняют часто, и полноценный разбор их JSON ломался бы каждый месяц.
+    Здесь же худший случай — не найти ничего, и тогда остаются метаданные.
+    """
+    found: list[str] = []
+    for raw in _JSON_IMAGE.findall(markup or ""):
+        value = _unescape_json_url(raw)
+        if not value.lower().startswith(("http://", "https://")):
+            continue
+        # Отбрасываем всё, что не картинка: по этим же ключам иногда
+        # лежат ссылки на профиль и на видео.
+        path = value.split("?")[0].lower()
+        if not path.endswith(EXTENSIONS):
+            continue
+        if value not in found:
+            found.append(value)
+        if len(found) >= MAX_FROM_PAGE:
+            break
+    return found
+
+
 def from_page(markup: str, base_url: str = "") -> list[str]:
     """Ссылки на картинки из метаданных страницы записи.
 
@@ -8079,7 +8176,9 @@ def from_page(markup: str, base_url: str = "") -> list[str]:
         log.debug("Разметка страницы разобрана не полностью", exc_info=True)
 
     links: list[str] = []
-    for value in reader.found:
+    # Метаданные идут первыми: там лежит главная картинка записи, и она
+    # должна прийти человеку первой. Остальные добираются из JSON.
+    for value in list(reader.found) + from_json(markup):
         # Относительный адрес встречается у зеркал и самодельных страниц.
         if base_url:
             value = urljoin(base_url, value)
@@ -20830,6 +20929,7 @@ from . import (
     secrets,
     sos,
     sources,
+    media,
     storage,
     timezones,
     weather,
@@ -21398,6 +21498,16 @@ async def run() -> None:
 
             try:
                 now_moment = datetime.now()
+
+                # Уборка рабочего каталога медиа. Здесь же, а не отдельной
+                # задачей, по той же причине, что и копия: лишняя корутина
+                # на одноплатнике дороже проверки раз в цикл. Успешная
+                # отправка убирает за собой сама — сюда попадает то, что
+                # осталось от прерванных загрузок.
+                try:
+                    media.sweep(config.MEDIA_DIR)
+                except Exception:  # noqa: BLE001
+                    log.exception("Уборка рабочего каталога не удалась")
 
                 # Копия по расписанию. Внутри цикла, а не отдельной задачей:
                 # так она не запустится во время работ или при остановленном
@@ -25552,14 +25662,13 @@ async def handle_link(message: Message, role: str) -> None:
 async def _send_post_images(message: Message, url: str, notice) -> bool:
     """Картинки из записи, в которой нет видео. False — не вышло.
 
-    Разбор идёт по метаданным страницы (`og:image`, `twitter:image`):
-    их заполняют все крупные площадки, потому что по ним строится
-    предпросмотр ссылки в мессенджерах. Способ не всесильный — закрытая
-    запись отдаст страницу входа, и картинок в ней не будет. Тогда
-    возвращаем False, и человек увидит обычное объяснение.
+    Разбор идёт по метаданным страницы и по встроенному JSON: первые дают
+    главную картинку, второй — остальные снимки карусели. Способ
+    не всесильный — закрытая запись отдаёт страницу входа, и картинок
+    в ней не будет. Тогда возвращаем False, и человек увидит объяснение.
     """
     import aiohttp
-    from aiogram.types import BufferedInputFile
+    from aiogram.types import BufferedInputFile, InputMediaPhoto
 
     await notice.edit_text("🖼 <b>Видео нет — ищу картинки в записи…</b>")
 
@@ -25573,8 +25682,11 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
         ),
         "Accept-Language": "ru,en;q=0.8",
     }
-    timeout = aiohttp.ClientTimeout(total=45)
+    timeout = aiohttp.ClientTimeout(total=90)
     limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    photos: list[tuple[bytes, str]] = []
+    heavy: list[tuple[bytes, str]] = []
 
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         markup = await images.fetch_page(session, url)
@@ -25582,22 +25694,65 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
         if not links:
             return False
 
-        sent = 0
         for link in links:
             data, _complaint = await images.fetch(session, link, limit_mb)
             if not data:
                 continue
             name = images.filename_from(link)
-            file = BufferedInputFile(data, filename=name)
-            try:
-                if images.as_photo(len(data)):
-                    await message.answer_photo(file, caption=f"🖼 {esc(name)}")
-                else:
-                    await message.answer_document(file, caption=f"🖼 {esc(name)}")
-                sent += 1
-            except Exception:  # noqa: BLE001
-                log.warning("Картинка из записи не отправлена: %s", link)
-            await asyncio.sleep(0.3)
+            # Крупная картинка альбомом не уходит: у фотографий свой
+            # предел в 10 МБ. Такие отправляем отдельно, файлом.
+            (photos if images.as_photo(len(data)) else heavy).append((data, name))
+
+    if not photos and not heavy:
+        return False
+
+    sent = 0
+    # Альбомом, а не вереницей сообщений: карусель из десяти снимков
+    # десятью сообщениями превращает переписку в ленту. Telegram берёт
+    # не больше десяти вложений за раз.
+    for start in range(0, len(photos), 10):
+        chunk = photos[start:start + 10]
+        try:
+            if len(chunk) == 1:
+                data, name = chunk[0]
+                await message.answer_photo(
+                    BufferedInputFile(data, filename=name),
+                    caption=f"🖼 {esc(name)}",
+                )
+            else:
+                await message.answer_media_group([
+                    InputMediaPhoto(
+                        media=BufferedInputFile(data, filename=name),
+                        caption=(f"🖼 Картинок в записи: {len(photos)}"
+                                 if index == 0 and start == 0 else None),
+                    )
+                    for index, (data, name) in enumerate(chunk)
+                ])
+            sent += len(chunk)
+        except Exception:  # noqa: BLE001
+            log.warning("Альбом не отправлен, шлю по одной")
+            for data, name in chunk:
+                try:
+                    await message.answer_photo(
+                        BufferedInputFile(data, filename=name),
+                        caption=f"🖼 {esc(name)}",
+                    )
+                    sent += 1
+                except Exception:  # noqa: BLE001
+                    log.warning("Картинка из записи не отправлена: %s", name)
+                await asyncio.sleep(0.3)
+        await asyncio.sleep(0.3)
+
+    for data, name in heavy:
+        try:
+            await message.answer_document(
+                BufferedInputFile(data, filename=name),
+                caption=f"🖼 {esc(name)} · {len(data) / 1024 / 1024:.1f} МБ",
+            )
+            sent += 1
+        except Exception:  # noqa: BLE001
+            log.warning("Крупная картинка не отправлена: %s", name)
+        await asyncio.sleep(0.3)
 
     if not sent:
         return False
@@ -25607,6 +25762,7 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
         pass
     log.info("Из записи отправлено картинок: %d", sent)
     return True
+
 
 
 async def _send_image(message: Message, url: str) -> None:

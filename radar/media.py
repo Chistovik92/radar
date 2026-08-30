@@ -499,6 +499,47 @@ def looks_like_no_video(error: BaseException | str) -> bool:
     return any(marker in text for marker in NO_VIDEO_MARKERS)
 
 
+# Сколько держать забытое в рабочем каталоге. Шесть часов — заведомо
+# больше самой долгой загрузки на медленном канале и заведомо меньше
+# суток, за которые мусор успел бы съесть диск.
+SWEEP_AFTER_HOURS = 6
+
+
+def sweep(directory: str, older_than_hours: int = SWEEP_AFTER_HOURS) -> int:
+    """Убирает из рабочего каталога то, что осталось от прерванных загрузок.
+
+    Успешная отправка удаляет за собой сама, в `finally`. Но до `finally`
+    доходит не всё: загрузка обрывается предохранителем размера, площадка
+    отваливается по таймауту, контейнер перезапускают посреди работы —
+    и yt-dlp оставляет `.part`, недосклеенные дорожки и сам файл. Ничем
+    не убираемые, они копятся до тех пор, пока на диске не кончится место,
+    а вместе с местом остановятся и оповещения.
+
+    Возвращает число удалённых файлов.
+    """
+    import time as time_module
+
+    if not directory or not os.path.isdir(directory):
+        return 0
+
+    edge = time_module.time() - older_than_hours * 3600
+    removed = 0
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        try:
+            if not os.path.isfile(path) or os.path.getmtime(path) > edge:
+                continue
+            os.remove(path)
+            removed += 1
+        except OSError:
+            # Файл могли удалить между listdir и remove, а могло не хватить
+            # прав. Ни то ни другое не повод останавливать уборку.
+            continue
+    if removed:
+        log.info("Убрано из рабочего каталога: %d файлов", removed)
+    return removed
+
+
 def friendly_error(error: BaseException | str) -> str:
     """Переводит типичные ошибки yt-dlp в понятное объяснение."""
     text = str(error).lower()

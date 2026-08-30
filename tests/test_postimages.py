@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +35,10 @@ import stubcheck  # noqa: E402
 stubcheck.install()
 
 from radar import images, media  # noqa: E402
+
+# Обратный слэш через chr: в разметке соцсетей адреса приходят
+# экранированными, и запись их литералом в тесте читается хуже.
+B = chr(92)
 
 # Ответы площадок дословно, как их видно в журнале сервера.
 VK_LOGIN = "ERROR: [vk] Video only available to signed-in users"
@@ -137,6 +143,107 @@ class PageParsing(unittest.TestCase):
             for i in range(30)
         )
         self.assertEqual(len(images.from_page(self.page(meta))), images.MAX_FROM_PAGE)
+
+
+class Carousel(unittest.TestCase):
+    """Несколько картинок в одной записи.
+
+    Метаданные предпросмотра отдают только первую: их задача — картинка
+    для ссылки в мессенджере, а не содержимое записи. В карусели Instagram
+    снимков бывает десяток, и человек, приславший ссылку на пост, ждёт
+    весь пост, а не его обложку.
+    """
+
+    def page(self, body: str) -> str:
+        return ('<html><head>'
+                '<meta property="og:image" content="https://cdn.ru/first.jpg">'
+                '</head><body>' + body + '</body></html>')
+
+    def test_first_from_meta_then_rest_from_json(self) -> None:
+        markup = self.page(
+            '<script>{"display_url":"https://cdn.ru/second.jpg",'
+            '"display_url":"https://cdn.ru/third.jpg"}</script>'
+        )
+        self.assertEqual(images.from_page(markup), [
+            "https://cdn.ru/first.jpg",
+            "https://cdn.ru/second.jpg",
+            "https://cdn.ru/third.jpg",
+        ])
+
+    def test_escaped_slashes_and_ampersand(self) -> None:
+        raw = "https:" + B + "/" + B + "/cdn.ru" + B + "/x.jpg?a=1" + B + "u0026b=2"
+        markup = self.page('<script>{"display_url":"' + raw + '"}</script>')
+        self.assertIn("https://cdn.ru/x.jpg?a=1&b=2", images.from_page(markup))
+
+    def test_video_entries_dropped(self) -> None:
+        # По тем же ключам площадки кладут ссылки на ролики и профиль.
+        markup = self.page('<script>{"display_url":"https://cdn.ru/clip.mp4"}</script>')
+        self.assertEqual(images.from_page(markup), ["https://cdn.ru/first.jpg"])
+
+    def test_duplicates_dropped(self) -> None:
+        markup = self.page('<script>{"display_url":"https://cdn.ru/first.jpg"}</script>')
+        self.assertEqual(images.from_page(markup), ["https://cdn.ru/first.jpg"])
+
+    def test_twitter_key_supported(self) -> None:
+        markup = self.page('<script>{"media_url_https":"https://pbs.tw/a.jpg"}</script>')
+        self.assertIn("https://pbs.tw/a.jpg", images.from_page(markup))
+
+    def test_cap_applies_across_both_sources(self) -> None:
+        body = "<script>{" + ",".join(
+            '"display_url":"https://cdn.ru/%d.jpg"' % i for i in range(30)
+        ) + "}</script>"
+        self.assertEqual(len(images.from_page(self.page(body))), images.MAX_FROM_PAGE)
+
+    def test_json_without_images_is_not_an_error(self) -> None:
+        markup = self.page('<script>{"count":3,"display_url":""}</script>')
+        self.assertEqual(images.from_page(markup), ["https://cdn.ru/first.jpg"])
+
+
+class Sweeping(unittest.TestCase):
+    """Уборка рабочего каталога после прерванных загрузок."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = self.directory.name
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def make(self, name: str, age_hours: float) -> str:
+        target = os.path.join(self.path, name)
+        with open(target, "wb") as handle:
+            handle.write(b"x")
+        stamp = time.time() - age_hours * 3600
+        os.utime(target, (stamp, stamp))
+        return target
+
+    def test_old_leftovers_removed(self) -> None:
+        # Ровно то, что оставляет прерванная загрузка.
+        self.make("video.mp4.part", 10)
+        self.make("video.f137.mp4", 10)
+        self.assertEqual(media.sweep(self.path), 2)
+        self.assertEqual(os.listdir(self.path), [])
+
+    def test_fresh_files_kept(self) -> None:
+        # Идущая прямо сейчас загрузка не должна быть убрана из-под себя.
+        self.make("сейчас.mp4.part", 0)
+        self.assertEqual(media.sweep(self.path), 0)
+        self.assertEqual(len(os.listdir(self.path)), 1)
+
+    def test_boundary_respected(self) -> None:
+        self.make("свежий.part", media.SWEEP_AFTER_HOURS - 1)
+        self.make("старый.part", media.SWEEP_AFTER_HOURS + 1)
+        self.assertEqual(media.sweep(self.path), 1)
+        self.assertEqual(os.listdir(self.path), ["свежий.part"])
+
+    def test_missing_directory_is_not_an_error(self) -> None:
+        self.assertEqual(media.sweep(os.path.join(self.path, "нет")), 0)
+        self.assertEqual(media.sweep(""), 0)
+
+    def test_subdirectories_untouched(self) -> None:
+        os.mkdir(os.path.join(self.path, "вложенный"))
+        self.assertEqual(media.sweep(self.path), 0)
+        self.assertEqual(os.listdir(self.path), ["вложенный"])
 
 
 if __name__ == "__main__":
