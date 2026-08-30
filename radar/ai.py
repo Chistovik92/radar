@@ -514,13 +514,20 @@ def _fallback(text: str, source: str, link: str = "") -> Analysis:
     return analysis
 
 
-async def _openai_batch(prompt: str, name: str = "") -> str:
-    """Пакетный разбор через совместимый с OpenAI сервис.
+async def _openai_chat(
+    messages: list[dict[str, str]],
+    name: str = "",
+    *,
+    temperature: float = 0.4,
+    max_tokens: int = 2000,
+    json_mode: bool = False,
+) -> str:
+    """Запрос к совместимому с OpenAI сервису. Одна дорога для всех.
 
-    Одна функция на всех: DeepSeek, OpenRouter, Mistral, Moonshot, Qwen,
-    Z.ai, OpenAI и свой агент говорят одним протоколом. Восемь почти
-    одинаковых функций означали бы восемь мест, где придётся повторить
-    одну и ту же правку — и одно, где о ней забудут.
+    Вынесено из пакетного разбора в 4.9.1, когда ассистенту понадобился
+    тот же путь: до этого свободный диалог умел говорить только с Gemini,
+    и выбор провайдера в боте на него не влиял — человек переключал
+    провайдера и не понимал, почему ничего не изменилось.
     """
     import aiohttp
 
@@ -547,17 +554,14 @@ async def _openai_batch(prompt: str, name: str = "") -> str:
 
     payload: dict[str, Any] = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 2000,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
     # Строгий JSON поддерживают не все совместимые сервисы, и на тех, кто
     # не поддерживает, поле роняет запрос целиком. Просим его только там,
-    # где точно умеют; остальных дисциплинирует системная строка выше.
-    if name in ("deepseek", "openai", "mistral"):
+    # где точно умеют; остальных дисциплинирует системная строка.
+    if json_mode and name in ("deepseek", "openai", "mistral"):
         payload["response_format"] = {"type": "json_object"}
 
     timeout = aiohttp.ClientTimeout(total=90)
@@ -569,15 +573,34 @@ async def _openai_batch(prompt: str, name: str = "") -> str:
         ) as response:
             body = await response.text()
             if response.status != 200:
-                detail = body[:200]
-                raise AIError(f"{info.title} HTTP {response.status}: {detail}")
+                raise AIError(f"{info.title} HTTP {response.status}: {body[:200]}")
             data = json.loads(body)
 
     for choice in data.get("choices") or []:
         content = (choice.get("message") or {}).get("content")
         if content:
-            return content
-    raise AIError(f"{info.title} вернул пустой ответ")
+            return str(content)
+    raise AIError(f"{info.title}: пустой ответ")
+
+
+async def _openai_batch(prompt: str, name: str = "") -> str:
+    """Пакетный разбор через совместимый с OpenAI сервис.
+
+    Одна функция на всех: DeepSeek, OpenRouter, Mistral, Moonshot, Qwen,
+    Z.ai, OpenAI и свои агенты говорят одним протоколом. Восемь почти
+    одинаковых функций означали бы восемь мест, где придётся повторить
+    одну и ту же правку — и одно, где о ней забудут.
+    """
+    return await _openai_chat(
+        [
+            {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        name,
+        temperature=0.1,
+        max_tokens=2000,
+        json_mode=True,
+    )
 
 
 async def _deepseek_batch(prompt: str) -> str:
@@ -727,7 +750,45 @@ def model_turn(text: str) -> types.Content:
     return types.Content(role="model", parts=[types.Part(text=text)])
 
 
+def _as_messages(history: list[Any], question: str) -> list[dict[str, str]]:
+    """История Gemini в вид, понятный совместимым с OpenAI сервисам."""
+    messages = [{"role": "system", "content": ASSISTANT_SYSTEM}]
+    for item in history:
+        role = "assistant" if getattr(item, "role", "") == "model" else "user"
+        parts = getattr(item, "parts", None) or []
+        try:
+            text = " ".join(
+                str(getattr(part, "text", "") or "") for part in parts
+            ).strip()
+        except TypeError:
+            # История приходит из клиента Gemini, но перебирать её вслепую
+            # нельзя: у объекта может не оказаться частей вовсе. Пропустить
+            # реплику лучше, чем оборвать весь диалог.
+            continue
+        if text:
+            messages.append({"role": role, "content": text})
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
 async def assistant(history: list[types.Content], question: str) -> str:
+    """Свободный диалог. Провайдер — выбранный, а не обязательно Gemini.
+
+    До 4.9.1 ассистент ходил только в Gemini: выбор провайдера в боте
+    действовал на разбор новостей, но не на диалог, и человек переключал
+    провайдера, а отвечал ему прежний. Gemini остаётся предпочтительным —
+    у него поиск в интернете, — но единственным быть перестал.
+    """
+    from . import provider as provider_choice
+
+    active = provider_choice.current()
+    chosen = provider_choice.all_infos().get(active)
+    if chosen is not None and chosen.kind == provider_choice.KIND_OPENAI:
+        return await _openai_chat(
+            _as_messages(history, question), active,
+            temperature=0.6, max_tokens=2048,
+        )
+
     contents = list(history) + [user_turn(question)]
     return await generate(
         contents,

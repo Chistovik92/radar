@@ -38,11 +38,16 @@ def history_of(uid: str) -> deque:
 
 
 async def run(message: Message, question: str) -> None:
+    from .. import provider
+
     uid = str(message.from_user.id)
-    if not ai.ENABLED:
+    # Раньше проверялся только клиент Gemini: с ключом любого другого
+    # провайдера ассистент отвечал «не задан GEMINI_API_KEY», хотя
+    # отвечать было кому.
+    if not ai.ENABLED and not provider.available():
         await message.answer(
-            "❌ ИИ-ассистент недоступен: в <code>.env</code> не задан "
-            "<code>GEMINI_API_KEY</code>."
+            "❌ ИИ-ассистент недоступен: не задан ни один ключ провайдера. "
+            "Заведите его в разделе ключей — например <code>GEMINI_API_KEY</code>."
         )
         return
 

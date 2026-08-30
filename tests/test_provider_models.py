@@ -228,5 +228,88 @@ class TestFreeFirst(unittest.TestCase):
         self.assertEqual(provider.free_first([]), [])
 
 
+class GeminiModelList(unittest.TestCase):
+    """Ключ Google заведён — список моделей обязан быть.
+
+    Раньше `list_models` отказывала всему, что не совместимо с OpenAI,
+    и человек с рабочим ключом Google видел пустой список: ключ есть,
+    а выбрать нечего. Вводить ключ заново он не обязан — спросить модели
+    можно и так, своим протоколом.
+    """
+
+    def test_gemini_asks_its_own_api(self) -> None:
+        from radar import ai, provider
+
+        async def fake_discover():
+            return ["gemini-3.6-flash", "gemini-3.5-pro"]
+
+        with mock.patch.object(ai, "discover_models", fake_discover):
+            names = asyncio.run(provider.list_models(provider.GEMINI))
+        self.assertEqual(names, ["gemini-3.6-flash", "gemini-3.5-pro"])
+
+    def test_failure_is_not_an_error(self) -> None:
+        from radar import ai, provider
+
+        async def broken():
+            raise RuntimeError("сеть недоступна")
+
+        with mock.patch.object(ai, "discover_models", broken):
+            self.assertEqual(asyncio.run(provider.list_models(provider.GEMINI)), [])
+
+    def test_limit_respected(self) -> None:
+        from radar import ai, provider
+
+        async def many():
+            return [f"model-{i}" for i in range(100)]
+
+        with mock.patch.object(ai, "discover_models", many):
+            self.assertEqual(
+                len(asyncio.run(provider.list_models(provider.GEMINI, limit=5))), 5)
+
+
+class AssistantRouting(unittest.TestCase):
+    """Ассистентом может быть не только Gemini."""
+
+    def test_openai_provider_used_for_chat(self) -> None:
+        # До 4.9.1 свободный диалог всегда уходил в Gemini: человек
+        # переключал провайдера, а отвечал ему прежний.
+        from radar import ai, provider
+
+        seen = {}
+
+        async def fake_chat(messages, name="", **kwargs):
+            seen["name"] = name
+            seen["messages"] = messages
+            return "ответ"
+
+        with mock.patch.object(provider, "current", return_value="deepseek"),                 mock.patch.object(ai, "_openai_chat", fake_chat):
+            answer = asyncio.run(ai.assistant([], "вопрос"))
+
+        self.assertEqual(answer, "ответ")
+        self.assertEqual(seen["name"], "deepseek")
+        self.assertEqual(seen["messages"][-1]["content"], "вопрос")
+        self.assertEqual(seen["messages"][0]["role"], "system")
+
+    def test_history_converted(self) -> None:
+        from radar import ai
+
+        # Свои объекты вместо клиентских: в офлайн-проверках библиотека
+        # Gemini подменена заглушкой, и её Content ничего не хранит.
+        class Part:
+            def __init__(self, text):
+                self.text = text
+
+        class Turn:
+            def __init__(self, role, text):
+                self.role = role
+                self.parts = [Part(text)]
+
+        history = [Turn("user", "первый"), Turn("model", "ответ")]
+        messages = ai._as_messages(history, "второй")
+        self.assertEqual([item["role"] for item in messages],
+                         ["system", "user", "assistant", "user"])
+        self.assertEqual(messages[-1]["content"], "второй")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

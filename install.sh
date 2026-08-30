@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9 — автономный установщик.
+# Система «Радар» v4.9.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9"
+VERSION="4.9.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2958,6 +2958,23 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.1", [
+        "🔑 <b>Ключ Google теперь даёт выбор модели.</b> Список "
+        "запрашивался только у сервисов, совместимых с OpenAI, а у Gemini "
+        "свой протокол — и человек с рабочим ключом видел пустой список: "
+        "ключ есть, а выбрать нечего. Вводить его заново не нужно.",
+        "🧠 <b>Ассистентом может быть не только Gemini.</b> Выбор "
+        "провайдера действовал на разбор новостей, но не на свободный "
+        "диалог: человек переключал провайдера, а отвечал ему прежний. "
+        "Gemini остаётся предпочтительным — у него поиск в интернете, — "
+        "но единственным быть перестал.",
+        "⚙ <b>Возможности переключаются из панели.</b> Раньше она "
+        "их только показывала. Права те же, что в боте: переключает "
+        "суперадминистратор.",
+        "🕓 <b>Время пользователя правится из панели.</b> "
+        "Часовой пояс и время погоды — когда правит не сам человек, "
+        "а администрация по его просьбе.",
+    ]),
     ("4.9", [
         "💳 <b>Подписка одна и продаётся из одного места.</b> "
         "Раньше её предлагали дважды — из подборок и из видео. Модель "
@@ -3966,7 +3983,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9"
+__version__ = "4.9.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -9685,7 +9702,22 @@ async def list_models(name: str, limit: int = 60) -> list[str]:
     протокол и свой `ai.discover_models`.
     """
     info = all_infos().get(name)
-    if info is None or info.kind != KIND_OPENAI:
+    if info is None:
+        return []
+
+    # У Gemini свой протокол и свой перечень моделей. Раньше здесь стоял
+    # безусловный отказ, и человек с заведённым ключом Google видел пустой
+    # список: ключ есть, а выбрать нечего. Спрашивать заново он не обязан.
+    if info.kind == KIND_GEMINI:
+        from . import ai
+
+        try:
+            return (await ai.discover_models())[:limit]
+        except Exception:  # noqa: BLE001
+            log.warning("Список моделей Gemini недоступен", exc_info=True)
+            return []
+
+    if info.kind != KIND_OPENAI:
         return []
 
     base = info.url()
@@ -14251,25 +14283,71 @@ def _overview_body() -> str:
     )
 
 
-def _users_body(role: str = "") -> str:
-    """Список пользователей. Модератору идентификаторы показываются частично:
-    для его задач они не нужны, а утечка списка — лишний риск."""
+def _users_body(session, message: str = "", failed: str = "") -> str:
+    """Список пользователей с правкой времени.
+
+    Модератору идентификаторы показываются частично: для его задач они
+    не нужны, а утечка списка — лишний риск.
+
+    Часовой пояс и время погоды правятся здесь же. В боте это делает сам
+    человек; администрации оно нужно, когда правит не он — по просьбе или
+    при разборе «почему сводка пришла ночью».
+    """
+    from .. import timezones
+
+    role = session.role
     full = roles.is_admin(role)
+    token = auth.csrf_token(session)
+    editable = roles.is_moderator(role)
+
     rows = []
     for key, item in sorted(storage.users().items()):
         locations = item.get("locs") or []
         cities = ", ".join(
             sorted({str(loc.get("city") or "") for loc in locations if loc.get("city")})
         )
+        lang = "en" if str(item.get("lang") or "").startswith("en") else "ru"
+        zone = timezones.user_label(item, lang)
+        if not timezones.chosen(item):
+            zone += " (серверный)"
+        moment = (str(item.get("weather_time") or "08:00")
+                  if item.get("weather_mode") == "time" else "—")
+
+        form = ""
+        if editable:
+            options = "".join(
+                f'<option value="{timezones.render(minutes)}"'
+                f'{" selected" if minutes == timezones.offset_of(item) else ""}>'
+                f"{html.escape(timezones.label(minutes, lang))}</option>"
+                for minutes in timezones.WHOLE_HOURS
+            )
+            form = (
+                '<form class="inline" method="post" action="/users/time">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="user" value="{html.escape(key)}">'
+                f'<select name="tz">{options}</select>'
+                '<input type="text" name="weather_time" placeholder="08:00" '
+                'pattern="[0-2][0-9]:[0-5][0-9]" style="flex:0 0 90px">'
+                '<button class="ghost" type="submit">Сохранить</button></form>'
+            )
+
         rows.append(
             f"<tr><td><code>{html.escape(key if full else key[:4] + '…')}</code></td>"
             f"<td>{html.escape(roles.title(item.get('role', 'user')))}</td>"
             f"<td>{len(locations)}</td>"
-            f"<td>{html.escape(cities or '—')}</td></tr>"
+            f"<td>{html.escape(cities or '—')}</td>"
+            f"<td>{html.escape(zone)}<br>"
+            f'<span class="muted">погода: {html.escape(moment)}</span>{form}</td></tr>'
         )
+
     return (
-        '<div class="card"><table><tr><th>Ключ</th><th>Роль</th>'
-        f"<th>Локаций</th><th>Города</th></tr>{''.join(rows)}</table></div>"
+        _note("ok", message) + _note("bad", failed)
+        + '<div class="card"><table><tr><th>Ключ</th><th>Роль</th>'
+        f"<th>Локаций</th><th>Города</th><th>Время</th></tr>"
+        f"{''.join(rows)}</table>"
+        '<p class="muted">Пустое поле времени оставляет прежнее. По выбранному '
+        "поясу считаются тихие часы, время погоды и доставка подборок.</p>"
+        "</div>"
     )
 
 
@@ -14803,27 +14881,58 @@ async def _events_body() -> str:
     )
 
 
-def _features_body() -> str:
+def _features_body(session, message: str = "", failed: str = "") -> str:
+    """Возможности с переключателями.
+
+    До 4.9.1 панель их только показывала, а подпись объясняла это тем, что
+    «критичные переключатели остаются за подтверждённым каналом». Довод
+    не выдержал проверки: вход в панель — тот же Telegram Login, та же
+    учётная запись и та же роль, что в боте. Разница была не в надёжности,
+    а в том, что форм у панели тогда не было вовсе.
+
+    Права те же, что в боте: переключает только суперадминистратор.
+    """
+    token = auth.csrf_token(session)
+    editable = roles.is_superadmin(session.role)
+
     rows = []
     for group, items in features.by_group().items():
-        rows.append(f'<tr><th colspan="2">{html.escape(group)}</th></tr>')
+        rows.append(f'<tr><th colspan="3">{html.escape(group)}</th></tr>')
         for flag in items:
+            on = features.enabled(flag.key)
             state = (
                 '<span class="muted">всегда включено</span>' if flag.locked
-                else ('<span class="ok">включено</span>' if features.enabled(flag.key)
+                else ('<span class="ok">включено</span>' if on
                       else '<span class="muted">выключено</span>')
             )
+            action = ""
+            if editable and not flag.locked:
+                action = (
+                    '<form method="post" action="/features/toggle">'
+                    f'<input type="hidden" name="csrf" value="{token}">'
+                    f'<input type="hidden" name="key" value="{html.escape(flag.key)}">'
+                    f'<button class="ghost" type="submit">'
+                    f'{"выключить" if on else "включить"}</button></form>'
+                )
+            since = (f' <span class="muted">с {html.escape(flag.since)}</span>'
+                     if flag.since else "")
             rows.append(
-                f"<tr><td>{html.escape(flag.title)}<br>"
+                f"<tr><td>{html.escape(flag.title)}{since}<br>"
                 f'<span class="muted">{html.escape(flag.description)}</span></td>'
-                f"<td>{state}</td></tr>"
+                f"<td>{state}</td>"
+                f'<td style="text-align:right;width:1%">{action}</td></tr>'
             )
-    return (
-        f'<div class="card"><table>{"".join(rows)}</table></div>'
-        '<div class="card muted">Переключаются в боте: /features. '
-        "Панель показывает состояние, но не меняет его — критичные "
-        "переключатели остаются за подтверждённым каналом.</div>"
+
+    note = (
+        '<div class="card muted">Переключать может суперадминистратор — '
+        "здесь и в боте, командой /features. Режим обслуживания "
+        "останавливает рассылку оповещений: включайте его понимая это.</div>"
+        if editable else
+        '<div class="card muted">Переключение доступно '
+        "суперадминистратору.</div>"
     )
+    return (_note("ok", message) + _note("bad", failed)
+            + f'<div class="card"><table>{"".join(rows)}</table></div>' + note)
 
 
 def _audit_body() -> str:
@@ -14950,9 +15059,13 @@ async def create_app() -> Any:
         )
 
     @guard
-    async def users_page(_request, session):
+    async def users_page(request, session):
         return web.Response(
-            text=_layout("Пользователи", _users_body(session.role), "users",
+            text=_layout("Пользователи",
+                         _users_body(session,
+                                     request.query.get("ok", ""),
+                                     request.query.get("err", "")),
+                         "users",
                          roles.title(session.role), session.role),
             content_type="text/html",
         )
@@ -15250,12 +15363,83 @@ async def create_app() -> Any:
         )
 
     @owner_only
-    async def features_page(_request, session):
+    async def features_page(request, session):
         return web.Response(
-            text=_layout("Возможности", _features_body(), "features",
-                         roles.title(session.role), session.role),
+            text=_layout(
+                "Возможности",
+                _features_body(session,
+                               request.query.get("ok", ""),
+                               request.query.get("err", "")),
+                "features", roles.title(session.role), session.role,
+            ),
             content_type="text/html",
         )
+
+    async def features_toggle(request):
+        from ..db import repo as feature_repo
+
+        session, data = await _guarded_form(request, "superadmin")
+        key = str(data.get("key", ""))
+        flag = features.resolve(key)
+        if flag is None:
+            raise web.HTTPFound("/features?err=" + quote("Неизвестная возможность"))
+        if flag.locked:
+            raise web.HTTPFound("/features?err=" + quote(
+                "Это ядро системы, выключить нельзя"))
+
+        value = not features.enabled(flag.key)
+        features.set_local(flag.key, value)
+        await feature_repo.set_feature(flag.key, value, session.user_key)
+        audit.record(session.user_key,
+                     "возможность включена" if value else "возможность выключена",
+                     flag.key)
+        raise web.HTTPFound("/features?ok=" + quote(
+            f"{flag.title}: {'включено' if value else 'выключено'}"))
+
+    async def user_time(request):
+        """Часовой пояс и время погоды у конкретного человека.
+
+        Города пользователей в разных поясах, и «погода в 8:00» без пояса
+        означает восемь утра у сервера. В боте это правит сам человек;
+        администрации оно нужно, когда правит не он — по просьбе или
+        при разборе «почему пришло ночью».
+        """
+        from .. import timezones
+
+        session, data = await _guarded_form(request, "moderator")
+        key = str(data.get("user", ""))
+        target = storage.get_user(key)
+        if target is None:
+            raise web.HTTPFound("/users?err=" + quote("Пользователь не найден"))
+
+        changed = []
+        tz = str(data.get("tz", "")).strip()
+        if tz:
+            if timezones.parse(tz) is None:
+                raise web.HTTPFound("/users?err=" + quote("Часовой пояс не разобран"))
+            target["tz"] = tz
+            changed.append("пояс")
+
+        moment = str(data.get("weather_time", "")).strip()
+        if moment:
+            from ..quiet import parse_time
+
+            if parse_time(moment) is None:
+                raise web.HTTPFound("/users?err=" + quote(
+                    "Время нужно в виде 08:00"))
+            target["weather_time"] = moment
+            target["weather_mode"] = "time"
+            changed.append("время погоды")
+
+        if not changed:
+            raise web.HTTPFound("/users?err=" + quote("Нечего менять"))
+
+        await storage.save()
+        audit.record(session.user_key, "время пользователя изменено",
+                     f"{key}: {', '.join(changed)}")
+        raise web.HTTPFound("/users?ok=" + quote(
+            f"Сохранено: {', '.join(changed)}"))
+
 
     @owner_only
     async def audit_page(_request, session):
@@ -15336,6 +15520,8 @@ async def create_app() -> Any:
         web.post("/keys/set", keys_set),
         web.get("/events", events_page),
         web.get("/features", features_page),
+        web.post("/features/toggle", features_toggle),
+        web.post("/users/time", user_time),
         web.get("/audit", audit_page),
         web.get("/backup", backup_page),
         web.get("/backup/create", backup_create),
@@ -19333,13 +19519,20 @@ def _fallback(text: str, source: str, link: str = "") -> Analysis:
     return analysis
 
 
-async def _openai_batch(prompt: str, name: str = "") -> str:
-    """Пакетный разбор через совместимый с OpenAI сервис.
+async def _openai_chat(
+    messages: list[dict[str, str]],
+    name: str = "",
+    *,
+    temperature: float = 0.4,
+    max_tokens: int = 2000,
+    json_mode: bool = False,
+) -> str:
+    """Запрос к совместимому с OpenAI сервису. Одна дорога для всех.
 
-    Одна функция на всех: DeepSeek, OpenRouter, Mistral, Moonshot, Qwen,
-    Z.ai, OpenAI и свой агент говорят одним протоколом. Восемь почти
-    одинаковых функций означали бы восемь мест, где придётся повторить
-    одну и ту же правку — и одно, где о ней забудут.
+    Вынесено из пакетного разбора в 4.9.1, когда ассистенту понадобился
+    тот же путь: до этого свободный диалог умел говорить только с Gemini,
+    и выбор провайдера в боте на него не влиял — человек переключал
+    провайдера и не понимал, почему ничего не изменилось.
     """
     import aiohttp
 
@@ -19366,17 +19559,14 @@ async def _openai_batch(prompt: str, name: str = "") -> str:
 
     payload: dict[str, Any] = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 2000,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
     # Строгий JSON поддерживают не все совместимые сервисы, и на тех, кто
     # не поддерживает, поле роняет запрос целиком. Просим его только там,
-    # где точно умеют; остальных дисциплинирует системная строка выше.
-    if name in ("deepseek", "openai", "mistral"):
+    # где точно умеют; остальных дисциплинирует системная строка.
+    if json_mode and name in ("deepseek", "openai", "mistral"):
         payload["response_format"] = {"type": "json_object"}
 
     timeout = aiohttp.ClientTimeout(total=90)
@@ -19388,15 +19578,34 @@ async def _openai_batch(prompt: str, name: str = "") -> str:
         ) as response:
             body = await response.text()
             if response.status != 200:
-                detail = body[:200]
-                raise AIError(f"{info.title} HTTP {response.status}: {detail}")
+                raise AIError(f"{info.title} HTTP {response.status}: {body[:200]}")
             data = json.loads(body)
 
     for choice in data.get("choices") or []:
         content = (choice.get("message") or {}).get("content")
         if content:
-            return content
-    raise AIError(f"{info.title} вернул пустой ответ")
+            return str(content)
+    raise AIError(f"{info.title}: пустой ответ")
+
+
+async def _openai_batch(prompt: str, name: str = "") -> str:
+    """Пакетный разбор через совместимый с OpenAI сервис.
+
+    Одна функция на всех: DeepSeek, OpenRouter, Mistral, Moonshot, Qwen,
+    Z.ai, OpenAI и свои агенты говорят одним протоколом. Восемь почти
+    одинаковых функций означали бы восемь мест, где придётся повторить
+    одну и ту же правку — и одно, где о ней забудут.
+    """
+    return await _openai_chat(
+        [
+            {"role": "system", "content": "Ты отвечаешь только валидным JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        name,
+        temperature=0.1,
+        max_tokens=2000,
+        json_mode=True,
+    )
 
 
 async def _deepseek_batch(prompt: str) -> str:
@@ -19546,7 +19755,45 @@ def model_turn(text: str) -> types.Content:
     return types.Content(role="model", parts=[types.Part(text=text)])
 
 
+def _as_messages(history: list[Any], question: str) -> list[dict[str, str]]:
+    """История Gemini в вид, понятный совместимым с OpenAI сервисам."""
+    messages = [{"role": "system", "content": ASSISTANT_SYSTEM}]
+    for item in history:
+        role = "assistant" if getattr(item, "role", "") == "model" else "user"
+        parts = getattr(item, "parts", None) or []
+        try:
+            text = " ".join(
+                str(getattr(part, "text", "") or "") for part in parts
+            ).strip()
+        except TypeError:
+            # История приходит из клиента Gemini, но перебирать её вслепую
+            # нельзя: у объекта может не оказаться частей вовсе. Пропустить
+            # реплику лучше, чем оборвать весь диалог.
+            continue
+        if text:
+            messages.append({"role": role, "content": text})
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
 async def assistant(history: list[types.Content], question: str) -> str:
+    """Свободный диалог. Провайдер — выбранный, а не обязательно Gemini.
+
+    До 4.9.1 ассистент ходил только в Gemini: выбор провайдера в боте
+    действовал на разбор новостей, но не на диалог, и человек переключал
+    провайдера, а отвечал ему прежний. Gemini остаётся предпочтительным —
+    у него поиск в интернете, — но единственным быть перестал.
+    """
+    from . import provider as provider_choice
+
+    active = provider_choice.current()
+    chosen = provider_choice.all_infos().get(active)
+    if chosen is not None and chosen.kind == provider_choice.KIND_OPENAI:
+        return await _openai_chat(
+            _as_messages(history, question), active,
+            temperature=0.6, max_tokens=2048,
+        )
+
     contents = list(history) + [user_turn(question)]
     return await generate(
         contents,
@@ -29875,11 +30122,16 @@ def history_of(uid: str) -> deque:
 
 
 async def run(message: Message, question: str) -> None:
+    from .. import provider
+
     uid = str(message.from_user.id)
-    if not ai.ENABLED:
+    # Раньше проверялся только клиент Gemini: с ключом любого другого
+    # провайдера ассистент отвечал «не задан GEMINI_API_KEY», хотя
+    # отвечать было кому.
+    if not ai.ENABLED and not provider.available():
         await message.answer(
-            "❌ ИИ-ассистент недоступен: в <code>.env</code> не задан "
-            "<code>GEMINI_API_KEY</code>."
+            "❌ ИИ-ассистент недоступен: не задан ни один ключ провайдера. "
+            "Заведите его в разделе ключей — например <code>GEMINI_API_KEY</code>."
         )
         return
 

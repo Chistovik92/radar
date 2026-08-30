@@ -258,7 +258,22 @@ async def list_models(name: str, limit: int = 60) -> list[str]:
     протокол и свой `ai.discover_models`.
     """
     info = all_infos().get(name)
-    if info is None or info.kind != KIND_OPENAI:
+    if info is None:
+        return []
+
+    # У Gemini свой протокол и свой перечень моделей. Раньше здесь стоял
+    # безусловный отказ, и человек с заведённым ключом Google видел пустой
+    # список: ключ есть, а выбрать нечего. Спрашивать заново он не обязан.
+    if info.kind == KIND_GEMINI:
+        from . import ai
+
+        try:
+            return (await ai.discover_models())[:limit]
+        except Exception:  # noqa: BLE001
+            log.warning("Список моделей Gemini недоступен", exc_info=True)
+            return []
+
+    if info.kind != KIND_OPENAI:
         return []
 
     base = info.url()
