@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -187,6 +188,34 @@ class Codes(unittest.TestCase):
         self.run_async(redeem.add("HYDRA-2026"))
         self.assertTrue(self.run_async(redeem.drop("HYDRA-2026")))
         self.assertEqual(self.run_async(redeem.redeem("HYDRA-2026", "telegram:1")), 0)
+
+
+class DropLimits(unittest.TestCase):
+    """Подписи о пределе должны совпадать с самим пределом."""
+
+    def test_five_gigabytes_shown_as_five(self) -> None:
+        # На 5000 МБ целочисленное деление давало 4, и в боте стояло
+        # «до 4 ГБ» при заявленных пяти. Мегабайты двоичные.
+        from radar import filedrop
+
+        self.assertEqual(filedrop.MAX_FILE_MB // 1024, 5)
+
+    def test_budget_holds_more_than_one_file(self) -> None:
+        # Иначе первый же файл занимал бы всю раздачу, и следующему
+        # человеку места не оставалось.
+        from radar import filedrop
+
+        self.assertGreater(filedrop.BUDGET_MB, filedrop.MAX_FILE_MB)
+
+
+class TopicCount(unittest.TestCase):
+    """Число тематик считается, а не вписано словом."""
+
+    def test_no_hardcoded_number_in_texts(self) -> None:
+        # «двенадцать» в тексте расходилось с восемнадцатью в списке:
+        # человек читал одно, а получал другое.
+        source = pathlib.Path("radar/handlers/digest.py").read_text(encoding="utf-8")
+        self.assertNotIn("двенадцать", source)
 
 
 if __name__ == "__main__":

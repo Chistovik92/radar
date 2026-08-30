@@ -55,7 +55,9 @@ def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMa
     ]
     if features.enabled("digest_paid"):
         label = "⭐️ Продлить подписку" if subscription.active else "⭐️ Оформить подписку"
-        rows.append([InlineKeyboardButton(text=label, callback_data="dig:buy")])
+        # Ведём в общий раздел подписки: своё предложение здесь читалось
+        # как отдельный товар, хотя подписка одна на бота.
+        rows.append([InlineKeyboardButton(text=label, callback_data="sub:menu")])
     if roles.is_superadmin(role):
         rows.append([
             InlineKeyboardButton(text="💰 Тарифы и оплата", callback_data="dig:price")
@@ -214,7 +216,7 @@ async def show_plans(call: CallbackQuery) -> None:
     await safe_edit(
         call,
         "⭐️ <b>Подписка на подборки</b>\n\n"
-        "Открывает все двенадцать тематик. Оплата — звёздами Telegram.\n\n"
+        f"Открывает все тематики — сейчас их {len(digest.TOPICS)}. Оплата — звёздами Telegram.\n\n"
         "<i>Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
         "всегда и от подписки не зависят.</i>",
         InlineKeyboardMarkup(inline_keyboard=rows),
@@ -231,7 +233,7 @@ async def send_invoice(call: CallbackQuery) -> None:
         await call.message.answer_invoice(
             title=f"Подборки — {days} дней",
             description=(
-                "Все двенадцать тематик новостей города в одном сообщении "
+                f"Все {len(digest.TOPICS)} тематик новостей города в одном сообщении "
                 "в выбранное вами время."
             ),
             payload=f"digest:{days}",
@@ -278,7 +280,7 @@ async def payment_done(message: Message, user: dict, role: str) -> None:
     log.info("Оплата подписки: %s на %d дней", message.from_user.id, days)
     await message.answer(
         f"✅ <b>Подписка активна</b>\nДней осталось: <b>{subscription.days_left}</b>\n\n"
-        "Теперь доступны все двенадцать тематик — выберите нужные.",
+        f"Теперь доступны все {len(digest.TOPICS)} тематик — выберите нужные.",
         reply_markup=_menu(subscription),
     )
 

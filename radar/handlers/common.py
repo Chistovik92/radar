@@ -51,22 +51,42 @@ async def cmd_start(message: Message, state: FSMContext, role: str, user: dict) 
     await state.clear()
     # Закреплённые кнопки ставятся отдельным сообщением: Telegram не позволяет
     # приложить reply-клавиатуру и inline-меню к одному и тому же сообщению.
-    keyboard = keyboards.persistent_keyboard()
-    if keyboard is not None:
-        await message.answer(
-            i18n.t(
-                "common.pinned_buttons",
-                i18n.language_of(user),
-                "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
-            ),
-            reply_markup=keyboard,
-        )
+    # /start ставит кнопки заново всегда: человек мог их убрать сам.
+    user.setdefault("settings", {})["pinned"] = False
+    await ensure_pinned(message, user)
     await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
+
+
+async def ensure_pinned(message: Message, user: dict) -> None:
+    """Ставит закреплённые кнопки тем, у кого их ещё нет.
+
+    Раньше они появлялись только на /start, и у всех, кто начал раньше
+    их появления, кнопки «Меню» просто не было: человек знал про неё
+    из чужих скриншотов, а у себя не находил. Спросить у Telegram,
+    показана ли reply-клавиатура, нельзя, поэтому помечаем у себя —
+    и отправляем ровно один раз.
+    """
+    if (user.get("settings") or {}).get("pinned"):
+        return
+    keyboard = keyboards.persistent_keyboard()
+    if keyboard is None:
+        return
+    await message.answer(
+        i18n.t(
+            "common.pinned_buttons",
+            i18n.language_of(user),
+            "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
+        ),
+        reply_markup=keyboard,
+    )
+    user.setdefault("settings", {})["pinned"] = True
+    await storage.save(message.from_user.id)
 
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
+    await ensure_pinned(message, user)
     await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 

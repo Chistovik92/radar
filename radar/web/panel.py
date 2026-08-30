@@ -60,6 +60,11 @@ header { background:var(--surface); padding:12px 22px; display:flex;
          align-items:center; gap:16px; border-bottom:1px solid var(--line);
          position:sticky; top:0; z-index:5; flex-wrap:wrap; }
 header .brand { font-weight:700; font-size:17px; letter-spacing:.2px; }
+/* Версия рядом с названием: по скриншоту из панели должно быть видно,
+   какая версия установлена, — иначе разбор «а у вас какая?» начинается
+   с лишнего вопроса. */
+.version { color:var(--muted); font-size:12px; margin-left:-10px;
+           align-self:flex-start; padding-top:2px; }
 nav { display:flex; gap:4px; flex-wrap:wrap; }
 nav a { color:var(--link-dim); text-decoration:none; padding:6px 10px;
         border-radius:7px; white-space:nowrap; }
@@ -199,7 +204,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
 <style>{PAGE_STYLE}</style></head>
 <body>
 <header>
-  <span class="brand">Радар</span>
+  <span class="brand">Радар</span><span class="version">v{html.escape(config.VERSION)}</span>
   <nav>{nav}</nav>
   <span class="spacer"></span>
   <button id="theme" type="button" aria-label="Сменить тему">☀</button>
@@ -254,6 +259,7 @@ def _login_page(bot_username: str, message: str = "",
 <style>{PAGE_STYLE}</style></head>
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
+<p class="muted">Версия {html.escape(config.VERSION)}</p>
 <p class="muted">Вход через Telegram. Доступ — с роли администратора.</p>
 {warning}{widget}{hint}
 </div></body></html>"""

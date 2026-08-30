@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.1 — автономный установщик.
+# Система «Радар» v4.9.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.1"
+VERSION="4.9.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2958,6 +2958,13 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.2", [
+        "🧵 <b>Тексты про подписку сведены.</b> В одном месте бот писал «все двенадцать тематик», в другом — «все 18»: число было вписано словом и отстало от списка. Теперь оно считается. Раздел подборок ведёт в общую подписку, а не в своё отдельное предложение.",
+        "📏 <b>5 ГБ стали настоящими пятью.</b> Предел хранился как 5000 МБ, а при переводе в гигабайты целочисленным делением превращался в «до 4 ГБ». Мегабайты теперь двоичные, и подпись совпадает с пределом. Предел, бюджет и срок жизни ссылки вынесены в .env.",
+        "☰ <b>Кнопка «Меню» появилась у всех.</b> Закреплённые кнопки ставились только на /start, и у тех, кто начал пользоваться ботом раньше их появления, кнопки просто не было.",
+        "🎟 <b>Поле промокода.</b> В разделе подписки.",
+        "🖥 <b>Версия видна в панели</b> — рядом с названием и на странице входа.",
+    ]),
     ("4.9.1", [
         "🔑 <b>Ключ Google теперь даёт выбор модели.</b> Список "
         "запрашивался только у сервисов, совместимых с OpenAI, а у Gemini "
@@ -3983,7 +3990,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.1"
+__version__ = "4.9.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -4164,6 +4171,15 @@ MEDIA_DIR: str = (os.getenv("MEDIA_DIR") or "data/media").strip()
 MEDIA_RATE_LIMIT: str = (os.getenv("MEDIA_RATE_LIMIT") or "").strip()
 # Файл cookies для закрытых площадок
 MEDIA_COOKIES: str = (os.getenv("MEDIA_COOKIES") or "").strip()
+
+# Раздача крупных файлов по ссылке (см. radar/filedrop.py). Значения
+# вынесены сюда, чтобы их можно было менять без правки кода: у разных
+# машин разный диск, и один потолок на всех был бы или тесным, или
+# опасным. Мегабайты двоичные: 5120 МБ — это ровно 5 ГБ, а не 5000,
+# иначе «до 5 ГБ» в интерфейсе превращалось в «до 4 ГБ» при делении.
+FILEDROP_MAX_MB: int = _int("FILEDROP_MAX_MB", 5120)
+FILEDROP_BUDGET_MB: int = _int("FILEDROP_BUDGET_MB", 15360)
+FILEDROP_TTL_HOURS: int = _int("FILEDROP_TTL_HOURS", 24)
 # Сколько одновременных загрузок допускается: на одноплатнике больше одной
 # означает деградацию всего бота
 MEDIA_CONCURRENCY: int = max(1, _int("MEDIA_CONCURRENCY", 1))
@@ -14049,6 +14065,11 @@ header { background:var(--surface); padding:12px 22px; display:flex;
          align-items:center; gap:16px; border-bottom:1px solid var(--line);
          position:sticky; top:0; z-index:5; flex-wrap:wrap; }
 header .brand { font-weight:700; font-size:17px; letter-spacing:.2px; }
+/* Версия рядом с названием: по скриншоту из панели должно быть видно,
+   какая версия установлена, — иначе разбор «а у вас какая?» начинается
+   с лишнего вопроса. */
+.version { color:var(--muted); font-size:12px; margin-left:-10px;
+           align-self:flex-start; padding-top:2px; }
 nav { display:flex; gap:4px; flex-wrap:wrap; }
 nav a { color:var(--link-dim); text-decoration:none; padding:6px 10px;
         border-radius:7px; white-space:nowrap; }
@@ -14188,7 +14209,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
 <style>{PAGE_STYLE}</style></head>
 <body>
 <header>
-  <span class="brand">Радар</span>
+  <span class="brand">Радар</span><span class="version">v{html.escape(config.VERSION)}</span>
   <nav>{nav}</nav>
   <span class="spacer"></span>
   <button id="theme" type="button" aria-label="Сменить тему">☀</button>
@@ -14243,6 +14264,7 @@ def _login_page(bot_username: str, message: str = "",
 <style>{PAGE_STYLE}</style></head>
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
+<p class="muted">Версия {html.escape(config.VERSION)}</p>
 <p class="muted">Вход через Telegram. Доступ — с роли администратора.</p>
 {warning}{widget}{hint}
 </div></body></html>"""
@@ -21080,7 +21102,7 @@ import shutil
 import time
 from dataclasses import dataclass
 
-from . import shortener
+from . import config, shortener
 
 log = logging.getLogger("radar.filedrop")
 
@@ -21088,16 +21110,17 @@ DIRECTORY = "data/drop"
 
 # Сутки. Больше держать незачем: человек забирает файл сразу или не
 # забирает вовсе, а место на диске нужно оповещениям.
-TTL_HOURS = 24
+TTL_HOURS = config.FILEDROP_TTL_HOURS
 
 # Бюджет раздачи целиком. При превышении убираются самые старые: диск,
-# забитый чужими сериалами, останавливает систему целиком.
-BUDGET_MB = 5000
+# забитый чужими сериалами, останавливает систему целиком. Больше предела
+# на один файл — иначе первый же файл занял бы всю раздачу.
+BUDGET_MB = config.FILEDROP_BUDGET_MB
 
-# Предел на ОДИН файл. Ссылка не резиновая: пятигигабайтный файл занимает
-# весь бюджет раздачи один, и следующему человеку места уже нет. Подписка
-# этот предел не снимает — она про доступ к возможности, а не про диск.
-MAX_FILE_MB = 5000
+# Предел на ОДИН файл. Подписка его не снимает: она про доступ
+# к возможности, а не про место на диске. Мегабайты двоичные — 5120 МБ
+# это ровно 5 ГБ; на 5000 подпись «до 5 ГБ» превращалась в «до 4 ГБ».
+MAX_FILE_MB = config.FILEDROP_MAX_MB
 
 # Токен в имени файла: 32 знака шестнадцатеричных — подобрать нельзя.
 TOKEN_LENGTH = 16          # байт, то есть 32 знака в шестнадцатеричном виде
@@ -22603,6 +22626,7 @@ class Form(StatesGroup):
     sos_contact = State()          # добавление доверенного контакта
     sos_location = State()         # ожидание геопозиции для сигнала
     secret_value = State()         # ввод ключа доступа суперадминистратором
+    promo_code = State()           # ввод промокода в разделе подписки
     proxy_key = State()            # ключ или подписка для выхода в сеть
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
@@ -23529,22 +23553,42 @@ async def cmd_start(message: Message, state: FSMContext, role: str, user: dict) 
     await state.clear()
     # Закреплённые кнопки ставятся отдельным сообщением: Telegram не позволяет
     # приложить reply-клавиатуру и inline-меню к одному и тому же сообщению.
-    keyboard = keyboards.persistent_keyboard()
-    if keyboard is not None:
-        await message.answer(
-            i18n.t(
-                "common.pinned_buttons",
-                i18n.language_of(user),
-                "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
-            ),
-            reply_markup=keyboard,
-        )
+    # /start ставит кнопки заново всегда: человек мог их убрать сам.
+    user.setdefault("settings", {})["pinned"] = False
+    await ensure_pinned(message, user)
     await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
+
+
+async def ensure_pinned(message: Message, user: dict) -> None:
+    """Ставит закреплённые кнопки тем, у кого их ещё нет.
+
+    Раньше они появлялись только на /start, и у всех, кто начал раньше
+    их появления, кнопки «Меню» просто не было: человек знал про неё
+    из чужих скриншотов, а у себя не находил. Спросить у Telegram,
+    показана ли reply-клавиатура, нельзя, поэтому помечаем у себя —
+    и отправляем ровно один раз.
+    """
+    if (user.get("settings") or {}).get("pinned"):
+        return
+    keyboard = keyboards.persistent_keyboard()
+    if keyboard is None:
+        return
+    await message.answer(
+        i18n.t(
+            "common.pinned_buttons",
+            i18n.language_of(user),
+            "Кнопки <b>Меню</b> и <b>HydraSite</b> закреплены под полем ввода.",
+        ),
+        reply_markup=keyboard,
+    )
+    user.setdefault("settings", {})["pinned"] = True
+    await storage.save(message.from_user.id)
 
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
+    await ensure_pinned(message, user)
     await message.answer(greeting(role, user), reply_markup=keyboards.main_menu(role, user))
 
 
@@ -29565,7 +29609,9 @@ def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMa
     ]
     if features.enabled("digest_paid"):
         label = "⭐️ Продлить подписку" if subscription.active else "⭐️ Оформить подписку"
-        rows.append([InlineKeyboardButton(text=label, callback_data="dig:buy")])
+        # Ведём в общий раздел подписки: своё предложение здесь читалось
+        # как отдельный товар, хотя подписка одна на бота.
+        rows.append([InlineKeyboardButton(text=label, callback_data="sub:menu")])
     if roles.is_superadmin(role):
         rows.append([
             InlineKeyboardButton(text="💰 Тарифы и оплата", callback_data="dig:price")
@@ -29724,7 +29770,7 @@ async def show_plans(call: CallbackQuery) -> None:
     await safe_edit(
         call,
         "⭐️ <b>Подписка на подборки</b>\n\n"
-        "Открывает все двенадцать тематик. Оплата — звёздами Telegram.\n\n"
+        f"Открывает все тематики — сейчас их {len(digest.TOPICS)}. Оплата — звёздами Telegram.\n\n"
         "<i>Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
         "всегда и от подписки не зависят.</i>",
         InlineKeyboardMarkup(inline_keyboard=rows),
@@ -29741,7 +29787,7 @@ async def send_invoice(call: CallbackQuery) -> None:
         await call.message.answer_invoice(
             title=f"Подборки — {days} дней",
             description=(
-                "Все двенадцать тематик новостей города в одном сообщении "
+                f"Все {len(digest.TOPICS)} тематик новостей города в одном сообщении "
                 "в выбранное вами время."
             ),
             payload=f"digest:{days}",
@@ -29788,7 +29834,7 @@ async def payment_done(message: Message, user: dict, role: str) -> None:
     log.info("Оплата подписки: %s на %d дней", message.from_user.id, days)
     await message.answer(
         f"✅ <b>Подписка активна</b>\nДней осталось: <b>{subscription.days_left}</b>\n\n"
-        "Теперь доступны все двенадцать тематик — выберите нужные.",
+        f"Теперь доступны все {len(digest.TOPICS)} тематик — выберите нужные.",
         reply_markup=_menu(subscription),
     )
 
@@ -29905,6 +29951,7 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -29913,6 +29960,7 @@ from aiogram.types import (
 )
 
 from .. import mediaquota, redeem, roles, storage, subscription
+from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -29942,6 +29990,8 @@ def _menu(user: dict[str, Any], role: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="⭐️ Продлить подписку", callback_data="sub:buy")])
 
+    rows.append([InlineKeyboardButton(
+        text="🎟 Ввести промокод", callback_data="sub:promo")])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -30006,8 +30056,63 @@ async def buy(call: CallbackQuery) -> None:
     )
 
 
+@router.callback_query(F.data == "sub:promo")
+async def ask_promo(call: CallbackQuery, state: FSMContext) -> None:
+    """Поле ввода кода.
+
+    Откуда берутся коды, здесь не сказано намеренно: их раздают
+    на стороне партнёра, и обещать в боте то, чего у человека нет,
+    незачем. Поле просто есть — кому код дали, тот его введёт.
+    """
+    await call.answer()
+    await state.set_state(Form.promo_code)
+    await safe_edit(
+        call,
+        "🎟 <b>Промокод</b>\n\nПришлите код одним сообщением.\n"
+        "<i>/cancel — отмена.</i>",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="◀️ Назад", callback_data="sub:menu")
+        ]]),
+    )
+
+
+@router.message(Form.promo_code)
+async def take_promo(message: Message, state: FSMContext,
+                     user: dict[str, Any]) -> None:
+    await state.clear()
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+
+    from ..identity import make as make_identity
+
+    key = make_identity("telegram", str(message.from_user.id)).key
+    try:
+        days = await redeem.redeem(text, key)
+    except Exception:  # noqa: BLE001
+        log.exception("Погашение кода не удалось")
+        days = 0
+
+    if not days:
+        await message.answer(
+            "❌ Код не подошёл: он не существует, уже использован "
+            "или введён с ошибкой.",
+            reply_markup=_menu(user, user.get("role", "user")),
+        )
+        return
+
+    subscription.grant(user, days)
+    await storage.save(message.from_user.id)
+    log.info("Подписка по коду: %s на %d дней", message.from_user.id, days)
+    await message.answer(
+        f"✅ <b>Код принят</b>\nПодписка продлена на {days} дней.\n"
+        f"Осталось дней: <b>{subscription.days_left(user)}</b>",
+        reply_markup=_menu(user, user.get("role", "user")),
+    )
+
+
 # --------------------------------------------------------------------------
-#  Погашение кода, выданного на стороне партнёра
+#  Погашение кода, присланного просто сообщением
 # --------------------------------------------------------------------------
 #
 # Обработчик стоит здесь, а не в разделе партнёров, потому что действие его

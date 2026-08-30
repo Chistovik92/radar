@@ -168,6 +168,15 @@ MEDIA_DIR: str = (os.getenv("MEDIA_DIR") or "data/media").strip()
 MEDIA_RATE_LIMIT: str = (os.getenv("MEDIA_RATE_LIMIT") or "").strip()
 # Файл cookies для закрытых площадок
 MEDIA_COOKIES: str = (os.getenv("MEDIA_COOKIES") or "").strip()
+
+# Раздача крупных файлов по ссылке (см. radar/filedrop.py). Значения
+# вынесены сюда, чтобы их можно было менять без правки кода: у разных
+# машин разный диск, и один потолок на всех был бы или тесным, или
+# опасным. Мегабайты двоичные: 5120 МБ — это ровно 5 ГБ, а не 5000,
+# иначе «до 5 ГБ» в интерфейсе превращалось в «до 4 ГБ» при делении.
+FILEDROP_MAX_MB: int = _int("FILEDROP_MAX_MB", 5120)
+FILEDROP_BUDGET_MB: int = _int("FILEDROP_BUDGET_MB", 15360)
+FILEDROP_TTL_HOURS: int = _int("FILEDROP_TTL_HOURS", 24)
 # Сколько одновременных загрузок допускается: на одноплатнике больше одной
 # означает деградацию всего бота
 MEDIA_CONCURRENCY: int = max(1, _int("MEDIA_CONCURRENCY", 1))

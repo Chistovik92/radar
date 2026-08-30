@@ -27,6 +27,7 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -35,6 +36,7 @@ from aiogram.types import (
 )
 
 from .. import mediaquota, redeem, roles, storage, subscription
+from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
@@ -64,6 +66,8 @@ def _menu(user: dict[str, Any], role: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="⭐️ Продлить подписку", callback_data="sub:buy")])
 
+    rows.append([InlineKeyboardButton(
+        text="🎟 Ввести промокод", callback_data="sub:promo")])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -128,8 +132,63 @@ async def buy(call: CallbackQuery) -> None:
     )
 
 
+@router.callback_query(F.data == "sub:promo")
+async def ask_promo(call: CallbackQuery, state: FSMContext) -> None:
+    """Поле ввода кода.
+
+    Откуда берутся коды, здесь не сказано намеренно: их раздают
+    на стороне партнёра, и обещать в боте то, чего у человека нет,
+    незачем. Поле просто есть — кому код дали, тот его введёт.
+    """
+    await call.answer()
+    await state.set_state(Form.promo_code)
+    await safe_edit(
+        call,
+        "🎟 <b>Промокод</b>\n\nПришлите код одним сообщением.\n"
+        "<i>/cancel — отмена.</i>",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="◀️ Назад", callback_data="sub:menu")
+        ]]),
+    )
+
+
+@router.message(Form.promo_code)
+async def take_promo(message: Message, state: FSMContext,
+                     user: dict[str, Any]) -> None:
+    await state.clear()
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+
+    from ..identity import make as make_identity
+
+    key = make_identity("telegram", str(message.from_user.id)).key
+    try:
+        days = await redeem.redeem(text, key)
+    except Exception:  # noqa: BLE001
+        log.exception("Погашение кода не удалось")
+        days = 0
+
+    if not days:
+        await message.answer(
+            "❌ Код не подошёл: он не существует, уже использован "
+            "или введён с ошибкой.",
+            reply_markup=_menu(user, user.get("role", "user")),
+        )
+        return
+
+    subscription.grant(user, days)
+    await storage.save(message.from_user.id)
+    log.info("Подписка по коду: %s на %d дней", message.from_user.id, days)
+    await message.answer(
+        f"✅ <b>Код принят</b>\nПодписка продлена на {days} дней.\n"
+        f"Осталось дней: <b>{subscription.days_left(user)}</b>",
+        reply_markup=_menu(user, user.get("role", "user")),
+    )
+
+
 # --------------------------------------------------------------------------
-#  Погашение кода, выданного на стороне партнёра
+#  Погашение кода, присланного просто сообщением
 # --------------------------------------------------------------------------
 #
 # Обработчик стоит здесь, а не в разделе партнёров, потому что действие его

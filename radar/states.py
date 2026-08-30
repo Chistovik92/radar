@@ -23,6 +23,7 @@ class Form(StatesGroup):
     sos_contact = State()          # добавление доверенного контакта
     sos_location = State()         # ожидание геопозиции для сигнала
     secret_value = State()         # ввод ключа доступа суперадминистратором
+    promo_code = State()           # ввод промокода в разделе подписки
     proxy_key = State()            # ключ или подписка для выхода в сеть
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
