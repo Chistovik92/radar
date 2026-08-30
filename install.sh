@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.4.4 — автономный установщик.
+# Система «Радар» v4.8.4.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.4.4"
+VERSION="4.8.4.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2647,7 +2647,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=90
+FILE_COUNT=92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2952,6 +2952,22 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.4.5", [
+        "🖥 <b>Панель научилась править.</b> Раньше у неё были "
+        "одни читающие страницы: посмотреть можно всё, изменить нельзя "
+        "ничего. Теперь модератор заводит и удаляет источники — "
+        "Telegram-каналы, RSS-ленты, сообщества ВКонтакте, — "
+        "а суперадминистратор задаёт ключи ИИ и токены сервисов.",
+        "🔐 <b>Ключи вводятся, но не показываются.</b> "
+        "Существующее значение видно только маской: проверить, тот ли "
+        "ключ вставлен, по ней можно, а увести нельзя. Доступ к чужой "
+        "сессии панели не должен означать доступ ко всем ключам сразу. "
+        "В журнал уходит имя изменённого ключа и никогда значение.",
+        "🧩 <b>Одни правила разбора у бота и панели.</b> "
+        "Добавление источников вынесено в общий модуль: два набора "
+        "правил разъехались бы, и ссылка, которую принимает бот, "
+        "оказалась бы ошибкой в панели.",
+    ]),
     ("4.8.4.4", [
         "🕓 <b>Свой часовой пояс.</b> Время было общим на всю "
         "систему: тихие часы, погода в заданный час и доставка подборок "
@@ -3832,7 +3848,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.4.4"
+__version__ = "4.8.4.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -13261,6 +13277,41 @@ def cleanup() -> int:
 def active_sessions() -> int:
     cleanup()
     return len(_sessions)
+
+
+# --------------------------------------------------------------------------
+#  Защита форм (с 4.8.4.5)
+# --------------------------------------------------------------------------
+#
+# Пока панель только читала, POST-запросов не было вовсе и защищать было
+# нечего. С появлением правки источников и ключей чужая страница могла бы
+# отправить форму от имени вошедшего администратора.
+#
+# Cookie сессии выставлена с SameSite=Lax, и она уже не уходит при POST
+# со стороннего сайта — но полагаться на одну эту меру нельзя: значение
+# задаётся в одном месте кода, и его правка молча сняла бы защиту.
+# Поэтому к ней добавлен обычный скрытый токен.
+#
+# Токен выводится из токена сессии, а не хранится отдельно: своя таблица
+# означала бы своё устаревание и свою очистку, а живёт он ровно столько же.
+
+_CSRF_SALT = b"radar-csrf"
+
+
+def csrf_token(session: Session | None) -> str:
+    """Значение скрытого поля формы."""
+    if session is None:
+        return ""
+    return hmac.new(_CSRF_SALT, session.token.encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def csrf_valid(session: Session | None, value: str) -> bool:
+    """Сверка без утечки по времени сравнения."""
+    expected = csrf_token(session)
+    if not expected or not value:
+        return False
+    return hmac.compare_digest(expected, str(value))
 RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
 cat > "radar/web/audit.py" <<'RADAR_FILE_42'
@@ -13355,6 +13406,7 @@ from __future__ import annotations
 import html
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from .. import config, features, roles, shortener, storage
 from . import auth
@@ -13386,6 +13438,22 @@ tr:last-child td { border-bottom:none; }
 .ok { color:#6bd08a; } .warn { color:#ffc45e; } .bad { color:#ff7a7a; }
 .muted { color:#92a0b8; }
 .login { max-width:420px; margin:80px auto; text-align:center; }
+form.inline { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
+form.inline input[type=text], form.inline input[type=password] {
+  flex:1 1 260px; padding:9px 12px; border-radius:8px; border:1px solid #2b3242;
+  background:#171b24; color:#e8ecf3; font:inherit; }
+button { padding:9px 16px; border-radius:8px; border:none; cursor:pointer;
+         background:#2f6fd0; color:#fff; font:inherit; }
+button:hover { background:#3a80e8; }
+button.ghost { background:#2b3242; color:#c3cee0; padding:5px 11px; font-size:13px; }
+button.ghost:hover { background:#3a4356; }
+.note { padding:11px 14px; border-radius:8px; margin-bottom:16px; }
+.note.good { background:#1d3a2a; color:#9fe3b6; }
+.note.bad { background:#3a1d1d; color:#ffb4b4; }
+.keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:12px 0;
+          border-bottom:1px solid #2b3242; }
+.keyrow:last-child { border-bottom:none; }
+.keyrow .hint { color:#92a0b8; font-size:13px; }
 """
 
 
@@ -13397,6 +13465,7 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
     if roles.is_admin(role):
         links.append(("/events", "События", "events"))
     if roles.is_superadmin(role):
+        links.append(("/keys", "Ключи", "keys"))
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
@@ -13525,20 +13594,137 @@ def _users_body(role: str = "") -> str:
     )
 
 
-def _sources_body() -> str:
-    def block(title: str, items: list[str]) -> str:
-        rows = "".join(f"<tr><td>{html.escape(item)}</td></tr>" for item in items)
+def _note(kind: str, text: str) -> str:
+    """Полоса с итогом действия. Пусто — ничего не показываем."""
+    if not text:
+        return ""
+    css = "good" if kind == "ok" else "bad"
+    return f'<div class="note {css}">{html.escape(text)}</div>'
+
+
+def _sources_body(session, message: str = "", failed: str = "") -> str:
+    """Источники: список с удалением и форма добавления.
+
+    Правка открыта модератору — ровно как в боте. Панель повторяет права
+    бота, а не расширяет их: иначе роль означала бы разное в двух местах.
+    """
+    from .. import sourceedit as se
+
+    editable = roles.is_moderator(session.role)
+    token = auth.csrf_token(session)
+
+    def rows(kind: str, items: list[str]) -> str:
+        if not items:
+            return '<tr><td class="muted">пусто</td></tr>'
+        out = []
+        for item in items:
+            action = ""
+            if editable:
+                action = (
+                    '<form method="post" action="/sources/remove" '
+                    'style="display:inline">'
+                    f'<input type="hidden" name="csrf" value="{token}">'
+                    f'<input type="hidden" name="kind" value="{html.escape(kind)}">'
+                    f'<input type="hidden" name="value" value="{html.escape(item)}">'
+                    '<button class="ghost" type="submit">удалить</button></form>'
+                )
+            out.append(
+                f"<tr><td>{html.escape(item)}</td>"
+                f'<td style="text-align:right;width:1%">{action}</td></tr>'
+            )
+        return "".join(out)
+
+    def card(kind: str, title: str, placeholder: str) -> str:
+        items = se.listing(kind)
+        form = ""
+        if editable:
+            form = (
+                '<form class="inline" method="post" action="/sources/add">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="kind" value="{html.escape(kind)}">'
+                f'<input type="text" name="value" placeholder="{html.escape(placeholder)}" '
+                'required autocomplete="off">'
+                '<button type="submit">Добавить</button></form>'
+            )
         return (
             f'<div class="card"><h3>{html.escape(title)} — {len(items)}</h3>'
-            f"<table>{rows or '<tr><td class=muted>пусто</td></tr>'}</table></div>"
+            f"<table>{rows(kind, items)}</table>{form}</div>"
         )
 
+    pending = list(storage.pending())
+    queue_rows = "".join(
+        f"<tr><td>{html.escape(item)}</td></tr>" for item in pending
+    ) or '<tr><td class="muted">пусто</td></tr>'
+
     return (
-        block("Telegram-каналы", list(storage.channels()))
-        + block("RSS-ленты", list(storage.rss_feeds()))
-        + block("Сообщества VK", list(storage.vk_groups()))
-        + block("В очереди модерации", list(storage.pending()))
+        _note("ok", message)
+        + _note("bad", failed)
+        + card(se.TELEGRAM, "Telegram-каналы",
+               "@channel, ссылка t.me или несколько через запятую")
+        + card(se.RSS, "RSS-ленты", "https://example.ru/rss")
+        + card(se.VK, "Сообщества VK", "короткое имя или ссылка vk.com/…")
+        + '<div class="card"><h3>В очереди модерации — '
+        + str(len(pending))
+        + f"</h3><table>{queue_rows}</table>"
+        + '<p class="muted">Очередь разбирается в боте: предложение '
+          "пользователя принимается или отклоняется там, вместе с ответом "
+          "приславшему.</p></div>"
     )
+
+
+def _keys_body(session, message: str = "", failed: str = "") -> str:
+    """Ключи ИИ и токены сервисов. Только запись, без чтения.
+
+    Значение показывается маской: перехваченная сессия панели не должна
+    отдавать ключи целиком. Проверить «тот ли ключ вставлен» по маске
+    можно — по первым и последним знакам, — а увести его нельзя.
+    """
+    from .. import secrets as secrets_module
+
+    token = auth.csrf_token(session)
+    groups: dict[str, list] = {}
+    for setting in secrets_module.SETTINGS:
+        groups.setdefault(setting.group, []).append(setting)
+
+    cards = []
+    for group, items in groups.items():
+        rows = []
+        for setting in items:
+            current = secrets_module.get(setting.key)
+            shown = (secrets_module.mask(current) if setting.secret
+                     else (current or "— не задано —"))
+            where = (f' <span class="hint">Где взять: {html.escape(setting.where)}</span>'
+                     if setting.where else "")
+            restart = (' <span class="warn">применится после перезапуска</span>'
+                       if setting.restart else "")
+            field = "password" if setting.secret else "text"
+            rows.append(
+                '<div class="keyrow">'
+                f"<div><b>{html.escape(setting.title)}</b> "
+                f'<span class="muted">{html.escape(setting.key)}</span></div>'
+                f'<div class="hint">{html.escape(setting.hint)}{where}{restart}</div>'
+                f'<div class="hint">Сейчас: {html.escape(shown)}</div>'
+                '<form class="inline" method="post" action="/keys/set">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="key" value="{html.escape(setting.key)}">'
+                f'<input type="{field}" name="value" autocomplete="off" '
+                'placeholder="новое значение, пусто — очистить">'
+                '<button type="submit">Сохранить</button></form>'
+                "</div>"
+            )
+        cards.append(
+            f'<div class="card"><h3>{html.escape(group)}</h3>{"".join(rows)}</div>'
+        )
+
+    warning = (
+        '<div class="card"><b>Значения не показываются.</b> '
+        '<span class="muted">Панель принимает новый ключ, но не отдаёт '
+        "существующий: доступ к чужой сессии не должен означать доступ "
+        "ко всем ключам сразу. Полное значение видно только в файле "
+        "<code>.env</code> на сервере.</span></div>"
+    )
+    return _note("ok", message) + _note("bad", failed) + warning + "".join(cards)
+
 
 
 async def _partners_body() -> str:
@@ -13770,11 +13956,106 @@ async def create_app() -> Any:
         )
 
     @guard
-    async def sources_page(_request, session):
+    async def sources_page(request, session):
         return web.Response(
-            text=_layout("Источники", _sources_body(), "sources", roles.title(session.role), session.role),
+            text=_layout(
+                "Источники",
+                _sources_body(session,
+                              request.query.get("ok", ""),
+                              request.query.get("err", "")),
+                "sources", roles.title(session.role), session.role,
+            ),
             content_type="text/html",
         )
+
+    @owner_only
+    async def keys_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Ключи",
+                _keys_body(session,
+                           request.query.get("ok", ""),
+                           request.query.get("err", "")),
+                "keys", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def _guarded_form(request, minimum: str):
+        """Общая часть записи: сессия, роль, токен формы.
+
+        Возвращает (сессия, поля) либо бросает перенаправление. Проверки
+        собраны в одном месте намеренно: пропустить одну из них в новом
+        обработчике — самый лёгкий способ открыть панель наружу.
+        """
+        session = current_session(request)
+        if session is None:
+            raise web.HTTPFound("/login")
+        if not roles.at_least(session.role, minimum):
+            audit.record(session.user_key, "отказ в доступе", request.path)
+            raise web.HTTPFound("/")
+        data = await request.post()
+        if not auth.csrf_valid(session, data.get("csrf", "")):
+            audit.record(session.user_key, "форма отклонена", request.path)
+            raise web.HTTPFound("/sources?err=Форма устарела, откройте страницу заново")
+        return session, data
+
+    async def sources_add(request):
+        from .. import sourceedit as se
+
+        session, data = await _guarded_form(request, "moderator")
+        kind = str(data.get("kind", ""))
+        if kind not in se.KINDS:
+            raise web.HTTPFound("/sources?err=Неизвестный вид источника")
+
+        added, skipped = se.add(kind, str(data.get("value", "")))
+        if added:
+            await storage.save()
+            audit.record(session.user_key, "источники добавлены",
+                         f"{kind}: {', '.join(added)}")
+        parts = []
+        if added:
+            parts.append("Добавлено: " + ", ".join(added))
+        if skipped:
+            # Молчать про пропущенные нельзя: человек видит «добавлено 0»
+            # и не понимает, ошибся он или источник уже был.
+            parts.append("Пропущено (неверный формат или уже есть): "
+                         + ", ".join(skipped))
+        key = "ok" if added else "err"
+        raise web.HTTPFound(f"/sources?{key}=" + quote("; ".join(parts) or "Ничего не добавлено"))
+
+    async def sources_remove(request):
+        from .. import sourceedit as se
+
+        session, data = await _guarded_form(request, "moderator")
+        kind = str(data.get("kind", ""))
+        value = str(data.get("value", ""))
+        if se.remove(kind, value):
+            await storage.save()
+            audit.record(session.user_key, "источник удалён", f"{kind}: {value}")
+            raise web.HTTPFound("/sources?ok=" + quote(f"Удалён: {value}"))
+        raise web.HTTPFound("/sources?err=" + quote("Такого источника нет"))
+
+    async def keys_set(request):
+        from .. import secrets as secrets_module
+
+        session, data = await _guarded_form(request, "superadmin")
+        key = str(data.get("key", ""))
+        if key not in secrets_module.BY_KEY:
+            raise web.HTTPFound("/keys?err=" + quote("Неизвестный ключ"))
+
+        value = str(data.get("value", "")).strip()
+        if not secrets_module.write(key, value):
+            raise web.HTTPFound("/keys?err=" + quote(
+                "Записать не удалось — проверьте права на .env"))
+
+        # В журнал уходит имя ключа, но НИКОГДА значение: журнал панели
+        # читается в самой панели, и записанный туда ключ свёл бы на нет
+        # то, ради чего значения скрыты.
+        audit.record(session.user_key,
+                     "ключ очищен" if not value else "ключ изменён", key)
+        done = "очищен" if not value else "сохранён"
+        raise web.HTTPFound("/keys?ok=" + quote(f"{key} {done}"))
 
     @admin_only
     async def events_page(_request, session):
@@ -13886,6 +14167,10 @@ async def create_app() -> Any:
         web.get("/", overview),
         web.get("/users", users_page),
         web.get("/sources", sources_page),
+        web.post("/sources/add", sources_add),
+        web.post("/sources/remove", sources_remove),
+        web.get("/keys", keys_page),
+        web.post("/keys/set", keys_set),
         web.get("/events", events_page),
         web.get("/features", features_page),
         web.get("/audit", audit_page),
@@ -19169,8 +19454,154 @@ async def fetch_vk(
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
 RADAR_FILE_65
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceedit.py"
+cat > "radar/sourceedit.py" <<'RADAR_FILE_66'
+#!/usr/bin/env python3
+"""Правка списка источников: добавление, удаление, проверка формата.
+
+Вынесено из обработчиков бота в 4.8.4.5, когда те же действия понадобились
+веб-панели. Дублировать разбор было нельзя: правила «что считается каналом»
+разъехались бы между ботом и панелью, и человек получил бы источник,
+который бот принимает, а панель показывает как ошибку. Здесь одно место,
+куда смотрят оба.
+
+Опознаётся три вида источников — Telegram-каналы, RSS-ленты и сообщества
+ВКонтакте. Очередь модерации трогается отдельно: попадание в неё означает
+предложение от пользователя, а не решение администрации.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import re
+
+from . import storage
+
+log = logging.getLogger("radar.sourceedit")
+
+# Ограничения Telegram: латиница, цифры и подчёркивание, от пяти знаков.
+CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
+
+# Сообщество ВКонтакте: короткое имя либо club/public с числом.
+VK_RE = re.compile(r"^[A-Za-z0-9_.]{2,64}$")
+
+# Разделители в присланном списке: запятая, точка с запятой, перевод строки.
+_SPLIT = re.compile(r"[,\n;]+")
+
+TELEGRAM = "tg"
+RSS = "rss"
+VK = "vk"
+
+KINDS: tuple[str, ...] = (TELEGRAM, RSS, VK)
+
+TITLES: dict[str, str] = {
+    TELEGRAM: "Telegram-каналы",
+    RSS: "RSS-ленты",
+    VK: "Сообщества VK",
+}
+
+
+def _bucket(kind: str) -> list[str] | None:
+    if kind == TELEGRAM:
+        return storage.channels()
+    if kind == RSS:
+        return storage.rss_feeds()
+    if kind == VK:
+        return storage.vk_groups()
+    return None
+
+
+def normalize_channel(raw: str) -> str:
+    """Юзернейм канала из чего угодно: ссылки, @имени, голого имени."""
+    value = raw.strip()
+    value = re.sub(r"^(https?://)?(t\.me/|telegram\.me/)?@?", "", value, flags=re.I)
+    return value.strip("/ ").split("/")[0].split("?")[0]
+
+
+def normalize_vk(raw: str) -> str:
+    """Короткое имя сообщества из ссылки или голого имени."""
+    value = raw.strip()
+    value = re.sub(r"^(https?://)?(m\.)?vk\.com/", "", value, flags=re.I)
+    return value.strip("/ ").split("/")[0].split("?")[0]
+
+
+def normalize_feed(raw: str) -> str:
+    return raw.strip()
+
+
+def valid(kind: str, value: str) -> bool:
+    """Годится ли значение как источник этого вида."""
+    if kind == TELEGRAM:
+        return bool(CHANNEL_RE.match(value))
+    if kind == RSS:
+        # Схему проверяем строго: без неё адрес не откроется, а «ошибка
+        # раз в три минуты в журнале» — худший способ об этом узнать.
+        return value.startswith(("http://", "https://")) and len(value) > 11
+    if kind == VK:
+        return bool(VK_RE.match(value))
+    return False
+
+
+def normalize(kind: str, raw: str) -> str:
+    if kind == TELEGRAM:
+        return normalize_channel(raw)
+    if kind == VK:
+        return normalize_vk(raw)
+    return normalize_feed(raw)
+
+
+def add(kind: str, text: str) -> tuple[list[str], list[str]]:
+    """Добавляет источники из присланного текста.
+
+    Возвращает (добавленные, пропущенные). Пропущенные — это и мусор,
+    и уже имеющиеся: человеку важно увидеть, что его строка не потерялась,
+    а не молча получить «добавлено 0».
+    """
+    bucket = _bucket(kind)
+    if bucket is None:
+        return [], []
+
+    added: list[str] = []
+    skipped: list[str] = []
+    for raw in _SPLIT.split(text or ""):
+        if not raw.strip():
+            continue
+        value = normalize(kind, raw)
+        if valid(kind, value) and value not in bucket:
+            bucket.append(value)
+            added.append(value)
+        else:
+            skipped.append(raw.strip())
+    if added:
+        log.info("Добавлено источников (%s): %d", kind, len(added))
+    return added, skipped
+
+
+def remove(kind: str, value: str) -> bool:
+    """Убирает один источник. False — такого не было."""
+    bucket = _bucket(kind)
+    if bucket is None or value not in bucket:
+        return False
+    bucket.remove(value)
+    log.info("Удалён источник (%s): %s", kind, value)
+    return True
+
+
+def listing(kind: str) -> list[str]:
+    return list(_bucket(kind) or [])
+
+
+def counts() -> dict[str, int]:
+    return {kind: len(_bucket(kind) or []) for kind in KINDS}
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_66'
+cat > "radar/tg.py" <<'RADAR_FILE_67'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -19287,9 +19718,153 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_66
+RADAR_FILE_67
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
+cat > "radar/timezones.py" <<'RADAR_FILE_68'
+#!/usr/bin/env python3
+"""Часовой пояс пользователя.
+
+До 4.8.4.4 время было общим на всю систему: тихие часы, погода в заданный
+час и время доставки подборок считались по часовому поясу сервера. Пока
+все пользователи жили в одном городе, это работало. С появлением людей из
+других поясов «погода в 8:00» стала означать восемь утра у сервера — то
+есть пять утра у одного и одиннадцать у другого.
+
+Хранится **смещение от UTC**, а не имя зоны IANA. Причина прагматичная:
+человек выбирает пояс из списка, и список из смещений короче и понятнее
+списка из трёхсот зон. Плата за это — переход на летнее время: смещение
+его не отслеживает. Для России это безразлично (перевода стрелок нет
+с 2014 года), для Европы и США пользователь раз в полгода уедет на час
+и поправит выбор сам.
+
+Подпись зависит от языка. По-русски отсчёт идёт от Москвы («МСК+2»):
+так на русскоязычном пространстве говорят о времени, и «UTC+5» человеку
+из Саратова ничего не сообщает. По-английски — от Гринвича («UTC+5»).
+
+Пустое значение означает «не выбран»: тогда берётся часовой пояс сервера,
+и поведение остаётся ровно прежним. Так обновление никому ничего не ломает.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+# Москва — точка отсчёта русских подписей.
+MOSCOW = 180
+
+# Хранимый вид: «+03:00», «-05:30». Знак обязателен, чтобы «03:00» нельзя
+# было спутать со временем суток при чтении .env или базы глазами.
+_STORED = re.compile(r"^([+-])(\d{1,2}):([0-5]\d)$")
+
+# Пределы настоящих часовых поясов: от UTC−12 до UTC+14.
+MIN_OFFSET = -12 * 60
+MAX_OFFSET = 14 * 60
+
+# Целые часы — их выбирает подавляющее большинство.
+WHOLE_HOURS: tuple[int, ...] = tuple(
+    range(MIN_OFFSET, MAX_OFFSET + 1, 60)
+)
+
+# Пояса с половиной и четвертью часа. Вынесены на второй экран: в общем
+# списке они удлиняют его в полтора раза ради нескольких стран.
+FRACTIONAL: tuple[int, ...] = (
+    -9 * 60 - 30,      # Маркизские острова
+    3 * 60 + 30,       # Иран
+    4 * 60 + 30,       # Афганистан
+    5 * 60 + 30,       # Индия, Шри-Ланка
+    5 * 60 + 45,       # Непал
+    6 * 60 + 30,       # Мьянма
+    8 * 60 + 45,       # Юго-запад Австралии
+    9 * 60 + 30,       # Центральная Австралия
+    10 * 60 + 30,      # Лорд-Хау
+    12 * 60 + 45,      # Чатем
+)
+
+
+def parse(value: Any) -> int | None:
+    """Смещение в минутах из хранимой строки. None — не задано или мусор."""
+    match = _STORED.match(str(value or "").strip())
+    if not match:
+        return None
+    sign = -1 if match.group(1) == "-" else 1
+    minutes = sign * (int(match.group(2)) * 60 + int(match.group(3)))
+    if not MIN_OFFSET <= minutes <= MAX_OFFSET:
+        return None
+    return minutes
+
+
+def render(minutes: int) -> str:
+    """Хранимый вид смещения: «+03:00»."""
+    sign = "-" if minutes < 0 else "+"
+    total = abs(int(minutes))
+    return f"{sign}{total // 60:02d}:{total % 60:02d}"
+
+
+def _suffix(minutes: int) -> str:
+    """Хвост подписи: «», «+2», «−3:30»."""
+    if minutes == 0:
+        return ""
+    sign = "-" if minutes < 0 else "+"
+    total = abs(int(minutes))
+    hours, rest = divmod(total, 60)
+    if rest:
+        return f"{sign}{hours}:{rest:02d}"
+    return f"{sign}{hours}"
+
+
+def label(minutes: int, lang: str = "ru") -> str:
+    """Подпись пояса: «МСК+2» по-русски, «UTC+5» по-английски."""
+    if (lang or "ru").lower().startswith("en"):
+        return f"UTC{_suffix(minutes)}"
+    return f"МСК{_suffix(minutes - MOSCOW)}"
+
+
+def server_offset() -> int:
+    """Смещение часового пояса сервера — запасной вариант."""
+    shift = datetime.now().astimezone().utcoffset()
+    if shift is None:
+        return 0
+    return int(shift.total_seconds() // 60)
+
+
+def offset_of(user: dict[str, Any] | None) -> int:
+    """Смещение пользователя. Не выбрано — берём серверное, как раньше."""
+    chosen = parse((user or {}).get("tz"))
+    return server_offset() if chosen is None else chosen
+
+
+def chosen(user: dict[str, Any] | None) -> bool:
+    """Выбирал ли пользователь пояс сам."""
+    return parse((user or {}).get("tz")) is not None
+
+
+def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
+    """Наивное местное время пользователя.
+
+    Наивное намеренно: весь код вокруг — тихие часы, погода, подборки —
+    сравнивает часы и минуты, и осведомлённая о поясе дата там только
+    мешала бы. Часовой пояс уже учтён смещением.
+    """
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    return (now_utc.astimezone(timezone.utc)
+            + timedelta(minutes=offset_of(user))).replace(tzinfo=None)
+
+
+def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
+    """Подпись пояса пользователя для кнопок и сводок."""
+    return label(offset_of(user), lang)
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_67'
+cat > "radar/keyboards.py" <<'RADAR_FILE_69'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -19852,9 +20427,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_67
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_68'
+cat > "radar/states.py" <<'RADAR_FILE_70'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -19884,9 +20459,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_68
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_69'
+cat > "radar/middlewares.py" <<'RADAR_FILE_71'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -20032,9 +20607,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_69
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_70'
+cat > "radar/monitor.py" <<'RADAR_FILE_72'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -20671,9 +21246,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_70
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_71'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_73'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -20731,9 +21306,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_71
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_72'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_74'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -21148,9 +21723,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_72
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_75'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -21316,9 +21891,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_73
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_76'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -21817,9 +22392,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_74
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_77'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -21851,6 +22426,7 @@ from .. import (
     keyboards,
     roles,
     sourcecheck,
+    sourceedit,
     storage,
 )
 from ..states import Form
@@ -21859,12 +22435,11 @@ from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="sources")
 
-CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
-
-def normalize_channel(raw: str) -> str:
-    value = raw.strip()
-    value = re.sub(r"^(https?://)?(t\.me/|telegram\.me/)?@?", "", value, flags=re.I)
-    return value.strip("/ ").split("/")[0].split("?")[0]
+# Разбор и проверка переехали в radar/sourceedit.py: те же действия делает
+# веб-панель, и два набора правил разъехались бы. Имена оставлены здесь
+# как псевдонимы — на них ссылается остальной модуль.
+CHANNEL_RE = sourceedit.CHANNEL_RE
+normalize_channel = sourceedit.normalize_channel
 
 
 @router.callback_query(F.data == "src:suggest")
@@ -22005,16 +22580,7 @@ async def add_channel(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
-    added, skipped = [], []
-    for raw in re.split(r"[,\n;]+", message.text or ""):
-        if not raw.strip():
-            continue
-        channel = normalize_channel(raw)
-        if CHANNEL_RE.match(channel) and channel not in storage.channels():
-            storage.channels().append(channel)
-            added.append(channel)
-        else:
-            skipped.append(raw.strip())
+    added, skipped = sourceedit.add(sourceedit.TELEGRAM, message.text or "")
     await storage.save()
     lines = []
     if added:
@@ -22045,12 +22611,7 @@ async def add_rss(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
-    added = []
-    for raw in re.split(r"[,\s\n;]+", message.text or ""):
-        url = raw.strip()
-        if url.startswith(("http://", "https://")) and url not in storage.rss_feeds():
-            storage.rss_feeds().append(url)
-            added.append(url)
+    added, _skipped = sourceedit.add(sourceedit.RSS, message.text or "")
     await storage.save()
     text = (
         "✅ Добавлены ленты:\n" + "\n".join(f"• {esc(u)}" for u in added)
@@ -22275,17 +22836,7 @@ async def drop_dead(call: CallbackQuery, role: str) -> None:
         await call.answer("Список устарел — запустите проверку заново.", show_alert=True)
         return
 
-    removed = 0
-    for kind, ref in dead:
-        if kind == "tg" and ref in storage.channels():
-            storage.channels().remove(ref)
-            removed += 1
-        elif kind == "rss" and ref in storage.rss_feeds():
-            storage.rss_feeds().remove(ref)
-            removed += 1
-        elif kind == "vk" and ref in storage.vk_groups():
-            storage.vk_groups().remove(ref)
-            removed += 1
+    removed = sum(1 for kind, ref in dead if sourceedit.remove(kind, ref))
 
     await storage.save()
     _last_check.pop(str(call.from_user.id), None)
@@ -22318,9 +22869,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_75
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_78'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -22687,9 +23238,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_76
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_79'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -22836,9 +23387,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_77
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_80'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -23126,9 +23677,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_78
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_81'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -23335,9 +23886,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_79
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_82'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -23444,9 +23995,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_80
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_83'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -24021,9 +24572,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_81
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_84'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -24124,9 +24675,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_82
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_85'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -24216,9 +24767,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_83
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_86'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -24639,9 +25190,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_84
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_87'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -25324,9 +25875,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_85
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_88'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -26057,9 +26608,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_86
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_89'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -26580,9 +27131,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_87
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_90'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -26948,9 +27499,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_88
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_91'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -27095,7 +27646,7 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_89
+RADAR_FILE_91
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

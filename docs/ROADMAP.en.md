@@ -952,6 +952,20 @@ became item 21.
 3. **The installer brings Caddy back after an update** (4.8.4.3) — without
    it the web panel and short links stopped opening entirely.
 
+4. **The panel can edit, not just display.** Before 4.8.4.5 it had only
+   reading routes: no forms, no POST at all. Sources and keys could be set
+   from the bot alone, and the panel stayed a display case.
+
+   A moderator edits sources, a superadmin edits keys. Link parsing moved
+   into a shared module, `radar/sourceedit.py`: two sets of rules would
+   drift apart, and a person would get a source the bot accepts and the
+   panel calls an error.
+
+   **Keys are write-only.** An existing value is shown as a mask: access to
+   a hijacked session must not mean access to every key at once. Forms
+   carry a hidden token on top of `SameSite=Lax`.
+
+
 ## 4.9 — operations
 
 1. **Zero-downtime updates:** the schema is applied before the restart,

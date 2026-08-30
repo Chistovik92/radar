@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 4.8.4.4, она же выложена на GitHub.
+Текущая версия — 4.8.4.5, она же выложена на GitHub.
 
 ## Общение
 
@@ -25,7 +25,12 @@ bash -n install.sh                      # синтаксис собранног�
 python3 tools/lint_shellorder.py        # вызов функции раньше её определения
 python3 tools/lint_installer.py         # числовые подстановки и полнота словаря
 python3 tools/lint_release.py           # версия поднята везде, включая RELEASES
+python3 tools/lint_manifest.py          # новые модули попали в манифест установщика
 ```
+
+`lint_manifest.py` добавлен в 4.8.4.5: модуль `radar/timezones.py`
+из 4.8.4.4 не попал в `MANIFEST`, и установщик не разворачивал его
+на сервере — локально всё зелёное, на сервере бот не поднимается.
 
 Каждая проверка появилась после реальной поломки на сервере. Пропуск любой
 из них уже приводил к тому, что бот падал у пользователя.
@@ -120,6 +125,7 @@ python tools\lint_undefined.py
 python tools\lint_names.py
 python tools\lint_pyversion.py
 python tools\lint_docker.py
+python tools\lint_manifest.py
 python tools\build_installer.py
 ```
 

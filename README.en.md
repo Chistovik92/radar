@@ -1,4 +1,4 @@
-# Radar v4.8.4.4
+# Radar v4.8.4.5
 
 [Русская версия](README.md)
 
@@ -100,6 +100,20 @@ An offset is stored rather than a zone name. The price of that simplicity
 is daylight saving time, which an offset does not track. Russia has not
 changed clocks since 2014, so this costs nothing there; a user in Europe
 or the US adjusts the choice twice a year.
+
+## The web panel
+
+The panel mirrors the bot's permissions rather than extending them.
+A **moderator** edits the source list — Telegram channels, RSS feeds and
+VKontakte communities — using the same parsing rules as the bot, so
+`@name`, `t.me/name` and a bare name all give the same result in both
+places. A **superadmin** sets AI keys and service tokens.
+
+**Keys go in but never come out.** An existing value is shown only as a
+mask such as `AIza…9kQw`: enough to check which key is in place, not
+enough to take it. Access to a hijacked panel session must not mean access
+to every key at once. The full value stays in `.env` on the server, and
+the panel's own log records the key's name, never its value.
 
 ## Language
 

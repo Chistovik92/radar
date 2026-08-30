@@ -29,6 +29,7 @@ from .. import (
     keyboards,
     roles,
     sourcecheck,
+    sourceedit,
     storage,
 )
 from ..states import Form
@@ -37,12 +38,11 @@ from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="sources")
 
-CHANNEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
-
-def normalize_channel(raw: str) -> str:
-    value = raw.strip()
-    value = re.sub(r"^(https?://)?(t\.me/|telegram\.me/)?@?", "", value, flags=re.I)
-    return value.strip("/ ").split("/")[0].split("?")[0]
+# Разбор и проверка переехали в radar/sourceedit.py: те же действия делает
+# веб-панель, и два набора правил разъехались бы. Имена оставлены здесь
+# как псевдонимы — на них ссылается остальной модуль.
+CHANNEL_RE = sourceedit.CHANNEL_RE
+normalize_channel = sourceedit.normalize_channel
 
 
 @router.callback_query(F.data == "src:suggest")
@@ -183,16 +183,7 @@ async def add_channel(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
-    added, skipped = [], []
-    for raw in re.split(r"[,\n;]+", message.text or ""):
-        if not raw.strip():
-            continue
-        channel = normalize_channel(raw)
-        if CHANNEL_RE.match(channel) and channel not in storage.channels():
-            storage.channels().append(channel)
-            added.append(channel)
-        else:
-            skipped.append(raw.strip())
+    added, skipped = sourceedit.add(sourceedit.TELEGRAM, message.text or "")
     await storage.save()
     lines = []
     if added:
@@ -223,12 +214,7 @@ async def add_rss(message: Message, state: FSMContext, role: str) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
-    added = []
-    for raw in re.split(r"[,\s\n;]+", message.text or ""):
-        url = raw.strip()
-        if url.startswith(("http://", "https://")) and url not in storage.rss_feeds():
-            storage.rss_feeds().append(url)
-            added.append(url)
+    added, _skipped = sourceedit.add(sourceedit.RSS, message.text or "")
     await storage.save()
     text = (
         "✅ Добавлены ленты:\n" + "\n".join(f"• {esc(u)}" for u in added)
@@ -453,17 +439,7 @@ async def drop_dead(call: CallbackQuery, role: str) -> None:
         await call.answer("Список устарел — запустите проверку заново.", show_alert=True)
         return
 
-    removed = 0
-    for kind, ref in dead:
-        if kind == "tg" and ref in storage.channels():
-            storage.channels().remove(ref)
-            removed += 1
-        elif kind == "rss" and ref in storage.rss_feeds():
-            storage.rss_feeds().remove(ref)
-            removed += 1
-        elif kind == "vk" and ref in storage.vk_groups():
-            storage.vk_groups().remove(ref)
-            removed += 1
+    removed = sum(1 for kind, ref in dead if sourceedit.remove(kind, ref))
 
     await storage.save()
     _last_check.pop(str(call.from_user.id), None)

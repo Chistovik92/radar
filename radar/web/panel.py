@@ -20,6 +20,7 @@ from __future__ import annotations
 import html
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from .. import config, features, roles, shortener, storage
 from . import auth
@@ -51,6 +52,22 @@ tr:last-child td { border-bottom:none; }
 .ok { color:#6bd08a; } .warn { color:#ffc45e; } .bad { color:#ff7a7a; }
 .muted { color:#92a0b8; }
 .login { max-width:420px; margin:80px auto; text-align:center; }
+form.inline { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
+form.inline input[type=text], form.inline input[type=password] {
+  flex:1 1 260px; padding:9px 12px; border-radius:8px; border:1px solid #2b3242;
+  background:#171b24; color:#e8ecf3; font:inherit; }
+button { padding:9px 16px; border-radius:8px; border:none; cursor:pointer;
+         background:#2f6fd0; color:#fff; font:inherit; }
+button:hover { background:#3a80e8; }
+button.ghost { background:#2b3242; color:#c3cee0; padding:5px 11px; font-size:13px; }
+button.ghost:hover { background:#3a4356; }
+.note { padding:11px 14px; border-radius:8px; margin-bottom:16px; }
+.note.good { background:#1d3a2a; color:#9fe3b6; }
+.note.bad { background:#3a1d1d; color:#ffb4b4; }
+.keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:12px 0;
+          border-bottom:1px solid #2b3242; }
+.keyrow:last-child { border-bottom:none; }
+.keyrow .hint { color:#92a0b8; font-size:13px; }
 """
 
 
@@ -62,6 +79,7 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
     if roles.is_admin(role):
         links.append(("/events", "События", "events"))
     if roles.is_superadmin(role):
+        links.append(("/keys", "Ключи", "keys"))
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
@@ -190,20 +208,137 @@ def _users_body(role: str = "") -> str:
     )
 
 
-def _sources_body() -> str:
-    def block(title: str, items: list[str]) -> str:
-        rows = "".join(f"<tr><td>{html.escape(item)}</td></tr>" for item in items)
+def _note(kind: str, text: str) -> str:
+    """Полоса с итогом действия. Пусто — ничего не показываем."""
+    if not text:
+        return ""
+    css = "good" if kind == "ok" else "bad"
+    return f'<div class="note {css}">{html.escape(text)}</div>'
+
+
+def _sources_body(session, message: str = "", failed: str = "") -> str:
+    """Источники: список с удалением и форма добавления.
+
+    Правка открыта модератору — ровно как в боте. Панель повторяет права
+    бота, а не расширяет их: иначе роль означала бы разное в двух местах.
+    """
+    from .. import sourceedit as se
+
+    editable = roles.is_moderator(session.role)
+    token = auth.csrf_token(session)
+
+    def rows(kind: str, items: list[str]) -> str:
+        if not items:
+            return '<tr><td class="muted">пусто</td></tr>'
+        out = []
+        for item in items:
+            action = ""
+            if editable:
+                action = (
+                    '<form method="post" action="/sources/remove" '
+                    'style="display:inline">'
+                    f'<input type="hidden" name="csrf" value="{token}">'
+                    f'<input type="hidden" name="kind" value="{html.escape(kind)}">'
+                    f'<input type="hidden" name="value" value="{html.escape(item)}">'
+                    '<button class="ghost" type="submit">удалить</button></form>'
+                )
+            out.append(
+                f"<tr><td>{html.escape(item)}</td>"
+                f'<td style="text-align:right;width:1%">{action}</td></tr>'
+            )
+        return "".join(out)
+
+    def card(kind: str, title: str, placeholder: str) -> str:
+        items = se.listing(kind)
+        form = ""
+        if editable:
+            form = (
+                '<form class="inline" method="post" action="/sources/add">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="kind" value="{html.escape(kind)}">'
+                f'<input type="text" name="value" placeholder="{html.escape(placeholder)}" '
+                'required autocomplete="off">'
+                '<button type="submit">Добавить</button></form>'
+            )
         return (
             f'<div class="card"><h3>{html.escape(title)} — {len(items)}</h3>'
-            f"<table>{rows or '<tr><td class=muted>пусто</td></tr>'}</table></div>"
+            f"<table>{rows(kind, items)}</table>{form}</div>"
         )
 
+    pending = list(storage.pending())
+    queue_rows = "".join(
+        f"<tr><td>{html.escape(item)}</td></tr>" for item in pending
+    ) or '<tr><td class="muted">пусто</td></tr>'
+
     return (
-        block("Telegram-каналы", list(storage.channels()))
-        + block("RSS-ленты", list(storage.rss_feeds()))
-        + block("Сообщества VK", list(storage.vk_groups()))
-        + block("В очереди модерации", list(storage.pending()))
+        _note("ok", message)
+        + _note("bad", failed)
+        + card(se.TELEGRAM, "Telegram-каналы",
+               "@channel, ссылка t.me или несколько через запятую")
+        + card(se.RSS, "RSS-ленты", "https://example.ru/rss")
+        + card(se.VK, "Сообщества VK", "короткое имя или ссылка vk.com/…")
+        + '<div class="card"><h3>В очереди модерации — '
+        + str(len(pending))
+        + f"</h3><table>{queue_rows}</table>"
+        + '<p class="muted">Очередь разбирается в боте: предложение '
+          "пользователя принимается или отклоняется там, вместе с ответом "
+          "приславшему.</p></div>"
     )
+
+
+def _keys_body(session, message: str = "", failed: str = "") -> str:
+    """Ключи ИИ и токены сервисов. Только запись, без чтения.
+
+    Значение показывается маской: перехваченная сессия панели не должна
+    отдавать ключи целиком. Проверить «тот ли ключ вставлен» по маске
+    можно — по первым и последним знакам, — а увести его нельзя.
+    """
+    from .. import secrets as secrets_module
+
+    token = auth.csrf_token(session)
+    groups: dict[str, list] = {}
+    for setting in secrets_module.SETTINGS:
+        groups.setdefault(setting.group, []).append(setting)
+
+    cards = []
+    for group, items in groups.items():
+        rows = []
+        for setting in items:
+            current = secrets_module.get(setting.key)
+            shown = (secrets_module.mask(current) if setting.secret
+                     else (current or "— не задано —"))
+            where = (f' <span class="hint">Где взять: {html.escape(setting.where)}</span>'
+                     if setting.where else "")
+            restart = (' <span class="warn">применится после перезапуска</span>'
+                       if setting.restart else "")
+            field = "password" if setting.secret else "text"
+            rows.append(
+                '<div class="keyrow">'
+                f"<div><b>{html.escape(setting.title)}</b> "
+                f'<span class="muted">{html.escape(setting.key)}</span></div>'
+                f'<div class="hint">{html.escape(setting.hint)}{where}{restart}</div>'
+                f'<div class="hint">Сейчас: {html.escape(shown)}</div>'
+                '<form class="inline" method="post" action="/keys/set">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<input type="hidden" name="key" value="{html.escape(setting.key)}">'
+                f'<input type="{field}" name="value" autocomplete="off" '
+                'placeholder="новое значение, пусто — очистить">'
+                '<button type="submit">Сохранить</button></form>'
+                "</div>"
+            )
+        cards.append(
+            f'<div class="card"><h3>{html.escape(group)}</h3>{"".join(rows)}</div>'
+        )
+
+    warning = (
+        '<div class="card"><b>Значения не показываются.</b> '
+        '<span class="muted">Панель принимает новый ключ, но не отдаёт '
+        "существующий: доступ к чужой сессии не должен означать доступ "
+        "ко всем ключам сразу. Полное значение видно только в файле "
+        "<code>.env</code> на сервере.</span></div>"
+    )
+    return _note("ok", message) + _note("bad", failed) + warning + "".join(cards)
+
 
 
 async def _partners_body() -> str:
@@ -435,11 +570,106 @@ async def create_app() -> Any:
         )
 
     @guard
-    async def sources_page(_request, session):
+    async def sources_page(request, session):
         return web.Response(
-            text=_layout("Источники", _sources_body(), "sources", roles.title(session.role), session.role),
+            text=_layout(
+                "Источники",
+                _sources_body(session,
+                              request.query.get("ok", ""),
+                              request.query.get("err", "")),
+                "sources", roles.title(session.role), session.role,
+            ),
             content_type="text/html",
         )
+
+    @owner_only
+    async def keys_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Ключи",
+                _keys_body(session,
+                           request.query.get("ok", ""),
+                           request.query.get("err", "")),
+                "keys", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def _guarded_form(request, minimum: str):
+        """Общая часть записи: сессия, роль, токен формы.
+
+        Возвращает (сессия, поля) либо бросает перенаправление. Проверки
+        собраны в одном месте намеренно: пропустить одну из них в новом
+        обработчике — самый лёгкий способ открыть панель наружу.
+        """
+        session = current_session(request)
+        if session is None:
+            raise web.HTTPFound("/login")
+        if not roles.at_least(session.role, minimum):
+            audit.record(session.user_key, "отказ в доступе", request.path)
+            raise web.HTTPFound("/")
+        data = await request.post()
+        if not auth.csrf_valid(session, data.get("csrf", "")):
+            audit.record(session.user_key, "форма отклонена", request.path)
+            raise web.HTTPFound("/sources?err=Форма устарела, откройте страницу заново")
+        return session, data
+
+    async def sources_add(request):
+        from .. import sourceedit as se
+
+        session, data = await _guarded_form(request, "moderator")
+        kind = str(data.get("kind", ""))
+        if kind not in se.KINDS:
+            raise web.HTTPFound("/sources?err=Неизвестный вид источника")
+
+        added, skipped = se.add(kind, str(data.get("value", "")))
+        if added:
+            await storage.save()
+            audit.record(session.user_key, "источники добавлены",
+                         f"{kind}: {', '.join(added)}")
+        parts = []
+        if added:
+            parts.append("Добавлено: " + ", ".join(added))
+        if skipped:
+            # Молчать про пропущенные нельзя: человек видит «добавлено 0»
+            # и не понимает, ошибся он или источник уже был.
+            parts.append("Пропущено (неверный формат или уже есть): "
+                         + ", ".join(skipped))
+        key = "ok" if added else "err"
+        raise web.HTTPFound(f"/sources?{key}=" + quote("; ".join(parts) or "Ничего не добавлено"))
+
+    async def sources_remove(request):
+        from .. import sourceedit as se
+
+        session, data = await _guarded_form(request, "moderator")
+        kind = str(data.get("kind", ""))
+        value = str(data.get("value", ""))
+        if se.remove(kind, value):
+            await storage.save()
+            audit.record(session.user_key, "источник удалён", f"{kind}: {value}")
+            raise web.HTTPFound("/sources?ok=" + quote(f"Удалён: {value}"))
+        raise web.HTTPFound("/sources?err=" + quote("Такого источника нет"))
+
+    async def keys_set(request):
+        from .. import secrets as secrets_module
+
+        session, data = await _guarded_form(request, "superadmin")
+        key = str(data.get("key", ""))
+        if key not in secrets_module.BY_KEY:
+            raise web.HTTPFound("/keys?err=" + quote("Неизвестный ключ"))
+
+        value = str(data.get("value", "")).strip()
+        if not secrets_module.write(key, value):
+            raise web.HTTPFound("/keys?err=" + quote(
+                "Записать не удалось — проверьте права на .env"))
+
+        # В журнал уходит имя ключа, но НИКОГДА значение: журнал панели
+        # читается в самой панели, и записанный туда ключ свёл бы на нет
+        # то, ради чего значения скрыты.
+        audit.record(session.user_key,
+                     "ключ очищен" if not value else "ключ изменён", key)
+        done = "очищен" if not value else "сохранён"
+        raise web.HTTPFound("/keys?ok=" + quote(f"{key} {done}"))
 
     @admin_only
     async def events_page(_request, session):
@@ -551,6 +781,10 @@ async def create_app() -> Any:
         web.get("/", overview),
         web.get("/users", users_page),
         web.get("/sources", sources_page),
+        web.post("/sources/add", sources_add),
+        web.post("/sources/remove", sources_remove),
+        web.get("/keys", keys_page),
+        web.post("/keys/set", keys_set),
         web.get("/events", events_page),
         web.get("/features", features_page),
         web.get("/audit", audit_page),
