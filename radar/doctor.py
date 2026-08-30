@@ -191,6 +191,27 @@ def check_config() -> bool:
     backend = "SQLite" if config.is_sqlite() else "PostgreSQL"
     report.add("Конфигурация", OK, f"версия {config.VERSION}, база {backend}")
 
+    # .env должен быть виден самому боту, а не только впрыснут в окружение
+    # при создании контейнера. До 4.8.4.2 файла внутри не было вовсе:
+    # раздел ключей писал во временный файл контейнера и терял значение
+    # при первом же обновлении, а правка на хосте не действовала, пока
+    # контейнер не пересоздадут. Симптом на живом сервере был косвенный —
+    # короткие ссылки на домен, стёртый из .env двумя днями раньше.
+    from radar import secrets
+
+    env_path = secrets.env_path()
+    if not os.path.exists(env_path):
+        report.add("Файл .env", WARN, f"боту не виден: {env_path}",
+                   "Ключи, заданные из бота, не переживут обновление. "
+                   "В docker-compose.yml должно быть монтирование "
+                   "./.env:/app/.env")
+    elif not os.access(env_path, os.R_OK | os.W_OK):
+        report.add("Файл .env", WARN, "виден, но недоступен на запись",
+                   "Владелец должен совпадать с пользователем контейнера: "
+                   "chown 1000:1000 .env")
+    else:
+        report.add("Файл .env", OK, "виден и доступен на запись")
+
     if not config.GEMINI_API_KEY:
         report.add("Ключ Gemini", WARN, "не задан",
                    "Бот будет работать на эвристическом разборе без ИИ")

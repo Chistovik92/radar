@@ -209,6 +209,7 @@ t() {                  # t <ключ> [подстановка]
             tls_found)           value="Certificate already set up for" ;;
             tls_found_no_domain) value="A certificate exists, but no domain is configured" ;;
             tls_short_missing)   value="Short links do not know the address yet — fixing" ;;
+            tls_short_differs)   value="Short link address differs from the certificate domain — left as is" ;;
             tls_short_url)       value="Short links will use" ;;
             tls_salt_created)    value="Salt for short codes generated" ;;
             tls_salt_kept)       value="Existing salt kept: changing it would break links already sent" ;;
@@ -364,6 +365,7 @@ t() {                  # t <ключ> [подстановка]
             tls_found)           value="Сертификат уже настроен для" ;;
             tls_found_no_domain) value="Сертификат есть, но домен не настроен" ;;
             tls_short_missing)   value="Сократитель ссылок ещё не знает адрес — прописываю" ;;
+            tls_short_differs)   value="Адрес коротких ссылок расходится с доменом сертификата — оставляю как есть" ;;
             tls_short_url)       value="Короткие ссылки будут вида" ;;
             tls_salt_created)    value="Соль для коротких кодов создана" ;;
             tls_salt_kept)       value="Существующая соль сохранена: смена сломала бы уже разосланные ссылки" ;;
@@ -1157,15 +1159,31 @@ remember_language() {
     set_env_value INSTALLER_LANG "$LANG_CODE"
 }
 
+env_fix_perms() {     # права на .env: владелец — пользователь контейнера
+    # В образе бот работает под uid 1000. Файл должен быть доступен ему
+    # на чтение и запись, иначе раздел ключей снова станет декоративным.
+    # Права 600 сохраняются: доступ только у владельца, не у всей машины.
+    chown 1000:1000 "$APP_DIR/.env" 2>/dev/null || true
+    chmod 600 "$APP_DIR/.env" 2>/dev/null || true
+}
+
+# С 4.8.4.2 .env смонтирован в контейнер. Bind-mount привязан к ИНОДУ,
+# а `sed -i` пишет во временный файл и переименовывает его — инод меняется,
+# и контейнер продолжает читать прежний файл, которого на хосте уже нет.
+# Поэтому правим через временный файл, но возвращаем содержимое НА МЕСТО.
 set_env_value() {     # set_env_value <ключ> <значение>
-    local key="$1" value="$2" file="$APP_DIR/.env"
+    local key="$1" value="$2" file="$APP_DIR/.env" tmp
     touch "$file"
+    tmp="$(mktemp)" || { log_raw "ENV   временный файл не создан"; return 1; }
     if grep -qE "^${key}=" "$file"; then
         # Разделитель | — в значениях встречаются слэши (пути, URL)
-        sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+        sed "s|^${key}=.*|${key}=${value}|" "$file" > "$tmp"
     else
-        printf '%s=%s\n' "$key" "$value" >> "$file"
+        { cat "$file"; printf '%s=%s\n' "$key" "$value"; } > "$tmp"
     fi
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+    env_fix_perms
     log_raw "ENV   ${key}=${value}"
 }
 
@@ -1726,6 +1744,11 @@ unpack_migration() {   # unpack_migration <архив>
 
     if [ -f "$staging/env.backup" ]; then
         cp "$staging/env.backup" "$APP_DIR/.env"
+        # Права ниоткуда не наследуются: в архив копия попадает обычным
+        # cp, а разворачивается в файл, которого на новой машине ещё
+        # не было. Без явной установки .env оставался читаемым всей
+        # машиной — с токеном бота и паролем базы внутри.
+        env_fix_perms
         ok "$(t restore_env)"
     else
         warn "$(t restore_no_env)"
@@ -2751,6 +2774,9 @@ fi
 if [ -f "$STAGING/env.backup" ]; then
     cp "$STAGING/env.backup" "$APP_DIR/.env"
     chmod 600 "$APP_DIR/.env" 2>/dev/null || true
+    # Владелец — пользователь контейнера: .env смонтирован внутрь,
+    # и файл, оставшийся за root, бот перезаписать не сможет.
+    chown 1000:1000 "$APP_DIR/.env" 2>/dev/null || true
     ok "Настройки восстановлены"
 else
     warn "В копии нет .env — параметры придётся ввести заново"
@@ -3037,6 +3063,12 @@ ENVEOF
         warn "Ключ Gemini не задан: ассистент отключён, анализ пойдёт по ключевым словам"
     fi
 fi
+
+# С 4.8.4.2 .env смонтирован в контейнер, поэтому владельцем должен быть
+# пользователь образа (uid 1000), а не root: иначе бот не прочитает ключи
+# и не запишет новые из раздела настроек. Делается и при обновлении:
+# на установках прежних версий .env остался за root.
+env_fix_perms
 
 # --- обслуживание базы данных ---------------------------------------------
 # Отдельная копия только базы: она нужна чаще полной и восстанавливается
@@ -3622,9 +3654,18 @@ offer_tls() {
             # ссылки о нём знают. Это отдельный шаг, и его легко забыть.
             local current
             current="$(get_env_value SHORT_BASE_URL)"
-            if [ "$current" != "https://$existing" ]; then
+            if [ -z "$current" ]; then
                 info "$(t tls_short_missing)"
                 setup_shortener "$existing"
+            elif [ "$current" != "https://$existing" ]; then
+                # Раньше здесь стояла молчаливая перезапись, и адрес,
+                # исправленный администратором, возвращался к домену
+                # из Caddyfile при КАЖДОМ обновлении. Настройку,
+                # сделанную руками, установщик не отменяет — только
+                # показывает расхождение.
+                warn "$(t tls_short_differs)"
+                printf "      .env: %s\n" "$current"
+                printf "      Caddyfile: https://%s\n" "$existing"
             fi
             return 0
         fi

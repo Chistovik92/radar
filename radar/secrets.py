@@ -101,6 +101,13 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("MEDIA_COOKIES", "Файл cookies",
             "Путь к cookies.txt для закрытых площадок.", "Медиа", secret=False),
 
+    # --- веб-панель ---
+    Setting("WEB_PUBLIC_URL", "Публичный адрес панели",
+            "Адрес, по которому панель открыта снаружи, например "
+            "https://example.ru. Показывается в /panel. Пусто — панель "
+            "считается доступной только с сервера.",
+            "Панель", secret=False),
+
     # --- сокращение ссылок ---
     Setting("SHORT_BASE_URL", "Адрес для коротких ссылок",
             "Адрес, на котором открыта веб-панель, например https://example.ru. "
@@ -176,12 +183,28 @@ def write(key: str, value: str) -> bool:
                 lines.append("\n")
             lines.append(f"{key}={value}\n")
 
-        # Атомарная запись: оборванная запись .env оставила бы бота без токена
-        temporary = f"{ENV_PATH}.tmp"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            handle.writelines(lines)
-        os.replace(temporary, ENV_PATH)
-        os.chmod(ENV_PATH, 0o600)
+        # Запись НА МЕСТО, а не подмена через переименование.
+        #
+        # До 4.8.4.2 здесь стоял os.replace ради атомарности: оборванная
+        # запись .env оставила бы бота без токена. Но с версии 4.8.4.2
+        # .env смонтирован в контейнер, а bind-mount привязан к ИНОДУ,
+        # не к пути. Переименование в точку монтирования возвращает EBUSY,
+        # а если бы прошло — хост писал бы в новый файл, контейнер читал бы
+        # вечно старый. Молчаливое расхождение хуже оборванной записи.
+        #
+        # Атомарность заменена копией: backup_env выше снимает .env перед
+        # каждой правкой, и последние десять копий лежат в data/backups.
+        with open(ENV_PATH, "w", encoding="utf-8") as handle:
+            handle.write("".join(lines))
+
+        # Права выставляем отдельно и мягко: файл может принадлежать
+        # другому пользователю (в контейнере бот работает под uid 1000,
+        # на хосте .env заводит root), и отказ chmod не повод считать
+        # запись неудавшейся — значение уже на диске.
+        try:
+            os.chmod(ENV_PATH, 0o600)
+        except OSError:
+            log.debug("Права на %s оставлены как есть", ENV_PATH)
     except OSError as exc:
         log.error("Не удалось записать %s в %s: %s", key, ENV_PATH, exc)
         return False
