@@ -950,7 +950,9 @@ became item 21.
    is gone.
 
 3. **The installer brings Caddy back after an update** (4.8.4.3) — without
-   it the web panel and short links stopped opening entirely.
+   it the web panel and short links stopped opening entirely. 4.8.4.6
+   adds the same to the rollback path: a failed update rolled itself
+   back, but the panel did not come up afterwards.
 
 4. **The panel can edit, not just display.** Before 4.8.4.5 it had only
    reading routes: no forms, no POST at all. Sources and keys could be set
