@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.4.2 — автономный установщик.
+# Система «Радар» v4.8.4.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.4.2"
+VERSION="4.8.4.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -207,6 +207,9 @@ t() {                  # t <ключ> [подстановка]
             tls_domain_empty)    value="No domain entered — skipping" ;;
             tls_domain_bad)      value="That does not look like a domain:" ;;
             tls_found)           value="Certificate already set up for" ;;
+            tls_restoring)       value="Caddy container is missing — bringing it back" ;;
+            tls_restored)        value="Caddy is running again, the panel is reachable" ;;
+            tls_restore_failed)  value="Caddy did not start — see: docker logs radar_tls" ;;
             tls_found_no_domain) value="A certificate exists, but no domain is configured" ;;
             tls_short_missing)   value="Short links do not know the address yet — fixing" ;;
             tls_short_differs)   value="Short link address differs from the certificate domain — left as is" ;;
@@ -363,6 +366,9 @@ t() {                  # t <ключ> [подстановка]
             tls_domain_empty)    value="Домен не введён — пропускаю" ;;
             tls_domain_bad)      value="Это не похоже на домен:" ;;
             tls_found)           value="Сертификат уже настроен для" ;;
+            tls_restoring)       value="Контейнер Caddy отсутствует — поднимаю заново" ;;
+            tls_restored)        value="Caddy снова работает, панель доступна" ;;
+            tls_restore_failed)  value="Caddy не поднялся — смотрите: docker logs radar_tls" ;;
             tls_found_no_domain) value="Сертификат есть, но домен не настроен" ;;
             tls_short_missing)   value="Сократитель ссылок ещё не знает адрес — прописываю" ;;
             tls_short_differs)   value="Адрес коротких ссылок расходится с доменом сертификата — оставляю как есть" ;;
@@ -1157,6 +1163,31 @@ remember_language() {
     # Запоминаем выбор, чтобы при следующем запуске не спрашивать снова.
     [ -f "$APP_DIR/.env" ] || return 0
     set_env_value INSTALLER_LANG "$LANG_CODE"
+}
+
+# Caddy живёт во втором файле Compose (tls/docker-compose.tls.yml), поэтому
+# для обычного `docker compose` он ЧУЖОЙ контейнер — orphan. Обновление
+# делает `down --remove-orphans`, и Caddy удаляется вместе с сетью проекта.
+# Вернуть его обязано обновление же: offer_tls этого не делал — он проверял
+# наличие сертификата (том caddy_data переживает удаление) и молча выходил,
+# считая, что всё настроено. Итог на живом сервере: после обновления панель
+# и короткие ссылки переставали открываться совсем, при целом сертификате.
+#
+# Убрать --remove-orphans нельзя: без него Caddy остаётся в удалённой сети
+# проекта, перестаёт видеть контейнер radar и отвечает 502 навсегда.
+ensure_tls_running() {
+    [ -f "$APP_DIR/tls/docker-compose.tls.yml" ] || return 0
+    [ -f "$APP_DIR/tls/Caddyfile" ] || return 0
+    if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "^radar_tls$"; then
+        return 0
+    fi
+    info "$(t tls_restoring)"
+    if (cd "$APP_DIR" && run $COMPOSE -f docker-compose.yml \
+            -f tls/docker-compose.tls.yml up -d caddy); then
+        ok "$(t tls_restored)"
+    else
+        warn "$(t tls_restore_failed)"
+    fi
 }
 
 env_fix_perms() {     # права на .env: владелец — пользователь контейнера
@@ -2921,6 +2952,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.4.3", [
+        "🖥 <b>Обновление больше не убивает веб-панель.</b> Caddy, "
+        "который отдаёт панель и короткие ссылки наружу, описан во "
+        "втором файле Compose — для обычной команды он посторонний "
+        "контейнер. Обновление удаляло его вместе с сетью проекта "
+        "и не поднимало обратно: сертификат оставался цел, а панель "
+        "переставала открываться совсем. Теперь установщик возвращает "
+        "Caddy сразу после запуска контейнеров — и чинит установки, "
+        "где панель уже пропала.",
+    ]),
     ("4.8.4.2", [
         "🔑 <b>Ключи, заданные из бота, перестали пропадать.</b> Файл "
         ".env не был виден контейнеру: Compose передавал его значения "
@@ -3778,7 +3819,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.4.2"
+__version__ = "4.8.4.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -27768,6 +27809,10 @@ step "$(t step_start)"
 run_slow "Запуск контейнеров" $COMPOSE $COMPOSE_ARGS up -d \
     || die_or_rollback "Не удалось запустить контейнеры"
 
+# Сразу за запуском: Caddy удалён предыдущим `down --remove-orphans`,
+# и без него панель недоступна снаружи вообще.
+ensure_tls_running
+
 # Первый запуск включает миграции Alembic, перенос данных и геокодирование —
 # на слабом железе это занимает минуты, а не секунды.
 info "Жду запуска бота (первый запуск — до 10 минут)"
@@ -27958,6 +28003,8 @@ offer_tls() {
         existing="$(configured_domain || true)"
         if [ -n "$existing" ]; then
             ok "$(t tls_found): $existing"
+            # Наличие сертификата не значит, что его кто-то отдаёт.
+            ensure_tls_running
             # Сертификат уже есть — остаётся убедиться, что короткие
             # ссылки о нём знают. Это отдельный шаг, и его легко забыть.
             local current
