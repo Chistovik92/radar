@@ -17,7 +17,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from . import config, features, i18n, roles
+from . import config, features, i18n, roles, timezones
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
@@ -288,12 +288,62 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
                      f"{quiet_summary(user, lang)}",
                 callback_data="set:quiet",
             )])
+        # Часовой пояс стоит рядом с погодой и тихими часами не случайно:
+        # он задаёт смысл обоим. «Погода в 8:00» без пояса — восемь утра
+        # у сервера, а не у человека.
+        rows.append([InlineKeyboardButton(
+            text=f"{label('settings.tz.label', '🕓 Часовой пояс')}: "
+                 f"{timezones.user_label(user, lang)}",
+            callback_data="set:tz",
+        )])
         rows.append([InlineKeyboardButton(
             text=label("menu.home", "🏠 В главное меню"), callback_data="menu:main")])
     else:
         rows.append(
             [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{target}")]
         )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def timezone_menu(user: dict[str, Any], extra: bool = False) -> InlineKeyboardMarkup:
+    """Выбор часового пояса.
+
+    Целые часы на первом экране, получасовые — на втором: вместе они дают
+    список в полтора раза длиннее ради нескольких стран, и человек из
+    Саратова пролистывал бы Непал каждый раз.
+    """
+    lang = i18n.language_of(user)
+    current = timezones.offset_of(user)
+    values = timezones.FRACTIONAL if extra else timezones.WHOLE_HOURS
+
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for minutes in values:
+        mark = "✅ " if minutes == current else ""
+        row.append(InlineKeyboardButton(
+            text=f"{mark}{timezones.label(minutes, lang)}",
+            callback_data=f"set:tz:{timezones.render(minutes)}",
+        ))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    if extra:
+        rows.append([InlineKeyboardButton(
+            text=i18n.t("settings.tz.whole", lang, "◀️ Целые часы"),
+            callback_data="set:tz",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text=i18n.t("settings.tz.fractional", lang, "⏱ Получасовые пояса"),
+            callback_data="set:tz:extra",
+        )])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("settings.back", lang, "◀️ К настройкам"),
+        callback_data="menu:settings",
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

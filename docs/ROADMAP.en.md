@@ -927,6 +927,31 @@ became item 21.
 
 ---
 
+## 4.8.4 — time zones and the menu ✅ implemented
+
+1. **A time zone per user.** Before 4.8.4.4 time was shared system-wide:
+   quiet hours, the weather time and digest delivery all followed the
+   server's zone. That worked while everyone lived in one city; with users
+   elsewhere "weather at 8:00" meant eight in the morning at the server —
+   five for one person and eleven for another.
+
+   An offset from UTC is stored rather than a zone name: a list of offsets
+   is shorter and clearer than a list of three hundred zones. The price is
+   daylight saving time, which an offset does not track; Russia does not
+   change clocks, so it costs nothing there. Labels follow the interface
+   language: from Moscow in Russian, from Greenwich in English. An empty
+   value means "not chosen" — the server's zone is used, so the update
+   changes nothing for anyone.
+
+2. **Broadcast messages no longer lead into the menu.** An alert, a weather
+   summary and a digest each carried a "🏠 Main menu" button: the person was
+   reading a warning and the bot offered them settings. The menu is always
+   at hand anyway, pinned as "☰ Menu" under the input field, so the button
+   is gone.
+
+3. **The installer brings Caddy back after an update** (4.8.4.3) — without
+   it the web panel and short links stopped opening entirely.
+
 ## 4.9 — operations
 
 1. **Zero-downtime updates:** the schema is applied before the restart,

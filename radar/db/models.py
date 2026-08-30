@@ -83,6 +83,10 @@ class User(Base):
     last_weather: Mapped[int] = mapped_column(BigIntType, default=0)
     last_fixed_date: Mapped[str] = mapped_column(String(16), default="")
 
+    # Часовой пояс: смещение от UTC в виде «+03:00». Пусто — не выбран,
+    # тогда берётся пояс сервера, как было до 4.8.4.4. См. radar/timezones.py.
+    tz: Mapped[str] = mapped_column(String(8), default="")
+
     # Задел под 4.1: тихие часы и антиспам.
     quiet_from: Mapped[str] = mapped_column(String(8), default="")
     quiet_to: Mapped[str] = mapped_column(String(8), default="")

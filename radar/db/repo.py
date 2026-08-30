@@ -62,6 +62,8 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         # Пусто означает «язык ещё не выбран» — у нового человека
         # и у того, кто пользовался ботом до появления выбора.
         "lang": "",
+        # Часовой пояс не выбран: берётся серверный, поведение прежнее.
+        "tz": "",
         "last_weather": 0,
         "last_fixed_date": "",
         "quiet_from": "",
@@ -122,6 +124,7 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "weather_time": row.weather_time,
         "weather_format": row.weather_format,
         "lang": row.lang or "",
+        "tz": row.tz or "",
         "last_weather": row.last_weather,
         "last_fixed_date": row.last_fixed_date,
         "quiet_from": row.quiet_from,
@@ -174,6 +177,7 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.weather_time = data.get("weather_time", "08:00")
         row.weather_format = data.get("weather_format", "text")
         row.lang = (data.get("lang") or "")[:2]
+        row.tz = (data.get("tz") or "")[:8]
         row.last_weather = int(data.get("last_weather") or 0)
         row.last_fixed_date = data.get("last_fixed_date", "")
         row.quiet_from = data.get("quiet_from", "")

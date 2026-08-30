@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.4.3 — автономный установщик.
+# Система «Радар» v4.8.4.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.4.3"
+VERSION="4.8.4.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2952,6 +2952,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.4.4", [
+        "🕓 <b>Свой часовой пояс.</b> Время было общим на всю "
+        "систему: тихие часы, погода в заданный час и доставка подборок "
+        "считались по поясу сервера. Для человека из другого города "
+        "«погода в 8:00» приходила ночью. Теперь пояс выбирается "
+        "в настройках оповещений — по-русски от Москвы, по-английски "
+        "от Гринвича. Пока не выбран, берётся серверный: у тех, кто "
+        "ничего не менял, всё остаётся как было.",
+        "📢 <b>Тревога больше не уводит в меню.</b> Под "
+        "предупреждением, погодой и подборкой висела кнопка «В главное "
+        "меню»: человек читал сообщение, а бот предлагал настройки. Меню "
+        "и так всегда рядом — закреплённой кнопкой «☰ Меню» под полем ввода.",
+    ]),
     ("4.8.4.3", [
         "🖥 <b>Обновление больше не убивает веб-панель.</b> Caddy, "
         "который отдаёт панель и короткие ссылки наружу, описан во "
@@ -3819,7 +3832,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.4.3"
+__version__ = "4.8.4.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -14081,6 +14094,10 @@ class User(Base):
     last_weather: Mapped[int] = mapped_column(BigIntType, default=0)
     last_fixed_date: Mapped[str] = mapped_column(String(16), default="")
 
+    # Часовой пояс: смещение от UTC в виде «+03:00». Пусто — не выбран,
+    # тогда берётся пояс сервера, как было до 4.8.4.4. См. radar/timezones.py.
+    tz: Mapped[str] = mapped_column(String(8), default="")
+
     # Задел под 4.1: тихие часы и антиспам.
     quiet_from: Mapped[str] = mapped_column(String(8), default="")
     quiet_to: Mapped[str] = mapped_column(String(8), default="")
@@ -14875,6 +14892,8 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         # Пусто означает «язык ещё не выбран» — у нового человека
         # и у того, кто пользовался ботом до появления выбора.
         "lang": "",
+        # Часовой пояс не выбран: берётся серверный, поведение прежнее.
+        "tz": "",
         "last_weather": 0,
         "last_fixed_date": "",
         "quiet_from": "",
@@ -14935,6 +14954,7 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "weather_time": row.weather_time,
         "weather_format": row.weather_format,
         "lang": row.lang or "",
+        "tz": row.tz or "",
         "last_weather": row.last_weather,
         "last_fixed_date": row.last_fixed_date,
         "quiet_from": row.quiet_from,
@@ -14987,6 +15007,7 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.weather_time = data.get("weather_time", "08:00")
         row.weather_format = data.get("weather_format", "text")
         row.lang = (data.get("lang") or "")[:2]
+        row.tz = (data.get("tz") or "")[:8]
         row.last_weather = int(data.get("last_weather") or 0)
         row.last_fixed_date = data.get("last_fixed_date", "")
         row.quiet_from = data.get("quiet_from", "")
@@ -19288,7 +19309,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from . import config, features, i18n, roles
+from . import config, features, i18n, roles, timezones
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
@@ -19559,12 +19580,62 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
                      f"{quiet_summary(user, lang)}",
                 callback_data="set:quiet",
             )])
+        # Часовой пояс стоит рядом с погодой и тихими часами не случайно:
+        # он задаёт смысл обоим. «Погода в 8:00» без пояса — восемь утра
+        # у сервера, а не у человека.
+        rows.append([InlineKeyboardButton(
+            text=f"{label('settings.tz.label', '🕓 Часовой пояс')}: "
+                 f"{timezones.user_label(user, lang)}",
+            callback_data="set:tz",
+        )])
         rows.append([InlineKeyboardButton(
             text=label("menu.home", "🏠 В главное меню"), callback_data="menu:main")])
     else:
         rows.append(
             [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{target}")]
         )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def timezone_menu(user: dict[str, Any], extra: bool = False) -> InlineKeyboardMarkup:
+    """Выбор часового пояса.
+
+    Целые часы на первом экране, получасовые — на втором: вместе они дают
+    список в полтора раза длиннее ради нескольких стран, и человек из
+    Саратова пролистывал бы Непал каждый раз.
+    """
+    lang = i18n.language_of(user)
+    current = timezones.offset_of(user)
+    values = timezones.FRACTIONAL if extra else timezones.WHOLE_HOURS
+
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for minutes in values:
+        mark = "✅ " if minutes == current else ""
+        row.append(InlineKeyboardButton(
+            text=f"{mark}{timezones.label(minutes, lang)}",
+            callback_data=f"set:tz:{timezones.render(minutes)}",
+        ))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    if extra:
+        rows.append([InlineKeyboardButton(
+            text=i18n.t("settings.tz.whole", lang, "◀️ Целые часы"),
+            callback_data="set:tz",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text=i18n.t("settings.tz.fractional", lang, "⏱ Получасовые пояса"),
+            callback_data="set:tz:extra",
+        )])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("settings.back", lang, "◀️ К настройкам"),
+        callback_data="menu:settings",
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -19977,7 +20048,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -19999,11 +20070,12 @@ from . import (
     sos,
     sources,
     storage,
+    timezones,
     weather,
 )
 from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
 from .textutils import cluster_center, cluster_locations
-from .tg import back_kb, send_html
+from .tg import send_html
 
 log = logging.getLogger("radar.monitor")
 
@@ -20093,13 +20165,17 @@ async def dispatch_user(
     if features.enabled("antispam"):
         messages = quiet.merge_similar(messages)
 
-    moment = datetime.now()
+    # Местное время ЭТОГО человека, а не сервера: тихие часы и «погода
+    # в 8:00» должны означать восемь утра там, где он живёт. now приходит
+    # в UTC — общий для цикла якорь, от него считается каждый пояс.
+    moment = timezones.local_now(user, now)
     categories = {name for item in analyses for name in item.categories}
 
     sent = 0
-    # Сначала отбираем, потом шлём: кнопка «В главное меню» нужна одна,
-    # под последним сообщением серии. Раньше она висела под каждым, и при
-    # трёх совпавших локациях экран превращался в лестницу из кнопок.
+    # Рассылаемые сообщения идут без кнопок вовсе (с 4.8.4.4). Раньше под
+    # последним висело «🏠 В главное меню»: тревога уводила в меню, хотя
+    # человек читал её, а не собирался настраивать бота. Меню и так всегда
+    # рядом — закреплённой кнопкой «☰ Меню» под полем ввода.
     outgoing: list[str] = []
     for _kind, text in messages:
         # Повтор того же события по той же локации не отправляем
@@ -20115,9 +20191,8 @@ async def dispatch_user(
 
         outgoing.append(text)
 
-    for index, text in enumerate(outgoing):
-        last = index == len(outgoing) - 1
-        if await send_html(uid, text, back_kb() if last else None):
+    for text in outgoing:
+        if await send_html(uid, text):
             sent += 1
         await asyncio.sleep(0.3)
 
@@ -20137,13 +20212,12 @@ async def dispatch_user(
                 log.debug("Доставка не записана в журнал")
 
     changed = False
-    if features.enabled("weather") and weather_due(user, now_ts, now):
+    if features.enabled("weather") and weather_due(user, now_ts, moment):
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
-        for index, cluster in enumerate(clusters):
+        for cluster in clusters:
             lat, lon = cluster_center(cluster)
             data = await weather.fetch(session, lat, lon, lang=i18n.language_of(user))
-            markup = back_kb() if index == len(clusters) - 1 else None
-            await weather.deliver(uid, data, cluster_title(cluster), markup, user)
+            await weather.deliver(uid, data, cluster_title(cluster), None, user)
             sent += 1
             await asyncio.sleep(0.2)
         user["last_weather"] = now_ts
@@ -20213,7 +20287,7 @@ async def send_recap(now: datetime) -> None:
 
         hint = str(locations[0].get("city") or "")
         text = build_recap(relevant, period, hint)
-        if text and await send_html(uid, text, back_kb()):
+        if text and await send_html(uid, text):
             delivered += 1
         await asyncio.sleep(0.3)
 
@@ -20235,18 +20309,19 @@ async def _send_digests_inner(now: datetime) -> None:
     delivered = 0
     for uid, user in list(storage.users().items()):
         subscription = digest.subscription_of(user)
-        marker = digest.due(subscription, now)
+        local = timezones.local_now(user, now)
+        marker = digest.due(subscription, local)
         if marker is None:
             continue
 
         locations = user.get("locs") or []
         city = str(locations[0].get("city") or "") if locations else ""
         summaries = await digest.summaries_for(_digest_pool, subscription)
-        text = digest.build(_digest_pool, subscription, now, city, summaries)
+        text = digest.build(_digest_pool, subscription, local, city, summaries)
         if not text:
             continue
 
-        if await send_html(uid, text, back_kb()):
+        if await send_html(uid, text):
             subscription.last_sent = marker
             digest.store_subscription(user, subscription)
             delivered += 1
@@ -20351,10 +20426,9 @@ async def release_held(now: datetime) -> None:
     if not features.enabled("quiet_hours") or not quiet.held_count():
         return
     for uid, user in list(storage.users().items()):
-        held = list(quiet.release(uid, user, now))
-        for index, text in enumerate(held):
-            last = index == len(held) - 1
-            await send_html(uid, text, back_kb() if last else None)
+        held = list(quiet.release(uid, user, timezones.local_now(user, now)))
+        for text in held:
+            await send_html(uid, text)
             await asyncio.sleep(0.2)
 
 
@@ -20512,7 +20586,9 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
         )
 
     now_ts = int(time.time())
-    now = datetime.now()
+    # Якорь цикла — UTC. Местное время каждого получателя считается
+    # от него внутри dispatch_user: пользователи живут в разных поясах.
+    now = datetime.now(timezone.utc)
     changed = False
     with profiling.measure("dispatch"):
         for uid, user in list(storage.users().items()):
@@ -21261,7 +21337,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import features, i18n, keyboards, roles, storage
+from .. import features, i18n, keyboards, roles, storage, timezones
 from ..matching import CATEGORY_TITLES
 from ..states import Form
 from ..tg import back_kb, safe_edit, send_html
@@ -21605,6 +21681,61 @@ async def set_weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
         i18n.t("settings.wformat.as_text", lang, "📄 Текстом") if value == "text"
         else i18n.t("settings.wformat.as_image", lang, "🖼 Картинкой")
     )
+    await safe_edit(
+        call,
+        f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",
+        keyboards.settings_menu(user),
+    )
+
+
+@router.callback_query(F.data == "set:tz")
+@router.callback_query(F.data == "set:tz:extra")
+async def ask_timezone(call: CallbackQuery, user: dict[str, Any]) -> None:
+    """Выбор часового пояса. Отсчёт русских подписей — от Москвы."""
+    lang = i18n.language_of(user)
+    extra = call.data.endswith(":extra")
+    await call.answer()
+
+    if lang.startswith("en"):
+        explain = i18n.t(
+            "settings.tz.prompt_en", lang,
+            "Offsets are counted from UTC. Quiet hours, the weather time "
+            "and digest delivery all follow the zone you pick here.",
+        )
+    else:
+        explain = i18n.t(
+            "settings.tz.prompt", lang,
+            "Отсчёт от московского времени. По выбранному поясу считаются "
+            "тихие часы, время погоды и доставка подборок.",
+        )
+
+    await safe_edit(
+        call,
+        f"{i18n.t('settings.tz.title', lang, '🕓 <b>Часовой пояс</b>')}\n\n"
+        f"{i18n.t('settings.tz.now', lang, 'Сейчас')}: "
+        f"<b>{timezones.user_label(user, lang)}</b>\n\n{explain}",
+        keyboards.timezone_menu(user, extra=extra),
+    )
+
+
+@router.callback_query(F.data.startswith("set:tz:"))
+async def set_timezone(call: CallbackQuery, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
+    value = call.data.split(":", 2)[2]
+
+    # Значение приходит от нашей же клавиатуры, но проверяем всё равно:
+    # callback_data подделывается тривиально, а мусор в поле уехал бы
+    # в базу и вернулся бы «не выбран» при каждом чтении.
+    if timezones.parse(value) is None:
+        await call.answer(
+            i18n.t("settings.tz.bad", lang, "Не разобрал пояс."), show_alert=True)
+        return
+
+    user["tz"] = value
+    await storage.save()
+    await call.answer(
+        f"{i18n.t('settings.tz.saved', lang, 'Часовой пояс')}: "
+        f"{timezones.label(timezones.parse(value), lang)}")
     await safe_edit(
         call,
         f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",

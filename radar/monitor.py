@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -33,11 +33,12 @@ from . import (
     sos,
     sources,
     storage,
+    timezones,
     weather,
 )
 from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
 from .textutils import cluster_center, cluster_locations
-from .tg import back_kb, send_html
+from .tg import send_html
 
 log = logging.getLogger("radar.monitor")
 
@@ -127,13 +128,17 @@ async def dispatch_user(
     if features.enabled("antispam"):
         messages = quiet.merge_similar(messages)
 
-    moment = datetime.now()
+    # Местное время ЭТОГО человека, а не сервера: тихие часы и «погода
+    # в 8:00» должны означать восемь утра там, где он живёт. now приходит
+    # в UTC — общий для цикла якорь, от него считается каждый пояс.
+    moment = timezones.local_now(user, now)
     categories = {name for item in analyses for name in item.categories}
 
     sent = 0
-    # Сначала отбираем, потом шлём: кнопка «В главное меню» нужна одна,
-    # под последним сообщением серии. Раньше она висела под каждым, и при
-    # трёх совпавших локациях экран превращался в лестницу из кнопок.
+    # Рассылаемые сообщения идут без кнопок вовсе (с 4.8.4.4). Раньше под
+    # последним висело «🏠 В главное меню»: тревога уводила в меню, хотя
+    # человек читал её, а не собирался настраивать бота. Меню и так всегда
+    # рядом — закреплённой кнопкой «☰ Меню» под полем ввода.
     outgoing: list[str] = []
     for _kind, text in messages:
         # Повтор того же события по той же локации не отправляем
@@ -149,9 +154,8 @@ async def dispatch_user(
 
         outgoing.append(text)
 
-    for index, text in enumerate(outgoing):
-        last = index == len(outgoing) - 1
-        if await send_html(uid, text, back_kb() if last else None):
+    for text in outgoing:
+        if await send_html(uid, text):
             sent += 1
         await asyncio.sleep(0.3)
 
@@ -171,13 +175,12 @@ async def dispatch_user(
                 log.debug("Доставка не записана в журнал")
 
     changed = False
-    if features.enabled("weather") and weather_due(user, now_ts, now):
+    if features.enabled("weather") and weather_due(user, now_ts, moment):
         clusters = cluster_locations(locations, config.CLUSTER_RADIUS_M)
-        for index, cluster in enumerate(clusters):
+        for cluster in clusters:
             lat, lon = cluster_center(cluster)
             data = await weather.fetch(session, lat, lon, lang=i18n.language_of(user))
-            markup = back_kb() if index == len(clusters) - 1 else None
-            await weather.deliver(uid, data, cluster_title(cluster), markup, user)
+            await weather.deliver(uid, data, cluster_title(cluster), None, user)
             sent += 1
             await asyncio.sleep(0.2)
         user["last_weather"] = now_ts
@@ -247,7 +250,7 @@ async def send_recap(now: datetime) -> None:
 
         hint = str(locations[0].get("city") or "")
         text = build_recap(relevant, period, hint)
-        if text and await send_html(uid, text, back_kb()):
+        if text and await send_html(uid, text):
             delivered += 1
         await asyncio.sleep(0.3)
 
@@ -269,18 +272,19 @@ async def _send_digests_inner(now: datetime) -> None:
     delivered = 0
     for uid, user in list(storage.users().items()):
         subscription = digest.subscription_of(user)
-        marker = digest.due(subscription, now)
+        local = timezones.local_now(user, now)
+        marker = digest.due(subscription, local)
         if marker is None:
             continue
 
         locations = user.get("locs") or []
         city = str(locations[0].get("city") or "") if locations else ""
         summaries = await digest.summaries_for(_digest_pool, subscription)
-        text = digest.build(_digest_pool, subscription, now, city, summaries)
+        text = digest.build(_digest_pool, subscription, local, city, summaries)
         if not text:
             continue
 
-        if await send_html(uid, text, back_kb()):
+        if await send_html(uid, text):
             subscription.last_sent = marker
             digest.store_subscription(user, subscription)
             delivered += 1
@@ -385,10 +389,9 @@ async def release_held(now: datetime) -> None:
     if not features.enabled("quiet_hours") or not quiet.held_count():
         return
     for uid, user in list(storage.users().items()):
-        held = list(quiet.release(uid, user, now))
-        for index, text in enumerate(held):
-            last = index == len(held) - 1
-            await send_html(uid, text, back_kb() if last else None)
+        held = list(quiet.release(uid, user, timezones.local_now(user, now)))
+        for text in held:
+            await send_html(uid, text)
             await asyncio.sleep(0.2)
 
 
@@ -546,7 +549,9 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
         )
 
     now_ts = int(time.time())
-    now = datetime.now()
+    # Якорь цикла — UTC. Местное время каждого получателя считается
+    # от него внутри dispatch_user: пользователи живут в разных поясах.
+    now = datetime.now(timezone.utc)
     changed = False
     with profiling.measure("dispatch"):
         for uid, user in list(storage.users().items()):

@@ -1,4 +1,4 @@
-# Radar v4.8.4.3
+# Radar v4.8.4.4
 
 [Русская версия](README.md)
 
@@ -84,6 +84,22 @@ measurement on the production server showed 51 seconds per cycle against a
 the network while using two percent of the CPU. The cap matters as much as
 the parallelism: dozens of simultaneous requests to `t.me` from one address
 look like scraping, and it is the alerting system that would pay for it.
+
+## Time zone
+
+Users live in different time zones, so each has their own local time.
+The zone is picked in the alert settings and gives meaning to three things
+at once: quiet hours, the weather time and digest delivery. Until a zone
+is chosen, the server's zone is used, exactly as before 4.8.4.4.
+
+Labels follow the interface language: offsets are counted from UTC in
+English (`UTC+5`) and from Moscow in Russian (`MSK+2`) — a Russian speaker
+thinks in Moscow time, and `UTC+5` tells them nothing.
+
+An offset is stored rather than a zone name. The price of that simplicity
+is daylight saving time, which an offset does not track. Russia has not
+changed clocks since 2014, so this costs nothing there; a user in Europe
+or the US adjusts the choice twice a year.
 
 ## Language
 

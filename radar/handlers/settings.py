@@ -16,7 +16,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import features, i18n, keyboards, roles, storage
+from .. import features, i18n, keyboards, roles, storage, timezones
 from ..matching import CATEGORY_TITLES
 from ..states import Form
 from ..tg import back_kb, safe_edit, send_html
@@ -360,6 +360,61 @@ async def set_weather_format(call: CallbackQuery, user: dict[str, Any]) -> None:
         i18n.t("settings.wformat.as_text", lang, "📄 Текстом") if value == "text"
         else i18n.t("settings.wformat.as_image", lang, "🖼 Картинкой")
     )
+    await safe_edit(
+        call,
+        f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",
+        keyboards.settings_menu(user),
+    )
+
+
+@router.callback_query(F.data == "set:tz")
+@router.callback_query(F.data == "set:tz:extra")
+async def ask_timezone(call: CallbackQuery, user: dict[str, Any]) -> None:
+    """Выбор часового пояса. Отсчёт русских подписей — от Москвы."""
+    lang = i18n.language_of(user)
+    extra = call.data.endswith(":extra")
+    await call.answer()
+
+    if lang.startswith("en"):
+        explain = i18n.t(
+            "settings.tz.prompt_en", lang,
+            "Offsets are counted from UTC. Quiet hours, the weather time "
+            "and digest delivery all follow the zone you pick here.",
+        )
+    else:
+        explain = i18n.t(
+            "settings.tz.prompt", lang,
+            "Отсчёт от московского времени. По выбранному поясу считаются "
+            "тихие часы, время погоды и доставка подборок.",
+        )
+
+    await safe_edit(
+        call,
+        f"{i18n.t('settings.tz.title', lang, '🕓 <b>Часовой пояс</b>')}\n\n"
+        f"{i18n.t('settings.tz.now', lang, 'Сейчас')}: "
+        f"<b>{timezones.user_label(user, lang)}</b>\n\n{explain}",
+        keyboards.timezone_menu(user, extra=extra),
+    )
+
+
+@router.callback_query(F.data.startswith("set:tz:"))
+async def set_timezone(call: CallbackQuery, user: dict[str, Any]) -> None:
+    lang = i18n.language_of(user)
+    value = call.data.split(":", 2)[2]
+
+    # Значение приходит от нашей же клавиатуры, но проверяем всё равно:
+    # callback_data подделывается тривиально, а мусор в поле уехал бы
+    # в базу и вернулся бы «не выбран» при каждом чтении.
+    if timezones.parse(value) is None:
+        await call.answer(
+            i18n.t("settings.tz.bad", lang, "Не разобрал пояс."), show_alert=True)
+        return
+
+    user["tz"] = value
+    await storage.save()
+    await call.answer(
+        f"{i18n.t('settings.tz.saved', lang, 'Часовой пояс')}: "
+        f"{timezones.label(timezones.parse(value), lang)}")
     await safe_edit(
         call,
         f"<b>{i18n.t('settings.title', lang, '⚙️ Оповещения')}</b>",
