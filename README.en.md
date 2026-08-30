@@ -1,4 +1,4 @@
-# Radar v4.8.9
+# Radar v4.9
 
 [Русская версия](README.md)
 
@@ -100,6 +100,22 @@ An offset is stored rather than a zone name. The price of that simplicity
 is daylight saving time, which an offset does not track. Russia has not
 changed clocks since 2014, so this costs nothing there; a user in Europe
 or the US adjusts the choice twice a year.
+
+## Subscription
+
+One subscription for the whole bot. It opens two things at once: news
+digests across all topics, and video downloads without the daily cap.
+
+**The parts are not sold separately.** The model underneath was already
+one — paying for either opened both — but people saw two offers and
+reasonably concluded they had to buy both. Charging twice for one feeling
+is not on, so there is a single entry point now.
+
+**A 7-day trial**, once per person, offered up front rather than after
+a refusal to buy — otherwise only those who reach the refusal ever see it.
+
+**Danger alerts are free always** and do not depend on the subscription.
+That is a project rule, not a current setting.
 
 ## Large files by link
 

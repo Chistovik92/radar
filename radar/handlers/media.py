@@ -743,6 +743,22 @@ async def _safe_text(message: Message, text: str) -> None:
 #  Справка
 # --------------------------------------------------------------------------
 
+def _drop_note() -> str:
+    """Строка про выдачу крупного файла ссылкой.
+
+    Сказана прямо в разделе загрузки: без неё человек упирается в предел
+    Telegram и решает, что бот больше ничего не умеет. Пусто, когда
+    внешнего адреса нет — обещать несуществующее нельзя.
+    """
+    from .. import filedrop
+
+    if not filedrop.enabled():
+        return ""
+    return (f"<b>Крупнее предела:</b> отдаётся ссылкой, до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ на файл. "
+            f"Ссылка живёт {filedrop.TTL_HOURS} ч.\n")
+
+
 @router.message(Command("media"))
 async def cmd_media(message: Message, role: str) -> None:
     if not features.enabled("media_download"):
@@ -752,13 +768,15 @@ async def cmd_media(message: Message, role: str) -> None:
         await message.answer("⛔️ Загрузка видео доступна начиная с другой роли.")
         return
 
+    drop_note = _drop_note()
     limit = media.size_limit_mb(config.uses_local_api())
     server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
     await message.answer(
         "🎬 <b>Загрузка видео</b>\n\n"
         "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
         f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
-        f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
+        f"<b>Предел отправки:</b> {limit} МБ ({server})\n"
+        f"{drop_note}\n"
         "<i>Скачивайте только то, на что у вас есть право: правила площадок "
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
@@ -786,7 +804,8 @@ async def menu_media(call: CallbackQuery, role: str, user: dict) -> None:
         "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
         f"<b>{mediaquota.describe(quota)}</b>\n"
         f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
-        f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
+        f"<b>Предел отправки:</b> {limit} МБ ({server})\n"
+        f"{_drop_note()}\n"
         "<i>Скачивайте только то, на что у вас есть право: правила площадок "
         "и авторские права никто не отменял.</i>",
         _quota_keyboard(quota),
@@ -800,9 +819,12 @@ async def menu_media(call: CallbackQuery, role: str, user: dict) -> None:
 def _quota_keyboard(quota) -> InlineKeyboardMarkup:
     rows = []
     if not quota.unlimited:
+        # Ведём в общую подписку, а не в отдельную покупку безлимита:
+        # раздельно эти части не продаются, и второе предложение
+        # заставляло человека думать, что купить надо оба.
         rows.append([InlineKeyboardButton(
-            text=f"⭐️ Безлимит на месяц — {mediaquota.STARS_PRICE}",
-            callback_data="med:buy",
+            text="💳 Подписка — безлимит на видео и подборки",
+            callback_data="sub:menu",
         )])
     rows.append([InlineKeyboardButton(text="🏠 В главное меню",
                                       callback_data="menu:main")])

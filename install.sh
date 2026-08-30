@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.9 — автономный установщик.
+# Система «Радар» v4.9 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.9"
+VERSION="4.9"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2653,7 +2653,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=94
+FILE_COUNT=96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2958,6 +2958,23 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9", [
+        "💳 <b>Подписка одна и продаётся из одного места.</b> "
+        "Раньше её предлагали дважды — из подборок и из видео. Модель "
+        "под ними давно была общей: оплата любой части открывала обе. "
+        "Но человек видел два предложения и разумно заключал, что "
+        "покупать надо оба. Продавать дважды одно и то же ощущение "
+        "нельзя, поэтому вход теперь один.",
+        "🎁 <b>Пробный период — 7 дней.</b> Один раз на человека "
+        "и предлагается сразу, а не после отказа от покупки: иначе его "
+        "увидят только те, кто до отказа дошёл.",
+        "📏 <b>Во вкладке видео сказано про ссылку.</b> Раньше "
+        "там стоял только предел Telegram, и человек решал, что бот "
+        "больше ничего не умеет. Теперь видно: крупнее предела файл "
+        "отдаётся ссылкой, до 5 ГБ.",
+        "⚙ <b>Подписка вынесена в управление.</b> Тарифы правились "
+        "из раздела подборок, хотя подписка подборками не исчерпывается.",
+    ]),
     ("4.8.9", [
         "🧠 <b>У агента появилась модель.</b> Четвёртое поле "
         "рядом с названием, адресом и ключом. Хранится под тем же именем, "
@@ -3949,7 +3966,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.9"
+__version__ = "4.9"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -12346,7 +12363,7 @@ cat > "radar/subscription.py" <<'RADAR_FILE_36'
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import roles
@@ -12363,6 +12380,76 @@ def _parse(value: Any) -> datetime | None:
         return None
 
 
+# Пробный период. Даётся один раз и сам: требовать нажатия «начать пробный
+# период» значит терять тех, кто до этой кнопки не дошёл, — а весь смысл
+# пробы в том, чтобы человек увидел платную часть в деле.
+TRIAL_DAYS = 7
+
+# Хранилище общей подписки. Раньше срок жил в двух местах — у подборок
+# и у видео, — и подарить дни было некуда: любой выбор выглядел бы
+# как оплата не того. Здесь третий, свой источник, а paid_until
+# по-прежнему берёт наибольшее из всех.
+SLOT = "sub"
+
+
+def _slot(user: dict[str, Any] | None) -> dict[str, Any]:
+    data = (user or {}).get(SLOT)
+    return data if isinstance(data, dict) else {}
+
+
+def trial_started(user: dict[str, Any] | None) -> str:
+    return str(_slot(user).get("trial_started") or "")
+
+
+def trial_used(user: dict[str, Any] | None) -> bool:
+    """Был ли пробный период. Второй раз он не даётся."""
+    return bool(trial_started(user))
+
+
+def start_trial(user: dict[str, Any]) -> bool:
+    """Включает пробный период. False — он уже был.
+
+    Дни кладутся в общий срок: пробный период отличается от оплаченного
+    только тем, как он появился, и разделять их пришлось бы во всех
+    проверках сразу.
+    """
+    if trial_used(user):
+        return False
+    now = datetime.now(timezone.utc)
+    slot = dict(_slot(user))
+    slot["trial_started"] = now.isoformat()
+    slot["until"] = (now + timedelta(days=TRIAL_DAYS)).isoformat()
+    user[SLOT] = slot
+    log.info("Пробный период на %d дней начат", TRIAL_DAYS)
+    return True
+
+
+def grant(user: dict[str, Any], days: int) -> str:
+    """Добавляет дни к общему сроку. Возвращает новую дату окончания.
+
+    Продлевает от конца текущего срока, а не от сегодня: иначе подарок
+    поверх оплаченного укоротил бы оплаченное.
+    """
+    now = datetime.now(timezone.utc)
+    current = _parse(paid_until(user))
+    base = current if current and current > now else now
+    until = (base + timedelta(days=max(0, int(days)))).isoformat()
+    slot = dict(_slot(user))
+    slot["until"] = until
+    user[SLOT] = slot
+    return until
+
+
+def on_trial(user: dict[str, Any] | None) -> bool:
+    """Идёт ли пробный период прямо сейчас."""
+    if not trial_used(user) or not paid(user):
+        return False
+    started = _parse(trial_started(user))
+    if started is None:
+        return False
+    return (datetime.now(timezone.utc) - started).days < TRIAL_DAYS
+
+
 def paid_until(user: dict[str, Any] | None) -> str:
     """Наибольший срок из всех оплаченных частей, ISO-строкой."""
     user = user or {}
@@ -12375,6 +12462,10 @@ def paid_until(user: dict[str, Any] | None) -> str:
     media_until = _parse((user.get("media_quota") or {}).get("paid_until"))
     if media_until:
         candidates.append(media_until)
+
+    own_until = _parse(_slot(user).get("until"))
+    if own_until:
+        candidates.append(own_until)
 
     if not candidates:
         return ""
@@ -12411,9 +12502,13 @@ def describe(user: dict[str, Any] | None, role: str | None = None) -> str:
     """Строка о состоянии подписки — одна на обе части."""
     if complimentary(user, role):
         return "🛠 Служебный доступ — всё открыто без оплаты."
+    if on_trial(user):
+        return f"🎁 Пробный период, осталось дней: {days_left(user)}"
     if paid(user):
         return f"✅ Подписка активна, осталось дней: {days_left(user)}"
-    return "Подписка не оформлена."
+    if trial_used(user):
+        return "Подписка не оформлена, пробный период уже был."
+    return f"Подписка не оформлена. Есть пробный период — {TRIAL_DAYS} дней."
 RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
 cat > "radar/backup.py" <<'RADAR_FILE_37'
@@ -21253,8 +21348,155 @@ def forget(slot: int) -> bool:
     log.info("Свой агент в слоте %s удалён", slot)
     return True
 RADAR_FILE_68
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/redeem.py"
+cat > "radar/redeem.py" <<'RADAR_FILE_69'
+#!/usr/bin/env python3
+"""Погашение кодов, выданных на стороне.
+
+Партнёрский проект раздаёт коды у себя, человек приносит код сюда
+и получает подписку. От `radar/promo.py` это противоположное движение:
+там коды выдаём мы и отдаём партнёру выгрузку, здесь код приходит
+снаружи и мы его засчитываем.
+
+Список кодов ведёт суперадминистратор — на стороне партнёра они
+генерируются как угодно, а сюда попадают готовыми. Своей генерации нет
+намеренно: код, который мы придумали сами, партнёр не сможет проверить
+у себя, и сверять две выдумки было бы нечем.
+
+Код одноразовый. Кто и когда его погасил, остаётся в записи: без этого
+на вопрос «почему у него подписка» ответить нечем.
+
+Про этот механизм ничего не сказано в интерфейсе бота, в README и в списке
+изменений — так задумано. Код узнаёт тот, кому его дали на стороне
+партнёра, и вводит его сообщением; для остальных ничего не меняется.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime, timezone
+from typing import Any
+
+log = logging.getLogger("radar.redeem")
+
+META_KEY = "redeem_codes"
+
+# Сколько дней даёт код по умолчанию.
+DEFAULT_DAYS = 28
+
+# Что вообще считаем кодом. Рамки нужны и для проверки при заведении,
+# и для того, чтобы обычное сообщение не принималось за попытку погашения.
+CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]{4,31}$")
+
+MAX_CODES = 500
+
+
+def normalize(code: str) -> str:
+    """Приводит ввод к хранимому виду: регистр и пробелы человек не считает."""
+    return re.sub(r"\s+", "", str(code or "")).upper()
+
+
+def looks_like_code(text: str) -> bool:
+    """Похоже ли сообщение на код. Нужна, чтобы не хватать чужой текст."""
+    return bool(CODE_RE.match(normalize(text)))
+
+
+async def load() -> list[dict[str, Any]]:
+    from .db import repo
+
+    try:
+        raw = await repo.get_meta(META_KEY, None)
+    except Exception:  # noqa: BLE001
+        log.exception("Список кодов недоступен")
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict) and item.get("code")]
+
+
+async def save(items: list[dict[str, Any]]) -> None:
+    from .db import repo
+
+    await repo.set_meta(META_KEY, items[:MAX_CODES])
+
+
+async def add(codes: str, days: int = DEFAULT_DAYS) -> tuple[list[str], list[str]]:
+    """Заводит коды из присланного текста. Возвращает (добавленные, пропущенные)."""
+    items = await load()
+    known = {str(item.get("code")) for item in items}
+
+    added: list[str] = []
+    skipped: list[str] = []
+    for chunk in re.split(r"[,\n;\s]+", codes or ""):
+        code = normalize(chunk)
+        if not code:
+            continue
+        if not CODE_RE.match(code) or code in known:
+            skipped.append(chunk.strip())
+            continue
+        items.append({"code": code, "days": max(1, int(days)),
+                      "used_by": "", "used_at": ""})
+        known.add(code)
+        added.append(code)
+
+    if added:
+        await save(items)
+        log.info("Заведено кодов: %d", len(added))
+    return added, skipped
+
+
+async def drop(code: str) -> bool:
+    items = await load()
+    code = normalize(code)
+    rest = [item for item in items if str(item.get("code")) != code]
+    if len(rest) == len(items):
+        return False
+    await save(rest)
+    return True
+
+
+async def redeem(code: str, user_key: str) -> int:
+    """Гасит код. Возвращает число дней; 0 — код не подошёл.
+
+    Одноразовость проверяется по записи, а не по факту начисления: иначе
+    один и тот же код, введённый дважды подряд, дал бы дни дважды.
+    """
+    code = normalize(code)
+    if not CODE_RE.match(code):
+        return 0
+
+    items = await load()
+    for item in items:
+        if str(item.get("code")) != code:
+            continue
+        if item.get("used_by"):
+            return 0
+        item["used_by"] = str(user_key)
+        item["used_at"] = datetime.now(timezone.utc).isoformat()
+        await save(items)
+        days = max(1, int(item.get("days") or DEFAULT_DAYS))
+        log.info("Код погашен: %s дней %d", code[:4] + "…", days)
+        return days
+    return 0
+
+
+async def summary() -> str:
+    """Состояние списка для суперадминистратора."""
+    items = await load()
+    if not items:
+        return "Кодов пока нет."
+    used = sum(1 for item in items if item.get("used_by"))
+    return f"Кодов: {len(items)}, погашено: {used}, свободно: {len(items) - used}"
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_69'
+cat > "radar/tg.py" <<'RADAR_FILE_70'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -21371,9 +21613,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_70'
+cat > "radar/timezones.py" <<'RADAR_FILE_71'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -21515,9 +21757,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_71'
+cat > "radar/keyboards.py" <<'RADAR_FILE_72'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -21661,6 +21903,12 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
         rows.append(network_row)
         rows.append([InlineKeyboardButton(text=label("manage.logs", "📋 Журналы"),
                                           callback_data="log:list")])
+        # Подписка отдельной кнопкой: раньше тарифы правились из раздела
+        # подборок, хотя подписка давно одна на бота и подборками
+        # не исчерпывается.
+        rows.append([InlineKeyboardButton(
+            text=label("manage.subscription", "💳 Подписка"),
+            callback_data="sub:admin")])
         # Управление разделами живёт здесь, а не внутри самих разделов:
         # иначе настройки расползаются по боту и их приходится искать.
         if features.enabled("partners"):
@@ -22080,9 +22328,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_72'
+cat > "radar/states.py" <<'RADAR_FILE_73'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -22112,9 +22360,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_73'
+cat > "radar/middlewares.py" <<'RADAR_FILE_74'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -22260,9 +22508,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_74'
+cat > "radar/monitor.py" <<'RADAR_FILE_75'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -22914,9 +23162,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_76'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -22947,6 +23195,7 @@ from . import (
     settings_admin,
     sos,
     sources,
+    subscription,
     users,
 )
 
@@ -22967,6 +23216,9 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(shortlink.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
+    # Подписка держит обработчик кодов: он ловит только то, что
+    # похоже на код, и пропускает остальное дальше по цепочке.
+    dp.include_router(subscription.router)
     # Ссылки перехватываем до свободного диалога с моделью
     dp.include_router(media.router)
     # Ассистент перехватывает любой оставшийся текст — только в самом конце.
@@ -22974,9 +23226,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_77'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -23391,9 +23643,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_78'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -23559,9 +23811,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_79'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -24060,9 +24312,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_80'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -24537,9 +24789,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_81'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -24906,9 +25158,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_82'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -25055,9 +25307,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_83'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -25345,9 +25597,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_84'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -25554,9 +25806,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_85'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -25663,9 +25915,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_86'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -26240,9 +26492,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_87'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -26343,9 +26595,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_88'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -26435,9 +26687,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_89'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -26858,9 +27110,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_90'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -27606,6 +27858,22 @@ async def _safe_text(message: Message, text: str) -> None:
 #  Справка
 # --------------------------------------------------------------------------
 
+def _drop_note() -> str:
+    """Строка про выдачу крупного файла ссылкой.
+
+    Сказана прямо в разделе загрузки: без неё человек упирается в предел
+    Telegram и решает, что бот больше ничего не умеет. Пусто, когда
+    внешнего адреса нет — обещать несуществующее нельзя.
+    """
+    from .. import filedrop
+
+    if not filedrop.enabled():
+        return ""
+    return (f"<b>Крупнее предела:</b> отдаётся ссылкой, до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ на файл. "
+            f"Ссылка живёт {filedrop.TTL_HOURS} ч.\n")
+
+
 @router.message(Command("media"))
 async def cmd_media(message: Message, role: str) -> None:
     if not features.enabled("media_download"):
@@ -27615,13 +27883,15 @@ async def cmd_media(message: Message, role: str) -> None:
         await message.answer("⛔️ Загрузка видео доступна начиная с другой роли.")
         return
 
+    drop_note = _drop_note()
     limit = media.size_limit_mb(config.uses_local_api())
     server = "собственный Bot API Server" if config.uses_local_api() else "api.telegram.org"
     await message.answer(
         "🎬 <b>Загрузка видео</b>\n\n"
         "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
         f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
-        f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
+        f"<b>Предел отправки:</b> {limit} МБ ({server})\n"
+        f"{drop_note}\n"
         "<i>Скачивайте только то, на что у вас есть право: правила площадок "
         "и авторские права никто не отменял.</i>",
         reply_markup=back_kb(),
@@ -27649,7 +27919,8 @@ async def menu_media(call: CallbackQuery, role: str, user: dict) -> None:
         "Пришлите ссылку — предложу выбрать качество и пришлю файл.\n\n"
         f"<b>{mediaquota.describe(quota)}</b>\n"
         f"<b>Площадки:</b> {media.SUPPORTED_HINT}\n"
-        f"<b>Предел отправки:</b> {limit} МБ ({server})\n\n"
+        f"<b>Предел отправки:</b> {limit} МБ ({server})\n"
+        f"{_drop_note()}\n"
         "<i>Скачивайте только то, на что у вас есть право: правила площадок "
         "и авторские права никто не отменял.</i>",
         _quota_keyboard(quota),
@@ -27663,9 +27934,12 @@ async def menu_media(call: CallbackQuery, role: str, user: dict) -> None:
 def _quota_keyboard(quota) -> InlineKeyboardMarkup:
     rows = []
     if not quota.unlimited:
+        # Ведём в общую подписку, а не в отдельную покупку безлимита:
+        # раздельно эти части не продаются, и второе предложение
+        # заставляло человека думать, что купить надо оба.
         rows.append([InlineKeyboardButton(
-            text=f"⭐️ Безлимит на месяц — {mediaquota.STARS_PRICE}",
-            callback_data="med:buy",
+            text="💳 Подписка — безлимит на видео и подборки",
+            callback_data="sub:menu",
         )])
     rows.append([InlineKeyboardButton(text="🏠 В главное меню",
                                       callback_data="menu:main")])
@@ -27728,9 +28002,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_91'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -28461,9 +28735,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_92'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -28984,9 +29258,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_93'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -29352,9 +29626,215 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_92
+RADAR_FILE_93
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_94'
+"""Подписка одной кнопкой: состояние, пробный период, оплата.
+
+До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
+видео. Модель под ними давно была одна (`radar/subscription.py`: оплата
+любой части открывает обе), но человек видел два разных предложения и
+разумно заключал, что покупать надо оба. Продавать дважды одно и то же
+ощущение нельзя, поэтому вход теперь один.
+
+Здесь же — пробный период на семь дней. Он даётся один раз и виден сразу:
+если предлагать его после отказа от покупки, увидят его только те, кто
+дошёл до отказа.
+
+Правка тарифов и служебная часть — за отдельной кнопкой в управлении,
+как у остальных разделов администрации.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from aiogram import F, Router
+from aiogram.filters import Command, StateFilter
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import mediaquota, redeem, roles, storage, subscription
+from ..textutils import esc
+from ..tg import back_kb, safe_edit
+
+log = logging.getLogger("radar.handlers.subscription")
+router = Router(name="subscription")
+
+
+def _plans() -> list[tuple[int, int]]:
+    """Тарифы берутся у подборок: цена одна на всю подписку."""
+    from .digest import _plans as digest_plans
+
+    return digest_plans()
+
+
+def _menu(user: dict[str, Any], role: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if not subscription.active(user, role):
+        if not subscription.trial_used(user):
+            rows.append([InlineKeyboardButton(
+                text=f"🎁 Пробный период — {subscription.TRIAL_DAYS} дней",
+                callback_data="sub:trial",
+            )])
+        rows.append([InlineKeyboardButton(
+            text="⭐️ Оформить подписку", callback_data="sub:buy")])
+    elif not subscription.complimentary(user, role):
+        rows.append([InlineKeyboardButton(
+            text="⭐️ Продлить подписку", callback_data="sub:buy")])
+
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _text(user: dict[str, Any], role: str) -> str:
+    """Что даёт подписка. Одним списком, потому что она одна."""
+    lines = [
+        "💳 <b>Подписка</b>", "",
+        esc(subscription.describe(user, role)), "",
+        "<b>Что открыто по подписке:</b>",
+        "• новостные подборки по всем тематикам;",
+        f"• загрузка видео без дневного предела "
+        f"(без подписки — {mediaquota.FREE_PER_DAY} в сутки).", "",
+        "<b>Оповещения об опасности бесплатны всегда</b> и от подписки "
+        "не зависят — платной тревога не станет никогда.", "",
+        "Раздельно эти части не продаются: подписка одна на бота.",
+    ]
+    return "\n".join(lines)
+
+
+@router.message(Command("subscription"))
+@router.message(Command("sub"))
+async def show_command(message: Message, user: dict[str, Any], role: str) -> None:
+    await message.answer(_text(user, role), reply_markup=_menu(user, role))
+
+
+@router.callback_query(F.data == "sub:menu")
+async def show(call: CallbackQuery, user: dict[str, Any], role: str) -> None:
+    await call.answer()
+    await safe_edit(call, _text(user, role), _menu(user, role))
+
+
+@router.callback_query(F.data == "sub:trial")
+async def take_trial(call: CallbackQuery, user: dict[str, Any], role: str) -> None:
+    if subscription.trial_used(user):
+        await call.answer("Пробный период уже был.", show_alert=True)
+        return
+
+    subscription.start_trial(user)
+    await storage.save(call.from_user.id)
+    await call.answer(f"Пробный период на {subscription.TRIAL_DAYS} дней включён")
+    log.info("Пробный период выдан: %s", call.from_user.id)
+    await safe_edit(call, _text(user, role), _menu(user, role))
+
+
+@router.callback_query(F.data == "sub:buy")
+async def buy(call: CallbackQuery) -> None:
+    """Тарифы. Оплата идёт через тот же счёт, что и раньше."""
+    rows = [
+        [InlineKeyboardButton(text=f"{days} дней — {stars} ⭐️",
+                              callback_data=f"dig:pay:{days}:{stars}")]
+        for days, stars in _plans()
+    ]
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="sub:menu")])
+    await call.answer()
+    await safe_edit(
+        call,
+        "⭐️ <b>Оформление подписки</b>\n\n"
+        "Оплата звёздами Telegram. Подписка открывает подборки и загрузку "
+        "видео без дневного предела — раздельно эти части не продаются.",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Погашение кода, выданного на стороне партнёра
+# --------------------------------------------------------------------------
+#
+# Обработчик стоит здесь, а не в разделе партнёров, потому что действие его
+# — подписка, а не переход по ссылке. В интерфейсе о нём не сказано ничего:
+# код узнаёт тот, кому его дали, и присылает сообщением.
+#
+# Ловим только то, что похоже на код, и только когда код действительно
+# заведён: иначе обычная реплика перехватывалась бы у ассистента.
+
+@router.message(StateFilter(None), F.text.func(redeem.looks_like_code))
+async def redeem_code(message: Message, user: dict[str, Any]) -> None:
+    # Импорт внутри функции: путь глубокий, и в офлайн-проверках aiogram
+    # подменяется заглушкой, которая таких вложений не разбирает.
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    from ..identity import make as make_identity
+
+    key = make_identity("telegram", str(message.from_user.id)).key
+    try:
+        days = await redeem.redeem(message.text or "", key)
+    except Exception:  # noqa: BLE001
+        log.exception("Погашение кода не удалось")
+        return
+
+    if not days:
+        # Не наш код — молчим и пропускаем сообщение дальше по цепочке.
+        # Ответ «код не подошёл» на каждое слово из заглавных букв
+        # превратил бы бота в угадайку.
+        raise SkipHandler
+
+    subscription.grant(user, days)
+    await storage.save(message.from_user.id)
+    log.info("Подписка по коду: %s на %d дней", message.from_user.id, days)
+    await message.answer(
+        f"✅ <b>Код принят</b>\nПодписка продлена на {days} дней.\n"
+        f"Осталось дней: <b>{subscription.days_left(user)}</b>",
+        reply_markup=back_kb(),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Служебная часть
+# --------------------------------------------------------------------------
+
+@router.callback_query(F.data == "sub:admin")
+async def admin(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    await call.answer()
+    plans = ", ".join(f"{days} дн. — {stars} ⭐️" for days, stars in _plans())
+    try:
+        codes = await redeem.summary()
+    except Exception:  # noqa: BLE001
+        codes = "Список кодов недоступен."
+
+    rows = [
+        [InlineKeyboardButton(text="💰 Тарифы", callback_data="dig:price")],
+        [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
+    ]
+    await safe_edit(
+        call,
+        "💳 <b>Подписка — управление</b>\n\n"
+        f"Тарифы: {esc(plans)}\n"
+        f"Пробный период: {subscription.TRIAL_DAYS} дней, один раз на человека.\n"
+        f"{esc(codes)}\n\n"
+        "Подписка одна на бота: оплата открывает и подборки, и загрузку "
+        "видео без дневного предела.",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_95'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -29499,7 +29979,7 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_93
+RADAR_FILE_95
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

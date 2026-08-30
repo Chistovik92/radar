@@ -28,6 +28,7 @@ from . import (
     settings_admin,
     sos,
     sources,
+    subscription,
     users,
 )
 
@@ -48,6 +49,9 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(shortlink.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
+    # Подписка держит обработчик кодов: он ловит только то, что
+    # похоже на код, и пропускает остальное дальше по цепочке.
+    dp.include_router(subscription.router)
     # Ссылки перехватываем до свободного диалога с моделью
     dp.include_router(media.router)
     # Ассистент перехватывает любой оставшийся текст — только в самом конце.

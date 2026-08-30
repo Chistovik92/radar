@@ -141,6 +141,12 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
         rows.append(network_row)
         rows.append([InlineKeyboardButton(text=label("manage.logs", "📋 Журналы"),
                                           callback_data="log:list")])
+        # Подписка отдельной кнопкой: раньше тарифы правились из раздела
+        # подборок, хотя подписка давно одна на бота и подборками
+        # не исчерпывается.
+        rows.append([InlineKeyboardButton(
+            text=label("manage.subscription", "💳 Подписка"),
+            callback_data="sub:admin")])
         # Управление разделами живёт здесь, а не внутри самих разделов:
         # иначе настройки расползаются по боту и их приходится искать.
         if features.enabled("partners"):

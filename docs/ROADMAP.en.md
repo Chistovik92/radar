@@ -989,18 +989,35 @@ became item 21.
    would drift from the disk exactly when that hurts most: after a crash
    mid-work.
 
-## 4.9 — operations
+## 4.9 — subscription and operations ✅ partly
 
-1. **Zero-downtime updates:** the schema is applied before the restart,
-   rollback to the previous version with one command.
-2. **Metrics:** number of alerts, delivery latency, AI quota spend, share
-   of dead sources — in the panel and in the bot.
-3. **Automatic source checks** on a schedule, with a report.
-4. **Automatic cleanup** of history and logs.
-5. **A system health panel** for the superadministrator right inside the
-   bot: memory, disk, database size, container state.
+1. **One subscription for the whole bot** ✅ done in 4.9. The model was
+   already unified — paying for either part opened both — but it was sold
+   from two places, and people reasonably concluded they had to buy both.
+   There is a single entry point now, a 7-day trial, and a separate
+   management button.
 
----
+2. **Updates without downtime, one-command rollback** ✅ effectively done.
+   The schema is extended via `ALTER TABLE` at start-up, and the installer
+   takes a snapshot and rolls back by itself. Proven in practice: in
+   4.8.4.4 an update failed on import, diagnostics caught it before the
+   bot started, and the installer rolled back to 4.8.4.3 with no downtime.
+
+3. ⚠️ **Metrics** — alert counts, delivery latency, AI quota spend, share
+   of dead sources. The data is already collected; gathering it into one
+   place is not done.
+
+4. ⚠️ **Scheduled source checks.** The check itself exists since 4.6;
+   the scheduler does not.
+
+5. ⚠️ **Automatic cleanup** of history and logs — partly: retention and
+   log rotation work, a cleanup report does not exist.
+
+6. **Health panel in the bot** — rescoped. Memory, disk and database size
+   are fine to show. **Container state is not and will not be:** the bot
+   would need the Docker socket, which is effectively full access to the
+   server. The project declined that deliberately, and we are not trading
+   the decision for a convenient line in a report.
 
 ## 4.9.5 — music and playlists
 

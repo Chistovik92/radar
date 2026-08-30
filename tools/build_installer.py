@@ -95,6 +95,7 @@ MANIFEST = [
     "radar/sourceedit.py",
     "radar/filedrop.py",
     "radar/agents.py",
+    "radar/redeem.py",
     "radar/tg.py",
     "radar/timezones.py",
     "radar/keyboards.py",
@@ -119,6 +120,7 @@ MANIFEST = [
     "radar/handlers/settings_admin.py",
     "radar/handlers/network.py",
     "radar/handlers/digest.py",
+    "radar/handlers/subscription.py",
     "radar/handlers/assistant.py",
 ]
 
