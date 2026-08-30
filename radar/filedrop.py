@@ -32,10 +32,17 @@ Telegram принимает от ботов не больше 50 МБ. Сери�
 Устройство хранения
 -------------------
 
-Никакой таблицы: всё, что нужно знать о файле, лежит в его имени —
-`токен_имя.расширение`. Срок жизни считается по времени изменения.
-Отдельная таблица означала бы расхождение между ней и диском ровно тогда,
+Всё, без чего раздача не работает, лежит в имени файла —
+`токен_имя.расширение`, а срок жизни считается по времени изменения.
+Таблица здесь означала бы расхождение между ней и диском ровно тогда,
 когда оно опаснее всего: после падения посреди работы.
+
+Рядом лежит `index.json` — кому выдана ссылка и сколько раз по ней
+скачали. Эти сведения нужны администрации в панели, но не нужны самой
+раздаче, поэтому они **необязательные**: потеря файла с пометками
+оставляет панель без подписей и ничего больше не ломает. Отсюда правило
+для кода ниже — любая ошибка чтения пометок продолжает работу с пустыми
+сведениями, а не останавливает её.
 """
 
 # --------------------------------------------------------------------------
@@ -46,6 +53,7 @@ Telegram принимает от ботов не больше 50 МБ. Сери�
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -64,9 +72,14 @@ DIRECTORY = "data/drop"
 # забирает вовсе, а место на диске нужно оповещениям.
 TTL_HOURS = 24
 
-# Бюджет раздачи. При превышении убираются самые старые: диск, забитый
-# чужими сериалами, останавливает систему целиком.
+# Бюджет раздачи целиком. При превышении убираются самые старые: диск,
+# забитый чужими сериалами, останавливает систему целиком.
 BUDGET_MB = 5000
+
+# Предел на ОДИН файл. Ссылка не резиновая: пятигигабайтный файл занимает
+# весь бюджет раздачи один, и следующему человеку места уже нет. Подписка
+# этот предел не снимает — она про доступ к возможности, а не про диск.
+MAX_FILE_MB = 5000
 
 # Токен в имени файла: 32 знака шестнадцатеричных — подобрать нельзя.
 TOKEN_LENGTH = 16          # байт, то есть 32 знака в шестнадцатеричном виде
@@ -77,6 +90,14 @@ _TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 _UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
 
 
+# Пометки о выдаче: кому выдана ссылка и сколько раз по ней скачали.
+# Хранятся отдельным файлом и намеренно считаются НЕОБЯЗАТЕЛЬНЫМИ: сами
+# файлы остаются источником правды, а потеря пометок теряет только
+# подписи в панели, но не раздачу. Поэтому любая ошибка чтения здесь —
+# повод продолжить с пустыми сведениями, а не остановиться.
+INDEX_NAME = "index.json"
+
+
 @dataclass(frozen=True)
 class Drop:
     token: str
@@ -84,6 +105,8 @@ class Drop:
     name: str
     size: int
     created: float
+    owner: str = ""
+    hits: int = 0
 
     @property
     def size_mb(self) -> float:
@@ -125,6 +148,41 @@ def _parse(filename: str) -> tuple[str, str] | None:
     return token, rest
 
 
+def _index_path() -> str:
+    return os.path.join(directory(), INDEX_NAME)
+
+
+def _read_index() -> dict:
+    try:
+        with open(_index_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_index(data: dict) -> None:
+    try:
+        with open(_index_path(), "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False)
+    except OSError as exc:
+        log.debug("Пометки раздачи не сохранены: %s", exc)
+
+
+def note_download(token: str) -> None:
+    """Отмечает, что по ссылке скачали. Ошибка здесь ничего не ломает."""
+    if not valid_token(token):
+        return
+    data = _read_index()
+    entry = data.get(token)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["hits"] = int(entry.get("hits") or 0) + 1
+    entry["last"] = time.time()
+    data[token] = entry
+    _write_index(data)
+
+
 def listing() -> list[Drop]:
     """Всё, что сейчас лежит в раздаче, новое сверху."""
     items: list[Drop] = []
@@ -133,6 +191,7 @@ def listing() -> list[Drop]:
     except OSError:
         return items
 
+    marks = _read_index()
     for filename in names:
         parsed = _parse(filename)
         if parsed is None:
@@ -145,8 +204,11 @@ def listing() -> list[Drop]:
             continue
         if not os.path.isfile(path):
             continue
+        entry = marks.get(token) if isinstance(marks.get(token), dict) else {}
         items.append(Drop(token=token, path=path, name=name,
-                          size=stat.st_size, created=stat.st_mtime))
+                          size=stat.st_size, created=stat.st_mtime,
+                          owner=str(entry.get("owner") or ""),
+                          hits=int(entry.get("hits") or 0)))
     items.sort(key=lambda item: item.created, reverse=True)
     return items
 
@@ -166,13 +228,30 @@ def url_for(drop: Drop) -> str:
     return f"{shortener.base_url()}/d/{drop.token}/{drop.name}"
 
 
-def store(source: str, name: str = "") -> Drop | None:
+def too_large(size_bytes: int) -> bool:
+    """Не влезает ли файл в предел одной ссылки."""
+    return size_bytes > MAX_FILE_MB * 1024 * 1024
+
+
+def store(source: str, name: str = "", owner: str = "") -> Drop | None:
     """Переносит готовый файл в раздачу. None — не вышло.
 
     Именно переносит, а не копирует: копия удвоила бы занятое место ровно
     в тот момент, когда файла и так слишком много для отправки.
+
+    `owner` — ключ пользователя, которому выдана ссылка. Он не проверяется
+    при скачивании (браузер не несёт учётной записи Telegram) и нужен
+    администрации: видеть в панели, чей это файл и забрали ли его.
     """
     if not enabled() or not source or not os.path.isfile(source):
+        return None
+
+    try:
+        if too_large(os.path.getsize(source)):
+            log.info("Файл больше предела ссылки (%d МБ) — не раздаём",
+                     MAX_FILE_MB)
+            return None
+    except OSError:
         return None
 
     token = secrets_module.token_hex(TOKEN_LENGTH)
@@ -193,10 +272,39 @@ def store(source: str, name: str = "") -> Drop | None:
     except OSError:
         size = 0
 
+    if owner:
+        data = _read_index()
+        data[token] = {"owner": owner, "hits": 0, "issued": time.time()}
+        _write_index(data)
+
     log.info("В раздачу помещён файл %s (%.1f МБ)", base, size / 1024 / 1024)
     purge()
     return Drop(token=token, path=target, name=base,
-                size=size, created=time.time())
+                size=size, created=time.time(), owner=owner)
+
+
+def remove(token: str) -> bool:
+    """Гасит ссылку досрочно: файл удаляется, пометка тоже.
+
+    Нужно администрации: выдал не тому, файл оказался лишним, место
+    понадобилось раньше срока. Ждать сутки в таких случаях незачем.
+    """
+    drop = None
+    for item in listing():
+        if item.token == token:
+            drop = item
+            break
+    if drop is None:
+        return False
+    try:
+        os.remove(drop.path)
+    except OSError:
+        return False
+    data = _read_index()
+    if data.pop(token, None) is not None:
+        _write_index(data)
+    log.info("Ссылка погашена досрочно: %s", drop.name)
+    return True
 
 
 def purge() -> int:
@@ -222,7 +330,16 @@ def purge() -> int:
             removed += 1
         except OSError:
             continue
+
     if removed:
+        # Пометки об исчезнувших файлах не нужны: индекс не должен расти
+        # вечно, а восстановить его не из чего — файла уже нет.
+        alive_tokens = {item.token for item in listing()}
+        data = _read_index()
+        trimmed = {key: value for key, value in data.items()
+                   if key in alive_tokens}
+        if len(trimmed) != len(data):
+            _write_index(trimmed)
         log.info("Из раздачи убрано файлов: %d", removed)
     return removed
 

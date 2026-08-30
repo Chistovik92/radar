@@ -28,46 +28,139 @@ from . import auth
 log = logging.getLogger("radar.web")
 
 PAGE_STYLE = """
-:root { color-scheme: dark; }
+/* Две темы. Значения собраны в переменные, чтобы правка цвета
+   не расползалась по десятку правил: у панели один набор ролей —
+   фон, поверхность, текст, приглушённый текст, рамка, ссылка. */
+:root {
+  --bg: #171b24; --surface: #1f2532; --surface-2: #262d3d;
+  --text: #e8ecf3; --muted: #92a0b8; --line: #2b3242;
+  --link: #5ea8ff; --link-dim: #9fb4d4;
+  --ok: #6bd08a; --warn: #ffc45e; --bad: #ff7a7a;
+  --shadow: 0 1px 3px rgba(0,0,0,.35);
+  color-scheme: dark;
+}
+/* Светлая тема. Не инверсия тёмной: на белом фоне те же насыщенности
+   выжигают глаза, поэтому акценты взяты темнее, а поверхности — почти
+   белые с ощутимой рамкой, иначе карточки сливаются с фоном. */
+[data-theme="light"] {
+  --bg: #eef1f6; --surface: #ffffff; --surface-2: #f4f6fa;
+  --text: #1b212c; --muted: #5d6a80; --line: #d7dde8;
+  --link: #1f6fd0; --link-dim: #46536a;
+  --ok: #1f8a4c; --warn: #96650a; --bad: #c0342c;
+  --shadow: 0 1px 3px rgba(16,24,40,.08);
+  color-scheme: light;
+}
+
 * { box-sizing: border-box; }
-body { margin:0; background:#171b24; color:#e8ecf3;
-       font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
-header { background:#1f2532; padding:14px 22px; display:flex;
-         align-items:center; gap:18px; border-bottom:1px solid #2b3242; }
-header b { font-size:17px; }
-nav a { color:#9fb4d4; text-decoration:none; margin-right:16px; }
-nav a:hover, nav a.active { color:#5ea8ff; }
+body { margin:0; background:var(--bg); color:var(--text);
+       font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+
+header { background:var(--surface); padding:12px 22px; display:flex;
+         align-items:center; gap:16px; border-bottom:1px solid var(--line);
+         position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+header .brand { font-weight:700; font-size:17px; letter-spacing:.2px; }
+nav { display:flex; gap:4px; flex-wrap:wrap; }
+nav a { color:var(--link-dim); text-decoration:none; padding:6px 10px;
+        border-radius:7px; white-space:nowrap; }
+nav a:hover { color:var(--link); background:var(--surface-2); }
+nav a.active { color:var(--link); background:var(--surface-2); font-weight:600; }
+.spacer { margin-left:auto; }
+.who { color:var(--muted); font-size:14px; }
+.who a { color:var(--link-dim); }
+
 main { padding:22px; max-width:1100px; margin:0 auto; }
-h1 { font-size:20px; margin:0 0 18px; }
-table { width:100%; border-collapse:collapse; background:#1f2532;
-        border-radius:10px; overflow:hidden; }
-th, td { padding:10px 14px; text-align:left; border-bottom:1px solid #2b3242; }
-th { color:#92a0b8; font-weight:600; font-size:13px; text-transform:uppercase; }
+h1 { font-size:21px; margin:0 0 18px; }
+h3 { margin:0 0 12px; font-size:16px; }
+
+table { width:100%; border-collapse:collapse; background:var(--surface);
+        border-radius:10px; overflow:hidden; box-shadow:var(--shadow); }
+th, td { padding:10px 14px; text-align:left; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:600; font-size:13px; text-transform:uppercase;
+     letter-spacing:.03em; }
 tr:last-child td { border-bottom:none; }
-.card { background:#1f2532; border-radius:10px; padding:18px; margin-bottom:16px; }
+
+.card { background:var(--surface); border-radius:10px; padding:18px;
+        margin-bottom:16px; box-shadow:var(--shadow); }
+.card table { box-shadow:none; background:transparent; }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
         gap:14px; margin-bottom:20px; }
 .metric b { display:block; font-size:26px; margin-bottom:4px; }
-.metric span { color:#92a0b8; font-size:13px; }
-.ok { color:#6bd08a; } .warn { color:#ffc45e; } .bad { color:#ff7a7a; }
-.muted { color:#92a0b8; }
+.metric span { color:var(--muted); font-size:13px; }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+.muted { color:var(--muted); }
 .login { max-width:420px; margin:80px auto; text-align:center; }
+
 form.inline { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
-form.inline input[type=text], form.inline input[type=password] {
-  flex:1 1 260px; padding:9px 12px; border-radius:8px; border:1px solid #2b3242;
-  background:#171b24; color:#e8ecf3; font:inherit; }
+input[type=text], input[type=password], input[type=url], textarea, select {
+  padding:9px 12px; border-radius:8px; border:1px solid var(--line);
+  background:var(--bg); color:var(--text); font:inherit; }
+form.inline input[type=text], form.inline input[type=password],
+form.inline input[type=url] { flex:1 1 240px; }
+textarea { width:100%; min-height:70px; resize:vertical; }
 button { padding:9px 16px; border-radius:8px; border:none; cursor:pointer;
-         background:#2f6fd0; color:#fff; font:inherit; }
-button:hover { background:#3a80e8; }
-button.ghost { background:#2b3242; color:#c3cee0; padding:5px 11px; font-size:13px; }
-button.ghost:hover { background:#3a4356; }
+         background:var(--link); color:#fff; font:inherit; }
+button:hover { filter:brightness(1.08); }
+button.ghost { background:var(--surface-2); color:var(--text);
+               padding:5px 11px; font-size:13px; }
+button.ghost:hover { filter:brightness(1.06); }
+button.danger { background:var(--bad); }
+
 .note { padding:11px 14px; border-radius:8px; margin-bottom:16px; }
-.note.good { background:#1d3a2a; color:#9fe3b6; }
-.note.bad { background:#3a1d1d; color:#ffb4b4; }
+.note.good { background:color-mix(in srgb, var(--ok) 18%, var(--surface));
+             color:var(--ok); }
+.note.bad { background:color-mix(in srgb, var(--bad) 18%, var(--surface));
+            color:var(--bad); }
 .keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:12px 0;
-          border-bottom:1px solid #2b3242; }
+          border-bottom:1px solid var(--line); }
 .keyrow:last-child { border-bottom:none; }
-.keyrow .hint { color:#92a0b8; font-size:13px; }
+.keyrow .hint { color:var(--muted); font-size:13px; }
+
+/* Переключатель темы. Кнопка, а не хитрый ползунок: она читается
+   без объяснений и работает без мыши. */
+#theme { background:var(--surface-2); color:var(--text); padding:6px 11px;
+         font-size:14px; line-height:1; }
+
+@media (max-width: 640px) {
+  header { padding:10px 14px; gap:10px; }
+  main { padding:14px; }
+  th, td { padding:8px 10px; }
+}
+"""
+
+# Тема выбирается до отрисовки, иначе страница мигает тёмной и лишь потом
+# становится светлой. Скрипт крошечный и стоит в head намеренно.
+THEME_SCRIPT = """
+(function () {
+  try {
+    var saved = localStorage.getItem('radar-theme');
+    if (!saved) {
+      saved = window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', saved);
+  } catch (e) { /* приватный режим: остаётся тема по умолчанию */ }
+})();
+"""
+
+THEME_TOGGLE = """
+(function () {
+  var button = document.getElementById('theme');
+  if (!button) { return; }
+  var root = document.documentElement;
+  function paint() {
+    var light = root.getAttribute('data-theme') === 'light';
+    button.textContent = light ? '\u263e' : '\u2600';
+    button.title = light ? 'Тёмная тема' : 'Светлая тема';
+  }
+  paint();
+  button.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('radar-theme', next); } catch (e) {}
+    paint();
+  });
+})();
 """
 
 
@@ -80,6 +173,7 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/events", "События", "events"))
     if roles.is_superadmin(role):
         links.append(("/keys", "Ключи", "keys"))
+        links.append(("/files", "Файлы", "files"))
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
@@ -98,12 +192,20 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)} — Радар</title><style>{PAGE_STYLE}</style></head>
+<title>{html.escape(title)} — Радар</title>
+<script>{THEME_SCRIPT}</script>
+<style>{PAGE_STYLE}</style></head>
 <body>
-<header><b>Радар</b><nav>{nav}</nav>
-<span class="muted" style="margin-left:auto">{html.escape(role)} ·
-<a href="/logout" style="color:#9fb4d4">выйти</a></span></header>
-<main><h1>{html.escape(title)}</h1>{body}</main></body></html>"""
+<header>
+  <span class="brand">Радар</span>
+  <nav>{nav}</nav>
+  <span class="spacer"></span>
+  <button id="theme" type="button" aria-label="Сменить тему">☀</button>
+  <span class="who">{html.escape(role)} · <a href="/logout">выйти</a></span>
+</header>
+<main><h1>{html.escape(title)}</h1>{body}</main>
+<script>{THEME_TOGGLE}</script>
+</body></html>"""
 
 
 def _login_page(bot_username: str, message: str = "",
@@ -140,10 +242,14 @@ def _login_page(bot_username: str, message: str = "",
         '</details>'
     )
 
+    # Тема выбирается и здесь: вход — первая страница, которую человек
+    # видит, и встречать его чужой темой было бы странно.
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Вход — Радар</title><style>{PAGE_STYLE}</style></head>
+<title>Вход — Радар</title>
+<script>{THEME_SCRIPT}</script>
+<style>{PAGE_STYLE}</style></head>
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
 <p class="muted">Вход через Telegram. Доступ — с роли администратора.</p>
@@ -284,6 +390,89 @@ def _sources_body(session, message: str = "", failed: str = "") -> str:
           "пользователя принимается или отклоняется там, вместе с ответом "
           "приславшему.</p></div>"
     )
+
+
+def _files_body(session, message: str = "", failed: str = "") -> str:
+    """Раздача крупных файлов: кому выдана ссылка, забрали ли, сколько живёт.
+
+    Панель — единственное место, где эту раздачу видно целиком. В боте
+    человек видит свою ссылку и всё; администрации нужен обзор: чей файл,
+    сколько занимает, скачали или нет, сколько осталось до сгорания.
+    """
+    from .. import filedrop, roles as roles_module, subscription
+
+    token = auth.csrf_token(session)
+    items = [item for item in filedrop.listing() if item.hours_left > 0]
+
+    if not filedrop.enabled():
+        return (
+            '<div class="card"><b>Раздача выключена.</b> '
+            '<span class="muted">Нужен внешний адрес: задайте '
+            '<code>SHORT_BASE_URL</code> в разделе ключей. Без него ссылка '
+            "вела бы в никуда, поэтому бот её не предлагает.</span></div>"
+        )
+
+    total_mb = sum(item.size for item in items) / 1024 / 1024
+    head = (
+        '<div class="grid">'
+        f'<div class="card metric"><b>{len(items)}</b>'
+        "<span>файлов в раздаче</span></div>"
+        f'<div class="card metric"><b>{total_mb:.0f} МБ</b>'
+        f"<span>занято из {filedrop.BUDGET_MB} МБ</span></div>"
+        f'<div class="card metric"><b>{filedrop.MAX_FILE_MB // 1024} ГБ</b>'
+        "<span>предел на один файл</span></div>"
+        f'<div class="card metric"><b>{filedrop.TTL_HOURS} ч</b>'
+        "<span>срок жизни ссылки</span></div>"
+        "</div>"
+    )
+
+    if not items:
+        return (_note("ok", message) + _note("bad", failed) + head
+                + '<div class="card muted">Сейчас в раздаче пусто.</div>')
+
+    rows = []
+    for item in items:
+        user = storage.get_user(item.owner) if item.owner else None
+        if user is None:
+            who = '<span class="muted">неизвестен</span>'
+            plan = '<span class="muted">—</span>'
+        else:
+            name = user.get("username") or item.owner
+            who = f"{html.escape(str(name))} "
+            who += f'<span class="muted">{html.escape(roles_module.title(user.get("role", "")))}</span>'
+            active = subscription.active(user, user.get("role"))
+            plan = ('<span class="ok">подписка</span>' if active
+                    else '<span class="muted">без подписки</span>')
+
+        taken = (f'<span class="ok">забрали, раз: {item.hits}</span>'
+                 if item.hits else '<span class="warn">ещё не скачан</span>')
+        link = html.escape(filedrop.url_for(item))
+        rows.append(
+            "<tr>"
+            f'<td><a href="{link}">{html.escape(item.name)}</a><br>'
+            f'<span class="muted">{item.size_mb:.0f} МБ</span></td>'
+            f"<td>{who}<br>{plan}</td>"
+            f"<td>{taken}</td>"
+            f"<td>{item.hours_left:.1f} ч</td>"
+            '<td style="text-align:right;width:1%">'
+            '<form method="post" action="/files/remove">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="token" value="{item.token}">'
+            '<button class="ghost danger" type="submit">отключить</button>'
+            "</form></td></tr>"
+        )
+
+    table = (
+        '<div class="card"><table><tr>'
+        "<th>Файл</th><th>Кому выдана</th><th>Состояние</th>"
+        "<th>Осталось</th><th></th></tr>"
+        + "".join(rows) + "</table>"
+        '<p class="muted">Ссылка — секрет: проверить учётную запись '
+        "Telegram при запросе из браузера невозможно, поэтому скачает тот, "
+        "кому её переслали. «Отключить» удаляет файл сразу, не дожидаясь "
+        "конца срока.</p></div>"
+    )
+    return _note("ok", message) + _note("bad", failed) + head + table
 
 
 def _keys_body(session, message: str = "", failed: str = "") -> str:
@@ -595,6 +784,29 @@ async def create_app() -> Any:
             content_type="text/html",
         )
 
+    @owner_only
+    async def files_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Файлы",
+                _files_body(session,
+                            request.query.get("ok", ""),
+                            request.query.get("err", "")),
+                "files", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def files_remove(request):
+        from .. import filedrop
+
+        session, data = await _guarded_form(request, "superadmin")
+        token = str(data.get("token", ""))
+        if filedrop.remove(token):
+            audit.record(session.user_key, "ссылка на файл отключена", token[:8])
+            raise web.HTTPFound("/files?ok=" + quote("Ссылка отключена, файл удалён"))
+        raise web.HTTPFound("/files?err=" + quote("Такой ссылки уже нет"))
+
     async def _guarded_form(request, minimum: str):
         """Общая часть записи: сессия, роль, токен формы.
 
@@ -666,6 +878,7 @@ async def create_app() -> Any:
                 text="Файл не найден или срок ссылки истёк.",
                 content_type="text/plain",
             )
+        filedrop.note_download(drop.token)
         log.info("Файл отдан по ссылке: %s (%.1f МБ)", drop.name, drop.size_mb)
         return web.FileResponse(
             drop.path,
@@ -812,6 +1025,8 @@ async def create_app() -> Any:
         web.post("/sources/add", sources_add),
         web.post("/sources/remove", sources_remove),
         web.get("/keys", keys_page),
+        web.get("/files", files_page),
+        web.post("/files/remove", files_remove),
         web.post("/keys/set", keys_set),
         web.get("/events", events_page),
         web.get("/features", features_page),

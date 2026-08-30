@@ -1,4 +1,4 @@
-# Radar v4.8.5
+# Radar v4.8.6
 
 [Русская версия](README.md)
 
@@ -121,7 +121,14 @@ The panel mirrors the bot's permissions rather than extending them.
 A **moderator** edits the source list — Telegram channels, RSS feeds and
 VKontakte communities — using the same parsing rules as the bot, so
 `@name`, `t.me/name` and a bare name all give the same result in both
-places. A **superadmin** sets AI keys and service tokens.
+places. A **superadmin** sets AI keys and service tokens, and the Files tab shows
+the whole drop: who a link was issued to, whether they hold a subscription,
+whether the file was picked up, and how long it has left. A link can be
+switched off early.
+
+The panel comes in light and dark themes — the toggle sits in the header,
+the choice is remembered in the browser, and the system preference is the
+default.
 
 **Keys go in but never come out.** An existing value is shown only as a
 mask such as `AIza…9kQw`: enough to check which key is in place, not

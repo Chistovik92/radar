@@ -182,5 +182,79 @@ class Purging(DropCase):
         self.assertIn("пусто", filedrop.summary())
 
 
+class PerFileLimit(DropCase):
+    """Предел на один файл. Подписка его не снимает."""
+
+    def test_oversized_refused(self) -> None:
+        with mock.patch.object(filedrop, "MAX_FILE_MB", 0.001):
+            source = self.source("big.mp4", 4096)
+            self.assertIsNone(filedrop.store(source, "большой"))
+            # Файл остаётся на месте: раздача его не приняла, и удалять
+            # чужой файл она не вправе — это сделает уборка вызывающего.
+            self.assertTrue(os.path.exists(source))
+
+    def test_within_limit_accepted(self) -> None:
+        with mock.patch.object(filedrop, "MAX_FILE_MB", 1):
+            self.assertIsNotNone(filedrop.store(self.source(size=1024), "малый"))
+
+    def test_predicate_matches_constant(self) -> None:
+        self.assertFalse(filedrop.too_large(filedrop.MAX_FILE_MB * 1024 * 1024))
+        self.assertTrue(filedrop.too_large(filedrop.MAX_FILE_MB * 1024 * 1024 + 1))
+
+
+class Ownership(DropCase):
+    """Кому выдана ссылка и забрали ли файл."""
+
+    def test_owner_remembered(self) -> None:
+        drop = filedrop.store(self.source(), "видео", owner="telegram:42")
+        self.assertEqual(drop.owner, "telegram:42")
+        self.assertEqual(filedrop.listing()[0].owner, "telegram:42")
+
+    def test_downloads_counted(self) -> None:
+        drop = filedrop.store(self.source(), "видео", owner="telegram:42")
+        self.assertEqual(filedrop.listing()[0].hits, 0)
+        filedrop.note_download(drop.token)
+        filedrop.note_download(drop.token)
+        self.assertEqual(filedrop.listing()[0].hits, 2)
+
+    def test_garbage_token_not_counted(self) -> None:
+        filedrop.note_download("не токен")
+        self.assertEqual(filedrop.listing(), [])
+
+    def test_lost_marks_do_not_break_listing(self) -> None:
+        # Пометки необязательные: без них панель теряет подписи,
+        # но раздача обязана работать.
+        drop = filedrop.store(self.source(), "видео", owner="telegram:42")
+        os.remove(os.path.join(filedrop.DIRECTORY, filedrop.INDEX_NAME))
+        found = filedrop.find(drop.token)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.owner, "")
+
+    def test_broken_marks_do_not_break_listing(self) -> None:
+        drop = filedrop.store(self.source(), "видео", owner="telegram:42")
+        with open(os.path.join(filedrop.DIRECTORY, filedrop.INDEX_NAME),
+                  "w", encoding="utf-8") as handle:
+            handle.write("{это не json")
+        self.assertIsNotNone(filedrop.find(drop.token))
+
+    def test_index_is_not_taken_for_a_file(self) -> None:
+        filedrop.store(self.source(), "видео", owner="telegram:42")
+        self.assertEqual(len(filedrop.listing()), 1)
+
+
+class EarlyRemoval(DropCase):
+    """Досрочное отключение ссылки из панели."""
+
+    def test_removes_file_and_marks(self) -> None:
+        drop = filedrop.store(self.source(), "видео", owner="telegram:42")
+        self.assertTrue(filedrop.remove(drop.token))
+        self.assertFalse(os.path.exists(drop.path))
+        self.assertIsNone(filedrop.find(drop.token))
+
+    def test_unknown_token_reported(self) -> None:
+        self.assertFalse(filedrop.remove("0" * 32))
+        self.assertFalse(filedrop.remove("мусор"))
+
+
 if __name__ == "__main__":
     unittest.main()

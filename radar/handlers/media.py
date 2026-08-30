@@ -32,6 +32,7 @@ from aiogram.types import (
 from .. import (
     config,
     features,
+    identity,
     images,
     media,
     mediaquota,
@@ -568,9 +569,26 @@ async def _offer_link(call: CallbackQuery, status: Message, path: str,
     if owner is None or owner.get("blocked"):
         return False
 
+    # Предел одной ссылки. Подписка его не снимает: она про доступ
+    # к возможности, а не про место на диске. Пятигигабайтный файл занял
+    # бы весь бюджет раздачи один, и следующему человеку места бы не было.
+    try:
+        if filedrop.too_large(os.path.getsize(path)):
+            await _safe_text(
+                status,
+                f"⚠️ Файл больше {filedrop.MAX_FILE_MB // 1024} ГБ — "
+                f"по ссылке такие не отдаём. Выберите качество ниже.",
+            )
+            return True
+    except OSError:
+        return False
+
     await _safe_text(status, "🔗 <b>Готовлю ссылку для скачивания…</b>")
     drop = await asyncio.to_thread(
-        filedrop.store, path, media.safe_filename(str(request.get("title") or "video"))
+        filedrop.store,
+        path,
+        media.safe_filename(str(request.get("title") or "video")),
+        identity.make("telegram", str(call.from_user.id)).key,
     )
     if drop is None:
         return False
