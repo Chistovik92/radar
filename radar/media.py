@@ -466,9 +466,62 @@ def probe_options(proxy: str = "", cookies: str = "") -> dict[str, Any]:
     return options
 
 
+# Ответы площадок, означающие «по ссылке не видео, а что-то другое».
+# Это не сбой: пост в Instagram, твит с фотографией и сообщение сообщества
+# YouTube — записи с картинками, и видео в них нет и не было. Проверено
+# на живых ссылках: X отвечает «No video could be found in this tweet»,
+# Instagram — «There is no video in this post», а запись сообщества
+# YouTube разбирается как вкладка канала, которой не существует.
+NO_VIDEO_MARKERS = (
+    "no video could be found",
+    "there is no video",
+    "no video formats found",
+    "does not have a",          # youtube:tab о записи сообщества
+    "unsupported url",
+)
+
+# Ответы, означающие «нужен вход». Формулировки у площадок разные,
+# и одной проверки на «sign in» мало: ВКонтакте пишет «signed-in»
+# через дефис, и запрос молча уходил в общий отказ.
+LOGIN_MARKERS = (
+    "private", "login required", "sign in", "signed-in", "signed in",
+    "log in", "account", "authoriz", "авториз",
+)
+
+
+def looks_like_no_video(error: BaseException | str) -> bool:
+    """Значит ли ошибка, что по ссылке запись с картинками, а не видео."""
+    text = str(error).lower()
+    if any(marker in text for marker in LOGIN_MARKERS):
+        # Закрытая запись — отдельный случай: там видео может и быть,
+        # просто его не показывают. Картинку оттуда тоже не достать.
+        return False
+    return any(marker in text for marker in NO_VIDEO_MARKERS)
+
+
 def friendly_error(error: BaseException | str) -> str:
     """Переводит типичные ошибки yt-dlp в понятное объяснение."""
     text = str(error).lower()
+
+    # Порядок ветвей значим: «нужен вход» проверяется раньше «нет видео»,
+    # иначе закрытая запись объяснялась бы отсутствием видео в ней.
+    if any(marker in text for marker in LOGIN_MARKERS):
+        return (
+            "Запись закрыта настройками приватности или требует входа. "
+            "Для таких ссылок нужен файл cookies — задайте MEDIA_COOKIES "
+            "в разделе ключей."
+        )
+    # Незнакомая площадка — отдельный случай от записи с картинками:
+    # картинки оттуда попробовать стоит, но объяснение нужно другое,
+    # иначе человек будет искать несуществующие картинки в ссылке.
+    if "unsupported url" in text:
+        return f"Площадка не поддерживается. Работают: {SUPPORTED_HINT}."
+    if looks_like_no_video(error):
+        return (
+            "По ссылке нет видео — похоже, это запись с картинками. "
+            "Картинки из неё скачать не вышло: площадка не отдала их "
+            "в метаданных страницы. Пришлите прямую ссылку на файл."
+        )
 
     # Сработал предохранитель max_filesize: загрузка прервана на середине,
     # и это хорошая новость — трафик не потрачен целиком. Человеку важно
@@ -478,13 +531,6 @@ def friendly_error(error: BaseException | str) -> str:
             "Файл оказался больше предела отправки — загрузка остановлена "
             "на середине, чтобы не тратить трафик впустую. Выберите "
             "качество ниже."
-        )
-    if "unsupported url" in text:
-        return f"Площадка не поддерживается. Работают: {SUPPORTED_HINT}."
-    if "private" in text or "login required" in text or "sign in" in text:
-        return (
-            "Видео закрыто настройками приватности или требует входа. "
-            "Для таких ссылок нужен файл cookies."
         )
     if "video unavailable" in text or "not available" in text:
         return "Видео недоступно — удалено или ограничено по региону."

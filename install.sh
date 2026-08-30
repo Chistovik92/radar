@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.4.6 — автономный установщик.
+# Система «Радар» v4.8.4.7 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.4.6"
+VERSION="4.8.4.7"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2958,6 +2958,18 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.4.7", [
+        "🖼 <b>Картинки из записей.</b> Ссылка на пост "
+        "с фотографией — в Instagram, твит с картинкой, сообщение "
+        "сообщества YouTube — отвечала «не удалось обработать ссылку». "
+        "Видео в таких записях нет и не было: площадка честно об этом "
+        "говорила, а бот переводил это в тупик. Теперь картинки "
+        "достаются из метаданных страницы и приходят как обычно.",
+        "🔑 <b>ВКонтакте просит вход — теперь это видно.</b> "
+        "Площадка отвечает «signed-in» через дефис, а проверка искала "
+        "«sign in» с пробелом. Запрос уходил в общий отказ, и подсказка "
+        "про файл cookies не показывалась.",
+    ]),
     ("4.8.4.6", [
         "🔄 <b>Откат возвращает веб-панель.</b> Неудачное "
         "обновление установщик откатывает сам — это сработало и спасло "
@@ -3862,7 +3874,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.4.6"
+__version__ = "4.8.4.7"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7407,9 +7419,62 @@ def probe_options(proxy: str = "", cookies: str = "") -> dict[str, Any]:
     return options
 
 
+# Ответы площадок, означающие «по ссылке не видео, а что-то другое».
+# Это не сбой: пост в Instagram, твит с фотографией и сообщение сообщества
+# YouTube — записи с картинками, и видео в них нет и не было. Проверено
+# на живых ссылках: X отвечает «No video could be found in this tweet»,
+# Instagram — «There is no video in this post», а запись сообщества
+# YouTube разбирается как вкладка канала, которой не существует.
+NO_VIDEO_MARKERS = (
+    "no video could be found",
+    "there is no video",
+    "no video formats found",
+    "does not have a",          # youtube:tab о записи сообщества
+    "unsupported url",
+)
+
+# Ответы, означающие «нужен вход». Формулировки у площадок разные,
+# и одной проверки на «sign in» мало: ВКонтакте пишет «signed-in»
+# через дефис, и запрос молча уходил в общий отказ.
+LOGIN_MARKERS = (
+    "private", "login required", "sign in", "signed-in", "signed in",
+    "log in", "account", "authoriz", "авториз",
+)
+
+
+def looks_like_no_video(error: BaseException | str) -> bool:
+    """Значит ли ошибка, что по ссылке запись с картинками, а не видео."""
+    text = str(error).lower()
+    if any(marker in text for marker in LOGIN_MARKERS):
+        # Закрытая запись — отдельный случай: там видео может и быть,
+        # просто его не показывают. Картинку оттуда тоже не достать.
+        return False
+    return any(marker in text for marker in NO_VIDEO_MARKERS)
+
+
 def friendly_error(error: BaseException | str) -> str:
     """Переводит типичные ошибки yt-dlp в понятное объяснение."""
     text = str(error).lower()
+
+    # Порядок ветвей значим: «нужен вход» проверяется раньше «нет видео»,
+    # иначе закрытая запись объяснялась бы отсутствием видео в ней.
+    if any(marker in text for marker in LOGIN_MARKERS):
+        return (
+            "Запись закрыта настройками приватности или требует входа. "
+            "Для таких ссылок нужен файл cookies — задайте MEDIA_COOKIES "
+            "в разделе ключей."
+        )
+    # Незнакомая площадка — отдельный случай от записи с картинками:
+    # картинки оттуда попробовать стоит, но объяснение нужно другое,
+    # иначе человек будет искать несуществующие картинки в ссылке.
+    if "unsupported url" in text:
+        return f"Площадка не поддерживается. Работают: {SUPPORTED_HINT}."
+    if looks_like_no_video(error):
+        return (
+            "По ссылке нет видео — похоже, это запись с картинками. "
+            "Картинки из неё скачать не вышло: площадка не отдала их "
+            "в метаданных страницы. Пришлите прямую ссылку на файл."
+        )
 
     # Сработал предохранитель max_filesize: загрузка прервана на середине,
     # и это хорошая новость — трафик не потрачен целиком. Человеку важно
@@ -7419,13 +7484,6 @@ def friendly_error(error: BaseException | str) -> str:
             "Файл оказался больше предела отправки — загрузка остановлена "
             "на середине, чтобы не тратить трафик впустую. Выберите "
             "качество ниже."
-        )
-    if "unsupported url" in text:
-        return f"Площадка не поддерживается. Работают: {SUPPORTED_HINT}."
-    if "private" in text or "login required" in text or "sign in" in text:
-        return (
-            "Видео закрыто настройками приватности или требует входа. "
-            "Для таких ссылок нужен файл cookies."
         )
     if "video unavailable" in text or "not available" in text:
         return "Видео недоступно — удалено или ограничено по региону."
@@ -7777,6 +7835,22 @@ yt-dlp, где есть выбор качества, склейка и сжат�
 * фактический объём считается по ходу и обрывается при превышении —
   иначе ссылка на бесконечный поток забила бы диск одноплатника, а вместе
   с ним остановила бы оповещения.
+
+Записи с картинками (с 4.8.4.7)
+-------------------------------
+
+Прямая ссылка на файл — не единственный способ прислать картинку. Люди
+кидают ссылку на запись: пост в Instagram, твит с фотографией, сообщение
+сообщества YouTube. Расширения в такой ссылке нет, и до 4.8.4.7 она
+уходила в yt-dlp, который честно отвечал «в этой записи нет видео» —
+а человек видел «не удалось обработать ссылку».
+
+Разбор идёт по метаданным страницы: `og:image` и `twitter:image`
+заполняют все крупные площадки, потому что по ним строится предпросмотр
+ссылки в мессенджерах. Способ не всесильный — площадка может ответить
+страницей входа вместо записи, и тогда картинок в метаданных не будет.
+Это честное ограничение, а не поломка: без входа закрытую запись
+не покажет и браузер.
 """
 
 # --------------------------------------------------------------------------
@@ -7789,7 +7863,8 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import urlparse, unquote
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse, unquote
 
 log = logging.getLogger("radar.images")
 
@@ -7939,6 +8014,103 @@ def format_description(info: dict) -> str:
         parts.append(esc(text))
 
     return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------
+#  Картинки из записи (с 4.8.4.7)
+# --------------------------------------------------------------------------
+
+# Свойства, которыми площадки объявляют картинку записи. Порядок важен:
+# og:image заполняют все, twitter:image — запасной для X и части зеркал.
+_META_KEYS = (
+    "og:image:secure_url",
+    "og:image:url",
+    "og:image",
+    "twitter:image:src",
+    "twitter:image",
+)
+
+# Сколько картинок берём из одной записи. Карусель в Instagram бывает
+# на десять снимков, но в метаданных отдаётся обычно первая; предел
+# нужен на случай страницы, где их объявлено много.
+MAX_FROM_PAGE = 10
+
+
+class _MetaReader(HTMLParser):
+    """Собирает содержимое нужных meta-тегов.
+
+    Разбор на стандартной библиотеке, а не на bs4, намеренно: задача —
+    вытащить несколько атрибутов из head, и тащить ради неё внешний
+    разборщик незачем. Вдобавок bs4 в тестах подменяется заглушкой,
+    и код на нём проверялся бы только на живом сервере.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag != "meta" or len(self.found) >= MAX_FROM_PAGE:
+            return
+        values = {name.lower(): (value or "") for name, value in attrs}
+        name = (values.get("property") or values.get("name") or "").strip().lower()
+        if name not in _META_KEYS:
+            return
+        content = (values.get("content") or "").strip()
+        if content:
+            self.found.append(content)
+
+
+def from_page(markup: str, base_url: str = "") -> list[str]:
+    """Ссылки на картинки из метаданных страницы записи.
+
+    Разбор отделён от загрузки намеренно: так его можно проверить офлайн,
+    на сохранённой разметке, не выходя в сеть.
+    """
+    if not markup:
+        return []
+
+    reader = _MetaReader()
+    try:
+        reader.feed(markup)
+    except Exception:  # noqa: BLE001
+        # Разметка соцсетей бывает битой; половина разобранного лучше,
+        # чем отказ целиком — то, что успели собрать, уже пригодно.
+        log.debug("Разметка страницы разобрана не полностью", exc_info=True)
+
+    links: list[str] = []
+    for value in reader.found:
+        # Относительный адрес встречается у зеркал и самодельных страниц.
+        if base_url:
+            value = urljoin(base_url, value)
+        if not value.lower().startswith(("http://", "https://")):
+            continue
+        if value not in links:
+            links.append(value)
+        if len(links) >= MAX_FROM_PAGE:
+            break
+    return links
+
+
+async def fetch_page(session, url: str, limit_kb: int = 512) -> str:
+    """Разметка страницы записи. Пусто — не получилось.
+
+    Читаем ограниченный кусок: метаданные лежат в head, а тянуть целиком
+    страницу соцсети на одноплатник незачем.
+    """
+    try:
+        async with session.get(url) as response:
+            if response.status != 200:
+                log.info("Страница записи ответила кодом %s", response.status)
+                return ""
+            kind = (response.headers.get("Content-Type") or "").lower()
+            if kind and "html" not in kind:
+                return ""
+            data = await response.content.read(limit_kb * 1024)
+            return data.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        log.debug("Страницу записи прочитать не удалось", exc_info=True)
+        return ""
 RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/secrets.py"
 cat > "radar/secrets.py" <<'RADAR_FILE_22'
@@ -25335,6 +25507,13 @@ async def handle_link(message: Message, role: str) -> None:
         return
     except Exception as exc:  # noqa: BLE001
         log.warning("Разбор ссылки не удался: %s", exc)
+        # «Видео тут нет» — не всегда отказ. Люди присылают ссылку
+        # на запись с картинками: пост в Instagram, твит с фотографией,
+        # сообщение сообщества YouTube. До 4.8.4.7 человек получал
+        # «не удалось обработать ссылку» и не понимал, что делать.
+        if media.looks_like_no_video(exc) and await _send_post_images(
+                message, url, notice):
+            return
         await notice.edit_text(f"❌ {esc(media.friendly_error(exc))}")
         return
 
@@ -25368,6 +25547,66 @@ async def handle_link(message: Message, role: str) -> None:
         reply_markup=_keyboard(token, formats, limit_mb,
                                has_text=bool(images.description_of(info))),
     )
+
+
+async def _send_post_images(message: Message, url: str, notice) -> bool:
+    """Картинки из записи, в которой нет видео. False — не вышло.
+
+    Разбор идёт по метаданным страницы (`og:image`, `twitter:image`):
+    их заполняют все крупные площадки, потому что по ним строится
+    предпросмотр ссылки в мессенджерах. Способ не всесильный — закрытая
+    запись отдаст страницу входа, и картинок в ней не будет. Тогда
+    возвращаем False, и человек увидит обычное объяснение.
+    """
+    import aiohttp
+    from aiogram.types import BufferedInputFile
+
+    await notice.edit_text("🖼 <b>Видео нет — ищу картинки в записи…</b>")
+
+    # Обычный User-Agent, а не наш: метаданные предпросмотра площадки
+    # отдают браузерам и краулерам, а незнакомому агенту нередко
+    # показывают страницу входа.
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; RadarBot/1.0; "
+            "+https://github.com/Chistovik92/radar)"
+        ),
+        "Accept-Language": "ru,en;q=0.8",
+    }
+    timeout = aiohttp.ClientTimeout(total=45)
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        markup = await images.fetch_page(session, url)
+        links = images.from_page(markup, url)
+        if not links:
+            return False
+
+        sent = 0
+        for link in links:
+            data, _complaint = await images.fetch(session, link, limit_mb)
+            if not data:
+                continue
+            name = images.filename_from(link)
+            file = BufferedInputFile(data, filename=name)
+            try:
+                if images.as_photo(len(data)):
+                    await message.answer_photo(file, caption=f"🖼 {esc(name)}")
+                else:
+                    await message.answer_document(file, caption=f"🖼 {esc(name)}")
+                sent += 1
+            except Exception:  # noqa: BLE001
+                log.warning("Картинка из записи не отправлена: %s", link)
+            await asyncio.sleep(0.3)
+
+    if not sent:
+        return False
+    try:
+        await notice.delete()
+    except TelegramBadRequest:
+        pass
+    log.info("Из записи отправлено картинок: %d", sent)
+    return True
 
 
 async def _send_image(message: Message, url: str) -> None:

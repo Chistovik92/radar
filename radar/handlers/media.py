@@ -126,6 +126,13 @@ async def handle_link(message: Message, role: str) -> None:
         return
     except Exception as exc:  # noqa: BLE001
         log.warning("Разбор ссылки не удался: %s", exc)
+        # «Видео тут нет» — не всегда отказ. Люди присылают ссылку
+        # на запись с картинками: пост в Instagram, твит с фотографией,
+        # сообщение сообщества YouTube. До 4.8.4.7 человек получал
+        # «не удалось обработать ссылку» и не понимал, что делать.
+        if media.looks_like_no_video(exc) and await _send_post_images(
+                message, url, notice):
+            return
         await notice.edit_text(f"❌ {esc(media.friendly_error(exc))}")
         return
 
@@ -159,6 +166,66 @@ async def handle_link(message: Message, role: str) -> None:
         reply_markup=_keyboard(token, formats, limit_mb,
                                has_text=bool(images.description_of(info))),
     )
+
+
+async def _send_post_images(message: Message, url: str, notice) -> bool:
+    """Картинки из записи, в которой нет видео. False — не вышло.
+
+    Разбор идёт по метаданным страницы (`og:image`, `twitter:image`):
+    их заполняют все крупные площадки, потому что по ним строится
+    предпросмотр ссылки в мессенджерах. Способ не всесильный — закрытая
+    запись отдаст страницу входа, и картинок в ней не будет. Тогда
+    возвращаем False, и человек увидит обычное объяснение.
+    """
+    import aiohttp
+    from aiogram.types import BufferedInputFile
+
+    await notice.edit_text("🖼 <b>Видео нет — ищу картинки в записи…</b>")
+
+    # Обычный User-Agent, а не наш: метаданные предпросмотра площадки
+    # отдают браузерам и краулерам, а незнакомому агенту нередко
+    # показывают страницу входа.
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; RadarBot/1.0; "
+            "+https://github.com/Chistovik92/radar)"
+        ),
+        "Accept-Language": "ru,en;q=0.8",
+    }
+    timeout = aiohttp.ClientTimeout(total=45)
+    limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        markup = await images.fetch_page(session, url)
+        links = images.from_page(markup, url)
+        if not links:
+            return False
+
+        sent = 0
+        for link in links:
+            data, _complaint = await images.fetch(session, link, limit_mb)
+            if not data:
+                continue
+            name = images.filename_from(link)
+            file = BufferedInputFile(data, filename=name)
+            try:
+                if images.as_photo(len(data)):
+                    await message.answer_photo(file, caption=f"🖼 {esc(name)}")
+                else:
+                    await message.answer_document(file, caption=f"🖼 {esc(name)}")
+                sent += 1
+            except Exception:  # noqa: BLE001
+                log.warning("Картинка из записи не отправлена: %s", link)
+            await asyncio.sleep(0.3)
+
+    if not sent:
+        return False
+    try:
+        await notice.delete()
+    except TelegramBadRequest:
+        pass
+    log.info("Из записи отправлено картинок: %d", sent)
+    return True
 
 
 async def _send_image(message: Message, url: str) -> None:

@@ -22,6 +22,22 @@ yt-dlp, где есть выбор качества, склейка и сжат�
 * фактический объём считается по ходу и обрывается при превышении —
   иначе ссылка на бесконечный поток забила бы диск одноплатника, а вместе
   с ним остановила бы оповещения.
+
+Записи с картинками (с 4.8.4.7)
+-------------------------------
+
+Прямая ссылка на файл — не единственный способ прислать картинку. Люди
+кидают ссылку на запись: пост в Instagram, твит с фотографией, сообщение
+сообщества YouTube. Расширения в такой ссылке нет, и до 4.8.4.7 она
+уходила в yt-dlp, который честно отвечал «в этой записи нет видео» —
+а человек видел «не удалось обработать ссылку».
+
+Разбор идёт по метаданным страницы: `og:image` и `twitter:image`
+заполняют все крупные площадки, потому что по ним строится предпросмотр
+ссылки в мессенджерах. Способ не всесильный — площадка может ответить
+страницей входа вместо записи, и тогда картинок в метаданных не будет.
+Это честное ограничение, а не поломка: без входа закрытую запись
+не покажет и браузер.
 """
 
 # --------------------------------------------------------------------------
@@ -34,7 +50,8 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import urlparse, unquote
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse, unquote
 
 log = logging.getLogger("radar.images")
 
@@ -184,3 +201,100 @@ def format_description(info: dict) -> str:
         parts.append(esc(text))
 
     return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------
+#  Картинки из записи (с 4.8.4.7)
+# --------------------------------------------------------------------------
+
+# Свойства, которыми площадки объявляют картинку записи. Порядок важен:
+# og:image заполняют все, twitter:image — запасной для X и части зеркал.
+_META_KEYS = (
+    "og:image:secure_url",
+    "og:image:url",
+    "og:image",
+    "twitter:image:src",
+    "twitter:image",
+)
+
+# Сколько картинок берём из одной записи. Карусель в Instagram бывает
+# на десять снимков, но в метаданных отдаётся обычно первая; предел
+# нужен на случай страницы, где их объявлено много.
+MAX_FROM_PAGE = 10
+
+
+class _MetaReader(HTMLParser):
+    """Собирает содержимое нужных meta-тегов.
+
+    Разбор на стандартной библиотеке, а не на bs4, намеренно: задача —
+    вытащить несколько атрибутов из head, и тащить ради неё внешний
+    разборщик незачем. Вдобавок bs4 в тестах подменяется заглушкой,
+    и код на нём проверялся бы только на живом сервере.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag != "meta" or len(self.found) >= MAX_FROM_PAGE:
+            return
+        values = {name.lower(): (value or "") for name, value in attrs}
+        name = (values.get("property") or values.get("name") or "").strip().lower()
+        if name not in _META_KEYS:
+            return
+        content = (values.get("content") or "").strip()
+        if content:
+            self.found.append(content)
+
+
+def from_page(markup: str, base_url: str = "") -> list[str]:
+    """Ссылки на картинки из метаданных страницы записи.
+
+    Разбор отделён от загрузки намеренно: так его можно проверить офлайн,
+    на сохранённой разметке, не выходя в сеть.
+    """
+    if not markup:
+        return []
+
+    reader = _MetaReader()
+    try:
+        reader.feed(markup)
+    except Exception:  # noqa: BLE001
+        # Разметка соцсетей бывает битой; половина разобранного лучше,
+        # чем отказ целиком — то, что успели собрать, уже пригодно.
+        log.debug("Разметка страницы разобрана не полностью", exc_info=True)
+
+    links: list[str] = []
+    for value in reader.found:
+        # Относительный адрес встречается у зеркал и самодельных страниц.
+        if base_url:
+            value = urljoin(base_url, value)
+        if not value.lower().startswith(("http://", "https://")):
+            continue
+        if value not in links:
+            links.append(value)
+        if len(links) >= MAX_FROM_PAGE:
+            break
+    return links
+
+
+async def fetch_page(session, url: str, limit_kb: int = 512) -> str:
+    """Разметка страницы записи. Пусто — не получилось.
+
+    Читаем ограниченный кусок: метаданные лежат в head, а тянуть целиком
+    страницу соцсети на одноплатник незачем.
+    """
+    try:
+        async with session.get(url) as response:
+            if response.status != 200:
+                log.info("Страница записи ответила кодом %s", response.status)
+                return ""
+            kind = (response.headers.get("Content-Type") or "").lower()
+            if kind and "html" not in kind:
+                return ""
+            data = await response.content.read(limit_kb * 1024)
+            return data.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        log.debug("Страницу записи прочитать не удалось", exc_info=True)
+        return ""
