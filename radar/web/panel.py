@@ -650,6 +650,34 @@ async def create_app() -> Any:
             raise web.HTTPFound("/sources?ok=" + quote(f"Удалён: {value}"))
         raise web.HTTPFound("/sources?err=" + quote("Такого источника нет"))
 
+    async def download_drop(request):
+        """Отдаёт крупный файл по ссылке из бота.
+
+        Без входа в панель намеренно: ссылку человек открывает в браузере
+        или качалкой, где сессии Telegram нет и быть не может. Защита —
+        в непредсказуемом имени и в сроке жизни: ссылку выдаёт бот лично
+        тому, кто с ним разговаривает.
+        """
+        from .. import filedrop
+
+        drop = filedrop.find(request.match_info.get("token", ""))
+        if drop is None:
+            raise web.HTTPNotFound(
+                text="Файл не найден или срок ссылки истёк.",
+                content_type="text/plain",
+            )
+        log.info("Файл отдан по ссылке: %s (%.1f МБ)", drop.name, drop.size_mb)
+        return web.FileResponse(
+            drop.path,
+            headers={
+                # Имя из токена, а не из адреса: адрес человек может
+                # обрезать, а имя файла должно остаться узнаваемым.
+                "Content-Disposition":
+                    f'attachment; filename="{drop.token}"; '
+                    f"filename*=UTF-8''{quote(drop.name)}",
+            },
+        )
+
     async def keys_set(request):
         from .. import secrets as secrets_module
 
@@ -793,6 +821,8 @@ async def create_app() -> Any:
         web.get("/backup/download", backup_download),
         web.get("/health", health),
         web.get("/s/{code}", follow),
+        web.get("/d/{token}", download_drop),
+        web.get("/d/{token}/{name}", download_drop),
         web.get("/partners", partners_page),
         web.get("/partners/export", partners_export),
     ])

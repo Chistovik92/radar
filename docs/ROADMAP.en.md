@@ -968,6 +968,27 @@ became item 21.
    carry a hidden token on top of `SameSite=Lax`.
 
 
+## 4.8.5 — large files by link ✅ implemented
+
+1. **The Telegram limit is driven around, not broken.** A bot cannot send
+   more than 50 MB, and a 1190 MB episode ran into "pick a lower quality" —
+   which may not exist. With `SHORT_BASE_URL` set, the file is handed over
+   as a link to the same external address the panel is served on; it never
+   enters the messenger.
+
+2. **The only condition is being a bot user.** The bot hands the link out
+   in the chat. Serving files to strangers would turn the domain into a
+   file dump, and the alert links sharing that domain would go down with it.
+
+   An honest caveat: the link itself is the secret, and whoever holds it
+   can fetch the file — a browser request carries no Telegram identity.
+   Hence an unguessable name, a one-day life, and a disk budget.
+
+3. **Storage without a table.** Everything worth knowing about a file lives
+   in its name, and its age is its modification time. A separate table
+   would drift from the disk exactly when that hurts most: after a crash
+   mid-work.
+
 ## 4.9 — operations
 
 1. **Zero-downtime updates:** the schema is applied before the restart,

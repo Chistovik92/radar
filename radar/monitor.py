@@ -23,6 +23,7 @@ from . import (
     dbcare,
     digest,
     features,
+    filedrop,
     geocode,
     i18n,
     presets,
@@ -609,6 +610,9 @@ async def run() -> None:
                 # осталось от прерванных загрузок.
                 try:
                     media.sweep(config.MEDIA_DIR)
+                    # Раздача крупных файлов живёт по своему сроку: сутки
+                    # с момента выдачи ссылки, плюс общий бюджет места.
+                    filedrop.purge()
                 except Exception:  # noqa: BLE001
                     log.exception("Уборка рабочего каталога не удалась")
 

@@ -93,6 +93,7 @@ MANIFEST = [
     "radar/weather.py",
     "radar/sources.py",
     "radar/sourceedit.py",
+    "radar/filedrop.py",
     "radar/tg.py",
     "radar/timezones.py",
     "radar/keyboards.py",

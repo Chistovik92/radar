@@ -1,4 +1,4 @@
-# Radar v4.8.4.8
+# Radar v4.8.5
 
 [Русская версия](README.md)
 
@@ -100,6 +100,20 @@ An offset is stored rather than a zone name. The price of that simplicity
 is daylight saving time, which an offset does not track. Russia has not
 changed clocks since 2014, so this costs nothing there; a user in Europe
 or the US adjusts the choice twice a year.
+
+## Large files by link
+
+Telegram accepts no more than 50 MB from bots. When `SHORT_BASE_URL` is
+set — the external address the panel is served on — a file over that limit
+is handed over as a link instead: it never goes through the messenger at
+all, the person downloads it themselves.
+
+Only a bot user gets a link, because the bot hands it out in the chat.
+The link itself is the secret: a browser request carries no Telegram
+identity, so anyone holding the link can fetch the file. The name is
+therefore unguessable, the link lives for a day, and the whole drop is
+capped by a disk budget — a full disk would stop alerts, and alerts
+outrank downloads.
 
 ## The web panel
 

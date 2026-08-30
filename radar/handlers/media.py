@@ -510,6 +510,20 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             size = os.path.getsize(path)
             oversize, reason = media.too_big(size, config.uses_local_api())
             if oversize:
+                # Предел Telegram не обходим, а объезжаем: файл уже скачан,
+                # и если у системы есть внешний адрес — тот же, на котором
+                # открыта панель, — человек заберёт его по ссылке. Раньше
+                # разговор заканчивался советом «выберите качество ниже»,
+                # которого может не существовать.
+                if await _offer_link(call, status, path, request):
+                    # Файл переехал в раздачу — удалять его в finally
+                    # нельзя. Обнуляем ОБА имени: после сжатия исходник
+                    # и отправляемое различаются, а до сжатия совпадают,
+                    # и уборка унесла бы файл прямо из-под ссылки.
+                    if source_path == path:
+                        source_path = ""
+                    path = ""
+                    return
                 await _safe_text(status, f"⚠️ {esc(reason)}")
                 return
 
@@ -535,6 +549,46 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
                 except OSError:
                     pass
             _pending.pop(token, None)
+
+
+async def _offer_link(call: CallbackQuery, status: Message, path: str,
+                      request: dict) -> bool:
+    """Отдаёт скачанный файл ссылкой. False — нечем, обычный отказ.
+
+    Условие одно: человек должен быть пользователем бота. Оно выполняется
+    самим фактом переписки — ссылку выдаёт бот в ответ на нажатие, — но
+    проверяем явно: заблокированному отдавать файлы незачем.
+    """
+    from .. import filedrop
+
+    if not filedrop.enabled():
+        return False
+
+    owner = storage.get_user(call.from_user.id)
+    if owner is None or owner.get("blocked"):
+        return False
+
+    await _safe_text(status, "🔗 <b>Готовлю ссылку для скачивания…</b>")
+    drop = await asyncio.to_thread(
+        filedrop.store, path, media.safe_filename(str(request.get("title") or "video"))
+    )
+    if drop is None:
+        return False
+
+    await _safe_text(
+        status,
+        "\n".join([
+            f"📦 <b>{esc(request['title'])}</b>",
+            f"Размер: <b>{drop.size_mb:.0f} МБ</b> — больше предела "
+            f"Telegram, поэтому файл отдан ссылкой.",
+            "",
+            f'<a href="{esc(filedrop.url_for(drop))}">⬇️ Скачать файл</a>',
+            "",
+            f"<i>Ссылка действует {drop.hours_left:.0f} ч, потом файл "
+            f"удаляется с сервера.</i>",
+        ]),
+    )
+    return True
 
 
 async def _run_transcode(source: str, request: dict, chosen: media.Format,

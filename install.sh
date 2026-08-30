@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.4.8 — автономный установщик.
+# Система «Радар» v4.8.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.4.8"
+VERSION="4.8.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2653,7 +2653,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=92
+FILE_COUNT=93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2958,6 +2958,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.5", [
+        "📦 <b>Крупные файлы по ссылке.</b> Telegram принимает "
+        "от ботов не больше 50 МБ, и полуторагигабайтная серия упиралась "
+        "в совет «выберите качество ниже» — которого может не быть. "
+        "Теперь, если задан адрес панели, файл отдаётся ссылкой: "
+        "в мессенджер он не идёт вовсе, вы скачиваете его сами.",
+        "🔐 <b>Ссылку получает только пользователь бота.</b> "
+        "Она выдаётся в переписке, живёт сутки и имеет непредсказуемое "
+        "имя. Раздача ограничена бюджетом места: забитый диск остановил "
+        "бы оповещения, а они важнее любого скачивания.",
+    ]),
     ("4.8.4.8", [
         "🖼 <b>Карусель приходит целиком.</b> Из записи "
         "с несколькими снимками приходила одна: метаданные страницы "
@@ -3887,7 +3898,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.4.8"
+__version__ = "4.8.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -14321,6 +14332,34 @@ async def create_app() -> Any:
             raise web.HTTPFound("/sources?ok=" + quote(f"Удалён: {value}"))
         raise web.HTTPFound("/sources?err=" + quote("Такого источника нет"))
 
+    async def download_drop(request):
+        """Отдаёт крупный файл по ссылке из бота.
+
+        Без входа в панель намеренно: ссылку человек открывает в браузере
+        или качалкой, где сессии Telegram нет и быть не может. Защита —
+        в непредсказуемом имени и в сроке жизни: ссылку выдаёт бот лично
+        тому, кто с ним разговаривает.
+        """
+        from .. import filedrop
+
+        drop = filedrop.find(request.match_info.get("token", ""))
+        if drop is None:
+            raise web.HTTPNotFound(
+                text="Файл не найден или срок ссылки истёк.",
+                content_type="text/plain",
+            )
+        log.info("Файл отдан по ссылке: %s (%.1f МБ)", drop.name, drop.size_mb)
+        return web.FileResponse(
+            drop.path,
+            headers={
+                # Имя из токена, а не из адреса: адрес человек может
+                # обрезать, а имя файла должно остаться узнаваемым.
+                "Content-Disposition":
+                    f'attachment; filename="{drop.token}"; '
+                    f"filename*=UTF-8''{quote(drop.name)}",
+            },
+        )
+
     async def keys_set(request):
         from .. import secrets as secrets_module
 
@@ -14464,6 +14503,8 @@ async def create_app() -> Any:
         web.get("/backup/download", backup_download),
         web.get("/health", health),
         web.get("/s/{code}", follow),
+        web.get("/d/{token}", download_drop),
+        web.get("/d/{token}/{name}", download_drop),
         web.get("/partners", partners_page),
         web.get("/partners/export", partners_export),
     ])
@@ -19885,8 +19926,255 @@ def listing(kind: str) -> list[str]:
 def counts() -> dict[str, int]:
     return {kind: len(_bucket(kind) or []) for kind in KINDS}
 RADAR_FILE_66
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/filedrop.py"
+cat > "radar/filedrop.py" <<'RADAR_FILE_67'
+#!/usr/bin/env python3
+"""Выдача крупных файлов по ссылке.
+
+Зачем это есть
+--------------
+
+Telegram принимает от ботов не больше 50 МБ. Серия с Rutube весит 1190 МБ,
+и до 4.8.5 разговор на этом заканчивался: «выберите качество ниже — или
+поднимите собственный Bot API Server». Оба совета верные и оба неуместные:
+качества ниже может не быть, а поднимать второй сервер ради одного файла
+никто не станет.
+
+Если у системы есть внешний адрес — тот же, на котором открыта панель
+и работают короткие ссылки, — файл можно отдать по нему. Предел Telegram
+это не обходит, а именно объезжает: файл не отправляется в мессенджер
+вовсе, человек скачивает его сам.
+
+Кому достаётся ссылка
+---------------------
+
+Только пользователю бота. Ссылку выдаёт бот в переписке, и получить её
+может лишь тот, кто с ботом уже разговаривает. Это осознанное условие,
+а не побочный эффект: раздача файлов посторонним превращает домен
+в файлопомойку, и вместе с ним в списки блокировок уезжают ссылки
+из оповещений.
+
+Честная оговорка о безопасности: сама ссылка — секрет, и кто её получил,
+тот скачает. Проверить у скачивающего учётную запись Telegram при обычном
+запросе из браузера невозможно. Поэтому имя файла непредсказуемо, срок
+жизни ограничен сутками, а место — бюджетом.
+
+Устройство хранения
+-------------------
+
+Никакой таблицы: всё, что нужно знать о файле, лежит в его имени —
+`токен_имя.расширение`. Срок жизни считается по времени изменения.
+Отдельная таблица означала бы расхождение между ней и диском ровно тогда,
+когда оно опаснее всего: после падения посреди работы.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import secrets as secrets_module
+import shutil
+import time
+from dataclasses import dataclass
+
+from . import shortener
+
+log = logging.getLogger("radar.filedrop")
+
+DIRECTORY = "data/drop"
+
+# Сутки. Больше держать незачем: человек забирает файл сразу или не
+# забирает вовсе, а место на диске нужно оповещениям.
+TTL_HOURS = 24
+
+# Бюджет раздачи. При превышении убираются самые старые: диск, забитый
+# чужими сериалами, останавливает систему целиком.
+BUDGET_MB = 5000
+
+# Токен в имени файла: 32 знака шестнадцатеричных — подобрать нельзя.
+TOKEN_LENGTH = 16          # байт, то есть 32 знака в шестнадцатеричном виде
+_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+# Что оставляем в имени файла. Кириллицу сохраняем: человек скачивает
+# файл и должен узнать его по имени.
+_UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
+
+
+@dataclass(frozen=True)
+class Drop:
+    token: str
+    path: str
+    name: str
+    size: int
+    created: float
+
+    @property
+    def size_mb(self) -> float:
+        return self.size / 1024 / 1024
+
+    @property
+    def hours_left(self) -> float:
+        return max(0.0, TTL_HOURS - (time.time() - self.created) / 3600)
+
+
+def enabled() -> bool:
+    """Есть ли внешний адрес, по которому файл вообще можно забрать.
+
+    Тот же адрес, что у коротких ссылок: он и есть внешний адрес панели.
+    Без него ссылка вела бы в никуда, и предлагать её нельзя.
+    """
+    return bool(shortener.base_url())
+
+
+def directory() -> str:
+    os.makedirs(DIRECTORY, exist_ok=True)
+    return DIRECTORY
+
+
+def safe_name(name: str) -> str:
+    """Имя файла, безопасное для файловой системы и заголовка ответа."""
+    cleaned = _UNSAFE.sub("_", (name or "").strip()).strip("._ ")
+    return (cleaned or "file")[:80]
+
+
+def valid_token(token: str) -> bool:
+    return bool(_TOKEN_RE.match((token or "").strip().lower()))
+
+
+def _parse(filename: str) -> tuple[str, str] | None:
+    token, _, rest = filename.partition("_")
+    if not valid_token(token) or not rest:
+        return None
+    return token, rest
+
+
+def listing() -> list[Drop]:
+    """Всё, что сейчас лежит в раздаче, новое сверху."""
+    items: list[Drop] = []
+    try:
+        names = os.listdir(directory())
+    except OSError:
+        return items
+
+    for filename in names:
+        parsed = _parse(filename)
+        if parsed is None:
+            continue
+        token, name = parsed
+        path = os.path.join(DIRECTORY, filename)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        if not os.path.isfile(path):
+            continue
+        items.append(Drop(token=token, path=path, name=name,
+                          size=stat.st_size, created=stat.st_mtime))
+    items.sort(key=lambda item: item.created, reverse=True)
+    return items
+
+
+def find(token: str) -> Drop | None:
+    """Файл по токену. Просроченный не отдаём, даже если ещё на диске."""
+    if not valid_token(token):
+        return None
+    token = token.strip().lower()
+    for item in listing():
+        if item.token == token:
+            return item if item.hours_left > 0 else None
+    return None
+
+
+def url_for(drop: Drop) -> str:
+    return f"{shortener.base_url()}/d/{drop.token}/{drop.name}"
+
+
+def store(source: str, name: str = "") -> Drop | None:
+    """Переносит готовый файл в раздачу. None — не вышло.
+
+    Именно переносит, а не копирует: копия удвоила бы занятое место ровно
+    в тот момент, когда файла и так слишком много для отправки.
+    """
+    if not enabled() or not source or not os.path.isfile(source):
+        return None
+
+    token = secrets_module.token_hex(TOKEN_LENGTH)
+    extension = os.path.splitext(source)[1]
+    base = safe_name(name or os.path.basename(source))
+    if extension and not base.lower().endswith(extension.lower()):
+        base = f"{base}{extension}"
+
+    target = os.path.join(directory(), f"{token}_{base}")
+    try:
+        shutil.move(source, target)
+    except OSError as exc:
+        log.warning("Файл не помещён в раздачу: %s", exc)
+        return None
+
+    try:
+        size = os.path.getsize(target)
+    except OSError:
+        size = 0
+
+    log.info("В раздачу помещён файл %s (%.1f МБ)", base, size / 1024 / 1024)
+    purge()
+    return Drop(token=token, path=target, name=base,
+                size=size, created=time.time())
+
+
+def purge() -> int:
+    """Убирает просроченное и лишнее сверх бюджета. Возвращает число файлов."""
+    items = listing()
+    doomed = [item for item in items if item.hours_left <= 0]
+
+    # Бюджет считаем по тому, что переживёт срок: удалять свежее ради
+    # просроченного было бы наоборот.
+    alive = [item for item in items if item.hours_left > 0]
+    total = sum(item.size for item in alive)
+    budget = BUDGET_MB * 1024 * 1024
+    for item in sorted(alive, key=lambda value: value.created):
+        if total <= budget:
+            break
+        doomed.append(item)
+        total -= item.size
+
+    removed = 0
+    for item in doomed:
+        try:
+            os.remove(item.path)
+            removed += 1
+        except OSError:
+            continue
+    if removed:
+        log.info("Из раздачи убрано файлов: %d", removed)
+    return removed
+
+
+def summary() -> str:
+    """Состояние раздачи для сообщения администратору."""
+    items = [item for item in listing() if item.hours_left > 0]
+    if not items:
+        return "📦 <b>Раздача файлов</b>\n\nСейчас пусто."
+    total_mb = sum(item.size for item in items) / 1024 / 1024
+    lines = [
+        "📦 <b>Раздача файлов</b>", "",
+        f"Файлов: <b>{len(items)}</b> · занято <b>{total_mb:.0f} МБ</b> "
+        f"из {BUDGET_MB} МБ", "",
+    ]
+    for item in items[:10]:
+        lines.append(f"• {item.name} — {item.size_mb:.0f} МБ, "
+                     f"осталось {item.hours_left:.0f} ч")
+    return "\n".join(lines)
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_67'
+cat > "radar/tg.py" <<'RADAR_FILE_68'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -20003,9 +20291,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_67
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_68'
+cat > "radar/timezones.py" <<'RADAR_FILE_69'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -20147,9 +20435,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_69'
+cat > "radar/keyboards.py" <<'RADAR_FILE_70'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -20712,9 +21000,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_70'
+cat > "radar/states.py" <<'RADAR_FILE_71'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -20744,9 +21032,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_71'
+cat > "radar/middlewares.py" <<'RADAR_FILE_72'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -20892,9 +21180,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_72'
+cat > "radar/monitor.py" <<'RADAR_FILE_73'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -20920,6 +21208,7 @@ from . import (
     dbcare,
     digest,
     features,
+    filedrop,
     geocode,
     i18n,
     presets,
@@ -21506,6 +21795,9 @@ async def run() -> None:
                 # осталось от прерванных загрузок.
                 try:
                     media.sweep(config.MEDIA_DIR)
+                    # Раздача крупных файлов живёт по своему сроку: сутки
+                    # с момента выдачи ссылки, плюс общий бюджет места.
+                    filedrop.purge()
                 except Exception:  # noqa: BLE001
                     log.exception("Уборка рабочего каталога не удалась")
 
@@ -21542,9 +21834,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_73'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_74'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -21602,9 +21894,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_75'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -22019,9 +22311,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_76'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -22187,9 +22479,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_77'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -22688,9 +22980,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_78'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -23165,9 +23457,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_79'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -23534,9 +23826,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_80'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -23683,9 +23975,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_81'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -23973,9 +24265,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_82'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -24182,9 +24474,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_83'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -24291,9 +24583,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_84'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -24868,9 +25160,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_85'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -24971,9 +25263,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_86'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -25063,9 +25355,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_87'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -25486,9 +25778,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_88'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -26001,6 +26293,20 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             size = os.path.getsize(path)
             oversize, reason = media.too_big(size, config.uses_local_api())
             if oversize:
+                # Предел Telegram не обходим, а объезжаем: файл уже скачан,
+                # и если у системы есть внешний адрес — тот же, на котором
+                # открыта панель, — человек заберёт его по ссылке. Раньше
+                # разговор заканчивался советом «выберите качество ниже»,
+                # которого может не существовать.
+                if await _offer_link(call, status, path, request):
+                    # Файл переехал в раздачу — удалять его в finally
+                    # нельзя. Обнуляем ОБА имени: после сжатия исходник
+                    # и отправляемое различаются, а до сжатия совпадают,
+                    # и уборка унесла бы файл прямо из-под ссылки.
+                    if source_path == path:
+                        source_path = ""
+                    path = ""
+                    return
                 await _safe_text(status, f"⚠️ {esc(reason)}")
                 return
 
@@ -26026,6 +26332,46 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
                 except OSError:
                     pass
             _pending.pop(token, None)
+
+
+async def _offer_link(call: CallbackQuery, status: Message, path: str,
+                      request: dict) -> bool:
+    """Отдаёт скачанный файл ссылкой. False — нечем, обычный отказ.
+
+    Условие одно: человек должен быть пользователем бота. Оно выполняется
+    самим фактом переписки — ссылку выдаёт бот в ответ на нажатие, — но
+    проверяем явно: заблокированному отдавать файлы незачем.
+    """
+    from .. import filedrop
+
+    if not filedrop.enabled():
+        return False
+
+    owner = storage.get_user(call.from_user.id)
+    if owner is None or owner.get("blocked"):
+        return False
+
+    await _safe_text(status, "🔗 <b>Готовлю ссылку для скачивания…</b>")
+    drop = await asyncio.to_thread(
+        filedrop.store, path, media.safe_filename(str(request.get("title") or "video"))
+    )
+    if drop is None:
+        return False
+
+    await _safe_text(
+        status,
+        "\n".join([
+            f"📦 <b>{esc(request['title'])}</b>",
+            f"Размер: <b>{drop.size_mb:.0f} МБ</b> — больше предела "
+            f"Telegram, поэтому файл отдан ссылкой.",
+            "",
+            f'<a href="{esc(filedrop.url_for(drop))}">⬇️ Скачать файл</a>',
+            "",
+            f"<i>Ссылка действует {drop.hours_left:.0f} ч, потом файл "
+            f"удаляется с сервера.</i>",
+        ]),
+    )
+    return True
 
 
 async def _run_transcode(source: str, request: dict, chosen: media.Format,
@@ -26284,9 +26630,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_89'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -27017,9 +27363,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_90'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -27540,9 +27886,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_91'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -27908,9 +28254,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_92'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -28055,7 +28401,7 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_91
+RADAR_FILE_92
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
