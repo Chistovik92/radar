@@ -191,5 +191,96 @@ class TestDefaults(unittest.TestCase):
         self.assertFalse(first.lower().startswith(project.title.lower()))
 
 
+class FormParsing(unittest.TestCase):
+    """Проект из полей веб-панели.
+
+    Разбор вынесен в partners.from_form, а не написан в панели: два набора
+    правил разошлись бы, и человек получил бы проект, который бот
+    показывает иначе, чем панель обещала.
+    """
+
+    def form(self, **extra):
+        base = {
+            "slug": "hydrasite",
+            "title": "HydraSite",
+            "url": "https://example.ru",
+            "description": "Описание",
+            "icon": "🐙",
+            "order": "10",
+            "visible": "1",
+            "promo_kind": "none",
+            "promo_value": "",
+            "promo_prefix": "",
+            "promo_terms": "",
+        }
+        base.update(extra)
+        return base
+
+    def test_full_form_accepted(self) -> None:
+        project = partners.from_form(self.form())
+        self.assertIsNotNone(project)
+        self.assertEqual(project.slug, "hydrasite")
+        self.assertEqual(project.order, 10)
+        self.assertTrue(project.visible)
+
+    def test_missing_checkbox_means_hidden(self) -> None:
+        # Снятый флажок форма не присылает вовсе — это отсутствие ключа,
+        # а не «ложь», и трактоваться должно именно так.
+        form = self.form()
+        form.pop("visible")
+        self.assertFalse(partners.from_form(form).visible)
+
+    def test_clicks_kept_on_edit(self) -> None:
+        # Правка названия не повод обнулять счётчик, по которому считается
+        # отдача партнёра.
+        existing = partners.Project(slug="hydrasite", title="Старое",
+                                    url="https://example.ru", clicks=42)
+        project = partners.from_form(self.form(title="Новое"), existing)
+        self.assertEqual(project.clicks, 42)
+        self.assertEqual(project.title, "Новое")
+
+    def test_clicks_start_at_zero_for_new(self) -> None:
+        self.assertEqual(partners.from_form(self.form()).clicks, 0)
+
+    def test_bad_slug_refused(self) -> None:
+        for slug in ("", "ПЛОХОЙ", "a", "с пробелом", "x" * 40):
+            with self.subTest(slug=slug):
+                self.assertIsNone(partners.from_form(self.form(slug=slug)))
+
+    def test_bad_url_refused(self) -> None:
+        for url in ("", "javascript:alert(1)", "ftp://example.ru", "не ссылка"):
+            with self.subTest(url=url):
+                self.assertIsNone(partners.from_form(self.form(url=url)))
+
+    def test_empty_title_refused(self) -> None:
+        self.assertIsNone(partners.from_form(self.form(title="   ")))
+
+    def test_telegram_link_accepted(self) -> None:
+        project = partners.from_form(self.form(url="tg://resolve?domain=name"))
+        self.assertIsNotNone(project)
+
+    def test_lengths_trimmed(self) -> None:
+        project = partners.from_form(self.form(title="я" * 200,
+                                               description="о" * 900))
+        self.assertLessEqual(len(project.title), partners.MAX_TITLE)
+        self.assertLessEqual(len(project.description), partners.MAX_DESCRIPTION)
+
+    def test_unknown_promo_kind_becomes_none(self) -> None:
+        project = partners.from_form(self.form(promo_kind="выдумка"))
+        self.assertEqual(project.promo_kind, partners.NONE)
+
+    def test_prefix_uppercased(self) -> None:
+        project = partners.from_form(
+            self.form(promo_kind="unique", promo_prefix="hydra"))
+        self.assertEqual(project.promo_prefix, "HYDRA")
+
+    def test_broken_order_falls_back(self) -> None:
+        self.assertEqual(partners.from_form(self.form(order="не число")).order, 100)
+
+    def test_missing_fields_do_not_crash(self) -> None:
+        self.assertIsNone(partners.from_form({}))
+        self.assertIsNone(partners.from_form(None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

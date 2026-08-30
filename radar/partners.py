@@ -164,6 +164,41 @@ class Project:
         )
 
 
+def from_form(data: Any, existing: "Project | None" = None) -> "Project | None":
+    """Проект из полей формы веб-панели. None — поля негодные.
+
+    Собирается через `from_dict`, а не присваиванием: там уже живут обрезка
+    длин, чистка описания и разбор режима промокода. Второй набор этих
+    правил в панели неминуемо разошёлся бы с ботом — человек получил бы
+    проект, который бот показывает иначе, чем панель обещала.
+
+    Переходы берутся у существующей записи: правка названия не повод
+    обнулять счётчик, по которому считается отдача партнёра.
+    """
+    def value(key: str, default: str = "") -> str:
+        try:
+            return str(data.get(key, default) or default)
+        except AttributeError:
+            return default
+
+    return Project.from_dict({
+        "slug": value("slug"),
+        "title": value("title"),
+        "url": value("url"),
+        "description": value("description"),
+        "icon": value("icon") or "🔗",
+        "order": value("order", "100"),
+        # Снятый флажок форма не присылает вовсе — это не «ложь»,
+        # а отсутствие ключа, и трактуется именно так.
+        "visible": bool(value("visible")),
+        "clicks": existing.clicks if existing is not None else 0,
+        "promo_kind": value("promo_kind", NONE),
+        "promo_value": value("promo_value"),
+        "promo_prefix": value("promo_prefix"),
+        "promo_terms": value("promo_terms"),
+    })
+
+
 def _as_kind(value: Any) -> str:
     kind = str(value or NONE).strip().lower()
     return kind if kind in KINDS else NONE

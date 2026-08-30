@@ -530,25 +530,119 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
 
 
 
-async def _partners_body() -> str:
-    """Партнёрские проекты и выдача промокодов.
+def _project_form(project, token: str, kinds) -> str:
+    """Форма одного проекта. Пустой project — форма добавления."""
+    new = project is None
+    slug = "" if new else project.slug
+    heading = ("➕ Новый проект" if new
+               else f"{project.icon} {project.title}")
+
+    def field(name: str, label: str, value: str, kind: str = "text",
+              hint: str = "", extra: str = "") -> str:
+        return (
+            '<div class="keyrow">'
+            f"<div><b>{html.escape(label)}</b></div>"
+            + (f'<div class="hint">{html.escape(hint)}</div>' if hint else "")
+            + f'<input type="{kind}" name="{name}" value="{html.escape(value)}" '
+              f"{extra}></div>"
+        )
+
+    if new:
+        identity = field(
+            "slug", "Короткое имя", "",
+            hint="Латиница, цифры и дефис. Менять потом нельзя: "
+                 "по нему считаются переходы и выданные промокоды.",
+            extra='required autocomplete="off" pattern="[a-z0-9-]{2,32}"',
+        )
+    else:
+        identity = (
+            f'<input type="hidden" name="slug" value="{html.escape(slug)}">'
+            f'<div class="keyrow"><div><b>Короткое имя</b> '
+            f'<span class="muted">{html.escape(slug)}</span></div>'
+            '<div class="hint">Не меняется: по нему считаются переходы '
+            "и выданные промокоды.</div></div>"
+        )
+
+    options = "".join(
+        f'<option value="{html.escape(key)}"'
+        f'{" selected" if (not new and project.promo_kind == key) else ""}>'
+        f"{html.escape(title)}</option>"
+        for key, title in kinds.items()
+    )
+    checked = "" if new else (" checked" if project.visible else "")
+    description = "" if new else project.description
+    terms = "" if new else project.promo_terms
+
+    return (
+        f'<div class="card"><h3>{html.escape(heading)}</h3>'
+        '<form method="post" action="/partners/save">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        + identity
+        + field("title", "Название", "" if new else project.title,
+                hint="То, что видит человек в списке проектов.",
+                extra='required maxlength="48"')
+        + field("url", "Ссылка", "" if new else project.url,
+                hint="http, https или tg://resolve?domain=…",
+                extra='required maxlength="500"')
+        + field("icon", "Значок", "🔗" if new else project.icon,
+                hint="Один символ или эмодзи.", extra='maxlength="4"')
+        + '<div class="keyrow"><div><b>Описание</b></div>'
+          '<div class="hint">Показывается под названием. '
+          "Повтор названия из первой строки убирается сам.</div>"
+          f'<textarea name="description" maxlength="300">'
+          f"{html.escape(description)}</textarea></div>"
+        + field("order", "Порядок", "100" if new else str(project.order),
+                kind="text",
+                hint="Меньше — выше в списке.", extra='maxlength="5"')
+        + '<div class="keyrow"><label><input type="checkbox" name="visible" '
+          f'value="1"{checked}> Показывать в боте</label></div>'
+        + '<div class="keyrow"><div><b>Промокод</b></div>'
+          f'<select name="promo_kind">{options}</select></div>'
+        + field("promo_value", "Код (один на всех)",
+                "" if new else project.promo_value,
+                hint="Заполняется только для режима «один на всех».",
+                extra='maxlength="64"')
+        + field("promo_prefix", "Приставка (для своих кодов)",
+                "" if new else project.promo_prefix,
+                hint="Например HYDRA. Код будет вида HYDRA-XXXX.",
+                extra='maxlength="12"')
+        + '<div class="keyrow"><div><b>Условия промокода</b></div>'
+          f'<textarea name="promo_terms" maxlength="600">'
+          f"{html.escape(terms)}</textarea></div>"
+        + '<div class="inline" style="margin-top:14px">'
+          '<button type="submit">Сохранить</button></div></form>'
+        + ("" if new else
+           '<form method="post" action="/partners/remove" '
+           'style="margin-top:10px">'
+           f'<input type="hidden" name="csrf" value="{token}">'
+           f'<input type="hidden" name="slug" value="{html.escape(slug)}">'
+           '<button class="ghost danger" type="submit">Удалить проект</button>'
+           "</form>")
+        + "</div>"
+    )
+
+
+async def _partners_body(session, message: str = "", failed: str = "") -> str:
+    """Партнёрские проекты: список, правка, добавление.
 
     Панель повторяет то, что доступно в боте, а не расширяет права:
-    раздел открыт суперадминистратору, как и правка в боте.
+    раздел открыт суперадминистратору, как и правка в боте. До 4.8.7 здесь
+    была одна таблица и подпись «правка — в боте»: заводить проект
+    с описанием в переписке неудобно, а в панели поле описания видно
+    целиком.
     """
     from .. import partners
 
+    token = auth.csrf_token(session)
     try:
         projects = partners.order_projects(await partners.load())
     except Exception as exc:  # noqa: BLE001
         return f'<div class="card bad">Список недоступен: {html.escape(str(exc))}</div>'
 
-    if not projects:
-        return '<div class="card">Проектов пока нет. Добавьте их в боте.</div>'
-
     rows = []
     for project in projects:
-        state = "виден" if project.visible else "скрыт"
+        state = ('<span class="ok">виден</span>' if project.visible
+                 else '<span class="muted">скрыт</span>')
         kind = partners.KIND_TITLES.get(project.promo_kind, "—")
         issued = ""
         if project.has_promo and features.enabled("promo_codes"):
@@ -572,16 +666,27 @@ async def _partners_body() -> str:
             "</tr>"
         )
 
-    return (
-        '<div class="card"><table>'
+    table = (
+        '<div class="card"><h3>Проекты — ' + str(len(projects)) + "</h3><table>"
         "<tr><th>Проект</th><th>Ссылка</th><th>Показ</th><th>Переходы</th>"
         "<th>Промокод</th><th>Коды</th></tr>"
-        + "".join(rows)
-        + "</table></div>"
-        '<p class="muted">Правка проектов и настройка промокодов — в боте, '
-        "раздел «Управление». Выгрузка содержит только код и дату выдачи, "
-        "без идентификаторов пользователей.</p>"
-    )
+        + ("".join(rows) or '<tr><td class="muted">пусто</td></tr>')
+        + "</table>"
+        '<p class="muted">Выгрузка кодов содержит только код и дату выдачи, '
+        "без идентификаторов пользователей.</p></div>"
+    ) if projects else ""
+
+    forms = "".join(_project_form(item, token, partners.KIND_TITLES)
+                    for item in projects)
+    add = ("" if len(projects) >= partners.MAX_PROJECTS
+           else _project_form(None, token, partners.KIND_TITLES))
+    limit = ("" if len(projects) < partners.MAX_PROJECTS else
+             '<div class="card muted">Достигнут предел в '
+             f"{partners.MAX_PROJECTS} проектов — удалите ненужный, "
+             "чтобы добавить новый.</div>")
+
+    return (_note("ok", message) + _note("bad", failed)
+            + table + forms + add + limit)
 
 
 async def _events_body() -> str:
@@ -921,13 +1026,54 @@ async def create_app() -> Any:
         )
 
     @owner_only
-    async def partners_page(_request, session):
-        body = await _partners_body()
+    async def partners_page(request, session):
+        body = await _partners_body(session,
+                                    request.query.get("ok", ""),
+                                    request.query.get("err", ""))
         return web.Response(
             text=_layout("Партнёры", body, "partners",
                          roles.title(session.role), session.role),
             content_type="text/html",
         )
+
+    async def partners_save(request):
+        from .. import partners
+
+        session, data = await _guarded_form(request, "superadmin")
+        projects = await partners.load()
+        slug = str(data.get("slug", "")).strip().lower()
+
+        existing = next((item for item in projects if item.slug == slug), None)
+        if existing is None and len(projects) >= partners.MAX_PROJECTS:
+            raise web.HTTPFound("/partners?err=" + quote(
+                f"Больше {partners.MAX_PROJECTS} проектов не бывает"))
+
+        # Разбор формы живёт в самом модуле партнёров: второй набор
+        # правил в панели разошёлся бы с ботом.
+        project = partners.from_form(data, existing)
+        if project is None:
+            raise web.HTTPFound("/partners?err=" + quote(
+                "Проверьте короткое имя, название и ссылку"))
+
+        rest = [item for item in projects if item.slug != project.slug]
+        await partners.save(rest + [project])
+        audit.record(session.user_key,
+                     "партнёр изменён" if existing else "партнёр добавлен",
+                     project.slug)
+        raise web.HTTPFound("/partners?ok=" + quote(f"Сохранено: {project.title}"))
+
+    async def partners_remove(request):
+        from .. import partners
+
+        session, data = await _guarded_form(request, "superadmin")
+        slug = str(data.get("slug", "")).strip().lower()
+        projects = await partners.load()
+        rest = [item for item in projects if item.slug != slug]
+        if len(rest) == len(projects):
+            raise web.HTTPFound("/partners?err=" + quote("Такого проекта нет"))
+        await partners.save(rest)
+        audit.record(session.user_key, "партнёр удалён", slug)
+        raise web.HTTPFound("/partners?ok=" + quote("Проект удалён"))
 
     @owner_only
     async def partners_export(request, _session):
@@ -1039,6 +1185,8 @@ async def create_app() -> Any:
         web.get("/d/{token}", download_drop),
         web.get("/d/{token}/{name}", download_drop),
         web.get("/partners", partners_page),
+        web.post("/partners/save", partners_save),
+        web.post("/partners/remove", partners_remove),
         web.get("/partners/export", partners_export),
     ])
     return application
