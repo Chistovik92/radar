@@ -66,15 +66,6 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("OPENAI_API_KEY", "OpenAI", "Платный.", "ИИ", where="platform.openai.com"),
     Setting("ANTHROPIC_API_KEY", "Anthropic Claude", "Платный.", "ИИ",
             where="console.anthropic.com"),
-    # Свой агент: любой сервис с совместимым с OpenAI интерфейсом —
-    # локальная модель, корпоративный шлюз, собственный прокси. Адрес
-    # обязателен: ключ без адреса никуда не ведёт.
-    Setting("CUSTOM_AI_URL", "Свой агент: адрес",
-            "Основание адреса без /chat/completions, например "
-            "http://ollama:11434/v1", "ИИ", where="ваш сервис"),
-    Setting("CUSTOM_AI_KEY", "Свой агент: ключ",
-            "Если сервис не требует ключа, впишите любое непустое значение.",
-            "ИИ", where="ваш сервис"),
 
     # --- источники ---
     Setting("VK_SERVICE_TOKEN", "ВКонтакте", "Сервисный ключ сообщества для чтения стен.",
@@ -119,6 +110,61 @@ SETTINGS: tuple[Setting, ...] = (
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
 )
+
+# --------------------------------------------------------------------------
+#  Свои агенты (с 4.8.8)
+# --------------------------------------------------------------------------
+#
+# До 4.8.8 свой агент был ровно один: пара CUSTOM_AI_URL и CUSTOM_AI_KEY
+# среди двух десятков чужих ключей. Сервисов бывает несколько — локальная
+# модель, корпоративный шлюз, чей-то прокси, — поэтому теперь это слоты
+# по три поля: название, адрес, ключ.
+#
+# Слоты добавляются в общий перечень настроек, а не живут отдельной
+# машинерией: раздел ключей в боте, запись в .env и правка из панели уже
+# умеют работать с Setting, и второй такой механизм пришлось бы чинить
+# дважды. Смысловая часть — в radar/agents.py, здесь только имена и вид.
+
+AGENT_GROUP = "Свои агенты"
+AGENT_SLOTS = 5
+AGENT_PREFIX = "CUSTOM_AI"
+
+
+def agent_env_names(slot: int) -> tuple[str, str, str]:
+    """Имена настроек слота: название, адрес, ключ."""
+    return (f"{AGENT_PREFIX}_{slot}_TITLE",
+            f"{AGENT_PREFIX}_{slot}_URL",
+            f"{AGENT_PREFIX}_{slot}_KEY")
+
+
+def _agent_settings(slots: int) -> tuple[Setting, ...]:
+    built: list[Setting] = []
+    for slot in range(1, slots + 1):
+        title_env, url_env, key_env = agent_env_names(slot)
+        built.append(Setting(
+            title_env, f"Агент {slot}: название",
+            "Как агент будет показан в списке моделей. "
+            "«Локальная Llama» говорит больше, чем «свой агент 3».",
+            AGENT_GROUP, secret=False))
+        built.append(Setting(
+            url_env, f"Агент {slot}: базовый адрес",
+            "Основание адреса без /chat/completions, например "
+            "http://ollama:11434/v1",
+            AGENT_GROUP, secret=False, where="ваш сервис"))
+        built.append(Setting(
+            key_env, f"Агент {slot}: ключ API",
+            "Если сервис не требует ключа, впишите любое непустое значение.",
+            AGENT_GROUP, where="ваш сервис"))
+    return tuple(built)
+
+
+# Бот показывает первые пять слотов: в переписке длинный список неудобен,
+# а пяти сервисов хватает с запасом. Панель заводит агентов без этого
+# ограничения — там у неё своя вкладка, и слоты сверх пятого правятся
+# в ней. Разделение осознанное: перечень настроек собирается один раз при
+# старте, и «показывать всё, что заведено» означало бы либо перечитывать
+# .env на каждый показ, либо врать до перезапуска.
+SETTINGS = SETTINGS + _agent_settings(AGENT_SLOTS)
 
 BY_KEY = {item.key: item for item in SETTINGS}
 GROUPS: tuple[str, ...] = tuple(dict.fromkeys(item.group for item in SETTINGS))

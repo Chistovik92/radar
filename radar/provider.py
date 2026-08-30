@@ -82,17 +82,21 @@ class ProviderInfo:
     paid: bool
     kind: str = KIND_OPENAI
     # Основание адреса без `/chat/completions`. Пусто у Gemini (свой
-    # протокол) и у своего агента — там адрес задаёт человек.
+    # протокол) и у своих агентов — там адрес задаёт человек.
     base_url: str = ""
     default_model: str = ""
+    # Настройка, из которой берётся адрес. Заполнена у своих агентов:
+    # до 4.8.8 адрес был один на всех и читался из общей CUSTOM_AI_URL,
+    # а агентов теперь несколько, и у каждого свой.
+    url_env: str = ""
 
     @property
     def custom(self) -> bool:
-        return self.key == CUSTOM
+        return self.key == CUSTOM or self.key.startswith(CUSTOM)
 
     def url(self) -> str:
         """Адрес совместимого с OpenAI эндпоинта."""
-        base = secrets.get(CUSTOM_URL_ENV) if self.custom else self.base_url
+        base = secrets.get(self.url_env) if self.url_env else self.base_url
         return (base or "").rstrip("/")
 
 
@@ -161,12 +165,43 @@ PROVIDERS: dict[str, ProviderInfo] = {
         CUSTOM, "Свой агент", CUSTOM_KEY_ENV,
         "Любой сервис с совместимым с OpenAI интерфейсом: локальная модель, "
         "корпоративный шлюз, собственный прокси. Задаётся адресом и ключом.",
-        paid=False, base_url="", default_model="",
+        paid=False, base_url="", default_model="", url_env=CUSTOM_URL_ENV,
     ),
 }
 
 # Текущий выбор. Пустая строка — используется значение из .env.
 _selected: str = ""
+
+
+def custom_infos() -> dict[str, ProviderInfo]:
+    """Свои агенты как обычные провайдеры.
+
+    Собираются на лету, а не хранятся в PROVIDERS: их состав меняется
+    из панели и из бота, и застывший словарь показывал бы вчерашний
+    список до перезапуска.
+    """
+    from . import agents
+
+    built: dict[str, ProviderInfo] = {}
+    for agent in agents.load():
+        if agent.legacy:
+            # Прежняя пара уже описана записью CUSTOM — второй раз
+            # её показывать не надо.
+            continue
+        _title, url_env, key_env = agents.env_names(agent.slot)
+        built[agent.name] = ProviderInfo(
+            agent.name, agent.shown, key_env,
+            "Свой сервис с совместимым с OpenAI интерфейсом.",
+            paid=False, base_url="", default_model="", url_env=url_env,
+        )
+    return built
+
+
+def all_infos() -> dict[str, ProviderInfo]:
+    """Встроенные провайдеры вместе со своими агентами."""
+    merged = dict(PROVIDERS)
+    merged.update(custom_infos())
+    return merged
 
 
 def available() -> list[ProviderInfo]:
@@ -177,7 +212,7 @@ def available() -> list[ProviderInfo]:
     заведомо неработающее.
     """
     ready: list[ProviderInfo] = []
-    for item in PROVIDERS.values():
+    for item in all_infos().values():
         if not secrets.get(item.env):
             continue
         if item.custom and not item.url():
@@ -201,7 +236,7 @@ def model_env(name: str) -> str:
 
 def model_of(name: str) -> str:
     """Выбранная модель или значение по умолчанию."""
-    info = PROVIDERS.get(name)
+    info = all_infos().get(name)
     if info is None:
         return ""
     chosen = (secrets.get(model_env(name)) or "").strip()
@@ -209,7 +244,7 @@ def model_of(name: str) -> str:
 
 
 def set_model(name: str, model: str) -> bool:
-    if name not in PROVIDERS:
+    if name not in all_infos():
         return False
     return secrets.write(model_env(name), (model or "").strip())
 
@@ -221,7 +256,7 @@ async def list_models(name: str, limit: int = 60) -> list[str]:
     `{"data": [{"id": "..."}]}`. Gemini сюда не попадает — у него свой
     протокол и свой `ai.discover_models`.
     """
-    info = PROVIDERS.get(name)
+    info = all_infos().get(name)
     if info is None or info.kind != KIND_OPENAI:
         return []
 

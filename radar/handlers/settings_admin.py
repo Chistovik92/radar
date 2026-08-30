@@ -560,7 +560,7 @@ _model_choices: dict[int, list[str]] = {}
 def _ai_overview() -> str:
     from .. import provider
 
-    active = provider.PROVIDERS.get(provider.current())
+    active = provider.all_infos().get(provider.current())
     report = ai.models_report()
     snapshot = ai.limiter.snapshot()
     left = int(snapshot.get("limit_day", 0)) - int(snapshot.get("used_today", 0))
@@ -620,7 +620,7 @@ async def ai_pick_model(call: CallbackQuery, role: str) -> None:
     from .. import provider
 
     name = provider.current()
-    info = provider.PROVIDERS.get(name)
+    info = provider.all_infos().get(name)
     if info is None or info.kind != provider.KIND_OPENAI:
         await call.answer(
             "У Gemini свой список моделей — он в разделе «Модели и квота».",

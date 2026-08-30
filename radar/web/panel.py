@@ -23,6 +23,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .. import config, features, roles, shortener, storage
+from .. import secrets as secrets_module
 from . import auth
 
 log = logging.getLogger("radar.web")
@@ -173,6 +174,7 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/events", "События", "events"))
     if roles.is_superadmin(role):
         links.append(("/keys", "Ключи", "keys"))
+        links.append(("/agents", "Агенты", "agents"))
         links.append(("/files", "Файлы", "files"))
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
@@ -475,6 +477,80 @@ def _files_body(session, message: str = "", failed: str = "") -> str:
     return _note("ok", message) + _note("bad", failed) + head + table
 
 
+def _agents_body(session, message: str = "", failed: str = "") -> str:
+    """Свои агенты: название, адрес, ключ. Без ограничения по числу.
+
+    Бот показывает первые пять слотов — в переписке длинный список неудобен.
+    Здесь предела нет: панель для того и нужна, чтобы держать то, что
+    в переписку не помещается.
+    """
+    from .. import agents
+
+    token = auth.csrf_token(session)
+    items = agents.load()
+
+    def form(agent) -> str:
+        new = agent is None
+        slot = agents.free_slot() if new else agent.slot
+        if new and not slot:
+            return ""
+        heading = ("➕ Новый агент" if new
+                   else f"{agent.shown} — слот {agent.slot}")
+        state = ""
+        if not new:
+            state = ('<div class="hint ok">готов к работе</div>'
+                     if agent.ready else
+                     '<div class="hint warn">нужны и адрес, и ключ</div>')
+        legacy = ""
+        if not new and agent.legacy:
+            legacy = ('<div class="hint">Достался от прежней настройки '
+                      "(CUSTOM_AI_URL/KEY). Сохраните — и он переедет "
+                      "в обычный слот.</div>")
+        return (
+            f'<div class="card"><h3>{html.escape(heading)}</h3>{state}{legacy}'
+            '<form method="post" action="/agents/save">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="slot" value="{slot}">'
+            '<div class="keyrow"><div><b>Название</b></div>'
+            '<div class="hint">Как агент будет показан в списке моделей.</div>'
+            f'<input type="text" name="title" maxlength="32" '
+            f'value="{html.escape("" if new else agent.title)}"></div>'
+            '<div class="keyrow"><div><b>Базовый адрес</b></div>'
+            '<div class="hint">Без /chat/completions, например '
+            "http://ollama:11434/v1</div>"
+            f'<input type="url" name="url" required maxlength="300" '
+            f'value="{html.escape("" if new else agent.url)}"></div>'
+            '<div class="keyrow"><div><b>Ключ API</b></div>'
+            '<div class="hint">Сейчас: '
+            f'{html.escape(secrets_module.mask("" if new else agent.key))}. '
+            "Пустое поле оставит прежний ключ; сервису без ключа годится "
+            "любая непустая строка.</div>"
+            '<input type="password" name="key" autocomplete="off" '
+            'placeholder="новое значение"></div>'
+            '<div class="inline" style="margin-top:14px">'
+            '<button type="submit">Сохранить</button></div></form>'
+            + ("" if new else
+               '<form method="post" action="/agents/remove" '
+               'style="margin-top:10px">'
+               f'<input type="hidden" name="csrf" value="{token}">'
+               f'<input type="hidden" name="slot" value="{agent.slot}">'
+               '<button class="ghost danger" type="submit">Удалить агента'
+               "</button></form>")
+            + "</div>"
+        )
+
+    head = (
+        '<div class="card"><b>Свои агенты</b> '
+        '<span class="muted">— любой сервис с совместимым с OpenAI '
+        "интерфейсом: локальная модель, корпоративный шлюз, свой прокси. "
+        f"Первые {agents.BOT_SLOTS} слотов правятся и в боте, остальные — "
+        "только здесь. Ключ показывается маской и не отдаётся наружу, "
+        "как и остальные ключи.</span></div>"
+    )
+    return (_note("ok", message) + _note("bad", failed) + head
+            + "".join(form(item) for item in items) + form(None))
+
+
 def _keys_body(session, message: str = "", failed: str = "") -> str:
     """Ключи ИИ и токены сервисов. Только запись, без чтения.
 
@@ -482,8 +558,6 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     отдавать ключи целиком. Проверить «тот ли ключ вставлен» по маске
     можно — по первым и последним знакам, — а увести его нельзя.
     """
-    from .. import secrets as secrets_module
-
     token = auth.csrf_token(session)
     groups: dict[str, list] = {}
     for setting in secrets_module.SETTINGS:
@@ -912,6 +986,57 @@ async def create_app() -> Any:
             raise web.HTTPFound("/files?ok=" + quote("Ссылка отключена, файл удалён"))
         raise web.HTTPFound("/files?err=" + quote("Такой ссылки уже нет"))
 
+    @owner_only
+    async def agents_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Агенты",
+                _agents_body(session,
+                             request.query.get("ok", ""),
+                             request.query.get("err", "")),
+                "agents", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def agents_save(request):
+        from .. import agents
+
+        session, data = await _guarded_form(request, "superadmin")
+        slot = str(data.get("slot", ""))
+        if not agents.valid_slot(slot):
+            raise web.HTTPFound("/agents?err=" + quote("Свободных слотов нет"))
+
+        url = str(data.get("url", ""))
+        if not agents.valid_url(url):
+            raise web.HTTPFound("/agents?err=" + quote(
+                "Адрес должен начинаться с http:// или https://"))
+
+        # Пустое поле ключа означает «оставить прежний», а не «стереть»:
+        # значение показано маской, и заставлять вводить его заново при
+        # правке названия — верный способ потерять рабочий ключ.
+        key = str(data.get("key", "")).strip()
+        if not key:
+            existing = next((item for item in agents.load()
+                             if item.slot == int(slot)), None)
+            key = existing.key if existing else ""
+
+        if not agents.save(int(slot), str(data.get("title", "")), url, key):
+            raise web.HTTPFound("/agents?err=" + quote(
+                "Записать не удалось — проверьте права на .env"))
+        audit.record(session.user_key, "свой агент сохранён", f"слот {slot}")
+        raise web.HTTPFound("/agents?ok=" + quote(f"Агент в слоте {slot} сохранён"))
+
+    async def agents_remove(request):
+        from .. import agents
+
+        session, data = await _guarded_form(request, "superadmin")
+        slot = str(data.get("slot", ""))
+        if not agents.valid_slot(slot) or not agents.forget(int(slot)):
+            raise web.HTTPFound("/agents?err=" + quote("Такого слота нет"))
+        audit.record(session.user_key, "свой агент удалён", f"слот {slot}")
+        raise web.HTTPFound("/agents?ok=" + quote("Агент удалён"))
+
     async def _guarded_form(request, minimum: str):
         """Общая часть записи: сессия, роль, токен формы.
 
@@ -997,8 +1122,6 @@ async def create_app() -> Any:
         )
 
     async def keys_set(request):
-        from .. import secrets as secrets_module
-
         session, data = await _guarded_form(request, "superadmin")
         key = str(data.get("key", ""))
         if key not in secrets_module.BY_KEY:
@@ -1171,6 +1294,9 @@ async def create_app() -> Any:
         web.post("/sources/add", sources_add),
         web.post("/sources/remove", sources_remove),
         web.get("/keys", keys_page),
+        web.get("/agents", agents_page),
+        web.post("/agents/save", agents_save),
+        web.post("/agents/remove", agents_remove),
         web.get("/files", files_page),
         web.post("/files/remove", files_remove),
         web.post("/keys/set", keys_set),

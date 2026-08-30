@@ -446,7 +446,7 @@ async def cmd_provider(message: Message, role: str) -> None:
 def _provider_overview() -> str:
     active = provider.current()
     lines = ["🤖 <b>Провайдер разбора новостей</b>", ""]
-    for info in provider.PROVIDERS.values():
+    for info in provider.all_infos().values():
         mark = "✅" if info.key == active else ("•" if secrets.get(info.env) else "—")
         lines.append(f"{mark} <b>{esc(info.title)}</b>")
         lines.append(f"   <i>{esc(info.note)}</i>")
@@ -486,7 +486,7 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
         return
 
     key = call.data.split(":")[2]
-    info = provider.PROVIDERS.get(key)
+    info = provider.all_infos().get(key)
     if info is None:
         await call.answer("Неизвестный провайдер.", show_alert=True)
         return

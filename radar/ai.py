@@ -527,7 +527,7 @@ async def _openai_batch(prompt: str, name: str = "") -> str:
     from . import provider, secrets
 
     name = name or provider.current()
-    info = provider.PROVIDERS.get(name)
+    info = provider.all_infos().get(name)
     if info is None or info.kind != provider.KIND_OPENAI:
         raise AIError(f"провайдер {name} не совместим с OpenAI")
 
@@ -635,7 +635,7 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             from . import provider as provider_choice
 
             active = provider_choice.current()
-            chosen = provider_choice.PROVIDERS.get(active)
+            chosen = provider_choice.all_infos().get(active)
             # Всё, кроме Gemini, говорит совместимым с OpenAI протоколом.
             # Раньше здесь проверялся один DeepSeek, и любой добавленный
             # провайдер молча уходил бы в Gemini — то есть выбор в боте

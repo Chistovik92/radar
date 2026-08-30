@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.7 — автономный установщик.
+# Система «Радар» v4.8.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.7"
+VERSION="4.8.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2653,7 +2653,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=93
+FILE_COUNT=94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2958,6 +2958,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.8", [
+        "🤖 <b>Свои агенты вместо одного.</b> Раньше это была "
+        "пара строк «адрес» и «ключ» среди двух десятков чужих ключей — "
+        "то есть ровно один сервис. Теперь это раздел: у каждого агента "
+        "название, базовый адрес и ключ. Название задаёте вы, и именно "
+        "оно показывается в списке моделей: «Локальная Llama» говорит "
+        "больше, чем «свой агент 3».",
+        "🖥 <b>В боте пять слотов, в панели без предела.</b> "
+        "В переписке длинный список неудобен, а панель для того и нужна, "
+        "чтобы держать то, что в переписку не помещается.",
+        "🔗 <b>У каждого агента свой адрес.</b> Прежде адрес был "
+        "один на всех: второй агент молча ходил бы по адресу первого. "
+        "Уже настроенный сервис не потерян — он становится первым слотом.",
+    ]),
     ("4.8.7", [
         "🤝 <b>Партнёры правятся из панели.</b> Раньше там была "
         "одна таблица и подпись «правка — в боте»: заводить проект "
@@ -3924,7 +3938,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.7"
+__version__ = "4.8.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -8318,15 +8332,6 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("OPENAI_API_KEY", "OpenAI", "Платный.", "ИИ", where="platform.openai.com"),
     Setting("ANTHROPIC_API_KEY", "Anthropic Claude", "Платный.", "ИИ",
             where="console.anthropic.com"),
-    # Свой агент: любой сервис с совместимым с OpenAI интерфейсом —
-    # локальная модель, корпоративный шлюз, собственный прокси. Адрес
-    # обязателен: ключ без адреса никуда не ведёт.
-    Setting("CUSTOM_AI_URL", "Свой агент: адрес",
-            "Основание адреса без /chat/completions, например "
-            "http://ollama:11434/v1", "ИИ", where="ваш сервис"),
-    Setting("CUSTOM_AI_KEY", "Свой агент: ключ",
-            "Если сервис не требует ключа, впишите любое непустое значение.",
-            "ИИ", where="ваш сервис"),
 
     # --- источники ---
     Setting("VK_SERVICE_TOKEN", "ВКонтакте", "Сервисный ключ сообщества для чтения стен.",
@@ -8371,6 +8376,61 @@ SETTINGS: tuple[Setting, ...] = (
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
 )
+
+# --------------------------------------------------------------------------
+#  Свои агенты (с 4.8.8)
+# --------------------------------------------------------------------------
+#
+# До 4.8.8 свой агент был ровно один: пара CUSTOM_AI_URL и CUSTOM_AI_KEY
+# среди двух десятков чужих ключей. Сервисов бывает несколько — локальная
+# модель, корпоративный шлюз, чей-то прокси, — поэтому теперь это слоты
+# по три поля: название, адрес, ключ.
+#
+# Слоты добавляются в общий перечень настроек, а не живут отдельной
+# машинерией: раздел ключей в боте, запись в .env и правка из панели уже
+# умеют работать с Setting, и второй такой механизм пришлось бы чинить
+# дважды. Смысловая часть — в radar/agents.py, здесь только имена и вид.
+
+AGENT_GROUP = "Свои агенты"
+AGENT_SLOTS = 5
+AGENT_PREFIX = "CUSTOM_AI"
+
+
+def agent_env_names(slot: int) -> tuple[str, str, str]:
+    """Имена настроек слота: название, адрес, ключ."""
+    return (f"{AGENT_PREFIX}_{slot}_TITLE",
+            f"{AGENT_PREFIX}_{slot}_URL",
+            f"{AGENT_PREFIX}_{slot}_KEY")
+
+
+def _agent_settings(slots: int) -> tuple[Setting, ...]:
+    built: list[Setting] = []
+    for slot in range(1, slots + 1):
+        title_env, url_env, key_env = agent_env_names(slot)
+        built.append(Setting(
+            title_env, f"Агент {slot}: название",
+            "Как агент будет показан в списке моделей. "
+            "«Локальная Llama» говорит больше, чем «свой агент 3».",
+            AGENT_GROUP, secret=False))
+        built.append(Setting(
+            url_env, f"Агент {slot}: базовый адрес",
+            "Основание адреса без /chat/completions, например "
+            "http://ollama:11434/v1",
+            AGENT_GROUP, secret=False, where="ваш сервис"))
+        built.append(Setting(
+            key_env, f"Агент {slot}: ключ API",
+            "Если сервис не требует ключа, впишите любое непустое значение.",
+            AGENT_GROUP, where="ваш сервис"))
+    return tuple(built)
+
+
+# Бот показывает первые пять слотов: в переписке длинный список неудобен,
+# а пяти сервисов хватает с запасом. Панель заводит агентов без этого
+# ограничения — там у неё своя вкладка, и слоты сверх пятого правятся
+# в ней. Разделение осознанное: перечень настроек собирается один раз при
+# старте, и «показывать всё, что заведено» означало бы либо перечитывать
+# .env на каждый показ, либо врать до перезапуска.
+SETTINGS = SETTINGS + _agent_settings(AGENT_SLOTS)
 
 BY_KEY = {item.key: item for item in SETTINGS}
 GROUPS: tuple[str, ...] = tuple(dict.fromkeys(item.group for item in SETTINGS))
@@ -9409,17 +9469,21 @@ class ProviderInfo:
     paid: bool
     kind: str = KIND_OPENAI
     # Основание адреса без `/chat/completions`. Пусто у Gemini (свой
-    # протокол) и у своего агента — там адрес задаёт человек.
+    # протокол) и у своих агентов — там адрес задаёт человек.
     base_url: str = ""
     default_model: str = ""
+    # Настройка, из которой берётся адрес. Заполнена у своих агентов:
+    # до 4.8.8 адрес был один на всех и читался из общей CUSTOM_AI_URL,
+    # а агентов теперь несколько, и у каждого свой.
+    url_env: str = ""
 
     @property
     def custom(self) -> bool:
-        return self.key == CUSTOM
+        return self.key == CUSTOM or self.key.startswith(CUSTOM)
 
     def url(self) -> str:
         """Адрес совместимого с OpenAI эндпоинта."""
-        base = secrets.get(CUSTOM_URL_ENV) if self.custom else self.base_url
+        base = secrets.get(self.url_env) if self.url_env else self.base_url
         return (base or "").rstrip("/")
 
 
@@ -9488,12 +9552,43 @@ PROVIDERS: dict[str, ProviderInfo] = {
         CUSTOM, "Свой агент", CUSTOM_KEY_ENV,
         "Любой сервис с совместимым с OpenAI интерфейсом: локальная модель, "
         "корпоративный шлюз, собственный прокси. Задаётся адресом и ключом.",
-        paid=False, base_url="", default_model="",
+        paid=False, base_url="", default_model="", url_env=CUSTOM_URL_ENV,
     ),
 }
 
 # Текущий выбор. Пустая строка — используется значение из .env.
 _selected: str = ""
+
+
+def custom_infos() -> dict[str, ProviderInfo]:
+    """Свои агенты как обычные провайдеры.
+
+    Собираются на лету, а не хранятся в PROVIDERS: их состав меняется
+    из панели и из бота, и застывший словарь показывал бы вчерашний
+    список до перезапуска.
+    """
+    from . import agents
+
+    built: dict[str, ProviderInfo] = {}
+    for agent in agents.load():
+        if agent.legacy:
+            # Прежняя пара уже описана записью CUSTOM — второй раз
+            # её показывать не надо.
+            continue
+        _title, url_env, key_env = agents.env_names(agent.slot)
+        built[agent.name] = ProviderInfo(
+            agent.name, agent.shown, key_env,
+            "Свой сервис с совместимым с OpenAI интерфейсом.",
+            paid=False, base_url="", default_model="", url_env=url_env,
+        )
+    return built
+
+
+def all_infos() -> dict[str, ProviderInfo]:
+    """Встроенные провайдеры вместе со своими агентами."""
+    merged = dict(PROVIDERS)
+    merged.update(custom_infos())
+    return merged
 
 
 def available() -> list[ProviderInfo]:
@@ -9504,7 +9599,7 @@ def available() -> list[ProviderInfo]:
     заведомо неработающее.
     """
     ready: list[ProviderInfo] = []
-    for item in PROVIDERS.values():
+    for item in all_infos().values():
         if not secrets.get(item.env):
             continue
         if item.custom and not item.url():
@@ -9528,7 +9623,7 @@ def model_env(name: str) -> str:
 
 def model_of(name: str) -> str:
     """Выбранная модель или значение по умолчанию."""
-    info = PROVIDERS.get(name)
+    info = all_infos().get(name)
     if info is None:
         return ""
     chosen = (secrets.get(model_env(name)) or "").strip()
@@ -9536,7 +9631,7 @@ def model_of(name: str) -> str:
 
 
 def set_model(name: str, model: str) -> bool:
-    if name not in PROVIDERS:
+    if name not in all_infos():
         return False
     return secrets.write(model_env(name), (model or "").strip())
 
@@ -9548,7 +9643,7 @@ async def list_models(name: str, limit: int = 60) -> list[str]:
     `{"data": [{"id": "..."}]}`. Gemini сюда не попадает — у него свой
     протокол и свой `ai.discover_models`.
     """
-    info = PROVIDERS.get(name)
+    info = all_infos().get(name)
     if info is None or info.kind != KIND_OPENAI:
         return []
 
@@ -13766,6 +13861,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .. import config, features, roles, shortener, storage
+from .. import secrets as secrets_module
 from . import auth
 
 log = logging.getLogger("radar.web")
@@ -13916,6 +14012,7 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/events", "События", "events"))
     if roles.is_superadmin(role):
         links.append(("/keys", "Ключи", "keys"))
+        links.append(("/agents", "Агенты", "agents"))
         links.append(("/files", "Файлы", "files"))
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
@@ -14218,6 +14315,80 @@ def _files_body(session, message: str = "", failed: str = "") -> str:
     return _note("ok", message) + _note("bad", failed) + head + table
 
 
+def _agents_body(session, message: str = "", failed: str = "") -> str:
+    """Свои агенты: название, адрес, ключ. Без ограничения по числу.
+
+    Бот показывает первые пять слотов — в переписке длинный список неудобен.
+    Здесь предела нет: панель для того и нужна, чтобы держать то, что
+    в переписку не помещается.
+    """
+    from .. import agents
+
+    token = auth.csrf_token(session)
+    items = agents.load()
+
+    def form(agent) -> str:
+        new = agent is None
+        slot = agents.free_slot() if new else agent.slot
+        if new and not slot:
+            return ""
+        heading = ("➕ Новый агент" if new
+                   else f"{agent.shown} — слот {agent.slot}")
+        state = ""
+        if not new:
+            state = ('<div class="hint ok">готов к работе</div>'
+                     if agent.ready else
+                     '<div class="hint warn">нужны и адрес, и ключ</div>')
+        legacy = ""
+        if not new and agent.legacy:
+            legacy = ('<div class="hint">Достался от прежней настройки '
+                      "(CUSTOM_AI_URL/KEY). Сохраните — и он переедет "
+                      "в обычный слот.</div>")
+        return (
+            f'<div class="card"><h3>{html.escape(heading)}</h3>{state}{legacy}'
+            '<form method="post" action="/agents/save">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="slot" value="{slot}">'
+            '<div class="keyrow"><div><b>Название</b></div>'
+            '<div class="hint">Как агент будет показан в списке моделей.</div>'
+            f'<input type="text" name="title" maxlength="32" '
+            f'value="{html.escape("" if new else agent.title)}"></div>'
+            '<div class="keyrow"><div><b>Базовый адрес</b></div>'
+            '<div class="hint">Без /chat/completions, например '
+            "http://ollama:11434/v1</div>"
+            f'<input type="url" name="url" required maxlength="300" '
+            f'value="{html.escape("" if new else agent.url)}"></div>'
+            '<div class="keyrow"><div><b>Ключ API</b></div>'
+            '<div class="hint">Сейчас: '
+            f'{html.escape(secrets_module.mask("" if new else agent.key))}. '
+            "Пустое поле оставит прежний ключ; сервису без ключа годится "
+            "любая непустая строка.</div>"
+            '<input type="password" name="key" autocomplete="off" '
+            'placeholder="новое значение"></div>'
+            '<div class="inline" style="margin-top:14px">'
+            '<button type="submit">Сохранить</button></div></form>'
+            + ("" if new else
+               '<form method="post" action="/agents/remove" '
+               'style="margin-top:10px">'
+               f'<input type="hidden" name="csrf" value="{token}">'
+               f'<input type="hidden" name="slot" value="{agent.slot}">'
+               '<button class="ghost danger" type="submit">Удалить агента'
+               "</button></form>")
+            + "</div>"
+        )
+
+    head = (
+        '<div class="card"><b>Свои агенты</b> '
+        '<span class="muted">— любой сервис с совместимым с OpenAI '
+        "интерфейсом: локальная модель, корпоративный шлюз, свой прокси. "
+        f"Первые {agents.BOT_SLOTS} слотов правятся и в боте, остальные — "
+        "только здесь. Ключ показывается маской и не отдаётся наружу, "
+        "как и остальные ключи.</span></div>"
+    )
+    return (_note("ok", message) + _note("bad", failed) + head
+            + "".join(form(item) for item in items) + form(None))
+
+
 def _keys_body(session, message: str = "", failed: str = "") -> str:
     """Ключи ИИ и токены сервисов. Только запись, без чтения.
 
@@ -14225,8 +14396,6 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     отдавать ключи целиком. Проверить «тот ли ключ вставлен» по маске
     можно — по первым и последним знакам, — а увести его нельзя.
     """
-    from .. import secrets as secrets_module
-
     token = auth.csrf_token(session)
     groups: dict[str, list] = {}
     for setting in secrets_module.SETTINGS:
@@ -14655,6 +14824,57 @@ async def create_app() -> Any:
             raise web.HTTPFound("/files?ok=" + quote("Ссылка отключена, файл удалён"))
         raise web.HTTPFound("/files?err=" + quote("Такой ссылки уже нет"))
 
+    @owner_only
+    async def agents_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Агенты",
+                _agents_body(session,
+                             request.query.get("ok", ""),
+                             request.query.get("err", "")),
+                "agents", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def agents_save(request):
+        from .. import agents
+
+        session, data = await _guarded_form(request, "superadmin")
+        slot = str(data.get("slot", ""))
+        if not agents.valid_slot(slot):
+            raise web.HTTPFound("/agents?err=" + quote("Свободных слотов нет"))
+
+        url = str(data.get("url", ""))
+        if not agents.valid_url(url):
+            raise web.HTTPFound("/agents?err=" + quote(
+                "Адрес должен начинаться с http:// или https://"))
+
+        # Пустое поле ключа означает «оставить прежний», а не «стереть»:
+        # значение показано маской, и заставлять вводить его заново при
+        # правке названия — верный способ потерять рабочий ключ.
+        key = str(data.get("key", "")).strip()
+        if not key:
+            existing = next((item for item in agents.load()
+                             if item.slot == int(slot)), None)
+            key = existing.key if existing else ""
+
+        if not agents.save(int(slot), str(data.get("title", "")), url, key):
+            raise web.HTTPFound("/agents?err=" + quote(
+                "Записать не удалось — проверьте права на .env"))
+        audit.record(session.user_key, "свой агент сохранён", f"слот {slot}")
+        raise web.HTTPFound("/agents?ok=" + quote(f"Агент в слоте {slot} сохранён"))
+
+    async def agents_remove(request):
+        from .. import agents
+
+        session, data = await _guarded_form(request, "superadmin")
+        slot = str(data.get("slot", ""))
+        if not agents.valid_slot(slot) or not agents.forget(int(slot)):
+            raise web.HTTPFound("/agents?err=" + quote("Такого слота нет"))
+        audit.record(session.user_key, "свой агент удалён", f"слот {slot}")
+        raise web.HTTPFound("/agents?ok=" + quote("Агент удалён"))
+
     async def _guarded_form(request, minimum: str):
         """Общая часть записи: сессия, роль, токен формы.
 
@@ -14740,8 +14960,6 @@ async def create_app() -> Any:
         )
 
     async def keys_set(request):
-        from .. import secrets as secrets_module
-
         session, data = await _guarded_form(request, "superadmin")
         key = str(data.get("key", ""))
         if key not in secrets_module.BY_KEY:
@@ -14914,6 +15132,9 @@ async def create_app() -> Any:
         web.post("/sources/add", sources_add),
         web.post("/sources/remove", sources_remove),
         web.get("/keys", keys_page),
+        web.get("/agents", agents_page),
+        web.post("/agents/save", agents_save),
+        web.post("/agents/remove", agents_remove),
         web.get("/files", files_page),
         web.post("/files/remove", files_remove),
         web.post("/keys/set", keys_set),
@@ -18929,7 +19150,7 @@ async def _openai_batch(prompt: str, name: str = "") -> str:
     from . import provider, secrets
 
     name = name or provider.current()
-    info = provider.PROVIDERS.get(name)
+    info = provider.all_infos().get(name)
     if info is None or info.kind != provider.KIND_OPENAI:
         raise AIError(f"провайдер {name} не совместим с OpenAI")
 
@@ -19037,7 +19258,7 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             from . import provider as provider_choice
 
             active = provider_choice.current()
-            chosen = provider_choice.PROVIDERS.get(active)
+            chosen = provider_choice.all_infos().get(active)
             # Всё, кроме Gemini, говорит совместимым с OpenAI протоколом.
             # Раньше здесь проверялся один DeepSeek, и любой добавленный
             # провайдер молча уходил бы в Gemini — то есть выбор в боте
@@ -20714,8 +20935,222 @@ def summary() -> str:
                      f"осталось {item.hours_left:.0f} ч")
     return "\n".join(lines)
 RADAR_FILE_67
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/agents.py"
+cat > "radar/agents.py" <<'RADAR_FILE_68'
+#!/usr/bin/env python3
+"""Свои агенты ИИ: несколько сервисов вместо одного.
+
+До 4.8.8 «свой агент» был ровно один: пара ключей `CUSTOM_AI_URL`
+и `CUSTOM_AI_KEY` в общем списке настроек. Она и выглядела как две
+случайные строки среди двух десятков чужих ключей, и позволяла подключить
+только один сервис — а их бывает несколько: локальная модель на этой же
+машине, корпоративный шлюз, чей-то прокси.
+
+Теперь агентов несколько, и у каждого три поля:
+
+* **название** — то, как агент показан в списке моделей. Его задаёт
+  суперадминистратор, потому что «свой агент 3» ничего не говорит,
+  а «Локальная Llama» говорит всё;
+* **базовый адрес** — основание совместимого с OpenAI эндпоинта,
+  без `/chat/completions`;
+* **ключ** — если сервис его не спрашивает, годится любая непустая строка.
+
+Где это лежит
+-------------
+
+В `.env`, как и все остальные ключи: правило проекта — секреты живут
+только там. Список хранится пронумерованными именами:
+
+    CUSTOM_AI_1_TITLE, CUSTOM_AI_1_URL, CUSTOM_AI_1_KEY
+    CUSTOM_AI_2_TITLE, ...
+
+Своя таблица в базе выглядела бы аккуратнее, но увела бы ключи из `.env`
+в базу — то есть в резервные копии, в дампы и в выгрузки. Ради опрятности
+списка это плохой размен.
+
+Прежняя пара `CUSTOM_AI_URL`/`CUSTOM_AI_KEY` не забыта: пока первый слот
+пуст, она показывается как первый агент. Молча потерять уже настроенный
+сервис при обновлении нельзя.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+
+from . import secrets
+
+log = logging.getLogger("radar.agents")
+
+# Сколько слотов показывает бот. В переписке длинный список неудобен,
+# и пять — обозримый предел; в панели ограничения нет.
+BOT_SLOTS = secrets.AGENT_SLOTS
+
+# Предел на всякий случай: номер приходит из формы, то есть снаружи.
+MAX_SLOT = 50
+
+MAX_TITLE = 32
+
+# Прежняя пара, до 4.8.8 — единственный способ подключить свой сервис.
+LEGACY_URL_ENV = "CUSTOM_AI_URL"
+LEGACY_KEY_ENV = "CUSTOM_AI_KEY"
+
+_SLOT_RE = re.compile(r"^\d{1,2}$")
+
+
+@dataclass(frozen=True)
+class Agent:
+    slot: int
+    title: str
+    url: str
+    key: str
+    legacy: bool = False
+
+    @property
+    def name(self) -> str:
+        """Ключ провайдера: по нему запоминается выбор модели."""
+        return "custom" if self.legacy else f"custom{self.slot}"
+
+    @property
+    def ready(self) -> bool:
+        """Годен ли агент к работе.
+
+        Ключ без адреса никуда не ведёт, поэтому нужны оба. Название
+        необязательно: без него подставляется запасное.
+        """
+        return bool(self.url and self.key)
+
+    @property
+    def shown(self) -> str:
+        return self.title or f"Свой агент {self.slot}"
+
+
+def valid_slot(value: object) -> bool:
+    text = str(value or "").strip()
+    if not _SLOT_RE.match(text):
+        return False
+    return 1 <= int(text) <= MAX_SLOT
+
+
+def env_names(slot: int) -> tuple[str, str, str]:
+    """Имена настроек слота: название, адрес, ключ.
+
+    Берутся у secrets, а не собираются здесь заново: те же имена нужны
+    перечню настроек, и два места сборки разошлись бы при первой правке.
+    """
+    return secrets.agent_env_names(slot)
+
+
+def valid_url(url: str) -> bool:
+    """Основание адреса. Схему проверяем строго: без неё запрос не уйдёт."""
+    text = (url or "").strip()
+    return text.startswith(("http://", "https://")) and len(text) > 10
+
+
+def _read(slot: int) -> Agent | None:
+    title_env, url_env, key_env = env_names(slot)
+    title = (secrets.get(title_env) or "").strip()[:MAX_TITLE]
+    url = (secrets.get(url_env) or "").strip().rstrip("/")
+    key = (secrets.get(key_env) or "").strip()
+    if not title and not url and not key:
+        return None
+    return Agent(slot=slot, title=title, url=url, key=key)
+
+
+def legacy() -> Agent | None:
+    """Прежняя пара как агент. None — она не заполнена."""
+    url = (secrets.get(LEGACY_URL_ENV) or "").strip().rstrip("/")
+    key = (secrets.get(LEGACY_KEY_ENV) or "").strip()
+    if not url and not key:
+        return None
+    return Agent(slot=1, title="Свой агент", url=url, key=key, legacy=True)
+
+
+def load() -> list[Agent]:
+    """Все заведённые агенты, по возрастанию слота.
+
+    Прежняя пара показывается первым слотом, пока он пуст: обновление
+    не должно молча терять уже настроенный сервис.
+    """
+    found: list[Agent] = []
+    for slot in range(1, MAX_SLOT + 1):
+        agent = _read(slot)
+        if agent is not None:
+            found.append(agent)
+
+    if not any(item.slot == 1 for item in found):
+        old = legacy()
+        if old is not None:
+            found.insert(0, old)
+    return found
+
+
+def ready() -> list[Agent]:
+    """Только те, которыми можно пользоваться."""
+    return [item for item in load() if item.ready]
+
+
+def by_name(name: str) -> Agent | None:
+    for item in load():
+        if item.name == name:
+            return item
+    return None
+
+
+def free_slot() -> int:
+    """Первый незанятый номер. 0 — свободных нет."""
+    busy = {item.slot for item in load()}
+    for slot in range(1, MAX_SLOT + 1):
+        if slot not in busy:
+            return slot
+    return 0
+
+
+def save(slot: int, title: str, url: str, key: str) -> bool:
+    """Записывает слот целиком. False — слот или адрес негодные.
+
+    Пустой ключ допустим: часть сервисов его не спрашивает, и требовать
+    выдуманную строку значило бы усложнять на ровном месте. Пустой адрес
+    не допустим — по нему некуда обращаться.
+    """
+    if not valid_slot(slot):
+        return False
+    url = (url or "").strip().rstrip("/")
+    if not valid_url(url):
+        return False
+
+    title_env, url_env, key_env = env_names(int(slot))
+    ok = secrets.write(title_env, (title or "").strip()[:MAX_TITLE])
+    ok = secrets.write(url_env, url) and ok
+    ok = secrets.write(key_env, (key or "").strip()) and ok
+    if ok:
+        log.info("Свой агент в слоте %s сохранён", slot)
+    return ok
+
+
+def forget(slot: int) -> bool:
+    """Очищает слот. Прежняя пара очищается вместе со слотом 1."""
+    if not valid_slot(slot):
+        return False
+    for name in env_names(int(slot)):
+        secrets.write(name, "")
+    if int(slot) == 1:
+        # Иначе очищенный первый слот тут же снова заполнился бы прежней
+        # парой, и кнопка «удалить» выглядела бы сломанной.
+        secrets.write(LEGACY_URL_ENV, "")
+        secrets.write(LEGACY_KEY_ENV, "")
+    log.info("Свой агент в слоте %s удалён", slot)
+    return True
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_68'
+cat > "radar/tg.py" <<'RADAR_FILE_69'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -20832,9 +21267,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_69'
+cat > "radar/timezones.py" <<'RADAR_FILE_70'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -20976,9 +21411,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_70'
+cat > "radar/keyboards.py" <<'RADAR_FILE_71'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -21541,9 +21976,9 @@ def queue_item() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_71'
+cat > "radar/states.py" <<'RADAR_FILE_72'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -21573,9 +22008,9 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     quiet_hours = State()          # интервал тихих часов
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_72'
+cat > "radar/middlewares.py" <<'RADAR_FILE_73'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -21721,9 +22156,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_73'
+cat > "radar/monitor.py" <<'RADAR_FILE_74'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -22375,9 +22810,9 @@ async def run() -> None:
                 log.exception("Сбой цикла мониторинга")
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_74'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_75'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -22435,9 +22870,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_76'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -22852,9 +23287,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_77'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -23020,9 +23455,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_78'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -23521,9 +23956,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_79'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -23998,9 +24433,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_80'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -24367,9 +24802,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_81'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -24516,9 +24951,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_82'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -24806,9 +25241,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_83'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -25015,9 +25450,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_84'
 """Сокращение ссылок — суперадминистратору.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -25124,9 +25559,9 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_85'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -25701,9 +26136,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_86'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -25804,9 +26239,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_87'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -25896,9 +26331,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_88'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -26319,9 +26754,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_89'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -27189,9 +27624,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_90'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -27754,7 +28189,7 @@ _model_choices: dict[int, list[str]] = {}
 def _ai_overview() -> str:
     from .. import provider
 
-    active = provider.PROVIDERS.get(provider.current())
+    active = provider.all_infos().get(provider.current())
     report = ai.models_report()
     snapshot = ai.limiter.snapshot()
     left = int(snapshot.get("limit_day", 0)) - int(snapshot.get("used_today", 0))
@@ -27814,7 +28249,7 @@ async def ai_pick_model(call: CallbackQuery, role: str) -> None:
     from .. import provider
 
     name = provider.current()
-    info = provider.PROVIDERS.get(name)
+    info = provider.all_infos().get(name)
     if info is None or info.kind != provider.KIND_OPENAI:
         await call.answer(
             "У Gemini свой список моделей — он в разделе «Модели и квота».",
@@ -27922,9 +28357,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_91'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -28373,7 +28808,7 @@ async def cmd_provider(message: Message, role: str) -> None:
 def _provider_overview() -> str:
     active = provider.current()
     lines = ["🤖 <b>Провайдер разбора новостей</b>", ""]
-    for info in provider.PROVIDERS.values():
+    for info in provider.all_infos().values():
         mark = "✅" if info.key == active else ("•" if secrets.get(info.env) else "—")
         lines.append(f"{mark} <b>{esc(info.title)}</b>")
         lines.append(f"   <i>{esc(info.note)}</i>")
@@ -28413,7 +28848,7 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
         return
 
     key = call.data.split(":")[2]
-    info = provider.PROVIDERS.get(key)
+    info = provider.all_infos().get(key)
     if info is None:
         await call.answer("Неизвестный провайдер.", show_alert=True)
         return
@@ -28445,9 +28880,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_92'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -28813,9 +29248,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("dig:menu", "◀️ Назад"),
     )
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_93'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -28960,7 +29395,7 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_92
+RADAR_FILE_93
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
