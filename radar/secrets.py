@@ -130,17 +130,24 @@ AGENT_SLOTS = 5
 AGENT_PREFIX = "CUSTOM_AI"
 
 
-def agent_env_names(slot: int) -> tuple[str, str, str]:
-    """Имена настроек слота: название, адрес, ключ."""
+def agent_env_names(slot: int) -> tuple[str, str, str, str]:
+    """Имена настроек слота: название, адрес, ключ, модель.
+
+    Модель нарочно названа так же, как у встроенных провайдеров
+    (`AI_MODEL_<ИМЯ>`), а не по образцу остальных полей слота. Иначе
+    выбранная модель хранилась бы в двух местах: здесь и в общем выборе
+    модели, который есть у каждого провайдера. Одно значение — одно имя.
+    """
     return (f"{AGENT_PREFIX}_{slot}_TITLE",
             f"{AGENT_PREFIX}_{slot}_URL",
-            f"{AGENT_PREFIX}_{slot}_KEY")
+            f"{AGENT_PREFIX}_{slot}_KEY",
+            f"AI_MODEL_CUSTOM{slot}")
 
 
 def _agent_settings(slots: int) -> tuple[Setting, ...]:
     built: list[Setting] = []
     for slot in range(1, slots + 1):
-        title_env, url_env, key_env = agent_env_names(slot)
+        title_env, url_env, key_env, model_env = agent_env_names(slot)
         built.append(Setting(
             title_env, f"Агент {slot}: название",
             "Как агент будет показан в списке моделей. "
@@ -155,6 +162,11 @@ def _agent_settings(slots: int) -> tuple[Setting, ...]:
             key_env, f"Агент {slot}: ключ API",
             "Если сервис не требует ключа, впишите любое непустое значение.",
             AGENT_GROUP, where="ваш сервис"))
+        built.append(Setting(
+            model_env, f"Агент {slot}: модель",
+            "Имя модели у этого сервиса, например llama3.1:8b. "
+            "У своего агента списка моделей не спросить — вписывается руками.",
+            AGENT_GROUP, secret=False))
     return tuple(built)
 
 

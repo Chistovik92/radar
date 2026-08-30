@@ -72,6 +72,7 @@ class Agent:
     title: str
     url: str
     key: str
+    model: str = ""
     legacy: bool = False
 
     @property
@@ -100,7 +101,7 @@ def valid_slot(value: object) -> bool:
     return 1 <= int(text) <= MAX_SLOT
 
 
-def env_names(slot: int) -> tuple[str, str, str]:
+def env_names(slot: int) -> tuple[str, str, str, str]:
     """Имена настроек слота: название, адрес, ключ.
 
     Берутся у secrets, а не собираются здесь заново: те же имена нужны
@@ -116,13 +117,14 @@ def valid_url(url: str) -> bool:
 
 
 def _read(slot: int) -> Agent | None:
-    title_env, url_env, key_env = env_names(slot)
+    title_env, url_env, key_env, model_env = env_names(slot)
     title = (secrets.get(title_env) or "").strip()[:MAX_TITLE]
     url = (secrets.get(url_env) or "").strip().rstrip("/")
     key = (secrets.get(key_env) or "").strip()
+    model = (secrets.get(model_env) or "").strip()
     if not title and not url and not key:
         return None
-    return Agent(slot=slot, title=title, url=url, key=key)
+    return Agent(slot=slot, title=title, url=url, key=key, model=model)
 
 
 def legacy() -> Agent | None:
@@ -174,7 +176,7 @@ def free_slot() -> int:
     return 0
 
 
-def save(slot: int, title: str, url: str, key: str) -> bool:
+def save(slot: int, title: str, url: str, key: str, model: str = "") -> bool:
     """Записывает слот целиком. False — слот или адрес негодные.
 
     Пустой ключ допустим: часть сервисов его не спрашивает, и требовать
@@ -187,10 +189,11 @@ def save(slot: int, title: str, url: str, key: str) -> bool:
     if not valid_url(url):
         return False
 
-    title_env, url_env, key_env = env_names(int(slot))
+    title_env, url_env, key_env, model_env = env_names(int(slot))
     ok = secrets.write(title_env, (title or "").strip()[:MAX_TITLE])
     ok = secrets.write(url_env, url) and ok
     ok = secrets.write(key_env, (key or "").strip()) and ok
+    ok = secrets.write(model_env, (model or "").strip()) and ok
     if ok:
         log.info("Свой агент в слоте %s сохранён", slot)
     return ok

@@ -188,11 +188,12 @@ def custom_infos() -> dict[str, ProviderInfo]:
             # Прежняя пара уже описана записью CUSTOM — второй раз
             # её показывать не надо.
             continue
-        _title, url_env, key_env = agents.env_names(agent.slot)
+        _title, url_env, key_env, _model = agents.env_names(agent.slot)
         built[agent.name] = ProviderInfo(
             agent.name, agent.shown, key_env,
             "Свой сервис с совместимым с OpenAI интерфейсом.",
-            paid=False, base_url="", default_model="", url_env=url_env,
+            paid=False, base_url="", default_model=agent.model,
+            url_env=url_env,
         )
     return built
 

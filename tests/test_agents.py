@@ -57,11 +57,13 @@ class AgentsCase(unittest.TestCase):
         writer.start()
         self.addCleanup(writer.stop)
 
-    def fill(self, slot: int, title: str = "", url: str = "", key: str = "") -> None:
-        title_env, url_env, key_env = agents.env_names(slot)
+    def fill(self, slot: int, title: str = "", url: str = "", key: str = "",
+             model: str = "") -> None:
+        title_env, url_env, key_env, model_env = agents.env_names(slot)
         self.values[title_env] = title
         self.values[url_env] = url
         self.values[key_env] = key
+        self.values[model_env] = model
 
 
 class Slots(AgentsCase):
@@ -205,7 +207,8 @@ class SettingsRegistry(unittest.TestCase):
     def test_grouped_together(self) -> None:
         self.assertIn(secrets.AGENT_GROUP, secrets.GROUPS)
         group = secrets.by_group()[secrets.AGENT_GROUP]
-        self.assertEqual(len(group), secrets.AGENT_SLOTS * 3)
+        # Четыре поля на слот: название, адрес, ключ, модель.
+        self.assertEqual(len(group), secrets.AGENT_SLOTS * 4)
 
     def test_old_pair_left_the_key_list(self) -> None:
         # Две строки среди чужих ключей заменены разделом; иначе один
@@ -214,10 +217,37 @@ class SettingsRegistry(unittest.TestCase):
         self.assertNotIn("CUSTOM_AI_KEY", secrets.BY_KEY)
 
     def test_key_is_secret_and_address_is_not(self) -> None:
-        title_env, url_env, key_env = secrets.agent_env_names(1)
+        title_env, url_env, key_env, model_env = secrets.agent_env_names(1)
         self.assertFalse(secrets.BY_KEY[url_env].secret)
         self.assertFalse(secrets.BY_KEY[title_env].secret)
+        self.assertFalse(secrets.BY_KEY[model_env].secret)
         self.assertTrue(secrets.BY_KEY[key_env].secret)
+
+    def test_model_shares_the_name_with_built_in_providers(self) -> None:
+        # Иначе выбранная модель хранилась бы в двух местах: в слоте
+        # и в общем выборе модели, который есть у каждого провайдера.
+        from radar import provider
+
+        self.assertEqual(secrets.agent_env_names(2)[3],
+                         provider.model_env("custom2"))
+
+
+class Models(AgentsCase):
+    """Модель агента вписывается руками: списка у своего сервиса не спросить."""
+
+    def test_model_saved_and_read(self) -> None:
+        agents.save(1, "Локальная", "http://ollama:11434/v1", "к", "llama3.1:8b")
+        self.assertEqual(agents.load()[0].model, "llama3.1:8b")
+
+    def test_model_optional(self) -> None:
+        agents.save(1, "Локальная", "http://ollama:11434/v1", "к")
+        self.assertEqual(agents.load()[0].model, "")
+
+    def test_model_reaches_provider(self) -> None:
+        from radar import provider
+
+        self.fill(3, "Локальная", "http://ollama:11434/v1", "к", "llama3.1:8b")
+        self.assertEqual(provider.model_of("custom3"), "llama3.1:8b")
 
 
 if __name__ == "__main__":

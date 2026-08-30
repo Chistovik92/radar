@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.8.8 — автономный установщик.
+# Система «Радар» v4.8.9 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.8.8"
+VERSION="4.8.9"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2958,6 +2958,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.8.9", [
+        "🧠 <b>У агента появилась модель.</b> Четвёртое поле "
+        "рядом с названием, адресом и ключом. Хранится под тем же именем, "
+        "что у встроенных провайдеров, — иначе выбранная модель лежала бы "
+        "в двух местах сразу и расходилась бы сама с собой.",
+        "📋 <b>Список моделей подтягивается в панели.</b> "
+        "У OpenRouter моделей десятки, и вписывать имя руками — верный "
+        "способ опечататься так, что выяснится это при первом разборе "
+        "настоящей тревоги. Теперь список спрашивается у самого сервиса. "
+        "У своих агентов списка не спросить — там поле остаётся ручным.",
+    ]),
     ("4.8.8", [
         "🤖 <b>Свои агенты вместо одного.</b> Раньше это была "
         "пара строк «адрес» и «ключ» среди двух десятков чужих ключей — "
@@ -3938,7 +3949,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.8.8"
+__version__ = "4.8.9"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -8396,17 +8407,24 @@ AGENT_SLOTS = 5
 AGENT_PREFIX = "CUSTOM_AI"
 
 
-def agent_env_names(slot: int) -> tuple[str, str, str]:
-    """Имена настроек слота: название, адрес, ключ."""
+def agent_env_names(slot: int) -> tuple[str, str, str, str]:
+    """Имена настроек слота: название, адрес, ключ, модель.
+
+    Модель нарочно названа так же, как у встроенных провайдеров
+    (`AI_MODEL_<ИМЯ>`), а не по образцу остальных полей слота. Иначе
+    выбранная модель хранилась бы в двух местах: здесь и в общем выборе
+    модели, который есть у каждого провайдера. Одно значение — одно имя.
+    """
     return (f"{AGENT_PREFIX}_{slot}_TITLE",
             f"{AGENT_PREFIX}_{slot}_URL",
-            f"{AGENT_PREFIX}_{slot}_KEY")
+            f"{AGENT_PREFIX}_{slot}_KEY",
+            f"AI_MODEL_CUSTOM{slot}")
 
 
 def _agent_settings(slots: int) -> tuple[Setting, ...]:
     built: list[Setting] = []
     for slot in range(1, slots + 1):
-        title_env, url_env, key_env = agent_env_names(slot)
+        title_env, url_env, key_env, model_env = agent_env_names(slot)
         built.append(Setting(
             title_env, f"Агент {slot}: название",
             "Как агент будет показан в списке моделей. "
@@ -8421,6 +8439,11 @@ def _agent_settings(slots: int) -> tuple[Setting, ...]:
             key_env, f"Агент {slot}: ключ API",
             "Если сервис не требует ключа, впишите любое непустое значение.",
             AGENT_GROUP, where="ваш сервис"))
+        built.append(Setting(
+            model_env, f"Агент {slot}: модель",
+            "Имя модели у этого сервиса, например llama3.1:8b. "
+            "У своего агента списка моделей не спросить — вписывается руками.",
+            AGENT_GROUP, secret=False))
     return tuple(built)
 
 
@@ -9575,11 +9598,12 @@ def custom_infos() -> dict[str, ProviderInfo]:
             # Прежняя пара уже описана записью CUSTOM — второй раз
             # её показывать не надо.
             continue
-        _title, url_env, key_env = agents.env_names(agent.slot)
+        _title, url_env, key_env, _model = agents.env_names(agent.slot)
         built[agent.name] = ProviderInfo(
             agent.name, agent.shown, key_env,
             "Свой сервис с совместимым с OpenAI интерфейсом.",
-            paid=False, base_url="", default_model="", url_env=url_env,
+            paid=False, base_url="", default_model=agent.model,
+            url_env=url_env,
         )
     return built
 
@@ -14315,7 +14339,62 @@ def _files_body(session, message: str = "", failed: str = "") -> str:
     return _note("ok", message) + _note("bad", failed) + head + table
 
 
-def _agents_body(session, message: str = "", failed: str = "") -> str:
+async def _models_section(session) -> str:
+    """Выбор модели у встроенных провайдеров, где он вообще есть.
+
+    У OpenRouter моделей десятки, и вписывать имя руками — верный способ
+    опечататься так, что выяснится это при первом разборе настоящей
+    тревоги. Список спрашивается у самого провайдера; если он не ответил,
+    остаётся поле для ручного ввода — отказать было бы хуже.
+    """
+    from .. import provider
+
+    token = auth.csrf_token(session)
+    cards = []
+    for info in provider.available():
+        if info.custom or info.kind != provider.KIND_OPENAI:
+            continue
+        current = provider.model_of(info.key)
+        try:
+            models = await provider.list_models(info.key)
+        except Exception:  # noqa: BLE001
+            log.debug("Список моделей %s недоступен", info.key, exc_info=True)
+            models = []
+
+        if models:
+            options = "".join(
+                f'<option value="{html.escape(name)}"'
+                f'{" selected" if name == current else ""}>{html.escape(name)}'
+                "</option>"
+                for name in models
+            )
+            field = (f'<select name="model"><option value="">— по умолчанию —'
+                     f"</option>{options}</select>")
+            note = f"Список получен у провайдера: {len(models)} моделей."
+        else:
+            field = (f'<input type="text" name="model" maxlength="120" '
+                     f'value="{html.escape(current)}">')
+            note = ("Список моделей получить не вышло — впишите имя руками.")
+
+        cards.append(
+            f'<div class="card"><h3>{html.escape(info.title)}</h3>'
+            f'<div class="hint">{html.escape(note)}</div>'
+            '<form class="inline" method="post" action="/agents/model">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="provider" value="{html.escape(info.key)}">'
+            + field
+            + '<button type="submit">Сохранить</button></form></div>'
+        )
+
+    if not cards:
+        return ""
+    return ('<div class="card"><b>Модели встроенных провайдеров</b> '
+            '<span class="muted">— список подтягивается у самого сервиса, '
+            "поэтому опечатка в имени модели больше не доживёт до первой "
+            "тревоги.</span></div>" + "".join(cards))
+
+
+async def _agents_body(session, message: str = "", failed: str = "") -> str:
     """Свои агенты: название, адрес, ключ. Без ограничения по числу.
 
     Бот показывает первые пять слотов — в переписке длинный список неудобен.
@@ -14365,6 +14444,12 @@ def _agents_body(session, message: str = "", failed: str = "") -> str:
             "любая непустая строка.</div>"
             '<input type="password" name="key" autocomplete="off" '
             'placeholder="новое значение"></div>'
+            '<div class="keyrow"><div><b>Модель</b></div>'
+            '<div class="hint">Имя модели у этого сервиса, например '
+            "llama3.1:8b. У своего сервиса списка моделей не спросить — "
+            "вписывается руками.</div>"
+            f'<input type="text" name="model" maxlength="120" '
+            f'value="{html.escape("" if new else agent.model)}"></div>'
             '<div class="inline" style="margin-top:14px">'
             '<button type="submit">Сохранить</button></div></form>'
             + ("" if new else
@@ -14377,6 +14462,8 @@ def _agents_body(session, message: str = "", failed: str = "") -> str:
             + "</div>"
         )
 
+    picked = await _models_section(session)
+
     head = (
         '<div class="card"><b>Свои агенты</b> '
         '<span class="muted">— любой сервис с совместимым с OpenAI '
@@ -14386,7 +14473,7 @@ def _agents_body(session, message: str = "", failed: str = "") -> str:
         "как и остальные ключи.</span></div>"
     )
     return (_note("ok", message) + _note("bad", failed) + head
-            + "".join(form(item) for item in items) + form(None))
+            + "".join(form(item) for item in items) + form(None) + picked)
 
 
 def _keys_body(session, message: str = "", failed: str = "") -> str:
@@ -14829,9 +14916,9 @@ async def create_app() -> Any:
         return web.Response(
             text=_layout(
                 "Агенты",
-                _agents_body(session,
-                             request.query.get("ok", ""),
-                             request.query.get("err", "")),
+                await _agents_body(session,
+                                   request.query.get("ok", ""),
+                                   request.query.get("err", "")),
                 "agents", roles.title(session.role), session.role,
             ),
             content_type="text/html",
@@ -14859,11 +14946,24 @@ async def create_app() -> Any:
                              if item.slot == int(slot)), None)
             key = existing.key if existing else ""
 
-        if not agents.save(int(slot), str(data.get("title", "")), url, key):
+        if not agents.save(int(slot), str(data.get("title", "")), url, key,
+                           str(data.get("model", ""))):
             raise web.HTTPFound("/agents?err=" + quote(
                 "Записать не удалось — проверьте права на .env"))
         audit.record(session.user_key, "свой агент сохранён", f"слот {slot}")
         raise web.HTTPFound("/agents?ok=" + quote(f"Агент в слоте {slot} сохранён"))
+
+    async def agents_model(request):
+        from .. import provider
+
+        session, data = await _guarded_form(request, "superadmin")
+        name = str(data.get("provider", ""))
+        if name not in provider.all_infos():
+            raise web.HTTPFound("/agents?err=" + quote("Неизвестный провайдер"))
+        if not provider.set_model(name, str(data.get("model", ""))):
+            raise web.HTTPFound("/agents?err=" + quote("Записать не удалось"))
+        audit.record(session.user_key, "модель провайдера изменена", name)
+        raise web.HTTPFound("/agents?ok=" + quote(f"Модель {name} сохранена"))
 
     async def agents_remove(request):
         from .. import agents
@@ -15134,6 +15234,7 @@ async def create_app() -> Any:
         web.get("/keys", keys_page),
         web.get("/agents", agents_page),
         web.post("/agents/save", agents_save),
+        web.post("/agents/model", agents_model),
         web.post("/agents/remove", agents_remove),
         web.get("/files", files_page),
         web.post("/files/remove", files_remove),
@@ -21011,6 +21112,7 @@ class Agent:
     title: str
     url: str
     key: str
+    model: str = ""
     legacy: bool = False
 
     @property
@@ -21039,7 +21141,7 @@ def valid_slot(value: object) -> bool:
     return 1 <= int(text) <= MAX_SLOT
 
 
-def env_names(slot: int) -> tuple[str, str, str]:
+def env_names(slot: int) -> tuple[str, str, str, str]:
     """Имена настроек слота: название, адрес, ключ.
 
     Берутся у secrets, а не собираются здесь заново: те же имена нужны
@@ -21055,13 +21157,14 @@ def valid_url(url: str) -> bool:
 
 
 def _read(slot: int) -> Agent | None:
-    title_env, url_env, key_env = env_names(slot)
+    title_env, url_env, key_env, model_env = env_names(slot)
     title = (secrets.get(title_env) or "").strip()[:MAX_TITLE]
     url = (secrets.get(url_env) or "").strip().rstrip("/")
     key = (secrets.get(key_env) or "").strip()
+    model = (secrets.get(model_env) or "").strip()
     if not title and not url and not key:
         return None
-    return Agent(slot=slot, title=title, url=url, key=key)
+    return Agent(slot=slot, title=title, url=url, key=key, model=model)
 
 
 def legacy() -> Agent | None:
@@ -21113,7 +21216,7 @@ def free_slot() -> int:
     return 0
 
 
-def save(slot: int, title: str, url: str, key: str) -> bool:
+def save(slot: int, title: str, url: str, key: str, model: str = "") -> bool:
     """Записывает слот целиком. False — слот или адрес негодные.
 
     Пустой ключ допустим: часть сервисов его не спрашивает, и требовать
@@ -21126,10 +21229,11 @@ def save(slot: int, title: str, url: str, key: str) -> bool:
     if not valid_url(url):
         return False
 
-    title_env, url_env, key_env = env_names(int(slot))
+    title_env, url_env, key_env, model_env = env_names(int(slot))
     ok = secrets.write(title_env, (title or "").strip()[:MAX_TITLE])
     ok = secrets.write(url_env, url) and ok
     ok = secrets.write(key_env, (key or "").strip()) and ok
+    ok = secrets.write(model_env, (model or "").strip()) and ok
     if ok:
         log.info("Свой агент в слоте %s сохранён", slot)
     return ok
