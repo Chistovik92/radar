@@ -82,8 +82,10 @@ EN_STRINGS: dict[str, str] = {
                          "imitating a brand, someone else's domain, "
                          "redirects, domain age, Safe Browsing lists.",
     "menu.linkcheck": "🔍 Check a link",
+    "menu.music": "🎵 Music",
     "menu.sub_button": "💳 Subscription — unlimited checks",
     "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
+    "help.cmd_music": "/music — music and playlists",
 
     # --- оповещения: самое важное ---
     "alert.danger": "DANGER",

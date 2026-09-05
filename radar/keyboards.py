@@ -75,13 +75,14 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     if features.enabled("media_download"):
         extra.append(InlineKeyboardButton(text=label("menu.media", "🎬 Скачать видео"),
                                           callback_data="med:menu"))
+    if features.enabled("music"):
+        extra.append(InlineKeyboardButton(text=label("menu.music", "🎵 Музыка"),
+                                          callback_data="mus:menu"))
     if extra:
-        # Три кнопки в ряд не влезают — вторая строка, если набралось много.
-        if len(extra) > 2:
-            rows.append(extra[:2])
-            rows.append(extra[2:])
-        else:
-            rows.append(extra)
+        # Кнопок бывает больше двух — режем по две, чтобы строка
+        # не расползалась на весь экран телефона.
+        for start in range(0, len(extra), 2):
+            rows.append(extra[start:start + 2])
 
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text=label("menu.assistant", "🧠 ИИ-ассистент"),

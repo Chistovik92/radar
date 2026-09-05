@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.5.1 — автономный установщик.
+# Система «Радар» v4.9.5.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.5.1"
+VERSION="4.9.5.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2653,7 +2653,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=103
+FILE_COUNT=105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2960,6 +2960,25 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.5.2", [
+        "🚨 <b>Сайты с перехваченным сертификатом отмечаются как "
+        "потенциально опасные.</b> Сертификат национального центра "
+        "у сайта, который глобально подписан другим издателем, — "
+        "признак посредника между вами и сайтом, читающего трафик. "
+        "Сигнал появляется и для незнакомых сайтов с национальной "
+        "подписью: сама по себе она легальна, но знать об этом "
+        "при проверке ссылки важно. Ложных обвинений боялись больше "
+        "пропусков — порог консервативен.",
+        "🛡 <b>Новые проверки сайтов:</b> версия TLS, редирект HTTP→"
+        "HTTPS, HSTS, смешанный контент, форма входа на незащищённой "
+        "странице, срок сертификата как раньше — всё в одном отчёте "
+        "/check.",
+        "🎵 <b>Начало музыки.</b> Каркас из дорожной карты: треки "
+        "присылаются файлом, играют проигрывателем Telegram, "
+        "раскладываются по плейлистам. Каждый слушает только своё — "
+        "общей библиотеки нет и не будет. Подбор похожего — следующий "
+        "шаг. Включается тумблером «Музыка», по умолчанию выключено.",
+    ]),
     ("4.9.5.1", [
         "🔧 <b>Починено живое зависание проверки ссылок.</b> С 4.9.4.2 "
         "проверка могла повиснуть навсегда: при таймауте ожидание "
@@ -4131,7 +4150,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.5.1"
+__version__ = "4.9.5.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -5961,6 +5980,13 @@ FLAGS: tuple[Flag, ...] = (
          "подмена букв, чужой бренд, недавний домен, базы Safe Browsing. "
          "Вывод перечисляет признаки и не выдаёт «безопасна».",
          group="Защита", since="4.9.4", default=False),
+
+    # --- музыка ---
+    Flag("music", "Музыка и плейлисты",
+         "Треки присылаются файлом, играют проигрывателем Telegram, "
+         "раскладываются по плейлистам. Каждый слушает только своё. "
+         "Подбор похожего — следующий шаг.",
+         group="Медиа", since="4.9.5.2", default=False),
 
     # --- данные ---
     Flag("history", "История событий", "Журнал того, что приходило по адресу.",
@@ -12153,8 +12179,10 @@ EN_STRINGS: dict[str, str] = {
                          "imitating a brand, someone else's domain, "
                          "redirects, domain age, Safe Browsing lists.",
     "menu.linkcheck": "🔍 Check a link",
+    "menu.music": "🎵 Music",
     "menu.sub_button": "💳 Subscription — unlimited checks",
     "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
+    "help.cmd_music": "/music — music and playlists",
 
     # --- оповещения: самое важное ---
     "alert.danger": "DANGER",
@@ -22754,13 +22782,14 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     if features.enabled("media_download"):
         extra.append(InlineKeyboardButton(text=label("menu.media", "🎬 Скачать видео"),
                                           callback_data="med:menu"))
+    if features.enabled("music"):
+        extra.append(InlineKeyboardButton(text=label("menu.music", "🎵 Музыка"),
+                                          callback_data="mus:menu"))
     if extra:
-        # Три кнопки в ряд не влезают — вторая строка, если набралось много.
-        if len(extra) > 2:
-            rows.append(extra[:2])
-            rows.append(extra[2:])
-        else:
-            rows.append(extra)
+        # Кнопок бывает больше двух — режем по две, чтобы строка
+        # не расползалась на весь экран телефона.
+        for start in range(0, len(extra), 2):
+            rows.append(extra[start:start + 2])
 
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text=label("menu.assistant", "🧠 ИИ-ассистент"),
@@ -23290,6 +23319,7 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     short_link = State()           # сокращение ссылки (администратор)
+    playlist_name = State()        # название нового плейлиста (музыка)
     quiet_hours = State()          # интервал тихих часов
 RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
@@ -24157,6 +24187,7 @@ from . import (
     locations,
     logs,
     media,
+    music,
     network,
     partners,
     perf,
@@ -24185,6 +24216,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(perf.router)
     dp.include_router(shortlink.router)
     dp.include_router(linkcheck.router)
+    dp.include_router(music.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Подписка держит обработчик кодов: он ловит только то, что
@@ -24364,6 +24396,8 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
             "help.cmd_linkcheck",
             "/check &lt;ссылка&gt; — проверить ссылку на признаки мошенничества",
         ))
+    if features.enabled("music"):
+        lines.append(_("help.cmd_music", "/music — музыка и плейлисты"))
     if roles.can_use_assistant(role):
         lines.append(_(
             "help.cmd_assistant",
@@ -31800,6 +31834,18 @@ async def _run_check(message: Message, user: dict, role: str, url: str) -> None:
         key = (secrets.get("SAFE_BROWSING_API_KEY") or "").strip()
         verdict.net = await _net_with_deadline(url, key)
 
+        # Перехват TLS из сетевой проверки — в общий счёт вердикта:
+        # весов анализа адреса у этого признака нет, узнать его можно
+        # только соединившись. Одиночный сигнал 55 — «подозрительно»;
+        # вместе с другими признаками поднимает до «опасно».
+        if verdict.net and verdict.net.mitm_suspect:
+            from multitool.linkcheck.analyze import Signal
+
+            verdict.signals.append(Signal(
+                "mitm_cert", 55,
+                "подменённый сертификат (перехват TLS)",
+            ))
+
     # Счётчик дня тратим только за состоявшуюся проверку: за неудачную
     # человек платить квотой не должен.
     if not unlimited:
@@ -32150,8 +32196,596 @@ def describe() -> str:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
 RADAR_FILE_97
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
+cat > "radar/music.py" <<'RADAR_FILE_98'
+"""Музыка и плейлисты (с 4.9.5.2, каркас).
+
+Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
+или ссылкой, раскладываются по плейлистам, играют встроенным
+проигрывателем Telegram.
+
+Этот выпуск — первый шаг, ядро:
+
+* хранение: файлы в `data/music/<id>.mp3`, описание в записи
+  пользователя (`user["music"]`): треки и плейлисты;
+* каждый слушает только своё — общей библиотеки нет. Раздача чужих
+  фонограмм — это распространение, а не прослушивание, и платной
+  выдачей треков бот становился бы пиратским сервисом;
+* метаданные ID3 (артист, название) разбираются на чистой стандартной
+  библиотеке — внешний тег-парсер ради трёх полей не тащим;
+* приём файла и отдача — в `handlers/music.py`, сюда только логика.
+
+Что дальше (по плану): подбор похожего по тегам, MusicBrainz,
+перемешивание. Всё это поверх этого же хранилища.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from dataclasses import dataclass, field
+
+log = logging.getLogger("radar.music")
+
+DIRECTORY = "data/music"
+
+# Форматы, которые умеет играть встроенный проигрыватель Telegram.
+SUPPORTED_EXT = (".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav")
+
+# Пределы. Файл больше — не принимаем: это уже не «песня в мессенджере»,
+# а архив, и держать его на одноплатнике незачем.
+MAX_TRACK_MB = 30
+# Сколько треков у одного человека без подписки/под ней — как у видео:
+# считаем штуки, они понятны и честны.
+FREE_TRACKS = 20
+SUBSCRIBED_TRACKS = 500
+
+MAX_PLAYLISTS = 20
+MAX_TITLE = 60
+
+_UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
+
+
+# --------------------------------------------------------------------------
+#  ID3: три поля на стандартной библиотеке
+# --------------------------------------------------------------------------
+
+def _id3_text(data: bytes, tag: bytes) -> str:
+    """Текстовый кадр ID3v2 (TIT2/TPE1/TALB). Пусто — не нашли.
+
+    Разбор нарочно простейший: ищем заголовок кадра «TXXн», читаем
+    длину из syncsafe-байтов и вынимаем текст. Полный парсер ради
+    трёх полей — сотни строк, которые всё равно падают на музыке
+    с нестандартными тегами.
+    """
+    start = data.find(b"ID3")
+    if start < 0:
+        return ""
+    try:
+        pos = data.find(tag, start)
+        if pos < 0:
+            return ""
+        # Заголовок кадра: 4 байта имя + 4 байта длина (syncsafe).
+        size = ((data[pos + 4] & 0x7F) << 21
+                | (data[pos + 5] & 0x7F) << 14
+                | (data[pos + 6] & 0x7F) << 7
+                | (data[pos + 7] & 0x7F))
+        raw = data[pos + 10: pos + 10 + size]
+        if not raw:
+            return ""
+        # Первый байт — кодировка: 0/3 — байтовые, 1/2 — UTF-16.
+        encoding = raw[0]
+        body = raw[1:]
+        if encoding in (1, 2):
+            text = body.decode("utf-16", errors="replace")
+        else:
+            text = body.decode("latin-1", errors="replace")
+        return text.split("\x00")[0].strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def read_tags(data: bytes) -> dict[str, str]:
+    """Артист и название из ID3. Пустые — тегов нет."""
+    return {
+        "artist": _id3_text(data, b"TPE1"),
+        "title": _id3_text(data, b"TIT2"),
+    }
+
+
+# --------------------------------------------------------------------------
+#  Хранилище: запись пользователя
+# --------------------------------------------------------------------------
+
+# user["music"] = {
+#   "tracks": [{"id": "abc", "name": "...", "artist": "", "title": "",
+#               "size": 123, "ext": ".mp3"}],
+#   "playlists": [{"name": "Дорога", "tracks": ["abc", ...]}],
+# }
+
+SLOT = "music"
+
+
+def _slot(user: dict) -> dict:
+    data = (user or {}).get(SLOT)
+    return data if isinstance(data, dict) else {}
+
+
+def tracks_of(user: dict) -> list[dict]:
+    return list(_slot(user).get("tracks") or [])
+
+
+def playlists_of(user: dict) -> list[dict]:
+    return list(_slot(user).get("playlists") or [])
+
+
+def track_limit(user: dict, role: str | None = None) -> int:
+    """Сколько треков можно держать. Подписка расширяет хранилище."""
+    from . import subscription
+
+    if subscription.active(user, role):
+        return SUBSCRIBED_TRACKS
+    return FREE_TRACKS
+
+
+def safe_title(name: str) -> str:
+    cleaned = _UNSAFE.sub(" ", (name or "").strip()).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned[:MAX_TITLE].strip() or "Без названия"
+
+
+def add_track(user: dict, track_id: str, *, name: str, ext: str,
+              size: int, artist: str = "", title: str = "") -> bool:
+    """Записывает трек. False — хранилище переполнено."""
+    data = dict(_slot(user))
+    tracks = list(data.get("tracks") or [])
+    # Лимит по роли проверяет вызывающий: здесь только целостность записи.
+    tracks.append({
+        "id": track_id, "name": safe_title(name), "ext": ext,
+        "size": size, "artist": artist[:80], "title": title[:80],
+    })
+    data["tracks"] = tracks
+    user[SLOT] = data
+    return True
+
+
+def remove_track(user: dict, track_id: str) -> bool:
+    """Убирает трек из записи и с диска. False — не было такого."""
+    data = dict(_slot(user))
+    tracks = list(data.get("tracks") or [])
+    rest = [t for t in tracks if t.get("id") != track_id]
+    if len(rest) == len(tracks):
+        return False
+
+    # Из плейлистов тоже: ссылка на удалённый трек — мусор.
+    playlists = []
+    for pl in list(data.get("playlists") or []):
+        kept = dict(pl)
+        kept["tracks"] = [t for t in (pl.get("tracks") or [])
+                          if t != track_id]
+        playlists.append(kept)
+
+    data["tracks"] = rest
+    data["playlists"] = playlists
+    user[SLOT] = data
+
+    # Расширение берём из убранного трека — путь должен совпасть.
+    path = ""
+    for t in tracks:
+        if t.get("id") == track_id:
+            path = os.path.join(DIRECTORY, f"{track_id}{t.get('ext') or ''}")
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        log.debug("Файл трека не удалён: %s", path)
+    return True
+
+
+def create_playlist(user: dict, name: str) -> bool:
+    """Новый плейлист. False — лимит или имя занято."""
+    data = dict(_slot(user))
+    playlists = list(data.get("playlists") or [])
+    if len(playlists) >= MAX_PLAYLISTS:
+        return False
+    title = safe_title(name)
+    if any(pl.get("name") == title for pl in playlists):
+        return False
+    playlists.append({"name": title, "tracks": []})
+    data["playlists"] = playlists
+    user[SLOT] = data
+    return True
+
+
+def toggle_in_playlist(user: dict, playlist: str, track_id: str) -> bool | None:
+    """Добавить/убрать трек из плейлиста. None — плейлиста нет."""
+    data = dict(_slot(user))
+    playlists = list(data.get("playlists") or [])
+    target = None
+    for pl in playlists:
+        if pl.get("name") == playlist:
+            target = pl
+            break
+    if target is None:
+        return None
+    tracks = list(target.get("tracks") or [])
+    if track_id in tracks:
+        tracks.remove(track_id)
+        added = False
+    else:
+        tracks.append(track_id)
+        added = True
+    target["tracks"] = tracks
+    data["playlists"] = playlists
+    user[SLOT] = data
+    return added
+
+
+def playlist_tracks(user: dict, playlist: str) -> list[dict]:
+    """Треки плейлиста в его порядке."""
+    by_id = {t.get("id"): t for t in tracks_of(user)}
+    for pl in playlists_of(user):
+        if pl.get("name") == playlist:
+            return [by_id[tid] for tid in (pl.get("tracks") or [])
+                    if tid in by_id]
+    return []
+
+
+def describe(user: dict, role: str | None = None) -> str:
+    """Строка о состоянии: сколько треков, плейлистов, лимит."""
+    tracks = tracks_of(user)
+    limit = track_limit(user, role)
+    playlists = playlists_of(user)
+    lines = [
+        f"Треков: <b>{len(tracks)}</b> из {limit}",
+        f"Плейлистов: <b>{len(playlists)}</b> из {MAX_PLAYLISTS}",
+    ]
+    return "\n".join(lines)
+RADAR_FILE_98
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
+cat > "radar/handlers/music.py" <<'RADAR_FILE_99'
+"""Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
+
+Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
+встроенным проигрывателем Telegram, раскладывается по плейлистам.
+Подбор похожего и внешние базы — следующие шаги.
+
+Ограничение, которое нельзя обойти: каждый слушает то, что загрузил
+сам. Общей библиотеки нет и не будет: раздача чужих фонограмм —
+распространение, а платная выдача треков сделала бы бота пиратским
+сервисом со всеми последствиями для домена и хостинга.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+import secrets as secrets_module
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from .. import music, roles, storage, subscription
+from ..states import Form
+from ..tg import back_kb, safe_edit
+
+log = logging.getLogger("radar.handlers.music")
+router = Router(name="music")
+
+
+def _menu(user: dict, role: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if music.tracks_of(user):
+        rows.append([InlineKeyboardButton(
+            text="▶️ Мои треки", callback_data="mus:list")])
+    for pl in music.playlists_of(user):
+        count = len(pl.get("tracks") or [])
+        rows.append([InlineKeyboardButton(
+            text=f"🎵 {pl['name']} ({count})",
+            callback_data=f"mus:pl:{pl['name'][:40]}")])
+    rows.append([InlineKeyboardButton(
+        text="➕ Новый плейлист", callback_data="mus:newpl")])
+    rows.append([InlineKeyboardButton(text="🏠 В главное меню",
+                                      callback_data="menu:main")])
+    del role
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _track_kb(track_id: str, playlists: list[dict]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(
+        text="▶️ Играть", callback_data=f"mus:play:{track_id}")]]
+    for pl in playlists:
+        mark = "➖" if track_id in (pl.get("tracks") or []) else "➕"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {pl['name'][:40]}",
+            callback_data=f"mus:toggle:{pl['name'][:40]}:{track_id}")])
+    rows.append([InlineKeyboardButton(
+        text="🗑 Удалить", callback_data=f"mus:del:{track_id}")])
+    rows.append([InlineKeyboardButton(text="◀️ К музыке",
+                                      callback_data="mus:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _section(user: dict, role: str) -> str:
+    return (
+        "🎵 <b>Музыка</b>\n\n"
+        f"{music.describe(user, role)}\n\n"
+        "Пришлите аудиофайл сообщением — он появится в ваших треках.\n"
+        "Форматы: mp3, m4a, ogg, opus, flac, wav; до "
+        f"{music.MAX_TRACK_MB} МБ.\n\n"
+        "<i>Каждый слушает только то, что загрузил сам — общей "
+        "библиотеки нет.</i>"
+    )
+
+
+@router.message(Command("music"))
+async def cmd_music(message: Message, user: dict, role: str) -> None:
+    from .. import features
+
+    if not features.enabled("music"):
+        await message.answer("🎵 Музыка отключена.")
+        return
+    await message.answer(_section(user, role), reply_markup=_menu(user, role))
+
+
+@router.callback_query(F.data == "mus:menu")
+async def menu(call, user: dict, role: str) -> None:
+    from .. import features
+
+    if not features.enabled("music"):
+        await call.answer("Музыка отключена.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, _section(user, role), _menu(user, role))
+
+
+@router.message(F.audio)
+async def take_track(message: Message, user: dict, role: str) -> None:
+    """Аудиофайл сообщением — в хранилище."""
+    from .. import features
+
+    if not features.enabled("music"):
+        return  # не наш файл — пусть идёт дальше по цепочке
+
+    audio = message.audio
+    if not audio:
+        return
+
+    ext = ""
+    for candidate in music.SUPPORTED_EXT:
+        if (audio.file_name or "").lower().endswith(candidate):
+            ext = candidate
+            break
+    if not ext:
+        await message.answer(
+            "❌ Формат не поддерживается. Игрок Telegram понимает: "
+            + ", ".join(music.SUPPORTED_EXT) + ".")
+        return
+
+    if audio.file_size and audio.file_size > music.MAX_TRACK_MB * 1024 * 1024:
+        await message.answer(
+            f"❌ Файл больше {music.MAX_TRACK_MB} МБ — это уже не песня "
+            "в мессенджере.")
+        return
+
+    limit = music.track_limit(user, role)
+    if len(music.tracks_of(user)) >= limit:
+        if subscription.active(user, role):
+            await message.answer("❌ Хранилище заполнено.")
+        else:
+            await message.answer(
+                f"🔒 Бесплатно — {music.FREE_TRACKS} треков. Подписка "
+                "расширяет хранилище до "
+                f"{music.SUBSCRIBED_TRACKS}.")
+        return
+
+    try:
+        file = await message.bot.get_file(audio.file_id)
+        data = await message.bot.download_file(file.file_path)
+        payload = data.read() if data else b""
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Трек не скачан: %s", exc)
+        await message.answer("❌ Не удалось скачать файл. Попробуйте ещё раз.")
+        return
+
+    tags = music.read_tags(payload)
+    track_id = secrets_module.token_hex(8)
+
+    os.makedirs(music.DIRECTORY, exist_ok=True)
+    path = os.path.join(music.DIRECTORY, f"{track_id}{ext}")
+    with open(path, "wb") as handle:
+        handle.write(payload)
+
+    name = (audio.file_name or "Без названия").rsplit(".", 1)[0]
+    music.add_track(user, track_id, name=name, ext=ext,
+                    size=len(payload),
+                    artist=tags.get("artist", ""),
+                    title=tags.get("title", ""))
+    await storage.save(message.from_user.id)
+
+    shown = tags.get("title") or name
+    artist = tags.get("artist", "")
+    label = f"{artist} — {shown}" if artist else shown
+    await message.answer(
+        f"✅ Трек добавлен: <b>{label[:80]}</b>\n"
+        f"{music.describe(user, role)}",
+        reply_markup=_track_kb(track_id, music.playlists_of(user)),
+    )
+    log.info("Добавлен трек: %s", label[:60])
+
+
+@router.callback_query(F.data.startswith("mus:play:"))
+async def play(call) -> None:
+    track_id = call.data.split(":")[2]
+    await call.answer()
+    track = next((t for t in music.tracks_of(_user_of(call))
+                  if t.get("id") == track_id), None)
+    if track is None:
+        await call.message.answer("Трек не найден.")
+        return
+    path = os.path.join(music.DIRECTORY,
+                        f"{track_id}{track.get('ext') or ''}")
+    if not os.path.isfile(path):
+        await call.message.answer("Файл трека потерян — загрузите заново.")
+        return
+    caption = track.get("name") or "Трек"
+    artist = track.get("artist") or ""
+    title = track.get("title") or ""
+    if artist or title:
+        caption = f"{artist} — {title}" if artist else title
+    await call.message.answer_audio(
+        FSInputFile(path),
+        caption=f"🎵 {caption[:80]}",
+        request_timeout=600,
+    )
+
+
+@router.callback_query(F.data.startswith("mus:del:"))
+async def remove(call) -> None:
+    track_id = call.data.split(":")[2]
+    await call.answer()
+    user = _user_of(call)
+    if music.remove_track(user, track_id):
+        await storage.save(call.from_user.id)
+        await safe_edit(call, "🗑 Трек удалён.", _menu(user, _role_of(call)))
+    else:
+        await call.answer("Трек не найден.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("mus:list"))
+async def track_list(call, user: dict, role: str) -> None:
+    await call.answer()
+    tracks = music.tracks_of(user)
+    if not tracks:
+        await safe_edit(call, _section(user, role), _menu(user, role))
+        return
+    rows = []
+    for t in tracks:
+        artist = t.get("artist") or ""
+        title = t.get("title") or t.get("name") or "Трек"
+        label = f"{artist} — {title}" if artist else title
+        rows.append([InlineKeyboardButton(
+            text=f"🎵 {label[:50]}",
+            callback_data=f"mus:track:{t['id']}")])
+    rows.append([InlineKeyboardButton(text="◀️ К музыке",
+                                      callback_data="mus:menu")])
+    await safe_edit(call, "🎵 <b>Мои треки</b>",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mus:track:"))
+async def track_card(call, user: dict) -> None:
+    track_id = call.data.split(":")[2]
+    await call.answer()
+    track = next((t for t in music.tracks_of(user)
+                  if t.get("id") == track_id), None)
+    if track is None:
+        await call.answer("Трек не найден.", show_alert=True)
+        return
+    artist = track.get("artist") or ""
+    title = track.get("title") or track.get("name") or "Трек"
+    label = f"{artist} — {title}" if artist else title
+    await safe_edit(
+        call,
+        f"🎵 <b>{label[:80]}</b>\n"
+        f"Файл: {track.get('name', '')[:60]}{track.get('ext', '')}",
+        _track_kb(track_id, music.playlists_of(user)),
+    )
+
+
+@router.callback_query(F.data.startswith("mus:toggle:"))
+async def toggle(call, user: dict) -> None:
+    # mus:toggle:<плейлист>:<трек> — имя плейлиста без двоеточий
+    parts = call.data.split(":", 3)
+    if len(parts) < 4:
+        await call.answer("Запрос устарел.", show_alert=True)
+        return
+    playlist, track_id = parts[2], parts[3]
+    result = music.toggle_in_playlist(user, playlist, track_id)
+    if result is None:
+        await call.answer("Плейлист не найден.", show_alert=True)
+        return
+    await storage.save(call.from_user.id)
+    await call.answer("Добавлен в плейлист." if result else "Убран из плейлиста.")
+    await track_card(call, user)
+
+
+@router.callback_query(F.data.startswith("mus:pl:"))
+async def playlist_view(call, user: dict) -> None:
+    name = call.data.split(":", 2)[2]
+    await call.answer()
+    tracks = music.playlist_tracks(user, name)
+    if not tracks:
+        await safe_edit(call, f"🎵 Плейлист «{name}» пуст.",
+                        _menu(user, _role_of(call)))
+        return
+    rows = []
+    for t in tracks:
+        artist = t.get("artist") or ""
+        title = t.get("title") or t.get("name") or "Трек"
+        label = f"{artist} — {title}" if artist else title
+        rows.append([InlineKeyboardButton(
+            text=f"🎵 {label[:50]}",
+            callback_data=f"mus:play:{t['id']}")])
+    rows.append([InlineKeyboardButton(text="◀️ К музыке",
+                                      callback_data="mus:menu")])
+    await safe_edit(call, f"🎵 <b>Плейлист «{name[:40]}»</b>",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "mus:newpl")
+async def new_playlist(call, state) -> None:
+    await call.answer()
+    await state.set_state(Form.playlist_name)
+    await safe_edit(
+        call,
+        "➕ <b>Новый плейлист</b>\n\nПришлите название одним сообщением.\n"
+        "<i>/cancel — отмена.</i>",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="◀️ Отмена", callback_data="mus:menu")]]),
+    )
+
+
+@router.message(Form.playlist_name)
+async def take_playlist_name(message: Message, state, user: dict) -> None:
+    await state.clear()
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+    if not music.create_playlist(user, text):
+        await message.answer(
+            "❌ Не вышло: лимит плейлистов или имя уже занято.",
+            reply_markup=back_kb("mus:menu", "◀️ К музыке"))
+        return
+    await storage.save(message.from_user.id)
+    await message.answer(
+        f"✅ Плейлист «{music.safe_title(text)}» создан.",
+        reply_markup=back_kb("mus:menu", "◀️ К музыке"))
+
+
+def _user_of(call) -> dict:
+    return storage.get_user(call.from_user.id) or {}
+
+
+def _role_of(call) -> str:
+    return (_user_of(call).get("role") or "user")
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_98'
+cat > "multitool/__init__.py" <<'RADAR_FILE_100'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -32177,9 +32811,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_98'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_98
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_99'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_101'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -32212,9 +32846,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_99'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_99
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_100'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_102'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -32242,31 +32876,32 @@ from dataclasses import dataclass, field
 SCORE_MAX = 100
 
 SIGNALS = [
-    ("scheme_http", 20, "незащищённое HTTP"),
-    ("scheme_suspicious", 35, "опасная схема"),
-    ("executable_scheme", 60, "исполняемая схема"),
-    ("userinfo", 45, "учётные данные перед @"),
-    ("ip_literal", 10, "IP вместо домена"),
-    ("punycode", 15, "пуньякод (идн-домен)"),
-    ("mixed_script", 25, "смешанные алфавиты"),
-    ("homograph_brand", 70, "подмена букв с имитацией бренда"),
-    ("brand_wrong_domain", 40, "бренд в домене, но не в реестре"),
-    ("brand_path", 12, "бренд в пути"),
-    ("typosquat", 30, "подобный бренду домен"),
-    ("suspicious_tld", 5, "подозрительная зона"),
-    ("subdomain_depth", 6, "глубокая вложенность"),
-    ("hyphen_label", 3, "дефис в метке домена"),
-    ("shortener", 5, "сокращатель ссылки"),
-    ("nonstandard_port", 2, "нестандартный порт"),
-    ("bait_word", 8, "слова-призыв в пути"),
-    ("executable_ext", 15, "исполняемый файл"),
-    ("double_ext", 30, "двойное расширение"),
-    ("many_escapes", 4, "много кодов экранирования"),
-    ("trailing_dot", 3, "точка в конце домена"),
-    ("zero_width", 20, "невидимые символы"),
-    ("digits_in_brand", 6, "цифры в имени домена"),
-    ("free_hosting", 4, "свободный хостинг"),
-]
+        ("scheme_http", 20, "незащищённое HTTP"),
+        ("scheme_suspicious", 35, "опасная схема"),
+        ("executable_scheme", 60, "исполняемая схема"),
+        ("userinfo", 45, "учётные данные перед @"),
+        ("ip_literal", 10, "IP вместо домена"),
+        ("punycode", 15, "пуньякод (идн-домен)"),
+        ("mixed_script", 25, "смешанные алфавиты"),
+        ("homograph_brand", 70, "подмена букв с имитацией бренда"),
+        ("brand_wrong_domain", 40, "бренд в домене, но не в реестре"),
+        ("brand_path", 12, "бренд в пути"),
+        ("typosquat", 30, "подобный бренду домен"),
+        ("suspicious_tld", 5, "подозрительная зона"),
+        ("subdomain_depth", 6, "глубокая вложенность"),
+        ("hyphen_label", 3, "дефис в метке домена"),
+        ("shortener", 5, "сокращатель ссылки"),
+        ("nonstandard_port", 2, "нестандартный порт"),
+        ("bait_word", 8, "слова-призыв в пути"),
+        ("executable_ext", 15, "исполняемый файл"),
+        ("double_ext", 30, "двойное расширение"),
+        ("many_escapes", 4, "много кодов экранирования"),
+        ("trailing_dot", 3, "точка в конце домена"),
+        ("zero_width", 20, "невидимые символы"),
+        ("digits_in_brand", 6, "цифры в имени домена"),
+        ("free_hosting", 4, "свободный хостинг"),
+        ("mitm_cert", 55, "подменённый сертификат (перехват TLS)"),
+    ]
 
 VERDICT = {
     0: "ok",
@@ -32388,6 +33023,14 @@ class NetResult:
     cert_valid_days: int | None = None
     threats: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # С 4.9.5.2: HTTPS-редирект, HSTS, TLS-версия, перехват TLS.
+    https_redirect: bool | None = None
+    hsts: bool = False
+    tls_version: str = ""
+    mitm_suspect: bool = False
+    # Поля ответа страницы для проверки контента.
+    mixed_content: int = 0
+    login_form_http: bool = False
 
 
 @dataclass(slots=True)
@@ -32611,9 +33254,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_100
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_101'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_103'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -32782,6 +33425,80 @@ async def safe_browsing(url: str, api_key: str | None) -> "NetResult":
     return res
 
 
+# Отечественные центы сертификации, которыми подписываются сайты
+# внутри национальной инфраструктуры. Их присутствие в цепочке
+# при посещении сайта, который глобально известен другим издателем,
+# означает перехват TLS на уровне провайдера (ТСПУ) — человек
+# думает, что говорит с сайтом напрямую, а между ним и сайтом
+# стоит посредник, читающий трафик. Список не исчерпывающий:
+# проверка смотрит и на сам факт «издатель сменился на
+# незнакомый», а не только на конкретные имена.
+NATIONAL_CAs = {
+    "russian trusted root ca",
+    "russian trusted sub ca",
+    "russian trusted center",
+    "ministry of digital development",
+    "моски",
+    "нцпи",
+    "фсб россии",
+}
+
+# Издатели крупнейших мировых площадок: если сайт известен каким-то
+# из них, а цепочку подписал национальный или неизвестный центр —
+# это не «сайт сменил сертификат», это перехват.
+KNOWN_ISSUERS = {
+    "gmail.com": ("google trust services", "globalsign"),
+    "youtube.com": ("google trust services", "globalsign"),
+    "google.com": ("google trust services", "globalsign"),
+    "facebook.com": ("digicert", "globalsign"),
+    "instagram.com": ("digicert", "globalsign"),
+    "x.com": ("digicert", "globalsign"),
+    "twitter.com": ("digicert", "globalsign"),
+    "vk.com": ("globalsign", "sectigo"),
+    "yandex.ru": ("globalsign", "sectigo", "digicert"),
+    "telegram.org": ("digicert", "globalsign"),
+    "wikipedia.org": ("globalsign", "digicert", "lets encrypt", "isrg"),
+}
+
+
+def _cert_mitm_suspect(issuer: str, host: str) -> tuple[bool, str]:
+    """Похоже ли издателя сертификата на перехват TLS.
+
+    Возвращает (подозрительно, пояснение). Смотрится не сам факт
+    национального CA — им подписано много честных российских сайтов, —
+    а противоречие: сайт известен глобальным издателем, а цепочку
+    подписал кто-то другой. Ошибка здесь допустима только в одну
+    сторону: непойманное — обычная осторожность, пойманное ложно —
+    обвинение сайта без вины. Поэтому ложных срабатываний избегаем:
+    незнакомый издатель без национальной подписи — не повод для
+    сигнала.
+    """
+    issuer_lower = issuer.lower()
+    if not issuer_lower.strip():
+        return False, ""
+    for domain, issuers in KNOWN_ISSUERS.items():
+        if host == domain or host.endswith("." + domain):
+            if any(marker in issuer_lower for marker in NATIONAL_CAs):
+                return True, (
+                    f"сайт {domain} использует сертификат национального "
+                    "издателя — вероятен перехват TLS на уровне провайдера"
+                )
+            if not any(marker in issuer_lower for marker in issuers):
+                return True, (
+                    f"сертификат {domain} издан неизвестным центром "
+                    f"({issuer[:60]}) — вероятен перехват TLS"
+                )
+            return False, ""
+    # Сайт вне списка известных: сигнал ставим только за явную
+    # национальную подпись — сам по себе она легальна, но для
+    # человека, проверяющего ссылку, это важный факт: внутри
+    # такой сессии возможен разбор трафика.
+    for marker in NATIONAL_CAs:
+        if marker in issuer_lower:
+            return True, "сертификат издан национальным центром — внутри сессии возможен разбор трафика"
+    return False, ""
+
+
 async def cert_info(host: str) -> "NetResult":
     from .analyze import NetResult
 
@@ -32799,6 +33516,13 @@ async def cert_info(host: str) -> "NetResult":
             asyncio.open_connection(host, 443, ssl=ctx),
             timeout=6,
         )
+        # Версия TLS: SSLv3 и TLS 1.0 сломаны известными атаками,
+        # а честные сайты давно не используют их.
+        transport = writer.transport
+        ssl_object = getattr(transport, "get_extra_info", lambda _n: None)("ssl_object")
+        if ssl_object is not None:
+            res.tls_version = ssl_object.version() or ""
+
         sock = writer.get_extra_info("socket")
         if sock:
             cert = sock.getpeercert()
@@ -32808,6 +33532,15 @@ async def cert_info(host: str) -> "NetResult":
                 expires = expires.replace(tzinfo=timezone.utc)
                 res.cert_valid_days = (expires - datetime.now(timezone.utc)).days
                 res.success = True
+            issuer = ""
+            for piece in cert.get("issuer", ()):  # tuple of tuples
+                for name, value in piece:
+                    if name in ("organizationName", "commonName") and value:
+                        issuer = f"{issuer} {value}".strip()
+            suspect, why = _cert_mitm_suspect(issuer, host)
+            if suspect:
+                res.mitm_suspect = True
+                res.notes.append(why)
     except Exception as exc:  # noqa: BLE001
         log.warning("cert failed %s: %s", host, exc)
         res.notes.append(f"cert error: {type(exc).__name__}")
@@ -32818,6 +33551,47 @@ async def cert_info(host: str) -> "NetResult":
                 await writer.wait_closed()
             except Exception:  # noqa: BLE001
                 pass
+    return res
+
+
+async def http_security(url: str) -> "NetResult":
+    """HTTPS-редирект, HSTS и примитивы страницы.
+
+    Проверяется стартовый адрес (до редиректов): если он HTTP
+    и не отправляет на HTTPS — весь путь до сайта идёт открытым
+    текстом, и логин-форма на такой странице читается по дороге.
+    """
+    from .analyze import NetResult
+
+    res = NetResult()
+    try:
+        async with _session() as sess:
+            async with sess.get(url, allow_redirects=False) as resp:
+                if url.lower().startswith("http://"):
+                    location = resp.headers.get("Location") or ""
+                    res.https_redirect = location.lower().startswith("https://")
+                res.hsts = bool(resp.headers.get("Strict-Transport-Security"))
+
+                # Форма входа на незащищённой странице: пароль уходит
+                # открытым текстом, и это не зависит от честности сайта.
+                if url.lower().startswith("http://"):
+                    body = await resp.text(errors="replace")
+                    low = body[:65536].lower()
+                    if "<form" in low and (
+                        'type="password"' in low or "type='password'" in low
+                    ):
+                        res.login_form_http = True
+                    # Смешанный контент: HTTPS-страница, тянущая HTTP.
+                elif url.lower().startswith("https://"):
+                    body = await resp.text(errors="replace")
+                    low = body[:65536].lower()
+                    if 'src="http://' in low or "src='http://" in low:
+                        res.mixed_content = low.count('src="http://') + \
+                            low.count("src='http://")
+                res.success = True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("http_security failed %s: %s", url, exc)
+        res.notes.append(f"security error: {type(exc).__name__}")
     return res
 
 
@@ -32834,6 +33608,7 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
     age = await domain_age(host)
     sb = await safe_browsing(chain.final_url, api_key)
     cert = await cert_info(host)
+    sec = await http_security(chain.final_url)
 
     return NetResult(
         success=True,
@@ -32842,11 +33617,17 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         domain_age_days=age.domain_age_days,
         cert_valid_days=cert.cert_valid_days,
         threats=sb.threats,
-        notes=chain.notes + age.notes + sb.notes + cert.notes,
+        notes=chain.notes + age.notes + sb.notes + cert.notes + sec.notes,
+        https_redirect=sec.https_redirect,
+        hsts=sec.hsts,
+        tls_version=cert.tls_version,
+        mitm_suspect=cert.mitm_suspect,
+        mixed_content=sec.mixed_content,
+        login_form_http=sec.login_form_http,
     )
-RADAR_FILE_101
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_102'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_104'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -32915,6 +33696,33 @@ def build_report(v: Verdict) -> str:
                     lines.append("      <i>(сертификат просрочен)</i>")
                 elif days < 7:
                     lines.append("      <i>(сертификат скоро истекает)</i>")
+                lines.append("")
+            if v.net.mitm_suspect:
+                lines.append("  🚨 <b>Подозрение на перехват TLS</b> — "
+                             "сертификат выдан не тем центром, каким сайт "
+                             "подписан глобально. Посредник между вами "
+                             "и сайтом может читать трафик.")
+                lines.append("")
+            if v.net.tls_version:
+                tls = v.net.tls_version
+                lines.append(f"  <i>TLS:</i> {html.escape(tls)}")
+                if tls in ("SSLv3", "TLSv1", "TLSv1.1"):
+                    lines.append("      <i>(устаревшая версия — уязвима к атакам)</i>")
+                lines.append("")
+            if v.net.https_redirect is False:
+                lines.append("  <i>HTTP не перенаправляет на HTTPS</i> — "
+                             "путь до сайта идёт открытым текстом")
+                lines.append("")
+            if v.net.hsts:
+                lines.append("  <i>HSTS:</i> включён")
+                lines.append("")
+            if v.net.mixed_content:
+                lines.append(f"  ⚠️ <i>Смешанный контент:</i> "
+                             f"{v.net.mixed_content} HTTP-элементов на HTTPS-странице")
+                lines.append("")
+            if v.net.login_form_http:
+                lines.append("  ⚠️ <i>Форма входа на незащищённой странице</i> — "
+                             "пароль уходит открытым текстом")
                 lines.append("")
             if v.net.threats:
                 lines.append("  <b>⚠️ Обнаружены угрозы по Safe Browsing:</b>")
@@ -33006,7 +33814,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_102
+RADAR_FILE_104
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

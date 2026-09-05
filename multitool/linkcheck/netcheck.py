@@ -166,6 +166,80 @@ async def safe_browsing(url: str, api_key: str | None) -> "NetResult":
     return res
 
 
+# Отечественные центы сертификации, которыми подписываются сайты
+# внутри национальной инфраструктуры. Их присутствие в цепочке
+# при посещении сайта, который глобально известен другим издателем,
+# означает перехват TLS на уровне провайдера (ТСПУ) — человек
+# думает, что говорит с сайтом напрямую, а между ним и сайтом
+# стоит посредник, читающий трафик. Список не исчерпывающий:
+# проверка смотрит и на сам факт «издатель сменился на
+# незнакомый», а не только на конкретные имена.
+NATIONAL_CAs = {
+    "russian trusted root ca",
+    "russian trusted sub ca",
+    "russian trusted center",
+    "ministry of digital development",
+    "моски",
+    "нцпи",
+    "фсб россии",
+}
+
+# Издатели крупнейших мировых площадок: если сайт известен каким-то
+# из них, а цепочку подписал национальный или неизвестный центр —
+# это не «сайт сменил сертификат», это перехват.
+KNOWN_ISSUERS = {
+    "gmail.com": ("google trust services", "globalsign"),
+    "youtube.com": ("google trust services", "globalsign"),
+    "google.com": ("google trust services", "globalsign"),
+    "facebook.com": ("digicert", "globalsign"),
+    "instagram.com": ("digicert", "globalsign"),
+    "x.com": ("digicert", "globalsign"),
+    "twitter.com": ("digicert", "globalsign"),
+    "vk.com": ("globalsign", "sectigo"),
+    "yandex.ru": ("globalsign", "sectigo", "digicert"),
+    "telegram.org": ("digicert", "globalsign"),
+    "wikipedia.org": ("globalsign", "digicert", "lets encrypt", "isrg"),
+}
+
+
+def _cert_mitm_suspect(issuer: str, host: str) -> tuple[bool, str]:
+    """Похоже ли издателя сертификата на перехват TLS.
+
+    Возвращает (подозрительно, пояснение). Смотрится не сам факт
+    национального CA — им подписано много честных российских сайтов, —
+    а противоречие: сайт известен глобальным издателем, а цепочку
+    подписал кто-то другой. Ошибка здесь допустима только в одну
+    сторону: непойманное — обычная осторожность, пойманное ложно —
+    обвинение сайта без вины. Поэтому ложных срабатываний избегаем:
+    незнакомый издатель без национальной подписи — не повод для
+    сигнала.
+    """
+    issuer_lower = issuer.lower()
+    if not issuer_lower.strip():
+        return False, ""
+    for domain, issuers in KNOWN_ISSUERS.items():
+        if host == domain or host.endswith("." + domain):
+            if any(marker in issuer_lower for marker in NATIONAL_CAs):
+                return True, (
+                    f"сайт {domain} использует сертификат национального "
+                    "издателя — вероятен перехват TLS на уровне провайдера"
+                )
+            if not any(marker in issuer_lower for marker in issuers):
+                return True, (
+                    f"сертификат {domain} издан неизвестным центром "
+                    f"({issuer[:60]}) — вероятен перехват TLS"
+                )
+            return False, ""
+    # Сайт вне списка известных: сигнал ставим только за явную
+    # национальную подпись — сам по себе она легальна, но для
+    # человека, проверяющего ссылку, это важный факт: внутри
+    # такой сессии возможен разбор трафика.
+    for marker in NATIONAL_CAs:
+        if marker in issuer_lower:
+            return True, "сертификат издан национальным центром — внутри сессии возможен разбор трафика"
+    return False, ""
+
+
 async def cert_info(host: str) -> "NetResult":
     from .analyze import NetResult
 
@@ -183,6 +257,13 @@ async def cert_info(host: str) -> "NetResult":
             asyncio.open_connection(host, 443, ssl=ctx),
             timeout=6,
         )
+        # Версия TLS: SSLv3 и TLS 1.0 сломаны известными атаками,
+        # а честные сайты давно не используют их.
+        transport = writer.transport
+        ssl_object = getattr(transport, "get_extra_info", lambda _n: None)("ssl_object")
+        if ssl_object is not None:
+            res.tls_version = ssl_object.version() or ""
+
         sock = writer.get_extra_info("socket")
         if sock:
             cert = sock.getpeercert()
@@ -192,6 +273,15 @@ async def cert_info(host: str) -> "NetResult":
                 expires = expires.replace(tzinfo=timezone.utc)
                 res.cert_valid_days = (expires - datetime.now(timezone.utc)).days
                 res.success = True
+            issuer = ""
+            for piece in cert.get("issuer", ()):  # tuple of tuples
+                for name, value in piece:
+                    if name in ("organizationName", "commonName") and value:
+                        issuer = f"{issuer} {value}".strip()
+            suspect, why = _cert_mitm_suspect(issuer, host)
+            if suspect:
+                res.mitm_suspect = True
+                res.notes.append(why)
     except Exception as exc:  # noqa: BLE001
         log.warning("cert failed %s: %s", host, exc)
         res.notes.append(f"cert error: {type(exc).__name__}")
@@ -202,6 +292,47 @@ async def cert_info(host: str) -> "NetResult":
                 await writer.wait_closed()
             except Exception:  # noqa: BLE001
                 pass
+    return res
+
+
+async def http_security(url: str) -> "NetResult":
+    """HTTPS-редирект, HSTS и примитивы страницы.
+
+    Проверяется стартовый адрес (до редиректов): если он HTTP
+    и не отправляет на HTTPS — весь путь до сайта идёт открытым
+    текстом, и логин-форма на такой странице читается по дороге.
+    """
+    from .analyze import NetResult
+
+    res = NetResult()
+    try:
+        async with _session() as sess:
+            async with sess.get(url, allow_redirects=False) as resp:
+                if url.lower().startswith("http://"):
+                    location = resp.headers.get("Location") or ""
+                    res.https_redirect = location.lower().startswith("https://")
+                res.hsts = bool(resp.headers.get("Strict-Transport-Security"))
+
+                # Форма входа на незащищённой странице: пароль уходит
+                # открытым текстом, и это не зависит от честности сайта.
+                if url.lower().startswith("http://"):
+                    body = await resp.text(errors="replace")
+                    low = body[:65536].lower()
+                    if "<form" in low and (
+                        'type="password"' in low or "type='password'" in low
+                    ):
+                        res.login_form_http = True
+                    # Смешанный контент: HTTPS-страница, тянущая HTTP.
+                elif url.lower().startswith("https://"):
+                    body = await resp.text(errors="replace")
+                    low = body[:65536].lower()
+                    if 'src="http://' in low or "src='http://" in low:
+                        res.mixed_content = low.count('src="http://') + \
+                            low.count("src='http://")
+                res.success = True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("http_security failed %s: %s", url, exc)
+        res.notes.append(f"security error: {type(exc).__name__}")
     return res
 
 
@@ -218,6 +349,7 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
     age = await domain_age(host)
     sb = await safe_browsing(chain.final_url, api_key)
     cert = await cert_info(host)
+    sec = await http_security(chain.final_url)
 
     return NetResult(
         success=True,
@@ -226,5 +358,11 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         domain_age_days=age.domain_age_days,
         cert_valid_days=cert.cert_valid_days,
         threats=sb.threats,
-        notes=chain.notes + age.notes + sb.notes + cert.notes,
+        notes=chain.notes + age.notes + sb.notes + cert.notes + sec.notes,
+        https_redirect=sec.https_redirect,
+        hsts=sec.hsts,
+        tls_version=cert.tls_version,
+        mitm_suspect=cert.mitm_suspect,
+        mixed_content=sec.mixed_content,
+        login_form_http=sec.login_form_http,
     )

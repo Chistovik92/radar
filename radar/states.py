@@ -28,4 +28,5 @@ class Form(StatesGroup):
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
     short_link = State()           # сокращение ссылки (администратор)
+    playlist_name = State()        # название нового плейлиста (музыка)
     quiet_hours = State()          # интервал тихих часов

@@ -21,6 +21,7 @@ from . import (
     locations,
     logs,
     media,
+    music,
     network,
     partners,
     perf,
@@ -49,6 +50,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(perf.router)
     dp.include_router(shortlink.router)
     dp.include_router(linkcheck.router)
+    dp.include_router(music.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Подписка держит обработчик кодов: он ловит только то, что

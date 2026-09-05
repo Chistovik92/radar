@@ -237,6 +237,18 @@ async def _run_check(message: Message, user: dict, role: str, url: str) -> None:
         key = (secrets.get("SAFE_BROWSING_API_KEY") or "").strip()
         verdict.net = await _net_with_deadline(url, key)
 
+        # Перехват TLS из сетевой проверки — в общий счёт вердикта:
+        # весов анализа адреса у этого признака нет, узнать его можно
+        # только соединившись. Одиночный сигнал 55 — «подозрительно»;
+        # вместе с другими признаками поднимает до «опасно».
+        if verdict.net and verdict.net.mitm_suspect:
+            from multitool.linkcheck.analyze import Signal
+
+            verdict.signals.append(Signal(
+                "mitm_cert", 55,
+                "подменённый сертификат (перехват TLS)",
+            ))
+
     # Счётчик дня тратим только за состоявшуюся проверку: за неудачную
     # человек платить квотой не должен.
     if not unlimited:

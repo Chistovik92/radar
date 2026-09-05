@@ -124,6 +124,8 @@ MANIFEST = [
     "radar/handlers/assistant.py",
     "radar/handlers/linkcheck.py",
     "radar/cookies.py",
+    "radar/music.py",
+    "radar/handlers/music.py",
     "multitool/__init__.py",
     "multitool/linkcheck/__init__.py",
     "multitool/linkcheck/analyze.py",

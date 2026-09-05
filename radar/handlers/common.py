@@ -162,6 +162,8 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
             "help.cmd_linkcheck",
             "/check &lt;ссылка&gt; — проверить ссылку на признаки мошенничества",
         ))
+    if features.enabled("music"):
+        lines.append(_("help.cmd_music", "/music — музыка и плейлисты"))
     if roles.can_use_assistant(role):
         lines.append(_(
             "help.cmd_assistant",

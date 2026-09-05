@@ -25,31 +25,32 @@ from dataclasses import dataclass, field
 SCORE_MAX = 100
 
 SIGNALS = [
-    ("scheme_http", 20, "незащищённое HTTP"),
-    ("scheme_suspicious", 35, "опасная схема"),
-    ("executable_scheme", 60, "исполняемая схема"),
-    ("userinfo", 45, "учётные данные перед @"),
-    ("ip_literal", 10, "IP вместо домена"),
-    ("punycode", 15, "пуньякод (идн-домен)"),
-    ("mixed_script", 25, "смешанные алфавиты"),
-    ("homograph_brand", 70, "подмена букв с имитацией бренда"),
-    ("brand_wrong_domain", 40, "бренд в домене, но не в реестре"),
-    ("brand_path", 12, "бренд в пути"),
-    ("typosquat", 30, "подобный бренду домен"),
-    ("suspicious_tld", 5, "подозрительная зона"),
-    ("subdomain_depth", 6, "глубокая вложенность"),
-    ("hyphen_label", 3, "дефис в метке домена"),
-    ("shortener", 5, "сокращатель ссылки"),
-    ("nonstandard_port", 2, "нестандартный порт"),
-    ("bait_word", 8, "слова-призыв в пути"),
-    ("executable_ext", 15, "исполняемый файл"),
-    ("double_ext", 30, "двойное расширение"),
-    ("many_escapes", 4, "много кодов экранирования"),
-    ("trailing_dot", 3, "точка в конце домена"),
-    ("zero_width", 20, "невидимые символы"),
-    ("digits_in_brand", 6, "цифры в имени домена"),
-    ("free_hosting", 4, "свободный хостинг"),
-]
+        ("scheme_http", 20, "незащищённое HTTP"),
+        ("scheme_suspicious", 35, "опасная схема"),
+        ("executable_scheme", 60, "исполняемая схема"),
+        ("userinfo", 45, "учётные данные перед @"),
+        ("ip_literal", 10, "IP вместо домена"),
+        ("punycode", 15, "пуньякод (идн-домен)"),
+        ("mixed_script", 25, "смешанные алфавиты"),
+        ("homograph_brand", 70, "подмена букв с имитацией бренда"),
+        ("brand_wrong_domain", 40, "бренд в домене, но не в реестре"),
+        ("brand_path", 12, "бренд в пути"),
+        ("typosquat", 30, "подобный бренду домен"),
+        ("suspicious_tld", 5, "подозрительная зона"),
+        ("subdomain_depth", 6, "глубокая вложенность"),
+        ("hyphen_label", 3, "дефис в метке домена"),
+        ("shortener", 5, "сокращатель ссылки"),
+        ("nonstandard_port", 2, "нестандартный порт"),
+        ("bait_word", 8, "слова-призыв в пути"),
+        ("executable_ext", 15, "исполняемый файл"),
+        ("double_ext", 30, "двойное расширение"),
+        ("many_escapes", 4, "много кодов экранирования"),
+        ("trailing_dot", 3, "точка в конце домена"),
+        ("zero_width", 20, "невидимые символы"),
+        ("digits_in_brand", 6, "цифры в имени домена"),
+        ("free_hosting", 4, "свободный хостинг"),
+        ("mitm_cert", 55, "подменённый сертификат (перехват TLS)"),
+    ]
 
 VERDICT = {
     0: "ok",
@@ -171,6 +172,14 @@ class NetResult:
     cert_valid_days: int | None = None
     threats: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # С 4.9.5.2: HTTPS-редирект, HSTS, TLS-версия, перехват TLS.
+    https_redirect: bool | None = None
+    hsts: bool = False
+    tls_version: str = ""
+    mitm_suspect: bool = False
+    # Поля ответа страницы для проверки контента.
+    mixed_content: int = 0
+    login_form_http: bool = False
 
 
 @dataclass(slots=True)

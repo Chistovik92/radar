@@ -1113,23 +1113,27 @@ for signs of fraud.
    handler's messages are bilingual; the report is Russian for now —
    to be translated separately, like the weather summary once was.
 
-## 4.9.5 — music and playlists
+## 4.9.5 — music and playlists 🔨 in progress
 
 An idea from August 2026: uploading tracks to the bot, personal playlists,
 similar-track suggestions. A subsystem separate from monitoring — placed
 here for exactly that reason: it must never delay danger alerts.
 
-**Postponed by the author's decision, September 2026** — for a few steps:
-multitool tools come first. The plan below is not cancelled.
+Was postponed in September 2026 for multitool tools; work resumed
+in 4.9.5.2 — the skeleton is ready:
 
-1. **Upload and storage.** A track is sent as a file or a link, sorted
-   into playlists, and plays through Telegram's built-in player. The
-   upload mechanics already exist in `media.py` — reuse them instead of
-   writing them again.
-2. **Sources for suggestions.** Options, from simple to complex:
+1. **Upload and storage** ✅ skeleton in 4.9.5.2. A track is sent
+   as a file, plays through Telegram's built-in player; files live
+   in `data/music`, the description in the user's record. ID3 tags
+   (artist, title) are read on the standard library. Limits: 20
+   tracks free, 500 with the subscription, 20 playlists. The `music`
+   flag, off by default.
+2. **Playlists** ✅ skeleton in 4.9.5.2: creation, adding and removing
+   tracks, playing in order; deleting a track cleans the references
+   out of playlists.
+3. **Sources for suggestions.** Options, from simple to complex:
    - **your own files** — matching by ID3 tags (artist, genre, year), no
-     external requests at all. Start here: it always works and asks nobody
-     for anything;
+     external requests at all. The next step;
    - **MusicBrainz + ListenBrainz** — open databases, a free license, a
      public API with no key. They give "similar artists" and genres
      honestly and legally;
@@ -1137,11 +1141,10 @@ multitool tools come first. The plan below is not cancelled.
      of use restrict resale;
    - **YouTube Music** — tempting, but only reachable through unofficial
      scrapers: breaks with every layout change and directly violates the
-     service's terms. Not viable as a foundation, at most a manual,
-     one-off import on an explicit command.
-3. **Mixing.** Shuffle what was uploaded, build a selection by genre or
+     service's terms. Not viable as a foundation.
+4. **Mixing.** Shuffle what was uploaded, build a selection by genre or
    artist, continue a playlist with something similar.
-4. **A constraint that cannot be worked around.** Distributing other
+5. **A constraint that cannot be worked around.** Distributing other
    people's recordings is distribution, not personal listening, and paid
    access to tracks would turn the bot into a piracy service with all the
    consequences for the domain and hosting. The safe frame: **everyone

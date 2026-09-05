@@ -67,6 +67,33 @@ def build_report(v: Verdict) -> str:
                 elif days < 7:
                     lines.append("      <i>(сертификат скоро истекает)</i>")
                 lines.append("")
+            if v.net.mitm_suspect:
+                lines.append("  🚨 <b>Подозрение на перехват TLS</b> — "
+                             "сертификат выдан не тем центром, каким сайт "
+                             "подписан глобально. Посредник между вами "
+                             "и сайтом может читать трафик.")
+                lines.append("")
+            if v.net.tls_version:
+                tls = v.net.tls_version
+                lines.append(f"  <i>TLS:</i> {html.escape(tls)}")
+                if tls in ("SSLv3", "TLSv1", "TLSv1.1"):
+                    lines.append("      <i>(устаревшая версия — уязвима к атакам)</i>")
+                lines.append("")
+            if v.net.https_redirect is False:
+                lines.append("  <i>HTTP не перенаправляет на HTTPS</i> — "
+                             "путь до сайта идёт открытым текстом")
+                lines.append("")
+            if v.net.hsts:
+                lines.append("  <i>HSTS:</i> включён")
+                lines.append("")
+            if v.net.mixed_content:
+                lines.append(f"  ⚠️ <i>Смешанный контент:</i> "
+                             f"{v.net.mixed_content} HTTP-элементов на HTTPS-странице")
+                lines.append("")
+            if v.net.login_form_http:
+                lines.append("  ⚠️ <i>Форма входа на незащищённой странице</i> — "
+                             "пароль уходит открытым текстом")
+                lines.append("")
             if v.net.threats:
                 lines.append("  <b>⚠️ Обнаружены угрозы по Safe Browsing:</b>")
                 for t in v.net.threats:
