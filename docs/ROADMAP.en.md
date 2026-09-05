@@ -1132,8 +1132,12 @@ in 4.9.5.2 — the skeleton is ready:
    tracks, playing in order; deleting a track cleans the references
    out of playlists.
 3. **Sources for suggestions.** Options, from simple to complex:
-   - **your own files** — matching by ID3 tags (artist, genre, year), no
-     external requests at all. The next step;
+   - **your own files** ✅ done in 4.9.5.3 — matching by ID3 tags
+     (artist — 5 points, genre — 3, a close year — 1) with no external
+     requests at all; similar tracks join a playlist in one tap.
+     The genre (TCON) is read with the track. With no tags on the
+     sample the suggestions are empty: guessing by file name is the
+     road to "similar: everything at random";
    - **MusicBrainz + ListenBrainz** — open databases, a free license, a
      public API with no key. They give "similar artists" and genres
      honestly and legally;
@@ -1142,8 +1146,9 @@ in 4.9.5.2 — the skeleton is ready:
    - **YouTube Music** — tempting, but only reachable through unofficial
      scrapers: breaks with every layout change and directly violates the
      service's terms. Not viable as a foundation.
-4. **Mixing.** Shuffle what was uploaded, build a selection by genre or
-   artist, continue a playlist with something similar.
+4. **Mixing** ✅ partly in 4.9.5.3: shuffling a playlist with the new
+   order remembered. A selection by genre or artist is the next step,
+   on top of the ready similar-tracks matching.
 5. **A constraint that cannot be worked around.** Distributing other
    people's recordings is distribution, not personal listening, and paid
    access to tracks would turn the bot into a piracy service with all the

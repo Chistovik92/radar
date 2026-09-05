@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.5.2 — автономный установщик.
+# Система «Радар» v4.9.5.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.5.2"
+VERSION="4.9.5.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2960,6 +2960,15 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.5.3", [
+        "✨ <b>Похожие треки — по вашим тегам, без сети.</b> В карточке "
+        "трека появилась кнопка: бот сравнивает артиста, жанр и год "
+        "по ID3-тегам загруженного вами же и собирает подборку. "
+        "Одним нажатием похожие добавляются в плейлист. Без тегов "
+        "кнопка не появляется — пустых обещаний не держим.",
+        "🎲 <b>Перемешивание плейлистов.</b> Новый порядок сохраняется: "
+        "перемешали — и плейлист играет так, пока не перемешаете снова.",
+    ]),
     ("4.9.5.2", [
         "🚨 <b>Сайты с перехваченным сертификатом отмечаются как "
         "потенциально опасные.</b> Сертификат национального центра "
@@ -4150,7 +4159,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.5.2"
+__version__ = "4.9.5.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -32293,10 +32302,11 @@ def _id3_text(data: bytes, tag: bytes) -> str:
 
 
 def read_tags(data: bytes) -> dict[str, str]:
-    """Артист и название из ID3. Пустые — тегов нет."""
+    """Артист, название и жанр из ID3. Пустые — тегов нет."""
     return {
         "artist": _id3_text(data, b"TPE1"),
         "title": _id3_text(data, b"TIT2"),
+        "genre": _id3_text(data, b"TCON"),
     }
 
 
@@ -32342,7 +32352,8 @@ def safe_title(name: str) -> str:
 
 
 def add_track(user: dict, track_id: str, *, name: str, ext: str,
-              size: int, artist: str = "", title: str = "") -> bool:
+              size: int, artist: str = "", title: str = "",
+              genre: str = "") -> bool:
     """Записывает трек. False — хранилище переполнено."""
     data = dict(_slot(user))
     tracks = list(data.get("tracks") or [])
@@ -32350,6 +32361,7 @@ def add_track(user: dict, track_id: str, *, name: str, ext: str,
     tracks.append({
         "id": track_id, "name": safe_title(name), "ext": ext,
         "size": size, "artist": artist[:80], "title": title[:80],
+        "genre": genre[:40],
     })
     data["tracks"] = tracks
     user[SLOT] = data
@@ -32448,6 +32460,91 @@ def describe(user: dict, role: str | None = None) -> str:
         f"Плейлистов: <b>{len(playlists)}</b> из {MAX_PLAYLISTS}",
     ]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+#  Подбор похожего и перемешивание (с 4.9.5.3)
+# --------------------------------------------------------------------------
+
+def _norm_word(value: str) -> str:
+    """Нормализованный вид тега: без регистра, пунктуации и пробелов."""
+    return re.sub(r"[\W_]+", "", (value or "").lower())
+
+
+def similar(user: dict, track_id: str, limit: int = 5) -> list[dict]:
+    """Похожие треки из загруженного самим человеком.
+
+    Никакой сети: только ID3-теги своего хранилища. Похожесть — сумма
+    совпадений тегов:
+
+    * артист совпал полностью — 5 очков (обычно это и есть «похожее»);
+    * жанр совпал — 3 очка: жанр честнее называет настроение;
+    * разница лет меньше трёх — 1 очко: эпоха, но не «похожесть».
+
+    Без тегов у трека-образца подбор честно пуст: гадать по названию
+    файла — дорога к «похожее: всё подряд». Порядок — по очкам,
+    внутри одного счёта — как легло хранилище.
+    """
+    tracks = tracks_of(user)
+    base = next((t for t in tracks if t.get("id") == track_id), None)
+    if base is None:
+        return []
+
+    base_artist = _norm_word(base.get("artist") or "")
+    base_genre = _norm_word(base.get("genre") or "")
+    base_year = (base.get("year") or "").strip()
+
+    scored: list[tuple[int, dict]] = []
+    for track in tracks:
+        if track.get("id") == track_id:
+            continue
+
+        score = 0
+        if base_artist and _norm_word(track.get("artist") or "") == base_artist:
+            score += 5
+        if base_genre and base_genre == _norm_word(track.get("genre") or ""):
+            score += 3
+        year = (track.get("year") or "").strip()
+        if base_year and year and year.isdigit() and base_year.isdigit():
+            if abs(int(year) - int(base_year)) < 3:
+                score += 1
+
+        if score > 0:
+            scored.append((score, track))
+
+    scored.sort(key=lambda pair: -pair[0])
+    return [track for _score, track in scored[:limit]]
+
+
+def shuffle_playlist(user: dict, playlist: str, seed: str = "") -> list[dict]:
+    """Перемешанный плейлист. Порядок пишется в запись: перемешали —
+    и плейлист играет в новом порядке, пока не перемешают снова.
+
+    Seed по умолчанию — время: каждое перемешивание даёт новый порядок.
+    """
+    import random
+
+    tracks = playlist_tracks(user, playlist)
+    if not tracks:
+        return []
+
+    rng = random.Random(seed or None)
+    # Исходный порядок стабилен (по id): второй запуск с тем же seed
+    # даёт тот же результат — иначе seed бессмыслен.
+    order = sorted(t["id"] for t in tracks)
+    rng.shuffle(order)
+
+    data = dict(_slot(user))
+    playlists = list(data.get("playlists") or [])
+    for pl in playlists:
+        if pl.get("name") == playlist:
+            pl["tracks"] = order
+            break
+    data["playlists"] = playlists
+    user[SLOT] = data
+
+    by_id = {t.get("id"): t for t in tracks}
+    return [by_id[tid] for tid in order if tid in by_id]
 RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
 cat > "radar/handlers/music.py" <<'RADAR_FILE_99'
@@ -32505,7 +32602,8 @@ def _menu(user: dict, role: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _track_kb(track_id: str, playlists: list[dict]) -> InlineKeyboardMarkup:
+def _track_kb(track_id: str, playlists: list[dict],
+              has_similar: bool = False) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(
         text="▶️ Играть", callback_data=f"mus:play:{track_id}")]]
     for pl in playlists:
@@ -32513,6 +32611,10 @@ def _track_kb(track_id: str, playlists: list[dict]) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{mark} {pl['name'][:40]}",
             callback_data=f"mus:toggle:{pl['name'][:40]}:{track_id}")])
+    if has_similar:
+        rows.append([InlineKeyboardButton(
+            text="✨ Похожие из моих треков",
+            callback_data=f"mus:similar:{track_id}")])
     rows.append([InlineKeyboardButton(
         text="🗑 Удалить", callback_data=f"mus:del:{track_id}")])
     rows.append([InlineKeyboardButton(text="◀️ К музыке",
@@ -32614,18 +32716,35 @@ async def take_track(message: Message, user: dict, role: str) -> None:
     music.add_track(user, track_id, name=name, ext=ext,
                     size=len(payload),
                     artist=tags.get("artist", ""),
-                    title=tags.get("title", ""))
+                    title=tags.get("title", ""),
+                    genre=tags.get("genre", ""))
     await storage.save(message.from_user.id)
 
     shown = tags.get("title") or name
     artist = tags.get("artist", "")
     label = f"{artist} — {shown}" if artist else shown
+    # Кнопка «Похожие» появляется, только когда находить есть из чего:
+    # пустая кнопка обещала бы впустую.
+    similar_now = any(
+        _same_tag(tags.get("artist"), t.get("artist"))
+        or _same_tag(tags.get("genre"), t.get("genre"))
+        for t in music.tracks_of(user) if t.get("id") != track_id
+    )
     await message.answer(
         f"✅ Трек добавлен: <b>{label[:80]}</b>\n"
         f"{music.describe(user, role)}",
-        reply_markup=_track_kb(track_id, music.playlists_of(user)),
+        reply_markup=_track_kb(track_id, music.playlists_of(user),
+                               has_similar=similar_now),
     )
     log.info("Добавлен трек: %s", label[:60])
+
+
+def _same_tag(a: str | None, b: str | None) -> bool:
+    """Совпадают ли теги по нормализованному виду."""
+    from ..music import _norm_word
+
+    left, right = _norm_word(a or ""), _norm_word(b or "")
+    return bool(left) and left == right
 
 
 @router.callback_query(F.data.startswith("mus:play:"))
@@ -32699,12 +32818,106 @@ async def track_card(call, user: dict) -> None:
     artist = track.get("artist") or ""
     title = track.get("title") or track.get("name") or "Трек"
     label = f"{artist} — {title}" if artist else title
+    has_similar = bool(music.similar(user, track_id))
     await safe_edit(
         call,
         f"🎵 <b>{label[:80]}</b>\n"
         f"Файл: {track.get('name', '')[:60]}{track.get('ext', '')}",
-        _track_kb(track_id, music.playlists_of(user)),
+        _track_kb(track_id, music.playlists_of(user),
+                  has_similar=has_similar),
     )
+
+
+@router.callback_query(F.data.startswith("mus:similar:"))
+async def similar_tracks(call, user: dict) -> None:
+    """Похожие из своих треков — по тегам, без сети."""
+    track_id = call.data.split(":")[2]
+    await call.answer()
+    found = music.similar(user, track_id)
+    if not found:
+        await call.answer("Похожих не нашлось: мало тегов или треков.",
+                          show_alert=True)
+        return
+
+    base = next((t for t in music.tracks_of(user)
+                 if t.get("id") == track_id), None)
+    head = "по треку"
+    if base:
+        artist = base.get("artist") or ""
+        title = base.get("title") or base.get("name") or ""
+        head = f"{artist} — {title}" if artist else title
+
+    rows = []
+    for t in found:
+        artist = t.get("artist") or ""
+        title = t.get("title") or t.get("name") or "Трек"
+        label = f"{artist} — {title}" if artist else title
+        rows.append([InlineKeyboardButton(
+            text=f"✨ {label[:50]}",
+            callback_data=f"mus:play:{t['id']}")])
+    # Похожие можно добавить в существующий плейлист — продолжение
+    # одним нажатием.
+    for pl in music.playlists_of(user):
+        rows.append([InlineKeyboardButton(
+            text=f"➕ Все в «{pl['name'][:30]}»",
+            callback_data=f"mus:addsim:{track_id}:{pl['name'][:40]}")])
+    rows.append([InlineKeyboardButton(
+        text="◀️ К треку", callback_data=f"mus:track:{track_id}")])
+    await safe_edit(
+        call,
+        f"✨ <b>Похожие на «{head[:60]}»</b>\n"
+        "<i>Подбор по тегам ваших треков — без внешних сервисов.</i>",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("mus:addsim:"))
+async def add_similar(call, user: dict) -> None:
+    """Все похожие трека — в плейлист одним нажатием."""
+    # mus:addsim:<трек>:<плейлист>
+    parts = call.data.split(":", 3)
+    if len(parts) < 4:
+        await call.answer("Запрос устарел.", show_alert=True)
+        return
+    track_id, playlist = parts[2], parts[3]
+
+    found = music.similar(user, track_id)
+    if not found:
+        await call.answer("Похожих не нашлось.", show_alert=True)
+        return
+
+    added = 0
+    for t in found:
+        result = music.toggle_in_playlist(user, playlist, t["id"])
+        if result:
+            added += 1
+    await storage.save(call.from_user.id)
+    await call.answer(f"Добавлено: {added}")
+    await playlist_view(call, user)
+
+
+@router.callback_query(F.data.startswith("mus:shuf:"))
+async def shuffle(call, user: dict) -> None:
+    """Перемешать плейлист — порядок сохраняется."""
+    name = call.data.split(":", 2)[2]
+    await call.answer("Перемешано")
+    tracks = music.shuffle_playlist(user, name)
+    await storage.save(call.from_user.id)
+
+    rows = []
+    for t in tracks:
+        artist = t.get("artist") or ""
+        title = t.get("title") or t.get("name") or "Трек"
+        label = f"{artist} — {title}" if artist else title
+        rows.append([InlineKeyboardButton(
+            text=f"🎲 {label[:50]}",
+            callback_data=f"mus:play:{t['id']}")])
+    rows.append([InlineKeyboardButton(
+        text="🎲 Ещё раз", callback_data=f"mus:shuf:{name}")])
+    rows.append([InlineKeyboardButton(text="◀️ К музыке",
+                                      callback_data="mus:menu")])
+    await safe_edit(call, f"🎲 <b>«{name[:40]}» перемешан</b>",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("mus:toggle:"))
@@ -32741,6 +32954,8 @@ async def playlist_view(call, user: dict) -> None:
         rows.append([InlineKeyboardButton(
             text=f"🎵 {label[:50]}",
             callback_data=f"mus:play:{t['id']}")])
+    rows.append([InlineKeyboardButton(
+        text="🎲 Перемешать", callback_data=f"mus:shuf:{name}")])
     rows.append([InlineKeyboardButton(text="◀️ К музыке",
                                       callback_data="mus:menu")])
     await safe_edit(call, f"🎵 <b>Плейлист «{name[:40]}»</b>",

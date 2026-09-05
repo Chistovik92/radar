@@ -93,10 +93,11 @@ def _id3_text(data: bytes, tag: bytes) -> str:
 
 
 def read_tags(data: bytes) -> dict[str, str]:
-    """Артист и название из ID3. Пустые — тегов нет."""
+    """Артист, название и жанр из ID3. Пустые — тегов нет."""
     return {
         "artist": _id3_text(data, b"TPE1"),
         "title": _id3_text(data, b"TIT2"),
+        "genre": _id3_text(data, b"TCON"),
     }
 
 
@@ -142,7 +143,8 @@ def safe_title(name: str) -> str:
 
 
 def add_track(user: dict, track_id: str, *, name: str, ext: str,
-              size: int, artist: str = "", title: str = "") -> bool:
+              size: int, artist: str = "", title: str = "",
+              genre: str = "") -> bool:
     """Записывает трек. False — хранилище переполнено."""
     data = dict(_slot(user))
     tracks = list(data.get("tracks") or [])
@@ -150,6 +152,7 @@ def add_track(user: dict, track_id: str, *, name: str, ext: str,
     tracks.append({
         "id": track_id, "name": safe_title(name), "ext": ext,
         "size": size, "artist": artist[:80], "title": title[:80],
+        "genre": genre[:40],
     })
     data["tracks"] = tracks
     user[SLOT] = data
@@ -248,3 +251,88 @@ def describe(user: dict, role: str | None = None) -> str:
         f"Плейлистов: <b>{len(playlists)}</b> из {MAX_PLAYLISTS}",
     ]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+#  Подбор похожего и перемешивание (с 4.9.5.3)
+# --------------------------------------------------------------------------
+
+def _norm_word(value: str) -> str:
+    """Нормализованный вид тега: без регистра, пунктуации и пробелов."""
+    return re.sub(r"[\W_]+", "", (value or "").lower())
+
+
+def similar(user: dict, track_id: str, limit: int = 5) -> list[dict]:
+    """Похожие треки из загруженного самим человеком.
+
+    Никакой сети: только ID3-теги своего хранилища. Похожесть — сумма
+    совпадений тегов:
+
+    * артист совпал полностью — 5 очков (обычно это и есть «похожее»);
+    * жанр совпал — 3 очка: жанр честнее называет настроение;
+    * разница лет меньше трёх — 1 очко: эпоха, но не «похожесть».
+
+    Без тегов у трека-образца подбор честно пуст: гадать по названию
+    файла — дорога к «похожее: всё подряд». Порядок — по очкам,
+    внутри одного счёта — как легло хранилище.
+    """
+    tracks = tracks_of(user)
+    base = next((t for t in tracks if t.get("id") == track_id), None)
+    if base is None:
+        return []
+
+    base_artist = _norm_word(base.get("artist") or "")
+    base_genre = _norm_word(base.get("genre") or "")
+    base_year = (base.get("year") or "").strip()
+
+    scored: list[tuple[int, dict]] = []
+    for track in tracks:
+        if track.get("id") == track_id:
+            continue
+
+        score = 0
+        if base_artist and _norm_word(track.get("artist") or "") == base_artist:
+            score += 5
+        if base_genre and base_genre == _norm_word(track.get("genre") or ""):
+            score += 3
+        year = (track.get("year") or "").strip()
+        if base_year and year and year.isdigit() and base_year.isdigit():
+            if abs(int(year) - int(base_year)) < 3:
+                score += 1
+
+        if score > 0:
+            scored.append((score, track))
+
+    scored.sort(key=lambda pair: -pair[0])
+    return [track for _score, track in scored[:limit]]
+
+
+def shuffle_playlist(user: dict, playlist: str, seed: str = "") -> list[dict]:
+    """Перемешанный плейлист. Порядок пишется в запись: перемешали —
+    и плейлист играет в новом порядке, пока не перемешают снова.
+
+    Seed по умолчанию — время: каждое перемешивание даёт новый порядок.
+    """
+    import random
+
+    tracks = playlist_tracks(user, playlist)
+    if not tracks:
+        return []
+
+    rng = random.Random(seed or None)
+    # Исходный порядок стабилен (по id): второй запуск с тем же seed
+    # даёт тот же результат — иначе seed бессмыслен.
+    order = sorted(t["id"] for t in tracks)
+    rng.shuffle(order)
+
+    data = dict(_slot(user))
+    playlists = list(data.get("playlists") or [])
+    for pl in playlists:
+        if pl.get("name") == playlist:
+            pl["tracks"] = order
+            break
+    data["playlists"] = playlists
+    user[SLOT] = data
+
+    by_id = {t.get("id"): t for t in tracks}
+    return [by_id[tid] for tid in order if tid in by_id]

@@ -93,7 +93,8 @@ class TestSafeTitle(unittest.TestCase):
 
 class TestID3(unittest.TestCase):
     def test_no_tag(self):
-        self.assertEqual(music.read_tags(b"no tags here"), {"artist": "", "title": ""})
+        self.assertEqual(music.read_tags(b"no tags here"),
+                         {"artist": "", "title": "", "genre": ""})
 
     def test_reads_tpe1_tit2(self):
         # Минимальный ID3v2: заголовок + кадр TPE1 с латиницей (encoding 0)
@@ -104,10 +105,91 @@ class TestID3(unittest.TestCase):
 
         data = (b"ID3\x03\x00\x00\x00\x00\x00\x0f"
                 + frame(b"TPE1", "Artist X")
-                + frame(b"TIT2", "Song Y"))
+                + frame(b"TIT2", "Song Y")
+                + frame(b"TCON", "Rock"))
         tags = music.read_tags(data)
         self.assertEqual(tags["artist"], "Artist X")
         self.assertEqual(tags["title"], "Song Y")
+        self.assertEqual(tags["genre"], "Rock")
+
+
+class TestSimilar(unittest.TestCase):
+    """Подбор похожего по тегам — без сети, только своё."""
+
+    def _filled(self) -> dict:
+        user = {}
+        music.add_track(user, "a", name="A", ext=".mp3", size=1,
+                        artist="Кино", title="Группа крови", genre="Rock")
+        music.add_track(user, "b", name="B", ext=".mp3", size=1,
+                        artist="Кино", title="Звезда", genre="Rock")
+        music.add_track(user, "c", name="C", ext=".mp3", size=1,
+                        artist="Наутилус", title="Скованные", genre="Rock")
+        music.add_track(user, "d", name="D", ext=".mp3", size=1,
+                        artist="Моцарт", title="Реквием", genre="Classic")
+        return user
+
+    def test_same_artist_first(self):
+        user = self._filled()
+        found = music.similar(user, "a")
+        self.assertTrue(found)
+        # Тот же артист — выше, чем просто жанр
+        self.assertEqual(found[0]["id"], "b")
+
+    def test_genre_matches_too(self):
+        user = self._filled()
+        found = music.similar(user, "a")
+        ids = [t["id"] for t in found]
+        self.assertIn("c", ids)      # жанр Rock
+        self.assertNotIn("d", ids)   # Classic — мимо
+
+    def test_no_tags_no_similar(self):
+        user = {}
+        music.add_track(user, "a", name="A", ext=".mp3", size=1)
+        music.add_track(user, "b", name="B", ext=".mp3", size=1)
+        self.assertEqual(music.similar(user, "a"), [])
+
+    def test_limit(self):
+        user = self._filled()
+        found = music.similar(user, "a", limit=1)
+        self.assertEqual(len(found), 1)
+
+    def test_missing_base(self):
+        self.assertEqual(music.similar({}, "nope"), [])
+
+
+class TestShuffle(unittest.TestCase):
+    def test_shuffle_keeps_all_tracks(self):
+        user = {}
+        for tid, artist in (("a", "X"), ("b", "Y"), ("c", "Z"), ("d", "Q")):
+            music.add_track(user, tid, name=tid, ext=".mp3", size=1,
+                            artist=artist)
+        music.create_playlist(user, "Дорога")
+        for tid in ("a", "b", "c", "d"):
+            music.toggle_in_playlist(user, "Дорога", tid)
+
+        order = music.shuffle_playlist(user, "Дорога")
+        self.assertEqual(len(order), 4)
+        # Состав не теряется: те же треки, возможно в другом порядке
+        self.assertEqual({t["id"] for t in order}, {"a", "b", "c", "d"})
+        # Новый порядок записан в плейлист
+        stored = music.playlist_tracks(user, "Дорога")
+        self.assertEqual([t["id"] for t in stored],
+                         [t["id"] for t in order])
+
+    def test_shuffle_empty(self):
+        self.assertEqual(music.shuffle_playlist({}, "Нет"), [])
+
+    def test_seed_reproducible(self):
+        user = {}
+        for tid in ("a", "b", "c", "d", "e"):
+            music.add_track(user, tid, name=tid, ext=".mp3", size=1)
+        music.create_playlist(user, "P")
+        for tid in ("a", "b", "c", "d", "e"):
+            music.toggle_in_playlist(user, "P", tid)
+
+        first = [t["id"] for t in music.shuffle_playlist(user, "P", seed="x")]
+        second = [t["id"] for t in music.shuffle_playlist(user, "P", seed="x")]
+        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":

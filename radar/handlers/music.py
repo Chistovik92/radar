@@ -52,7 +52,8 @@ def _menu(user: dict, role: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _track_kb(track_id: str, playlists: list[dict]) -> InlineKeyboardMarkup:
+def _track_kb(track_id: str, playlists: list[dict],
+              has_similar: bool = False) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(
         text="▶️ Играть", callback_data=f"mus:play:{track_id}")]]
     for pl in playlists:
@@ -60,6 +61,10 @@ def _track_kb(track_id: str, playlists: list[dict]) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=f"{mark} {pl['name'][:40]}",
             callback_data=f"mus:toggle:{pl['name'][:40]}:{track_id}")])
+    if has_similar:
+        rows.append([InlineKeyboardButton(
+            text="✨ Похожие из моих треков",
+            callback_data=f"mus:similar:{track_id}")])
     rows.append([InlineKeyboardButton(
         text="🗑 Удалить", callback_data=f"mus:del:{track_id}")])
     rows.append([InlineKeyboardButton(text="◀️ К музыке",
@@ -161,18 +166,35 @@ async def take_track(message: Message, user: dict, role: str) -> None:
     music.add_track(user, track_id, name=name, ext=ext,
                     size=len(payload),
                     artist=tags.get("artist", ""),
-                    title=tags.get("title", ""))
+                    title=tags.get("title", ""),
+                    genre=tags.get("genre", ""))
     await storage.save(message.from_user.id)
 
     shown = tags.get("title") or name
     artist = tags.get("artist", "")
     label = f"{artist} — {shown}" if artist else shown
+    # Кнопка «Похожие» появляется, только когда находить есть из чего:
+    # пустая кнопка обещала бы впустую.
+    similar_now = any(
+        _same_tag(tags.get("artist"), t.get("artist"))
+        or _same_tag(tags.get("genre"), t.get("genre"))
+        for t in music.tracks_of(user) if t.get("id") != track_id
+    )
     await message.answer(
         f"✅ Трек добавлен: <b>{label[:80]}</b>\n"
         f"{music.describe(user, role)}",
-        reply_markup=_track_kb(track_id, music.playlists_of(user)),
+        reply_markup=_track_kb(track_id, music.playlists_of(user),
+                               has_similar=similar_now),
     )
     log.info("Добавлен трек: %s", label[:60])
+
+
+def _same_tag(a: str | None, b: str | None) -> bool:
+    """Совпадают ли теги по нормализованному виду."""
+    from ..music import _norm_word
+
+    left, right = _norm_word(a or ""), _norm_word(b or "")
+    return bool(left) and left == right
 
 
 @router.callback_query(F.data.startswith("mus:play:"))
@@ -246,12 +268,106 @@ async def track_card(call, user: dict) -> None:
     artist = track.get("artist") or ""
     title = track.get("title") or track.get("name") or "Трек"
     label = f"{artist} — {title}" if artist else title
+    has_similar = bool(music.similar(user, track_id))
     await safe_edit(
         call,
         f"🎵 <b>{label[:80]}</b>\n"
         f"Файл: {track.get('name', '')[:60]}{track.get('ext', '')}",
-        _track_kb(track_id, music.playlists_of(user)),
+        _track_kb(track_id, music.playlists_of(user),
+                  has_similar=has_similar),
     )
+
+
+@router.callback_query(F.data.startswith("mus:similar:"))
+async def similar_tracks(call, user: dict) -> None:
+    """Похожие из своих треков — по тегам, без сети."""
+    track_id = call.data.split(":")[2]
+    await call.answer()
+    found = music.similar(user, track_id)
+    if not found:
+        await call.answer("Похожих не нашлось: мало тегов или треков.",
+                          show_alert=True)
+        return
+
+    base = next((t for t in music.tracks_of(user)
+                 if t.get("id") == track_id), None)
+    head = "по треку"
+    if base:
+        artist = base.get("artist") or ""
+        title = base.get("title") or base.get("name") or ""
+        head = f"{artist} — {title}" if artist else title
+
+    rows = []
+    for t in found:
+        artist = t.get("artist") or ""
+        title = t.get("title") or t.get("name") or "Трек"
+        label = f"{artist} — {title}" if artist else title
+        rows.append([InlineKeyboardButton(
+            text=f"✨ {label[:50]}",
+            callback_data=f"mus:play:{t['id']}")])
+    # Похожие можно добавить в существующий плейлист — продолжение
+    # одним нажатием.
+    for pl in music.playlists_of(user):
+        rows.append([InlineKeyboardButton(
+            text=f"➕ Все в «{pl['name'][:30]}»",
+            callback_data=f"mus:addsim:{track_id}:{pl['name'][:40]}")])
+    rows.append([InlineKeyboardButton(
+        text="◀️ К треку", callback_data=f"mus:track:{track_id}")])
+    await safe_edit(
+        call,
+        f"✨ <b>Похожие на «{head[:60]}»</b>\n"
+        "<i>Подбор по тегам ваших треков — без внешних сервисов.</i>",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("mus:addsim:"))
+async def add_similar(call, user: dict) -> None:
+    """Все похожие трека — в плейлист одним нажатием."""
+    # mus:addsim:<трек>:<плейлист>
+    parts = call.data.split(":", 3)
+    if len(parts) < 4:
+        await call.answer("Запрос устарел.", show_alert=True)
+        return
+    track_id, playlist = parts[2], parts[3]
+
+    found = music.similar(user, track_id)
+    if not found:
+        await call.answer("Похожих не нашлось.", show_alert=True)
+        return
+
+    added = 0
+    for t in found:
+        result = music.toggle_in_playlist(user, playlist, t["id"])
+        if result:
+            added += 1
+    await storage.save(call.from_user.id)
+    await call.answer(f"Добавлено: {added}")
+    await playlist_view(call, user)
+
+
+@router.callback_query(F.data.startswith("mus:shuf:"))
+async def shuffle(call, user: dict) -> None:
+    """Перемешать плейлист — порядок сохраняется."""
+    name = call.data.split(":", 2)[2]
+    await call.answer("Перемешано")
+    tracks = music.shuffle_playlist(user, name)
+    await storage.save(call.from_user.id)
+
+    rows = []
+    for t in tracks:
+        artist = t.get("artist") or ""
+        title = t.get("title") or t.get("name") or "Трек"
+        label = f"{artist} — {title}" if artist else title
+        rows.append([InlineKeyboardButton(
+            text=f"🎲 {label[:50]}",
+            callback_data=f"mus:play:{t['id']}")])
+    rows.append([InlineKeyboardButton(
+        text="🎲 Ещё раз", callback_data=f"mus:shuf:{name}")])
+    rows.append([InlineKeyboardButton(text="◀️ К музыке",
+                                      callback_data="mus:menu")])
+    await safe_edit(call, f"🎲 <b>«{name[:40]}» перемешан</b>",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("mus:toggle:"))
@@ -288,6 +404,8 @@ async def playlist_view(call, user: dict) -> None:
         rows.append([InlineKeyboardButton(
             text=f"🎵 {label[:50]}",
             callback_data=f"mus:play:{t['id']}")])
+    rows.append([InlineKeyboardButton(
+        text="🎲 Перемешать", callback_data=f"mus:shuf:{name}")])
     rows.append([InlineKeyboardButton(text="◀️ К музыке",
                                       callback_data="mus:menu")])
     await safe_edit(call, f"🎵 <b>Плейлист «{name[:40]}»</b>",
