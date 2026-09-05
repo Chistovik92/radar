@@ -386,13 +386,98 @@ async def _probe(url: str) -> dict:
     """Метаданные без скачивания. yt-dlp синхронный — уводим в поток."""
     import yt_dlp
 
-    options = media.probe_options(config.EGRESS_PROXY, config.MEDIA_COOKIES)
+    from .. import secrets as secrets_module
+
+    cookies = (secrets_module.get("MEDIA_COOKIES") or config.MEDIA_COOKIES).strip()
+    options = media.probe_options(config.EGRESS_PROXY, cookies)
 
     def worker() -> dict:
         with yt_dlp.YoutubeDL(options) as downloader:
             return downloader.extract_info(url, download=False) or {}
 
     return await asyncio.to_thread(worker)
+
+
+# --------------------------------------------------------------------------
+#  Cookies для закрытых площадок (с 4.9.4.5)
+# --------------------------------------------------------------------------
+
+@router.message(Command("cookies"))
+async def cookies_help(message: Message, role: str) -> None:
+    """Инструкция и состояние файла cookies."""
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Управление cookies — суперадминистратору.")
+        return
+
+    from .. import cookies as cookies_module
+
+    await message.answer(
+        "🍪 <b>Cookies для закрытых записей</b>\n\n"
+        f"{cookies_module.describe()}\n\n"
+        "Записи «закрыта настройками приватности» и с возрастным "
+        "ограничением открываются только с cookies вошедшего человека.\n\n"
+        "<b>Как подключить:</b>\n"
+        "1. В браузере: расширение «Get cookies.txt LOCALLY» "
+        "(Chrome/Firefox) — Export — для нужной площадки.\n"
+        "2. Пришлите файл <code>cookies.txt</code> сюда сообщением.\n\n"
+        "<i>Файл держит сессию аккаунта: у кого он есть — тот вошёл. "
+        "Не пересылайте его никому.</i>",
+        reply_markup=back_kb(),
+    )
+
+
+@router.message(F.document)
+async def take_cookies(message: Message, role: str) -> None:
+    """Приём файла cookies прямо в чат.
+
+    До 4.9.4.5 файл требовалось принести на сервер SCP-ом и прописать
+    путь в .env руками. Формат проверяется до сохранения: мусор в нём
+    превращал бы отказы yt-dlp в загадки.
+    """
+    if not roles.is_superadmin(role):
+        return  # чужой документ — не наше дело, пусть идёт дальше
+
+    document = message.document
+    if not document or not document.file_name:
+        return
+    if not document.file_name.lower().endswith(".txt"):
+        return
+    if "cookie" not in document.file_name.lower():
+        # Любой .txt документов может быть чем угодно — ловим только
+        # похожее на cookies по имени, иначе перехватили бы чужие файлы.
+        return
+
+    from .. import cookies as cookies_module
+
+    if document.file_size and document.file_size > cookies_module.MAX_BYTES:
+        await message.answer(
+            "❌ Файл слишком большой для выгрузки cookies "
+            f"({cookies_module.MAX_BYTES // 1024} КБ)."
+        )
+        return
+
+    try:
+        file = await message.bot.get_file(document.file_id)
+        data = await message.bot.download_file(file.file_path)
+        payload = data.read() if data else b""
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Файл cookies не скачан: %s", exc)
+        await message.answer("❌ Не удалось скачать файл. Попробуйте ещё раз.")
+        return
+
+    ok, complaint = await asyncio.to_thread(cookies_module.store, payload)
+    if not ok:
+        await message.answer(f"❌ Файл не принят: {esc(complaint)}")
+        return
+
+    log.info("Файл cookies загружен суперадминистратором")
+    await message.answer(
+        "✅ <b>Cookies подключены.</b>\n"
+        "Закрытые записи и записи с возрастным ограничением откроются "
+        "при следующей загрузке — присылайте ссылку заново.\n\n"
+        "<i>Файл держит сессию аккаунта и хранится с правами 600.</i>",
+        reply_markup=back_kb(),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -844,11 +929,15 @@ async def _run_download(url: str, chosen: media.Format, target: str,
     # отсеивает заведомо неподходящие варианты, второе обрывает загрузку,
     # если размер выяснился только по ходу дела. При сжатии предел равен
     # нулю — исходник нужен целиком.
+    from .. import secrets as secrets_module
+
+    cookies_path = (secrets_module.get("MEDIA_COOKIES")
+                    or config.MEDIA_COOKIES).strip()
     options = media.build_options(
         target,
         chosen.selector_for(limit_mb),
         proxy=config.EGRESS_PROXY,
-        cookies=config.MEDIA_COOKIES,
+        cookies=cookies_path,
         limit_rate=config.MEDIA_RATE_LIMIT,
         limit_mb=limit_mb,
     )

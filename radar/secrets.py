@@ -90,7 +90,8 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("EGRESS_PROXY", "Прокси для выхода в сеть",
             "Например socks5://singbox:1080.", "Сеть", restart=True, secret=False),
     Setting("MEDIA_COOKIES", "Файл cookies",
-            "Путь к cookies.txt для закрытых площадок.", "Медиа", secret=False),
+            "Путь к cookies.txt для закрытых площадок. Проще прислать "
+            "файл прямо в чат — команда /cookies.", "Медиа", secret=False),
 
     # --- веб-панель ---
     Setting("WEB_PUBLIC_URL", "Публичный адрес панели",

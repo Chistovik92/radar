@@ -123,6 +123,7 @@ MANIFEST = [
     "radar/handlers/subscription.py",
     "radar/handlers/assistant.py",
     "radar/handlers/linkcheck.py",
+    "radar/cookies.py",
     "multitool/__init__.py",
     "multitool/linkcheck/__init__.py",
     "multitool/linkcheck/analyze.py",

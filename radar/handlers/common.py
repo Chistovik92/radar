@@ -186,7 +186,8 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
         lines.append(_(
             "help.cmd_super3",
             "/keys — ключи и настройки - /provider — выбор провайдера\n"
-            "/network — сеть и прокси - /backup — резервная копия",
+            "/network — сеть и прокси - /backup — резервная копия - "
+            "/cookies — файл cookies",
         ))
     await message.answer("\n".join(lines), reply_markup=back_kb())
 

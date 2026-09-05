@@ -549,8 +549,9 @@ def friendly_error(error: BaseException | str) -> str:
     if any(marker in text for marker in LOGIN_MARKERS):
         return (
             "Запись закрыта настройками приватности или требует входа. "
-            "Для таких ссылок нужен файл cookies — задайте MEDIA_COOKIES "
-            "в разделе ключей."
+            "Для таких ссылок нужен файл cookies: с 4.9.4.5 суперадминистратор "
+            "просто присылает cookies.txt в чат (см. /cookies) — сервер "
+            "и .env больше не трогаются руками."
         )
     # Незнакомая площадка — отдельный случай от записи с картинками:
     # картинки оттуда попробовать стоит, но объяснение нужно другое,
@@ -576,7 +577,7 @@ def friendly_error(error: BaseException | str) -> str:
     if "video unavailable" in text or "not available" in text:
         return "Видео недоступно — удалено или ограничено по региону."
     if "age" in text and "restrict" in text:
-        return "Видео с возрастным ограничением: нужен файл cookies."
+        return "Видео с возрастным ограничением: нужен файл cookies (/cookies)."
     if "timed out" in text or "timeout" in text:
         return "Площадка не ответила вовремя. Попробуйте ещё раз."
     if "http error 429" in text or "too many requests" in text:

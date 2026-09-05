@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.4.3 — автономный установщик.
+# Система «Радар» v4.9.4.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.4.3"
+VERSION="4.9.4.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2653,7 +2653,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=102
+FILE_COUNT=103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2960,6 +2960,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.4.5", [
+        "🍪 <b>Cookies теперь приносятся в чат.</b> Для закрытых записей "
+        "и возрастных ограничений файл cookies раньше требовалось "
+        "доставить на сервер SCP-ом и прописать путь в .env руками. "
+        "Теперь суперадминистратор просто присылает cookies.txt "
+        "сообщением: бот проверяет формат, кладёт файл с правами 600 "
+        "и подключает сам. Команда /cookies — инструкция и состояние.",
+        "🔗 <b>Подсказка при закрытой записи ведёт к решению.</b> Вместо "
+        "«задайте MEDIA_COOKIES в разделе ключей» бот говорит, что "
+        "файл можно принести прямо в чат.",
+    ]),
     ("4.9.4.3", [
         "🖼 <b>Картинки из записи — прямой дорогой.</b> В выборе ссылки "
         "появилась кнопка «Картинки из записи»: раньше до них можно было "
@@ -4071,7 +4082,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.4.3"
+__version__ = "4.9.4.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7726,8 +7737,9 @@ def friendly_error(error: BaseException | str) -> str:
     if any(marker in text for marker in LOGIN_MARKERS):
         return (
             "Запись закрыта настройками приватности или требует входа. "
-            "Для таких ссылок нужен файл cookies — задайте MEDIA_COOKIES "
-            "в разделе ключей."
+            "Для таких ссылок нужен файл cookies: с 4.9.4.5 суперадминистратор "
+            "просто присылает cookies.txt в чат (см. /cookies) — сервер "
+            "и .env больше не трогаются руками."
         )
     # Незнакомая площадка — отдельный случай от записи с картинками:
     # картинки оттуда попробовать стоит, но объяснение нужно другое,
@@ -7753,7 +7765,7 @@ def friendly_error(error: BaseException | str) -> str:
     if "video unavailable" in text or "not available" in text:
         return "Видео недоступно — удалено или ограничено по региону."
     if "age" in text and "restrict" in text:
-        return "Видео с возрастным ограничением: нужен файл cookies."
+        return "Видео с возрастным ограничением: нужен файл cookies (/cookies)."
     if "timed out" in text or "timeout" in text:
         return "Площадка не ответила вовремя. Попробуйте ещё раз."
     if "http error 429" in text or "too many requests" in text:
@@ -8516,7 +8528,8 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("EGRESS_PROXY", "Прокси для выхода в сеть",
             "Например socks5://singbox:1080.", "Сеть", restart=True, secret=False),
     Setting("MEDIA_COOKIES", "Файл cookies",
-            "Путь к cookies.txt для закрытых площадок.", "Медиа", secret=False),
+            "Путь к cookies.txt для закрытых площадок. Проще прислать "
+            "файл прямо в чат — команда /cookies.", "Медиа", secret=False),
 
     # --- веб-панель ---
     Setting("WEB_PUBLIC_URL", "Публичный адрес панели",
@@ -24043,7 +24056,8 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
         lines.append(_(
             "help.cmd_super3",
             "/keys — ключи и настройки - /provider — выбор провайдера\n"
-            "/network — сеть и прокси - /backup — резервная копия",
+            "/network — сеть и прокси - /backup — резервная копия - "
+            "/cookies — файл cookies",
         ))
     await message.answer("\n".join(lines), reply_markup=back_kb())
 
@@ -28416,13 +28430,98 @@ async def _probe(url: str) -> dict:
     """Метаданные без скачивания. yt-dlp синхронный — уводим в поток."""
     import yt_dlp
 
-    options = media.probe_options(config.EGRESS_PROXY, config.MEDIA_COOKIES)
+    from .. import secrets as secrets_module
+
+    cookies = (secrets_module.get("MEDIA_COOKIES") or config.MEDIA_COOKIES).strip()
+    options = media.probe_options(config.EGRESS_PROXY, cookies)
 
     def worker() -> dict:
         with yt_dlp.YoutubeDL(options) as downloader:
             return downloader.extract_info(url, download=False) or {}
 
     return await asyncio.to_thread(worker)
+
+
+# --------------------------------------------------------------------------
+#  Cookies для закрытых площадок (с 4.9.4.5)
+# --------------------------------------------------------------------------
+
+@router.message(Command("cookies"))
+async def cookies_help(message: Message, role: str) -> None:
+    """Инструкция и состояние файла cookies."""
+    if not roles.is_superadmin(role):
+        await message.answer("⛔️ Управление cookies — суперадминистратору.")
+        return
+
+    from .. import cookies as cookies_module
+
+    await message.answer(
+        "🍪 <b>Cookies для закрытых записей</b>\n\n"
+        f"{cookies_module.describe()}\n\n"
+        "Записи «закрыта настройками приватности» и с возрастным "
+        "ограничением открываются только с cookies вошедшего человека.\n\n"
+        "<b>Как подключить:</b>\n"
+        "1. В браузере: расширение «Get cookies.txt LOCALLY» "
+        "(Chrome/Firefox) — Export — для нужной площадки.\n"
+        "2. Пришлите файл <code>cookies.txt</code> сюда сообщением.\n\n"
+        "<i>Файл держит сессию аккаунта: у кого он есть — тот вошёл. "
+        "Не пересылайте его никому.</i>",
+        reply_markup=back_kb(),
+    )
+
+
+@router.message(F.document)
+async def take_cookies(message: Message, role: str) -> None:
+    """Приём файла cookies прямо в чат.
+
+    До 4.9.4.5 файл требовалось принести на сервер SCP-ом и прописать
+    путь в .env руками. Формат проверяется до сохранения: мусор в нём
+    превращал бы отказы yt-dlp в загадки.
+    """
+    if not roles.is_superadmin(role):
+        return  # чужой документ — не наше дело, пусть идёт дальше
+
+    document = message.document
+    if not document or not document.file_name:
+        return
+    if not document.file_name.lower().endswith(".txt"):
+        return
+    if "cookie" not in document.file_name.lower():
+        # Любой .txt документов может быть чем угодно — ловим только
+        # похожее на cookies по имени, иначе перехватили бы чужие файлы.
+        return
+
+    from .. import cookies as cookies_module
+
+    if document.file_size and document.file_size > cookies_module.MAX_BYTES:
+        await message.answer(
+            "❌ Файл слишком большой для выгрузки cookies "
+            f"({cookies_module.MAX_BYTES // 1024} КБ)."
+        )
+        return
+
+    try:
+        file = await message.bot.get_file(document.file_id)
+        data = await message.bot.download_file(file.file_path)
+        payload = data.read() if data else b""
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Файл cookies не скачан: %s", exc)
+        await message.answer("❌ Не удалось скачать файл. Попробуйте ещё раз.")
+        return
+
+    ok, complaint = await asyncio.to_thread(cookies_module.store, payload)
+    if not ok:
+        await message.answer(f"❌ Файл не принят: {esc(complaint)}")
+        return
+
+    log.info("Файл cookies загружен суперадминистратором")
+    await message.answer(
+        "✅ <b>Cookies подключены.</b>\n"
+        "Закрытые записи и записи с возрастным ограничением откроются "
+        "при следующей загрузке — присылайте ссылку заново.\n\n"
+        "<i>Файл держит сессию аккаунта и хранится с правами 600.</i>",
+        reply_markup=back_kb(),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -28874,11 +28973,15 @@ async def _run_download(url: str, chosen: media.Format, target: str,
     # отсеивает заведомо неподходящие варианты, второе обрывает загрузку,
     # если размер выяснился только по ходу дела. При сжатии предел равен
     # нулю — исходник нужен целиком.
+    from .. import secrets as secrets_module
+
+    cookies_path = (secrets_module.get("MEDIA_COOKIES")
+                    or config.MEDIA_COOKIES).strip()
     options = media.build_options(
         target,
         chosen.selector_for(limit_mb),
         proxy=config.EGRESS_PROXY,
-        cookies=config.MEDIA_COOKIES,
+        cookies=cookies_path,
         limit_rate=config.MEDIA_RATE_LIMIT,
         limit_mb=limit_mb,
     )
@@ -31491,8 +31594,141 @@ async def choice_skip(call: CallbackQuery) -> None:
     await call.answer()
     await _drop_choice(call)
 RADAR_FILE_96
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
+cat > "radar/cookies.py" <<'RADAR_FILE_97'
+"""Файл cookies для закрытых площадок — приём и подключение.
+
+Некоторые записи («закрыта настройками приватности», возрастные
+ограничения) yt-dlp открывает только с cookies вошедшего человека.
+До 4.9.4.5 файл требовалось принести на сервер руками — SCP, путь
+в `.env`, перезапуск. Теперь суперадминистратор просто присылает
+`cookies.txt` в чат: бот проверяет формат, кладёт файл и подключает.
+
+Формат — Netscape (те же строки, что делают расширения-экспортёры
+и параметр `--cookies` самого yt-dlp). Ничего экзотического.
+
+Файл держит сессию аккаунта, поэтому прав у него как у секрета:
+600, и скачивание его назад из бота не предусмотрено — отдал файл,
+отдал вход.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+
+log = logging.getLogger("radar.cookies")
+
+PATH = "data/cookies.txt"
+
+# Ограничения приёма: файл cookies — текст, и 512 КБ хватает с запасом
+# на сотни доменов. Больше — не cookies, а что-то перепутали.
+MAX_BYTES = 512 * 1024
+
+# Минимум строк с куками, ниже которого файл кукой быть не может.
+# Заголовок с "# HTTP Cookie File" не считается.
+MIN_COOKIE_LINES = 3
+
+
+def parse_errors(text: str) -> list[str]:
+    """Чем файл не похож на cookies в формате Netscape. Пусто — похож.
+
+    Разбор нарочно придирчивый: файл попадает в загрузчик видео,
+    и молча подсунуть ему мусор значило бы получить загадочные отказы
+    yt-dlp вместо понятного «файл не тот».
+    """
+    problems: list[str] = []
+
+    if not text.strip():
+        return ["файл пуст"]
+
+    lines = [line.rstrip("\r\n") for line in text.splitlines()]
+    cookie_lines = [
+        line for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(cookie_lines) < MIN_COOKIE_LINES:
+        problems.append(
+            f"кук в файле меньше {MIN_COOKIE_LINES} — похоже, это не "
+            "выгрузка cookies"
+        )
+
+    wellformed = 0
+    for line in cookie_lines[:50]:
+        # Домен, флаг, путь, безопасность, срок, имя, значение —
+        # семь полей табуляцией.
+        if len(line.split("\t")) >= 7:
+            wellformed += 1
+    if cookie_lines and wellformed == 0:
+        problems.append(
+            "строки не похожи на формат Netscape: ожидается семь полей "
+            "через табуляцию (расширения «Get cookies.txt LOCALLY» "
+            "выгружают именно так)"
+        )
+
+    return problems
+
+
+def store(data: bytes) -> tuple[bool, str]:
+    """Сохраняет файл и подключает его. (ok, пояснение)."""
+    if not data:
+        return False, "файл пуст"
+    if len(data) > MAX_BYTES:
+        return False, f"файл больше {MAX_BYTES // 1024} КБ — это не cookies"
+
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return False, "файл не текстовый: cookies выгружаются текстом"
+
+    problems = parse_errors(text)
+    if problems:
+        return False, "; ".join(problems)
+
+    os.makedirs(os.path.dirname(PATH) or ".", exist_ok=True)
+    with open(PATH, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    os.chmod(PATH, 0o600)
+
+    # Подключаем путь в .env: до правки MEDIA_COOKIES ни на что
+    # не указывал, и человеку пришлось бы лезть в файл руками.
+    from . import secrets
+
+    secrets.write("MEDIA_COOKIES", PATH)
+    log.info("Файл cookies обновлён: %d байт", len(data))
+    return True, ""
+
+
+def connected() -> bool:
+    """Подключён ли файл и существует ли он."""
+    from . import config, secrets
+
+    value = (secrets.get("MEDIA_COOKIES") or config.MEDIA_COOKIES).strip()
+    if not value:
+        return False
+    # Путь, заданный вручную, может быть любым — чей он, не проверяем.
+    return os.path.isfile(value) or value == PATH
+
+
+def describe() -> str:
+    """Состояние для сообщения: подключён ли файл и когда обновлён."""
+    if not connected():
+        return "Cookies не подключены."
+    try:
+        stamp = time.strftime("%d.%m.%Y %H:%M", time.localtime(os.path.getmtime(PATH)))
+    except OSError:
+        return "Cookies подключены."
+    return f"Cookies подключены, обновлены {stamp}."
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_97'
+cat > "multitool/__init__.py" <<'RADAR_FILE_98'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -31518,9 +31754,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_97'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_98'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_99'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -31553,9 +31789,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_98'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_99'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_100'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -31952,9 +32188,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_100'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_101'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -32185,9 +32421,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         threats=sb.threats,
         notes=chain.notes + age.notes + sb.notes + cert.notes,
     )
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_101'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_102'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -32347,7 +32583,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_101
+RADAR_FILE_102
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
