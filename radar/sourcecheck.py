@@ -324,5 +324,98 @@ def render(report: CheckReport, limit: int = 40) -> str:
     if not report.dead and not report.stale:
         lines.append("")
         lines.append("Все источники отвечают и обновляются.")
+    return "\n".join(lines)
 
+
+# --------------------------------------------------------------------------
+#  Проверка по расписанию (с 4.9.5)
+# --------------------------------------------------------------------------
+
+# Час ночного запуска: городские каналы молчат, паузы между запросами
+# никому не мешают. Тот же принцип, что у копий и обслуживания базы.
+SCHEDULE_HOUR = 4
+
+
+def due_today(last_run: str, now: datetime) -> bool:
+    """Пора ли проверять. По дате, а не по часам: сервер, выключенный
+    в четыре утра, проверит при первой возможности, а не потеряет
+    сутки. Логика та же, что у резервных копий."""
+    if now.hour < SCHEDULE_HOUR:
+        return False
+    return last_run != now.strftime("%Y-%m-%d")
+
+
+async def run_scheduled(now: datetime) -> str:
+    """Ночная проверка источников. Пустая строка — не время или не о чем.
+
+    Письмо отправляется только когда есть мёртвые или затихшие:
+    «все хорошо» каждое утро — это шум, который через неделю перестают
+    читать, а молчание при проблемах читается сразу.
+    """
+    from . import storage
+    from .db import repo
+
+    try:
+        last_run = str(await repo.get_meta("sourcecheck_last_run", "") or "")
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось прочитать отметку о проверке источников")
+        return ""
+
+    if not due_today(last_run, now):
+        return ""
+
+    # Отметку ставим ДО проверки: гонка двух циклов (перезапуск в её
+    # середине) не должна запускать вторую проверку поверх первой.
+    try:
+        await repo.set_meta("sourcecheck_last_run", now.strftime("%Y-%m-%d"))
+    except Exception:  # noqa: BLE001
+        log.warning("Отметка о проверке источников не сохранилась")
+
+    channels = list(storage.channels())
+    feeds = list(storage.feeds())
+    try:
+        vk_groups = list(storage.vk_groups())
+    except Exception:  # noqa: BLE001
+        vk_groups = []
+
+    if not channels and not feeds and not vk_groups:
+        return ""
+
+    report = await check_all(channels, feeds, vk_groups)
+
+    # Результат отмечаем в базе — по нему панель и отчёты видят
+    # проблемные источники; тот же вызов, что у кнопки модератора.
+    for item in report.statuses:
+        try:
+            await repo.mark_source(
+                item.kind, item.ref,
+                error="" if item.state != DEAD else item.note,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not report.dead and not report.stale:
+        log.info("Проверка по расписанию: все источники в порядке")
+        return ""
+
+    # Для письма — сводка короче экранной: там кнопки и полный список,
+    # тут только суть.
+    from .textutils import esc
+
+    lines = [
+        "🔍 <b>Проверка источников по расписанию</b>",
+        f"Живых: {len(report.alive)} · затихших: {len(report.stale)} · "
+        f"недоступных: {len(report.dead)} из {report.total}", "",
+    ]
+    if report.dead:
+        lines.append("✗ <b>Недоступны:</b>")
+        for item in report.dead[:10]:
+            lines.append(f"• {esc(item.title)} — {esc(item.note)}")
+        lines.append("")
+    if report.stale:
+        lines.append(f"! <b>Молчат более {STALE_DAYS} дней:</b>")
+        for item in report.stale[:10]:
+            lines.append(f"• {esc(item.title)} — {esc(item.age)}")
+    lines.append("<i>Убрать недоступные: Управление → Источники → "
+                 "«Проверить доступность».</i>")
     return "\n".join(lines)

@@ -28,10 +28,12 @@ from . import (
     i18n,
     presets,
     profiling,
+    roles,
     shortener,
     quiet,
     secrets,
     sos,
+    sourcecheck,
     sources,
     media,
     storage,
@@ -39,7 +41,7 @@ from . import (
     weather,
 )
 from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
-from .textutils import cluster_center, cluster_locations
+from .textutils import cluster_center, cluster_locations, esc
 from .tg import send_html
 
 log = logging.getLogger("radar.monitor")
@@ -567,6 +569,24 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
             await storage.save()
 
 
+async def _notify_admins(text: str) -> None:
+    """Письмо администраторам — о том, что не требует решения сейчас.
+
+    Ночные отчёты (обслуживание базы, проверка источников) адресованы
+    тем, кто может починить, — администраторам и суперадминистратору.
+    Модераторам хватит кнопки в разделе источников: письма каждое утро
+    превращаются в шум. Ошибка отправки не будит никого посреди ночи:
+    суть и так в журнале.
+    """
+    for uid, user in list(storage.users().items()):
+        if not roles.is_admin(user.get("role")) or user.get("blocked"):
+            continue
+        try:
+            await send_html(uid, text)
+        except Exception:  # noqa: BLE001
+            log.warning("Ночной отчёт не доставлен: %s", uid)
+
+
 async def run() -> None:
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {"User-Agent": config.USER_AGENT, "Accept-Language": "ru,en;q=0.8"}
@@ -635,8 +655,26 @@ async def run() -> None:
                     tidied = await dbcare.run_scheduled(now_moment)
                     if tidied:
                         log.info("Обслуживание базы: %s", tidied)
+                        # Отчёт о чистке закрывает последний кусок пункта
+                        # 4.9.5 дорожной карты: работа шла молча, и узнать,
+                        # сколько освобождено, можно было только в /perf.
+                        await _notify_admins(
+                            "🗄 <b>Обслуживание базы</b>\n" + esc(tidied)
+                        )
                 except Exception:  # noqa: BLE001
                     log.exception("Обслуживание базы не удалось")
+
+                # Проверка источников по расписанию — тем же ночным
+                # механизмом, что копии и база. Письмо уходит только
+                # когда есть мёртвые или затихшие (с 4.9.5).
+                if features.enabled("source_autocheck"):
+                    try:
+                        letter = await sourcecheck.run_scheduled(now_moment)
+                        if letter:
+                            log.info("Проверка источников нашла проблемы")
+                            await _notify_admins(letter)
+                    except Exception:  # noqa: BLE001
+                        log.exception("Проверка источников по расписанию не удалась")
 
                 await repeat_sos()
                 await release_held(now_moment)

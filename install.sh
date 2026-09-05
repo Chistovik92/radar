@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.4.7 — автономный установщик.
+# Система «Радар» v4.9.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.4.7"
+VERSION="4.9.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2960,6 +2960,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.5", [
+        "🔍 <b>Источники проверяются сами — ночью, по расписанию.</b> "
+        "Канал переименовали, издание закрылось — раньше об этом "
+        "узнавали, только нажав кнопку вручную. Теперь бот проверяет "
+        "доступность каждую ночь и письмом сообщает администрации "
+        "о мёртвых и затихших. Письмо приходит только когда есть "
+        "о чём: «всё хорошо» каждое утро — шум. Включается тумблером "
+        "«Проверка источников по расписанию», по умолчанию выключено.",
+        "🗄 <b>Отчёт об обслуживании базы.</b> Ночная чистка истории "
+        "и сжатие работали молча — сколько освобождено, было видно "
+        "только в /perf. Теперь администрации приходит короткое "
+        "письмо, и только когда чистка что-то сделала.",
+    ]),
     ("4.9.4.7", [
         "🔧 <b>«Видео недоступно» больше не врёт.</b> Клиенты без cookies "
         "из 4.9.4.6 часть записей не открывали — и честный ролик "
@@ -4106,7 +4119,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.4.7"
+__version__ = "4.9.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -5942,6 +5955,11 @@ FLAGS: tuple[Flag, ...] = (
          group="Данные", since="4.0"),
     Flag("source_export", "Выгрузка источников", "Скачивание и загрузка списка файлом.",
          group="Данные", since="3.3"),
+    Flag("source_autocheck", "Проверка источников по расписанию",
+         "Ночью бот сам проверяет доступность источников и письмом "
+         "сообщает администрации о мёртвых и затихших. Письмо приходит "
+         "только когда есть о чём: «всё хорошо» каждое утро — шум.",
+         group="Данные", since="4.9.5", default=False),
 
     # --- инфраструктура ---
     Flag("egress_proxy", "Выход в сеть через внешний узел",
@@ -6931,7 +6949,100 @@ def render(report: CheckReport, limit: int = 40) -> str:
     if not report.dead and not report.stale:
         lines.append("")
         lines.append("Все источники отвечают и обновляются.")
+    return "\n".join(lines)
 
+
+# --------------------------------------------------------------------------
+#  Проверка по расписанию (с 4.9.5)
+# --------------------------------------------------------------------------
+
+# Час ночного запуска: городские каналы молчат, паузы между запросами
+# никому не мешают. Тот же принцип, что у копий и обслуживания базы.
+SCHEDULE_HOUR = 4
+
+
+def due_today(last_run: str, now: datetime) -> bool:
+    """Пора ли проверять. По дате, а не по часам: сервер, выключенный
+    в четыре утра, проверит при первой возможности, а не потеряет
+    сутки. Логика та же, что у резервных копий."""
+    if now.hour < SCHEDULE_HOUR:
+        return False
+    return last_run != now.strftime("%Y-%m-%d")
+
+
+async def run_scheduled(now: datetime) -> str:
+    """Ночная проверка источников. Пустая строка — не время или не о чем.
+
+    Письмо отправляется только когда есть мёртвые или затихшие:
+    «все хорошо» каждое утро — это шум, который через неделю перестают
+    читать, а молчание при проблемах читается сразу.
+    """
+    from . import storage
+    from .db import repo
+
+    try:
+        last_run = str(await repo.get_meta("sourcecheck_last_run", "") or "")
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось прочитать отметку о проверке источников")
+        return ""
+
+    if not due_today(last_run, now):
+        return ""
+
+    # Отметку ставим ДО проверки: гонка двух циклов (перезапуск в её
+    # середине) не должна запускать вторую проверку поверх первой.
+    try:
+        await repo.set_meta("sourcecheck_last_run", now.strftime("%Y-%m-%d"))
+    except Exception:  # noqa: BLE001
+        log.warning("Отметка о проверке источников не сохранилась")
+
+    channels = list(storage.channels())
+    feeds = list(storage.feeds())
+    try:
+        vk_groups = list(storage.vk_groups())
+    except Exception:  # noqa: BLE001
+        vk_groups = []
+
+    if not channels and not feeds and not vk_groups:
+        return ""
+
+    report = await check_all(channels, feeds, vk_groups)
+
+    # Результат отмечаем в базе — по нему панель и отчёты видят
+    # проблемные источники; тот же вызов, что у кнопки модератора.
+    for item in report.statuses:
+        try:
+            await repo.mark_source(
+                item.kind, item.ref,
+                error="" if item.state != DEAD else item.note,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not report.dead and not report.stale:
+        log.info("Проверка по расписанию: все источники в порядке")
+        return ""
+
+    # Для письма — сводка короче экранной: там кнопки и полный список,
+    # тут только суть.
+    from .textutils import esc
+
+    lines = [
+        "🔍 <b>Проверка источников по расписанию</b>",
+        f"Живых: {len(report.alive)} · затихших: {len(report.stale)} · "
+        f"недоступных: {len(report.dead)} из {report.total}", "",
+    ]
+    if report.dead:
+        lines.append("✗ <b>Недоступны:</b>")
+        for item in report.dead[:10]:
+            lines.append(f"• {esc(item.title)} — {esc(item.note)}")
+        lines.append("")
+    if report.stale:
+        lines.append(f"! <b>Молчат более {STALE_DAYS} дней:</b>")
+        for item in report.stale[:10]:
+            lines.append(f"• {esc(item.title)} — {esc(item.age)}")
+    lines.append("<i>Убрать недоступные: Управление → Источники → "
+                 "«Проверить доступность».</i>")
     return "\n".join(lines)
 RADAR_FILE_17
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sos.py"
@@ -23349,10 +23460,12 @@ from . import (
     i18n,
     presets,
     profiling,
+    roles,
     shortener,
     quiet,
     secrets,
     sos,
+    sourcecheck,
     sources,
     media,
     storage,
@@ -23360,7 +23473,7 @@ from . import (
     weather,
 )
 from .matching import Analysis, build_recap, cluster_title, geo_matches, plan_alerts
-from .textutils import cluster_center, cluster_locations
+from .textutils import cluster_center, cluster_locations, esc
 from .tg import send_html
 
 log = logging.getLogger("radar.monitor")
@@ -23888,6 +24001,24 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
             await storage.save()
 
 
+async def _notify_admins(text: str) -> None:
+    """Письмо администраторам — о том, что не требует решения сейчас.
+
+    Ночные отчёты (обслуживание базы, проверка источников) адресованы
+    тем, кто может починить, — администраторам и суперадминистратору.
+    Модераторам хватит кнопки в разделе источников: письма каждое утро
+    превращаются в шум. Ошибка отправки не будит никого посреди ночи:
+    суть и так в журнале.
+    """
+    for uid, user in list(storage.users().items()):
+        if not roles.is_admin(user.get("role")) or user.get("blocked"):
+            continue
+        try:
+            await send_html(uid, text)
+        except Exception:  # noqa: BLE001
+            log.warning("Ночной отчёт не доставлен: %s", uid)
+
+
 async def run() -> None:
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {"User-Agent": config.USER_AGENT, "Accept-Language": "ru,en;q=0.8"}
@@ -23956,8 +24087,26 @@ async def run() -> None:
                     tidied = await dbcare.run_scheduled(now_moment)
                     if tidied:
                         log.info("Обслуживание базы: %s", tidied)
+                        # Отчёт о чистке закрывает последний кусок пункта
+                        # 4.9.5 дорожной карты: работа шла молча, и узнать,
+                        # сколько освобождено, можно было только в /perf.
+                        await _notify_admins(
+                            "🗄 <b>Обслуживание базы</b>\n" + esc(tidied)
+                        )
                 except Exception:  # noqa: BLE001
                     log.exception("Обслуживание базы не удалось")
+
+                # Проверка источников по расписанию — тем же ночным
+                # механизмом, что копии и база. Письмо уходит только
+                # когда есть мёртвые или затихшие (с 4.9.5).
+                if features.enabled("source_autocheck"):
+                    try:
+                        letter = await sourcecheck.run_scheduled(now_moment)
+                        if letter:
+                            log.info("Проверка источников нашла проблемы")
+                            await _notify_admins(letter)
+                    except Exception:  # noqa: BLE001
+                        log.exception("Проверка источников по расписанию не удалась")
 
                 await repeat_sos()
                 await release_held(now_moment)

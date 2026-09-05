@@ -1015,11 +1015,19 @@ became item 21.
    of dead sources. The data is already collected; gathering it into one
    place is not done.
 
-4. ⚠️ **Scheduled source checks.** The check itself exists since 4.6;
-   the scheduler does not.
+4. ⚠️→✅ **Scheduled source checks** ✅ done in 4.9.5. The
+   `source_autocheck` flag (off by default): at night, with the same
+   by-date mechanism as backups and database maintenance, the bot
+   checks every source with the same code as the moderator's button,
+   records the results in the database and letters the administration
+   about the dead and the silent. The letter goes out only when there
+   is something to report — "all good" every morning turns into noise
+   people stop reading. ⚠️ The nightly path is not verified on a live
+   server.
 
-5. ⚠️ **Automatic cleanup** of history and logs — partly: retention and
-   log rotation work, a cleanup report does not exist.
+5. ⚠️→✅ **Automatic cleanup** of history and logs ✅ closed in 4.9.5:
+   retention and rotation worked before, now the administration gets
+   a short report — and only when the cleanup actually did something.
 
 6. **Health panel in the bot** — rescoped. Memory, disk and database size
    are fine to show. **Container state is not and will not be:** the bot
