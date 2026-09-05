@@ -56,7 +56,9 @@ SUPPORTED_HINT = (
     "YouTube, VK Видео, RuTube, Одноклассники, Дзен, TikTok, X, Instagram"
 )
 
-_URL_RE = re.compile(r"^https?://[^\s]+$", re.I)
+# Ссылка внутри текста: до 4.9.4.7 перехватывали только «голый» URL,
+# и «скачай вот это https://…» доставалось ассистенту целиком.
+_URL_EMBEDDED = re.compile(r"https?://[^\s<>()]+", re.I)
 _UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
 
 
@@ -150,7 +152,20 @@ class Format:
 
 
 def looks_like_url(text: str) -> bool:
-    return bool(_URL_RE.match((text or "").strip()))
+    """Сообщение — запрос про ссылку?
+
+    До 4.9.4.7 требовался «голый» URL без единого слова: «скачай вот
+    это https://…» проскакивало мимо загрузчика к ассистенту. Теперь
+    ссылка ищется в любом месте сообщения. Сопутствующие слова не
+    теряются: `extract_url` отдаёт их отдельно.
+    """
+    return bool(_URL_EMBEDDED.search(text or ""))
+
+
+def extract_url(text: str) -> str:
+    """Первая ссылка из сообщения. Пусто — ссылки нет."""
+    match = _URL_EMBEDDED.search(text or "")
+    return match.group(0) if match else ""
 
 
 def safe_filename(title: str, limit: int = 60) -> str:
@@ -409,6 +424,15 @@ def too_big(size_bytes: int, local_server: bool) -> tuple[bool, str]:
     )
 
 
+# Клиенты YouTube, не требующие cookies. Обычный веб-клиент с адреса
+# датацентра всё чаще получает «Sign in to confirm you're not a bot»;
+# ios и tv_embedded открывают те же записи анонимно. Но часть записей
+# с этими клиентами отвечает «unavailable», хотя с клиентами
+# по умолчанию работает, — поэтому callers идёт каскадом: сначала
+# эти, при осечке — умолчания yt-dlp (см. handlers/media._probe).
+YOUTUBE_COOKIELESS = ("ios", "tv_embedded", "web_safari")
+
+
 def build_options(
     target: str,
     selector: str,
@@ -417,8 +441,13 @@ def build_options(
     cookies: str = "",
     limit_rate: str = "",
     limit_mb: int = 0,
+    clients: tuple[str, ...] | None = YOUTUBE_COOKIELESS,
 ) -> dict[str, Any]:
-    """Параметры yt-dlp. Вынесены отдельно, чтобы их можно было проверить."""
+    """Параметры yt-dlp. Вынесены отдельно, чтобы их можно было проверить.
+
+    clients=None — клиенты yt-dlp по умолчанию (шаг каскада, когда
+    специализированные клиенты запись не открыли).
+    """
     options: dict[str, Any] = {
         "format": selector,
         "outtmpl": target,
@@ -430,15 +459,11 @@ def build_options(
         "noplaylist": True,
         "retries": 3,
         "socket_timeout": 30,
-        # Клиенты YouTube, не требующие cookies. Обычный веб-клиент
-        # с адреса датацентра всё чаще получает «Sign in to confirm
-        # you're not a bot»; ios и tv_embedded открывают те же записи
-        # анонимно, tv_embedded — в том числе с возрастным
-        # ограничением. Cookies остаются последним рубежом, а не первым.
-        "extractor_args": {
-            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
-        },
     }
+    if clients:
+        options["extractor_args"] = {
+            "youtube": {"player_client": list(clients)},
+        }
     if limit_mb > 0:
         # Ограничитель на случай, когда размер заранее неизвестен: yt-dlp
         # прервёт загрузку, как только файл перерастёт предел. До 4.7.10
@@ -459,25 +484,41 @@ def build_options(
     return options
 
 
-def probe_options(proxy: str = "", cookies: str = "") -> dict[str, Any]:
+def probe_options(proxy: str = "", cookies: str = "",
+                  clients: tuple[str, ...] | None = YOUTUBE_COOKIELESS) -> dict[str, Any]:
     options: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
         "socket_timeout": 20,
-        # Те же клиенты, что и в build_options: проба и загрузка
-        # обязаны идти одним путём, иначе «нашёл — но не скачал»
-        # станет нормой.
-        "extractor_args": {
-            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
-        },
     }
+    # Те же клиенты, что и в build_options: проба и загрузка
+    # обязаны идти одним путём, иначе «нашёл — но не скачал»
+    # станет нормой.
+    if clients:
+        options["extractor_args"] = {
+            "youtube": {"player_client": list(clients)},
+        }
     if proxy:
         options["proxy"] = proxy
     if cookies:
         options["cookiefile"] = cookies
     return options
+
+
+# Ошибки, при которых стоит повторить с клиентами yt-dlp по умолчанию:
+# ios/tv_embedded часть записей не открывает, а умолчания — открывают.
+RETRY_CLIENTS_MARKERS = (
+    "video unavailable", "not available", "unavailable",
+    "private", "login", "sign in", "account", "age", "bot",
+)
+
+
+def worth_client_retry(error: BaseException | str) -> bool:
+    """Может ли повтор с другими клиентами YouTube дать другой результат."""
+    text = str(error).lower()
+    return any(marker in text for marker in RETRY_CLIENTS_MARKERS)
 
 
 # Ответы площадок, означающие «по ссылке не видео, а что-то другое».

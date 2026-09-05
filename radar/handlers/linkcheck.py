@@ -40,6 +40,18 @@ router = Router(name="linkcheck")
 
 URL_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
+
+def _has_url(text: str | None) -> bool:
+    """Есть ли ссылка внутри текста.
+
+    До 4.9.4.7 перехват работал только на сообщение из одного URL:
+    «скачай вот это https://…» проскакивало мимо и целиком доставалось
+    ассистенту — видео не скачивалось, а модель отвечала что-нибудь
+    в своей роли. Теперь любое сообщение со ссылкой доходит и до
+    выбора, и до загрузчика.
+    """
+    return bool(URL_RE.search(text or ""))
+
 # Квота дня: {"tg:<id>": {"day": "2026-09-05", "used": 17}}. Живёт в записи
 # пользователя, поэтому переживает перезапуск. Ключ оставлен строкой —
 # общий с антиспамом и квотами загрузки вид.
@@ -282,7 +294,11 @@ def _media_available() -> bool:
     return True
 
 
-@router.message(StateFilter(None), F.text.func(media.looks_like_url))
+# Ссылка в любом месте сообщения: «скачай вот это https://…» — тоже
+# запрос про ссылку, а до 4.9.4.7 такой текст целиком уходил ассистенту,
+# и видео не скачивалось вовсе. Сопутствующие слова отбрасываются:
+# проверке и загрузке нужен только адрес.
+@router.message(StateFilter(None), F.text.func(_has_url))
 async def plain_link(message: Message, user: dict, role: str) -> None:
     from aiogram.dispatcher.event.bases import SkipHandler
 
@@ -291,7 +307,13 @@ async def plain_link(message: Message, user: dict, role: str) -> None:
     if not features.enabled("linkcheck"):
         raise SkipHandler
 
-    url = (message.text or "").strip().split()[0]
+    # Голый URL без единого слова — прежний путь загрузчика: он сам
+    # ловит его первым в цепочке, сюда такое сообщение не доходит.
+    # Здесь оказываются только «текст со ссылкой внутри».
+    match = URL_RE.search(message.text or "")
+    if match is None:
+        raise SkipHandler
+    url = match.group(0)
     lang = i18n.language_of(user)
 
     # Прямая ссылка на картинку — сразу в загрузку картинки, без

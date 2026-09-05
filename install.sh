@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.4.6 — автономный установщик.
+# Система «Радар» v4.9.4.7 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.4.6"
+VERSION="4.9.4.7"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2960,6 +2960,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.4.7", [
+        "🔧 <b>«Видео недоступно» больше не врёт.</b> Клиенты без cookies "
+        "из 4.9.4.6 часть записей не открывали — и честный ролик "
+        "получал отказ «удалено или ограничено по региону». Теперь "
+        "каскад: сначала клиенты без входа, при осечке — клиенты "
+        "yt-dlp по умолчанию. Сработавший шаг запоминается, и скачивание "
+        "идёт тем же путём.",
+        "💬 <b>«Скачай вот это &lt;ссылка&gt;» — больше не уходит "
+        "ассистенту.</b> Перехват ссылки работал только на сообщение "
+        "из одного URL; ссылка с сопроводительными словами доставалась "
+        "ИИ-диалогу, и модель отвечала что-нибудь в своей роли вместо "
+        "видео. Теперь адрес извлекается из любого сообщения — "
+        "и попадает в выбор «проверить/скачать».",
+    ]),
     ("4.9.4.6", [
         "🔓 <b>Закрытые записи открываются без cookies.</b> Бот сам "
         "пробует обход: клиенты YouTube, не требующие входа (то самое "
@@ -4092,7 +4106,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.4.6"
+__version__ = "4.9.4.7"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7254,7 +7268,9 @@ SUPPORTED_HINT = (
     "YouTube, VK Видео, RuTube, Одноклассники, Дзен, TikTok, X, Instagram"
 )
 
-_URL_RE = re.compile(r"^https?://[^\s]+$", re.I)
+# Ссылка внутри текста: до 4.9.4.7 перехватывали только «голый» URL,
+# и «скачай вот это https://…» доставалось ассистенту целиком.
+_URL_EMBEDDED = re.compile(r"https?://[^\s<>()]+", re.I)
 _UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
 
 
@@ -7348,7 +7364,20 @@ class Format:
 
 
 def looks_like_url(text: str) -> bool:
-    return bool(_URL_RE.match((text or "").strip()))
+    """Сообщение — запрос про ссылку?
+
+    До 4.9.4.7 требовался «голый» URL без единого слова: «скачай вот
+    это https://…» проскакивало мимо загрузчика к ассистенту. Теперь
+    ссылка ищется в любом месте сообщения. Сопутствующие слова не
+    теряются: `extract_url` отдаёт их отдельно.
+    """
+    return bool(_URL_EMBEDDED.search(text or ""))
+
+
+def extract_url(text: str) -> str:
+    """Первая ссылка из сообщения. Пусто — ссылки нет."""
+    match = _URL_EMBEDDED.search(text or "")
+    return match.group(0) if match else ""
 
 
 def safe_filename(title: str, limit: int = 60) -> str:
@@ -7607,6 +7636,15 @@ def too_big(size_bytes: int, local_server: bool) -> tuple[bool, str]:
     )
 
 
+# Клиенты YouTube, не требующие cookies. Обычный веб-клиент с адреса
+# датацентра всё чаще получает «Sign in to confirm you're not a bot»;
+# ios и tv_embedded открывают те же записи анонимно. Но часть записей
+# с этими клиентами отвечает «unavailable», хотя с клиентами
+# по умолчанию работает, — поэтому callers идёт каскадом: сначала
+# эти, при осечке — умолчания yt-dlp (см. handlers/media._probe).
+YOUTUBE_COOKIELESS = ("ios", "tv_embedded", "web_safari")
+
+
 def build_options(
     target: str,
     selector: str,
@@ -7615,8 +7653,13 @@ def build_options(
     cookies: str = "",
     limit_rate: str = "",
     limit_mb: int = 0,
+    clients: tuple[str, ...] | None = YOUTUBE_COOKIELESS,
 ) -> dict[str, Any]:
-    """Параметры yt-dlp. Вынесены отдельно, чтобы их можно было проверить."""
+    """Параметры yt-dlp. Вынесены отдельно, чтобы их можно было проверить.
+
+    clients=None — клиенты yt-dlp по умолчанию (шаг каскада, когда
+    специализированные клиенты запись не открыли).
+    """
     options: dict[str, Any] = {
         "format": selector,
         "outtmpl": target,
@@ -7628,15 +7671,11 @@ def build_options(
         "noplaylist": True,
         "retries": 3,
         "socket_timeout": 30,
-        # Клиенты YouTube, не требующие cookies. Обычный веб-клиент
-        # с адреса датацентра всё чаще получает «Sign in to confirm
-        # you're not a bot»; ios и tv_embedded открывают те же записи
-        # анонимно, tv_embedded — в том числе с возрастным
-        # ограничением. Cookies остаются последним рубежом, а не первым.
-        "extractor_args": {
-            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
-        },
     }
+    if clients:
+        options["extractor_args"] = {
+            "youtube": {"player_client": list(clients)},
+        }
     if limit_mb > 0:
         # Ограничитель на случай, когда размер заранее неизвестен: yt-dlp
         # прервёт загрузку, как только файл перерастёт предел. До 4.7.10
@@ -7657,25 +7696,41 @@ def build_options(
     return options
 
 
-def probe_options(proxy: str = "", cookies: str = "") -> dict[str, Any]:
+def probe_options(proxy: str = "", cookies: str = "",
+                  clients: tuple[str, ...] | None = YOUTUBE_COOKIELESS) -> dict[str, Any]:
     options: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
         "socket_timeout": 20,
-        # Те же клиенты, что и в build_options: проба и загрузка
-        # обязаны идти одним путём, иначе «нашёл — но не скачал»
-        # станет нормой.
-        "extractor_args": {
-            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
-        },
     }
+    # Те же клиенты, что и в build_options: проба и загрузка
+    # обязаны идти одним путём, иначе «нашёл — но не скачал»
+    # станет нормой.
+    if clients:
+        options["extractor_args"] = {
+            "youtube": {"player_client": list(clients)},
+        }
     if proxy:
         options["proxy"] = proxy
     if cookies:
         options["cookiefile"] = cookies
     return options
+
+
+# Ошибки, при которых стоит повторить с клиентами yt-dlp по умолчанию:
+# ios/tv_embedded часть записей не открывает, а умолчания — открывают.
+RETRY_CLIENTS_MARKERS = (
+    "video unavailable", "not available", "unavailable",
+    "private", "login", "sign in", "account", "age", "bot",
+)
+
+
+def worth_client_retry(error: BaseException | str) -> bool:
+    """Может ли повтор с другими клиентами YouTube дать другой результат."""
+    text = str(error).lower()
+    return any(marker in text for marker in RETRY_CLIENTS_MARKERS)
 
 
 # Ответы площадок, означающие «по ссылке не видео, а что-то другое».
@@ -28277,7 +28332,10 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
         )
         return
 
-    url = (message.text or "").strip()
+    # Ссылка может прийти с сопутствующими словами («скачай вот это…»):
+    # до 4.9.4.7 такой текст проскакивал мимо и уходил ассистенту.
+    # Извлекаем адрес, слова не участвуют.
+    url = media.extract_url(message.text or "")
 
     # Картинка перехватывается раньше: гнать её через yt-dlp значило бы
     # обвешать простую задачу выбором качества и склейкой.
@@ -28290,10 +28348,10 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
     )
 
     try:
-        info = await asyncio.wait_for(_probe(url), timeout=90)
+        info, clients_variant = await asyncio.wait_for(_probe(url), timeout=120)
     except asyncio.TimeoutError:
         await notice.edit_text(
-            i18n.t("media.slow_probe", lang, "❌ Площадка не ответила за 90 секунд.")
+            i18n.t("media.slow_probe", lang, "❌ Площадка не ответила вовремя.")
         )
         return
     except Exception as exc:  # noqa: BLE001
@@ -28326,6 +28384,9 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
         # Метаданные держим целиком: из них берётся текст описания.
         # Живут не дольше самого запроса — четверть часа.
         "info": info,
+        # Какой шаг каскада клиентов открыл запись — тем же шагом
+        # и качаем (см. _probe).
+        "clients": clients_variant,
     }
 
     lines = [media.describe(info), "",
@@ -28547,20 +28608,42 @@ async def send_description(call: CallbackQuery) -> None:
     await call.message.answer(images.format_description(request.get("info") or {}))
 
 
-async def _probe(url: str) -> dict:
-    """Метаданные без скачивания. yt-dlp синхронный — уводим в поток."""
+async def _probe(url: str) -> tuple[dict, str]:
+    """Метаданные без скачивания. yt-dlp синхронный — уводим в поток.
+
+    Возвращает (info, вариант клиентов). Каскад из двух шагов:
+    клиенты без cookies — против бот-проверки веб-клиента; если запись
+    с ними не открылась («unavailable», «требует входа» — ios и
+    tv_embedded часть записей не отдают), повтор клиентами yt-dlp
+    по умолчанию. Сработавший вариант запоминается и передаётся
+    в загрузку: проба и скачивание обязаны идти одним путём.
+    """
     import yt_dlp
 
     from .. import secrets as secrets_module
 
     cookies = (secrets_module.get("MEDIA_COOKIES") or config.MEDIA_COOKIES).strip()
-    options = media.probe_options(config.EGRESS_PROXY, cookies)
 
-    def worker() -> dict:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            return downloader.extract_info(url, download=False) or {}
+    last_error: Exception | None = None
+    for variant, clients in (("cookieless", media.YOUTUBE_COOKIELESS),
+                             ("default", None)):
+        options = media.probe_options(config.EGRESS_PROXY, cookies, clients=clients)
 
-    return await asyncio.to_thread(worker)
+        def worker() -> dict:
+            with yt_dlp.YoutubeDL(options) as downloader:
+                return downloader.extract_info(url, download=False) or {}
+
+        try:
+            info = await asyncio.to_thread(worker)
+            if info:
+                return info, variant
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if not media.worth_client_retry(exc):
+                raise
+    if last_error is not None:
+        raise last_error
+    return {}, "cookieless"
 
 
 # --------------------------------------------------------------------------
@@ -28850,6 +28933,8 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             path = await _run_download(
                 request["url"], chosen, target, progress, status,
                 limit_mb=0 if (compress or full) else limit_mb,
+                clients=(None if request.get("clients") == "default"
+                         else media.YOUTUBE_COOKIELESS),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("Скачивание не удалось: %s", exc)
@@ -29071,8 +29156,14 @@ async def back_to_formats(call: CallbackQuery) -> None:
 
 async def _run_download(url: str, chosen: media.Format, target: str,
                         progress: media.Progress, status: Message,
-                        *, limit_mb: int = 0) -> str | None:
-    """Скачивание в потоке с передачей прогресса в чат."""
+                        *, limit_mb: int = 0,
+                        clients: tuple[str, ...] | None = media.YOUTUBE_COOKIELESS,
+                        ) -> str | None:
+    """Скачивание в потоке с передачей прогресса в чат.
+
+    clients — вариант из каскада пробы: каким шагом запись открылась,
+    тем и качается. None — клиенты yt-dlp по умолчанию.
+    """
     import yt_dlp
 
     loop = asyncio.get_running_loop()
@@ -29105,6 +29196,7 @@ async def _run_download(url: str, chosen: media.Format, target: str,
         cookies=cookies_path,
         limit_rate=config.MEDIA_RATE_LIMIT,
         limit_mb=limit_mb,
+        clients=clients,
     )
     options["progress_hooks"] = [hook]
 
@@ -31350,6 +31442,18 @@ router = Router(name="linkcheck")
 
 URL_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 
+
+def _has_url(text: str | None) -> bool:
+    """Есть ли ссылка внутри текста.
+
+    До 4.9.4.7 перехват работал только на сообщение из одного URL:
+    «скачай вот это https://…» проскакивало мимо и целиком доставалось
+    ассистенту — видео не скачивалось, а модель отвечала что-нибудь
+    в своей роли. Теперь любое сообщение со ссылкой доходит и до
+    выбора, и до загрузчика.
+    """
+    return bool(URL_RE.search(text or ""))
+
 # Квота дня: {"tg:<id>": {"day": "2026-09-05", "used": 17}}. Живёт в записи
 # пользователя, поэтому переживает перезапуск. Ключ оставлен строкой —
 # общий с антиспамом и квотами загрузки вид.
@@ -31592,7 +31696,11 @@ def _media_available() -> bool:
     return True
 
 
-@router.message(StateFilter(None), F.text.func(media.looks_like_url))
+# Ссылка в любом месте сообщения: «скачай вот это https://…» — тоже
+# запрос про ссылку, а до 4.9.4.7 такой текст целиком уходил ассистенту,
+# и видео не скачивалось вовсе. Сопутствующие слова отбрасываются:
+# проверке и загрузке нужен только адрес.
+@router.message(StateFilter(None), F.text.func(_has_url))
 async def plain_link(message: Message, user: dict, role: str) -> None:
     from aiogram.dispatcher.event.bases import SkipHandler
 
@@ -31601,7 +31709,13 @@ async def plain_link(message: Message, user: dict, role: str) -> None:
     if not features.enabled("linkcheck"):
         raise SkipHandler
 
-    url = (message.text or "").strip().split()[0]
+    # Голый URL без единого слова — прежний путь загрузчика: он сам
+    # ловит его первым в цепочке, сюда такое сообщение не доходит.
+    # Здесь оказываются только «текст со ссылкой внутри».
+    match = URL_RE.search(message.text or "")
+    if match is None:
+        raise SkipHandler
+    url = match.group(0)
     lang = i18n.language_of(user)
 
     # Прямая ссылка на картинку — сразу в загрузку картинки, без

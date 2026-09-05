@@ -1073,6 +1073,14 @@ for signs of fraud.
    fxtwitter — for images; on a login error the bot tries to fetch
    the images itself. ⚠️ Mirrors are third-party services, the path
    is not verified on a live server; cookies remain the last resort.
+   In 4.9.4.7 the clients became a cascade: cookieless clients failed
+   to open some videos ("video unavailable" on a working one), so
+   after a miss yt-dlp's defaults take the next step, and the step
+   that worked is remembered for the download. The link interception
+   was fixed too: "download this https://…" used to slip past the
+   downloader to the assistant, and the model replied in its role
+   instead of the video — now the address is extracted from any
+   message.
    Decisions:
    - the `linkcheck` feature flag, off by default — new code arrives
      disabled and is enabled on a live system;

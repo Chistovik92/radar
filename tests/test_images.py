@@ -275,7 +275,7 @@ class MirrorTest(unittest.TestCase):
 
 
 class YoutubeClientsTest(unittest.TestCase):
-    """Клиенты YouTube без cookies: проба и загрузка идут одним путём."""
+    """Каскад клиентов YouTube: проба и загрузка идут одним путём."""
 
     def test_build_options_has_clients(self):
         from radar import media as core_media
@@ -284,6 +284,13 @@ class YoutubeClientsTest(unittest.TestCase):
         self.assertIn("extractor_args", options)
         clients = options["extractor_args"]["youtube"]["player_client"]
         self.assertIn("ios", clients)
+
+    def test_build_options_default_clients(self):
+        """None — умолчания yt-dlp: второй шаг каскада после осечки."""
+        from radar import media as core_media
+
+        options = core_media.build_options("/tmp/x.%(ext)s", "best", clients=None)
+        self.assertNotIn("extractor_args", options)
 
     def test_probe_options_match_build(self):
         from radar import media as core_media
@@ -294,6 +301,25 @@ class YoutubeClientsTest(unittest.TestCase):
             probe["extractor_args"]["youtube"]["player_client"],
             build["extractor_args"]["youtube"]["player_client"],
         )
+
+    def test_probe_options_default_matches_build_default(self):
+        from radar import media as core_media
+
+        probe = core_media.probe_options(clients=None)
+        build = core_media.build_options("/tmp/x.%(ext)s", "best", clients=None)
+        self.assertNotIn("extractor_args", probe)
+        self.assertNotIn("extractor_args", build)
+
+    def test_worth_client_retry(self):
+        from radar import media as core_media
+
+        self.assertTrue(core_media.worth_client_retry(
+            "Video unavailable in your country"))
+        self.assertTrue(core_media.worth_client_retry(
+            "Sign in to confirm you're not a bot"))
+        self.assertTrue(core_media.worth_client_retry("This video is private"))
+        self.assertFalse(core_media.worth_client_retry("unsupported url"))
+        self.assertFalse(core_media.worth_client_retry("connection reset"))
 
 
 if __name__ == "__main__":

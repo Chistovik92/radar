@@ -117,7 +117,10 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
         )
         return
 
-    url = (message.text or "").strip()
+    # Ссылка может прийти с сопутствующими словами («скачай вот это…»):
+    # до 4.9.4.7 такой текст проскакивал мимо и уходил ассистенту.
+    # Извлекаем адрес, слова не участвуют.
+    url = media.extract_url(message.text or "")
 
     # Картинка перехватывается раньше: гнать её через yt-dlp значило бы
     # обвешать простую задачу выбором качества и склейкой.
@@ -130,10 +133,10 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
     )
 
     try:
-        info = await asyncio.wait_for(_probe(url), timeout=90)
+        info, clients_variant = await asyncio.wait_for(_probe(url), timeout=120)
     except asyncio.TimeoutError:
         await notice.edit_text(
-            i18n.t("media.slow_probe", lang, "❌ Площадка не ответила за 90 секунд.")
+            i18n.t("media.slow_probe", lang, "❌ Площадка не ответила вовремя.")
         )
         return
     except Exception as exc:  # noqa: BLE001
@@ -166,6 +169,9 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
         # Метаданные держим целиком: из них берётся текст описания.
         # Живут не дольше самого запроса — четверть часа.
         "info": info,
+        # Какой шаг каскада клиентов открыл запись — тем же шагом
+        # и качаем (см. _probe).
+        "clients": clients_variant,
     }
 
     lines = [media.describe(info), "",
@@ -387,20 +393,42 @@ async def send_description(call: CallbackQuery) -> None:
     await call.message.answer(images.format_description(request.get("info") or {}))
 
 
-async def _probe(url: str) -> dict:
-    """Метаданные без скачивания. yt-dlp синхронный — уводим в поток."""
+async def _probe(url: str) -> tuple[dict, str]:
+    """Метаданные без скачивания. yt-dlp синхронный — уводим в поток.
+
+    Возвращает (info, вариант клиентов). Каскад из двух шагов:
+    клиенты без cookies — против бот-проверки веб-клиента; если запись
+    с ними не открылась («unavailable», «требует входа» — ios и
+    tv_embedded часть записей не отдают), повтор клиентами yt-dlp
+    по умолчанию. Сработавший вариант запоминается и передаётся
+    в загрузку: проба и скачивание обязаны идти одним путём.
+    """
     import yt_dlp
 
     from .. import secrets as secrets_module
 
     cookies = (secrets_module.get("MEDIA_COOKIES") or config.MEDIA_COOKIES).strip()
-    options = media.probe_options(config.EGRESS_PROXY, cookies)
 
-    def worker() -> dict:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            return downloader.extract_info(url, download=False) or {}
+    last_error: Exception | None = None
+    for variant, clients in (("cookieless", media.YOUTUBE_COOKIELESS),
+                             ("default", None)):
+        options = media.probe_options(config.EGRESS_PROXY, cookies, clients=clients)
 
-    return await asyncio.to_thread(worker)
+        def worker() -> dict:
+            with yt_dlp.YoutubeDL(options) as downloader:
+                return downloader.extract_info(url, download=False) or {}
+
+        try:
+            info = await asyncio.to_thread(worker)
+            if info:
+                return info, variant
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if not media.worth_client_retry(exc):
+                raise
+    if last_error is not None:
+        raise last_error
+    return {}, "cookieless"
 
 
 # --------------------------------------------------------------------------
@@ -690,6 +718,8 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             path = await _run_download(
                 request["url"], chosen, target, progress, status,
                 limit_mb=0 if (compress or full) else limit_mb,
+                clients=(None if request.get("clients") == "default"
+                         else media.YOUTUBE_COOKIELESS),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("Скачивание не удалось: %s", exc)
@@ -911,8 +941,14 @@ async def back_to_formats(call: CallbackQuery) -> None:
 
 async def _run_download(url: str, chosen: media.Format, target: str,
                         progress: media.Progress, status: Message,
-                        *, limit_mb: int = 0) -> str | None:
-    """Скачивание в потоке с передачей прогресса в чат."""
+                        *, limit_mb: int = 0,
+                        clients: tuple[str, ...] | None = media.YOUTUBE_COOKIELESS,
+                        ) -> str | None:
+    """Скачивание в потоке с передачей прогресса в чат.
+
+    clients — вариант из каскада пробы: каким шагом запись открылась,
+    тем и качается. None — клиенты yt-dlp по умолчанию.
+    """
     import yt_dlp
 
     loop = asyncio.get_running_loop()
@@ -945,6 +981,7 @@ async def _run_download(url: str, chosen: media.Format, target: str,
         cookies=cookies_path,
         limit_rate=config.MEDIA_RATE_LIMIT,
         limit_mb=limit_mb,
+        clients=clients,
     )
     options["progress_hooks"] = [hook]
 

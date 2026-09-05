@@ -436,6 +436,27 @@ class TestHelpers(unittest.TestCase):
         self.assertFalse(media.looks_like_url("ftp://host/file"))
         self.assertFalse(media.looks_like_url(""))
 
+    def test_url_inside_text(self):
+        """Ссылка с сопутствующими словами — тоже запрос про ссылку.
+
+        До 4.9.4.7 такой текст целиком доставался ассистенту, и видео
+        не скачивалось вовсе.
+        """
+        self.assertTrue(media.looks_like_url("скачай вот это https://youtu.be/abc"))
+        self.assertTrue(media.looks_like_url("https://youtu.be/abc пожалуйста"))
+
+    def test_extract_url(self):
+        self.assertEqual(
+            media.extract_url("скачай https://youtu.be/abc please"),
+            "https://youtu.be/abc",
+        )
+        self.assertEqual(media.extract_url("без ссылок"), "")
+        # Первая из нескольких
+        self.assertEqual(
+            media.extract_url("https://a.com/1 и https://b.com/2"),
+            "https://a.com/1",
+        )
+
     def test_filename_sanitized(self):
         self.assertNotIn("/", media.safe_filename("папка/файл"))
         self.assertNotIn(":", media.safe_filename("время: 10:00"))
