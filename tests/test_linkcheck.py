@@ -1,7 +1,8 @@
 """Тесты модуля разбора ссылок на мошенничество (offline-часть).
 
-Проверяется только analyse.py, так как он не требует сети и
-подходит для быстрого unit-тестирования без стабов.
+Проверяется analyse.py — он не требует сети — и жёсткий потолок
+времени сетевых проверок: живое зависание 4.9.4.2–4.9.5, когда
+человек не получал ни ответа, ни ошибки, обязано быть невозможным.
 """
 
 # --------------------------------------------------------------------------
@@ -12,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import sys
@@ -165,6 +167,88 @@ class TestLinkCheck(unittest.TestCase):
         self.assertLess(v.score, 20)
         v = analyze("http://gооgle.com")
         self.assertGreaterEqual(v.score, 35)
+
+
+class TestNetDeadline(unittest.TestCase):
+    """Потолок времени сетевых проверок: ответ гарантирован всегда.
+
+    Живое зависание 4.9.4.2–4.9.5: wait_for при таймауте ждёт
+    завершения отмены, а застрявший сетевой код её не завершает —
+    и ответ не приходил никогда. asyncio.wait возвращается
+    безусловно.
+    """
+
+    def _deadline(self, url: str = "https://example.com/"):
+        from radar.handlers import linkcheck as handler
+
+        return handler._net_with_deadline(url, "")
+
+    def _patch_check(self, fake):
+        # Патчим там, где имя ищется: helper импортирует full_check
+        # из модуля netcheck при каждом вызове.
+        import multitool.linkcheck.netcheck as netcheck
+
+        original = netcheck.full_check
+        netcheck.full_check = fake
+        self.addCleanup(setattr, netcheck, "full_check", original)
+
+    def _fast_timeout(self, seconds: float):
+        from radar import config
+
+        original = config.LINKCHECK_TIMEOUT
+        config.LINKCHECK_TIMEOUT = seconds
+        self.addCleanup(setattr, config, "LINKCHECK_TIMEOUT", original)
+
+    def test_stuck_check_answers_within_deadline(self):
+        """Вечная проверка — ответ приходит ровно по потолку."""
+        async def stuck(url, key):
+            await asyncio.sleep(999)
+
+        self._patch_check(stuck)
+        self._fast_timeout(0.2)
+        result = asyncio.run(self._deadline())
+        self.assertIn("timeout", result.notes)
+
+    def test_stuck_uncancellable_check_answers(self):
+        """Даже задача, глотающая отмену, не держит ответ.
+
+        Это модель застрявшего транспорта: отменить нельзя, но ответ
+        человеку уже ушёл.
+        """
+        import contextlib
+
+        async def immortal(url, key):
+            try:
+                await asyncio.sleep(999)
+            except asyncio.CancelledError:
+                # Глотаем отмену и продолжаем висеть — как зависший
+                # SSL-транспорт при закрытии сессии.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(999)
+
+        self._patch_check(immortal)
+        self._fast_timeout(0.2)
+        result = asyncio.run(self._deadline())
+        self.assertIn("timeout", result.notes)
+
+    def test_fast_check_passes_through(self):
+        from multitool.linkcheck.analyze import NetResult
+
+        async def fine(url, key):
+            return NetResult(success=True, final_url=url, notes=["ok"])
+
+        self._patch_check(fine)
+        result = asyncio.run(self._deadline())
+        self.assertTrue(result.success)
+        self.assertEqual(result.final_url, "https://example.com/")
+
+    def test_error_becomes_note(self):
+        async def broken(url, key):
+            raise RuntimeError("сеть недоступна")
+
+        self._patch_check(broken)
+        result = asyncio.run(self._deadline())
+        self.assertIn("error: RuntimeError", result.notes)
 
 
 if __name__ == "__main__":

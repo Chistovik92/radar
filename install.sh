@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.5 — автономный установщик.
+# Система «Радар» v4.9.5.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.5"
+VERSION="4.9.5.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2960,6 +2960,18 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.5.1", [
+        "🔧 <b>Починено живое зависание проверки ссылок.</b> С 4.9.4.2 "
+        "проверка могла повиснуть навсегда: при таймауте ожидание "
+        "отмены сетевой задачи не завершалось, и человек не получал "
+        "ни ответа, ни ошибки. Теперь потолок времени жёсткий — ответ "
+        "гарантирован даже при зависшем соединении, уборка остаётся "
+        "фоновой.",
+        "🧹 <b>Ночная проверка источников починена до запуска.</b> "
+        "CI поймал вызов несуществующей функции в 4.9.5 — проверка "
+        "упала бы первой же ночью. Исправлено, выпуск заменяет "
+        "дефектный.",
+    ]),
     ("4.9.5", [
         "🔍 <b>Источники проверяются сами — ночью, по расписанию.</b> "
         "Канал переименовали, издание закрылось — раньше об этом "
@@ -4119,7 +4131,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.5"
+__version__ = "4.9.5.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6997,7 +7009,7 @@ async def run_scheduled(now: datetime) -> str:
         log.warning("Отметка о проверке источников не сохранилась")
 
     channels = list(storage.channels())
-    feeds = list(storage.feeds())
+    feeds = list(storage.rss_feeds())
     try:
         vk_groups = list(storage.vk_groups())
     except Exception:  # noqa: BLE001
@@ -31711,6 +31723,43 @@ async def section(call: CallbackQuery, user: dict, role: str) -> None:
     await _section_screen(call.message, user, role)
 
 
+async def _net_with_deadline(url: str, key: str):
+    """Сетевые проверки с жёстким потолком времени.
+
+    Причина отдельной функции — живое зависание 4.9.4.2–4.9.5:
+    `asyncio.wait_for` при таймауте отменяет задачу и ЖДЁТ, пока
+    отмена завершится, а сетевой код с застрявшим транспортом может
+    не завершить её никогда — и человек не получал ни ответа,
+    ни ошибки. `asyncio.wait` возвращается по таймауту безусловно:
+    ответ гарантирован, уборка остаётся фоновой.
+    """
+    from multitool.linkcheck.analyze import NetResult
+    from multitool.linkcheck.netcheck import full_check
+
+    task = asyncio.create_task(full_check(url, key))
+    done, _pending = await asyncio.wait(
+        {task}, timeout=config.LINKCHECK_TIMEOUT
+    )
+    if task in done:
+        try:
+            return task.result()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Сетевая проверка не удалась: %s", exc)
+            return NetResult(notes=[f"error: {type(exc).__name__}"])
+
+    # Не уложилась: отвечаем сразу, застрявшую задачу гасим в фоне.
+    task.cancel()
+
+    def _swallow(finished: asyncio.Future) -> None:
+        # Достаём исключение, чтобы не было «exception was never
+        # retrieved»: задача никого больше не ждёт.
+        if not finished.cancelled():
+            _ = finished.exception()
+
+    task.add_done_callback(_swallow)
+    return NetResult(notes=["timeout"])
+
+
 async def _run_check(message: Message, user: dict, role: str, url: str) -> None:
     """Полная проверка: квоты, разбор, сеть, отчёт."""
     lang = i18n.language_of(user)
@@ -31748,18 +31797,8 @@ async def _run_check(message: Message, user: dict, role: str, url: str) -> None:
     verdict = analyze(url)
 
     if config.LINKCHECK_NET:
-        from multitool.linkcheck.netcheck import NetResult, full_check
-
         key = (secrets.get("SAFE_BROWSING_API_KEY") or "").strip()
-        try:
-            verdict.net = await asyncio.wait_for(
-                full_check(url, key), timeout=config.LINKCHECK_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            verdict.net = NetResult(notes=["timeout"])
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Сетевая проверка не удалась: %s", exc)
-            verdict.net = NetResult(notes=[f"error: {type(exc).__name__}"])
+        verdict.net = await _net_with_deadline(url, key)
 
     # Счётчик дня тратим только за состоявшуюся проверку: за неудачную
     # человек платить квотой не должен.

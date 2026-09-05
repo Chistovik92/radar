@@ -1024,6 +1024,12 @@ became item 21.
    is something to report — "all good" every morning turns into noise
    people stop reading. ⚠️ The nightly path is not verified on a live
    server.
+   In 4.9.5.1 the call to the non-existent `storage.feeds` (caught
+   by CI) was replaced with `rss_feeds`, and the live link-check
+   hang that had been there since 4.9.4.2 was fixed: `wait_for`
+   on timeout waited for the cancellation to complete, and stuck
+   network code never completed it — the time ceiling is now hard
+   (`asyncio.wait`), the reply is guaranteed.
 
 5. ⚠️→✅ **Automatic cleanup** of history and logs ✅ closed in 4.9.5:
    retention and rotation worked before, now the administration gets

@@ -372,7 +372,7 @@ async def run_scheduled(now: datetime) -> str:
         log.warning("Отметка о проверке источников не сохранилась")
 
     channels = list(storage.channels())
-    feeds = list(storage.feeds())
+    feeds = list(storage.rss_feeds())
     try:
         vk_groups = list(storage.vk_groups())
     except Exception:  # noqa: BLE001
