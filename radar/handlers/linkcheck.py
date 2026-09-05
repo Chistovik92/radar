@@ -24,14 +24,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from .. import config, features, i18n, secrets, storage, subscription
+from .. import config, features, i18n, media, secrets, storage, subscription
 
 log = logging.getLogger("radar.handlers.linkcheck")
 router = Router(name="linkcheck")
@@ -146,31 +148,11 @@ async def section(call: CallbackQuery, user: dict, role: str) -> None:
     await _section_screen(call.message, user, role)
 
 
-@router.message(Command("check"))
-async def cmd_check(message: Message, user: dict, role: str) -> None:
+async def _run_check(message: Message, user: dict, role: str, url: str) -> None:
+    """Полная проверка: квоты, разбор, сеть, отчёт."""
     lang = i18n.language_of(user)
-
-    if not features.enabled("linkcheck"):
-        await message.answer(
-            i18n.t("linkcheck.off", lang, "Проверка ссылок отключена.")
-        )
-        return
-
-    args = (message.text or "").split(maxsplit=1)
-    match = URL_RE.search(args[1] if len(args) > 1 else "")
-    if not match:
-        unlimited = subscription.active(user, role)
-        await message.answer(
-            i18n.t(
-                "linkcheck.usage", lang,
-                "🔍 Пришлите ссылку после команды:\n"
-                "<code>/check https://пример.рф/страница</code>",
-            ),
-            reply_markup=_menu_kb(lang, unlimited, _left_today(user)),
-        )
-        return
-
     unlimited = subscription.active(user, role)
+
     if not _rate_ok(message.from_user.id, unlimited):
         await message.answer(
             i18n.t(
@@ -193,7 +175,6 @@ async def cmd_check(message: Message, user: dict, role: str) -> None:
         )
         return
 
-    url = match.group(0)
     await message.answer(i18n.t("linkcheck.working", lang, "⏳ Проверяю ссылку…"))
 
     # Импорт внутри обработчика: утилиты мультитула не грузятся, пока
@@ -236,3 +217,157 @@ async def cmd_check(message: Message, user: dict, role: str) -> None:
         build_report(verdict) + note,
         disable_web_page_preview=True,
     )
+
+
+@router.message(Command("check"))
+async def cmd_check(message: Message, user: dict, role: str) -> None:
+    lang = i18n.language_of(user)
+
+    if not features.enabled("linkcheck"):
+        await message.answer(
+            i18n.t("linkcheck.off", lang, "Проверка ссылок отключена.")
+        )
+        return
+
+    args = (message.text or "").split(maxsplit=1)
+    match = URL_RE.search(args[1] if len(args) > 1 else "")
+    if not match:
+        unlimited = subscription.active(user, role)
+        await message.answer(
+            i18n.t(
+                "linkcheck.usage", lang,
+                "🔍 Пришлите ссылку после команды:\n"
+                "<code>/check https://пример.рф/страница</code>",
+            ),
+            reply_markup=_menu_kb(lang, unlimited, _left_today(user)),
+        )
+        return
+
+    await _run_check(message, user, role, match.group(0))
+
+
+# --------------------------------------------------------------------------
+#  Ссылка, присланная просто сообщением
+# --------------------------------------------------------------------------
+#
+# До 4.9.4.2 любую ссылку целиком забирал загрузчик видео — и человек,
+# хотевший её проверить, получал «Смотрю, что за ссылка…» и список
+# качеств. Когда включены обе возможности, выбора не должен не существовать:
+# бот спрашивает, что сделать со ссылкой. Когда проверка включена одна —
+# проверяет сразу. Когда выключена — молча пропускает ссылку дальше
+# по цепочке, и работает прежний путь.
+
+# Ожидающие выбора: токен → ссылка, владелец, исходное сообщение.
+# Сообщение храним, чтобы кнопка «Скачать» запустила штатный путь
+# загрузчика с тем же текстом.
+_pending: dict[str, dict] = {}
+_PENDING_TTL = 15 * 60
+
+
+def _cleanup_pending() -> None:
+    edge = time.time() - _PENDING_TTL
+    for token, item in list(_pending.items()):
+        if item["created"] < edge:
+            _pending.pop(token, None)
+
+
+def _media_available() -> bool:
+    """Включён ли загрузчик и есть ли yt-dlp в образе."""
+    if not features.enabled("media_download"):
+        return False
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@router.message(StateFilter(None), F.text.func(media.looks_like_url))
+async def plain_link(message: Message, user: dict, role: str) -> None:
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    # Проверка выключена — ссылку не трогаем: её возьмёт загрузчик
+    # или ассистент, как раньше.
+    if not features.enabled("linkcheck"):
+        raise SkipHandler
+
+    url = (message.text or "").strip().split()[0]
+
+    # Загрузчик недоступен — проверяем сразу, выбора нет.
+    if not _media_available():
+        await _run_check(message, user, role, url)
+        return
+
+    # Включены обе возможности: спрашиваем.
+    _cleanup_pending()
+    token = uuid.uuid4().hex[:10]
+    _pending[token] = {
+        "url": url,
+        "owner": message.from_user.id,
+        "message": message,
+        "created": time.time(),
+    }
+    await message.answer(
+        "🔗 <b>Что сделать со ссылкой?</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Проверить на мошенничество",
+                                  callback_data=f"lchk:go:{token}"),
+             InlineKeyboardButton(text="🎬 Скачать видео",
+                                  callback_data=f"lchk:dl:{token}")],
+            [InlineKeyboardButton(text="❌ Ничего", callback_data=f"lchk:skip:{token}")],
+        ]),
+    )
+
+
+def _pending_of(call: CallbackQuery, token: str) -> dict | None:
+    """Запрос по токену с проверкой владельца. None — чужой или устаревший."""
+    item = _pending.get(token)
+    if item is None:
+        return None
+    if item["owner"] != call.from_user.id:
+        return None
+    return item
+
+
+async def _drop_choice(call: CallbackQuery) -> None:
+    try:
+        await call.message.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@router.callback_query(F.data.startswith("lchk:go:"))
+async def choice_check(call: CallbackQuery, user: dict, role: str) -> None:
+    item = _pending_of(call, call.data.split(":")[2])
+    if item is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    _pending.pop(call.data.split(":")[2], None)
+    await call.answer()
+    await _drop_choice(call)
+    await _run_check(item["message"], user, role, item["url"])
+
+
+@router.callback_query(F.data.startswith("lchk:dl:"))
+async def choice_download(call: CallbackQuery, role: str) -> None:
+    token = call.data.split(":")[2]
+    item = _pending_of(call, token)
+    if item is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    _pending.pop(token, None)
+    await call.answer()
+    await _drop_choice(call)
+
+    # Штатный путь загрузчика с исходным сообщением: у него свои
+    # проверки, свои сообщения и своя обработка ошибок.
+    from . import media as media_handler
+
+    await media_handler.handle_link(item["message"], role)
+
+
+@router.callback_query(F.data.startswith("lchk:skip:"))
+async def choice_skip(call: CallbackQuery) -> None:
+    _pending.pop(call.data.split(":")[2], None)
+    await call.answer()
+    await _drop_choice(call)

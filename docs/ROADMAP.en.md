@@ -1053,6 +1053,10 @@ for signs of fraud.
    everyone, no daily limit for subscribers; the remainder is shown
    under each report, and whoever runs out gets the subscription
    offer.
+   In 4.9.4.2 the fight over a plain link was settled: with both
+   checking and video download enabled, the bot asks which one to do;
+   with checking alone, the link is checked at once; with it disabled,
+   the downloader's old path works unchanged.
    Decisions:
    - the `linkcheck` feature flag, off by default — new code arrives
      disabled and is enabled on a live system;
