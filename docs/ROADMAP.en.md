@@ -1064,6 +1064,15 @@ for signs of fraud.
    skipping the choice. The media screens (images, quality choice,
    the size wall, handout by link) and the "what to do with the link"
    choice are translated to English.
+   In 4.9.4.5 a cookies file can be sent straight into the chat
+   (/cookies).
+   In 4.9.4.6 private posts are first attempted without cookies at
+   all: YouTube clients ios/tv_embedded/web_safari (the web client
+   from a datacenter address increasingly gets "Sign in to confirm
+   you're not a bot") and public post mirrors — ddinstagram and
+   fxtwitter — for images; on a login error the bot tries to fetch
+   the images itself. ⚠️ Mirrors are third-party services, the path
+   is not verified on a live server; cookies remain the last resort.
    Decisions:
    - the `linkcheck` feature flag, off by default — new code arrives
      disabled and is enabled on a live system;

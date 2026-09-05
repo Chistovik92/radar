@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.4.5 — автономный установщик.
+# Система «Радар» v4.9.4.6 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.4.5"
+VERSION="4.9.4.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2960,6 +2960,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.4.6", [
+        "🔓 <b>Закрытые записи открываются без cookies.</b> Бот сам "
+        "пробует обход: клиенты YouTube, не требующие входа (то самое "
+        "«Sign in to confirm you're not a bot» с серверных адресов), "
+        "и публичные зеркала записей Instagram и X — они показывают "
+        "пост анонимно. Cookies остались последним рубежом, а не первым.",
+        "🖼 <b>При ошибке входа бот сам пробует картинки.</b> Раньше "
+        "«запись закрыта» была концом пути; теперь за ней автоматически "
+        "идёт попытка достать снимки через зеркало.",
+    ]),
     ("4.9.4.5", [
         "🍪 <b>Cookies теперь приносятся в чат.</b> Для закрытых записей "
         "и возрастных ограничений файл cookies раньше требовалось "
@@ -4082,7 +4092,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.4.5"
+__version__ = "4.9.4.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7618,6 +7628,14 @@ def build_options(
         "noplaylist": True,
         "retries": 3,
         "socket_timeout": 30,
+        # Клиенты YouTube, не требующие cookies. Обычный веб-клиент
+        # с адреса датацентра всё чаще получает «Sign in to confirm
+        # you're not a bot»; ios и tv_embedded открывают те же записи
+        # анонимно, tv_embedded — в том числе с возрастным
+        # ограничением. Cookies остаются последним рубежом, а не первым.
+        "extractor_args": {
+            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
+        },
     }
     if limit_mb > 0:
         # Ограничитель на случай, когда размер заранее неизвестен: yt-dlp
@@ -7646,6 +7664,12 @@ def probe_options(proxy: str = "", cookies: str = "") -> dict[str, Any]:
         "noplaylist": True,
         "skip_download": True,
         "socket_timeout": 20,
+        # Те же клиенты, что и в build_options: проба и загрузка
+        # обязаны идти одним путём, иначе «нашёл — но не скачал»
+        # станет нормой.
+        "extractor_args": {
+            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
+        },
     }
     if proxy:
         options["proxy"] = proxy
@@ -7675,6 +7699,12 @@ LOGIN_MARKERS = (
     "private", "login required", "sign in", "signed-in", "signed in",
     "log in", "account", "authoriz", "авториз",
 )
+
+
+def needs_login(error: BaseException | str) -> bool:
+    """Значит ли ошибка, что площадка требует входа."""
+    text = str(error).lower()
+    return any(marker in text for marker in LOGIN_MARKERS)
 
 
 def looks_like_no_video(error: BaseException | str) -> bool:
@@ -7734,12 +7764,12 @@ def friendly_error(error: BaseException | str) -> str:
 
     # Порядок ветвей значим: «нужен вход» проверяется раньше «нет видео»,
     # иначе закрытая запись объяснялась бы отсутствием видео в ней.
-    if any(marker in text for marker in LOGIN_MARKERS):
+    if needs_login(error):
         return (
             "Запись закрыта настройками приватности или требует входа. "
-            "Для таких ссылок нужен файл cookies: с 4.9.4.5 суперадминистратор "
-            "просто присылает cookies.txt в чат (см. /cookies) — сервер "
-            "и .env больше не трогаются руками."
+            "С 4.9.4.6 бот сам пробует обход: клиенты YouTube без cookies "
+            "и публичные зеркала записей (Instagram, X). Если и зеркало "
+            "молчит — последний рубеж: файл cookies, команда /cookies."
         )
     # Незнакомая площадка — отдельный случай от записи с картинками:
     # картинки оттуда попробовать стоит, но объяснение нужно другое,
@@ -8433,6 +8463,92 @@ async def fetch_page(session, url: str, limit_kb: int = 512) -> str:
     except Exception:  # noqa: BLE001
         log.debug("Страницу записи прочитать не удалось", exc_info=True)
         return ""
+
+
+# --------------------------------------------------------------------------
+#  Публичные зеркала записей (с 4.9.4.6)
+# --------------------------------------------------------------------------
+#
+# Сама площадка на запись без входа отвечает страницей входа, и картинок
+# в её метаданных нет. Зеркало — сторонний сервис, отдающий запись
+# анонимно: ddinstagram — HTML с теми же метаданными, fxtwitter — JSON,
+# в котором картинки твита перечислены списком.
+#
+# Зеркала не наши: закрыться или уехать может любое, поэтому это
+# именно фолбэк после основной попытки, а не замена ей. Отказ зеркала
+# не ошибка: человек просто получит объяснение, как и раньше.
+
+MIRROR_URLS = (
+    ("instagram.com", "https://ddinstagram.com", "page"),
+    ("x.com", "https://api.fxtwitter.com", "json"),
+    ("twitter.com", "https://api.fxtwitter.com", "json"),
+)
+
+# Картинки в JSON fxtwitter: адреса медиа-хоста X. Ключ в разборе
+# один — host, по нему отличаем картинку от ссылки на профиль.
+# Слэши допускаются экранированными: JSON отдаёт их как "\/".
+_FXTWITTER_IMAGE = re.compile(
+    r'"url"\s*:\s*"(https?:\\?/\\?/pbs\.twimg\.com\\?/media\\?/[^"]{8,600}?)"'
+)
+
+
+def _mirror_base(url: str) -> tuple[str, str] | None:
+    """(база зеркала, тип) или None, если зеркала для ссылки нет."""
+    try:
+        host = (urlparse(url).netloc or "").lower().removeprefix("www.")
+        path = urlparse(url).path.rstrip("/")
+    except ValueError:
+        return None
+    if not path:
+        return None
+    for domain, base, kind in MIRROR_URLS:
+        if host == domain or host.endswith("." + domain):
+            return base + path, kind
+    return None
+
+
+def mirror_for(url: str) -> str:
+    """Адрес зеркала записи или пусто."""
+    pair = _mirror_base(url)
+    return pair[0] if pair else ""
+
+
+def from_fxtwitter(payload: str) -> list[str]:
+    """Картинки из JSON-ответа fxtwitter.
+
+    Разбор по хосту адреса, а не по структуре JSON: сервис обновляет
+    схему, и строгий разбор ломался бы раньше самого сервиса.
+    """
+    found: list[str] = []
+    for raw in _FXTWITTER_IMAGE.findall(payload or ""):
+        value = raw.replace("\\/", "/")
+        if value not in found:
+            found.append(value)
+        if len(found) >= MAX_FROM_PAGE:
+            break
+    return found
+
+
+async def via_mirror(session, url: str) -> list[str]:
+    """Картинки записи через публичное зеркало. Пусто — не вышло."""
+    pair = _mirror_base(url)
+    if pair is None:
+        return []
+    target, kind = pair
+
+    try:
+        async with session.get(target) as response:
+            if response.status != 200:
+                log.info("Зеркало %s ответило кодом %s", target, response.status)
+                return []
+            payload = await response.text()
+    except Exception:  # noqa: BLE001
+        log.debug("Зеркало недоступно: %s", target, exc_info=True)
+        return []
+
+    if kind == "json":
+        return from_fxtwitter(payload)
+    return from_page(payload, target)
 RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/secrets.py"
 cat > "radar/secrets.py" <<'RADAR_FILE_22'
@@ -28184,10 +28300,11 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
         log.warning("Разбор ссылки не удался: %s", exc)
         # «Видео тут нет» — не всегда отказ. Люди присылают ссылку
         # на запись с картинками: пост в Instagram, твит с фотографией,
-        # сообщение сообщества YouTube. До 4.8.4.7 человек получал
-        # «не удалось обработать ссылку» и не понимал, что делать.
-        if media.looks_like_no_video(exc) and await _send_post_images(
-                message, url, notice):
+        # сообщение сообщества YouTube. С 4.9.4.6 то же касается
+        # требующих входа: зеркало может показать запись, которую
+        # сама площадка закрыла.
+        can_try_images = media.looks_like_no_video(exc) or media.needs_login(exc)
+        if can_try_images and await _send_post_images(message, url, notice):
             return
         await notice.edit_text(f"❌ {esc(media.friendly_error(exc))}")
         return
@@ -28291,6 +28408,10 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         markup = await images.fetch_page(session, url)
         links = images.from_page(markup, url)
+        if not links:
+            # Страница входа метаданных не отдаёт — пробуем публичное
+            # зеркало: оно показывает запись анонимно (с 4.9.4.6).
+            links = await images.via_mirror(session, url)
         if not links:
             return False
 

@@ -140,10 +140,11 @@ async def handle_link(message: Message, role: str, user: dict) -> None:
         log.warning("Разбор ссылки не удался: %s", exc)
         # «Видео тут нет» — не всегда отказ. Люди присылают ссылку
         # на запись с картинками: пост в Instagram, твит с фотографией,
-        # сообщение сообщества YouTube. До 4.8.4.7 человек получал
-        # «не удалось обработать ссылку» и не понимал, что делать.
-        if media.looks_like_no_video(exc) and await _send_post_images(
-                message, url, notice):
+        # сообщение сообщества YouTube. С 4.9.4.6 то же касается
+        # требующих входа: зеркало может показать запись, которую
+        # сама площадка закрыла.
+        can_try_images = media.looks_like_no_video(exc) or media.needs_login(exc)
+        if can_try_images and await _send_post_images(message, url, notice):
             return
         await notice.edit_text(f"❌ {esc(media.friendly_error(exc))}")
         return
@@ -247,6 +248,10 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         markup = await images.fetch_page(session, url)
         links = images.from_page(markup, url)
+        if not links:
+            # Страница входа метаданных не отдаёт — пробуем публичное
+            # зеркало: оно показывает запись анонимно (с 4.9.4.6).
+            links = await images.via_mirror(session, url)
         if not links:
             return False
 

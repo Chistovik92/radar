@@ -430,6 +430,14 @@ def build_options(
         "noplaylist": True,
         "retries": 3,
         "socket_timeout": 30,
+        # Клиенты YouTube, не требующие cookies. Обычный веб-клиент
+        # с адреса датацентра всё чаще получает «Sign in to confirm
+        # you're not a bot»; ios и tv_embedded открывают те же записи
+        # анонимно, tv_embedded — в том числе с возрастным
+        # ограничением. Cookies остаются последним рубежом, а не первым.
+        "extractor_args": {
+            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
+        },
     }
     if limit_mb > 0:
         # Ограничитель на случай, когда размер заранее неизвестен: yt-dlp
@@ -458,6 +466,12 @@ def probe_options(proxy: str = "", cookies: str = "") -> dict[str, Any]:
         "noplaylist": True,
         "skip_download": True,
         "socket_timeout": 20,
+        # Те же клиенты, что и в build_options: проба и загрузка
+        # обязаны идти одним путём, иначе «нашёл — но не скачал»
+        # станет нормой.
+        "extractor_args": {
+            "youtube": {"player_client": ["ios", "tv_embedded", "web_safari"]},
+        },
     }
     if proxy:
         options["proxy"] = proxy
@@ -487,6 +501,12 @@ LOGIN_MARKERS = (
     "private", "login required", "sign in", "signed-in", "signed in",
     "log in", "account", "authoriz", "авториз",
 )
+
+
+def needs_login(error: BaseException | str) -> bool:
+    """Значит ли ошибка, что площадка требует входа."""
+    text = str(error).lower()
+    return any(marker in text for marker in LOGIN_MARKERS)
 
 
 def looks_like_no_video(error: BaseException | str) -> bool:
@@ -546,12 +566,12 @@ def friendly_error(error: BaseException | str) -> str:
 
     # Порядок ветвей значим: «нужен вход» проверяется раньше «нет видео»,
     # иначе закрытая запись объяснялась бы отсутствием видео в ней.
-    if any(marker in text for marker in LOGIN_MARKERS):
+    if needs_login(error):
         return (
             "Запись закрыта настройками приватности или требует входа. "
-            "Для таких ссылок нужен файл cookies: с 4.9.4.5 суперадминистратор "
-            "просто присылает cookies.txt в чат (см. /cookies) — сервер "
-            "и .env больше не трогаются руками."
+            "С 4.9.4.6 бот сам пробует обход: клиенты YouTube без cookies "
+            "и публичные зеркала записей (Instagram, X). Если и зеркало "
+            "молчит — последний рубеж: файл cookies, команда /cookies."
         )
     # Незнакомая площадка — отдельный случай от записи с картинками:
     # картинки оттуда попробовать стоит, но объяснение нужно другое,

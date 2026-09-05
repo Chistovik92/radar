@@ -232,5 +232,69 @@ class TestDescription(unittest.TestCase):
         self.assertNotIn("<script>", text)
 
 
+class MirrorTest(unittest.TestCase):
+    """Публичные зеркала записей: адрес и разбор ответа (с 4.9.4.6)."""
+
+    def test_mirror_for_instagram(self):
+        url = "https://www.instagram.com/p/Cx123AbCdEf/"
+        self.assertEqual(images.mirror_for(url),
+                         "https://ddinstagram.com/p/Cx123AbCdEf")
+
+    def test_mirror_for_x(self):
+        url = "https://x.com/user/status/1234567890"
+        self.assertEqual(images.mirror_for(url),
+                         "https://api.fxtwitter.com/user/status/1234567890")
+
+    def test_mirror_for_twitter(self):
+        url = "https://twitter.com/user/status/42"
+        self.assertEqual(images.mirror_for(url),
+                         "https://api.fxtwitter.com/user/status/42")
+
+    def test_mirror_for_unknown(self):
+        for url in ("https://youtube.com/watch?v=1", "https://vk.com/wall-1_2",
+                    "https://x.com", "not a url"):
+            with self.subTest(url=url):
+                self.assertEqual(images.mirror_for(url), "")
+
+    def test_from_fxtwitter(self):
+        payload = (
+            '{"media":{"photos":['
+            '{"url":"https:\\/\\/pbs.twimg.com\\/media\\/Abc123?format=jpg&name=large"},'
+            '{"url":"https:\\/\\/pbs.twimg.com\\/media\\/Def456?format=jpg&name=large"}'
+            ']}}'
+        )
+        found = images.from_fxtwitter(payload)
+        self.assertEqual(len(found), 2)
+        self.assertTrue(found[0].startswith("https://pbs.twimg.com/media/"))
+        # Экранированные слэши развернулись
+        self.assertNotIn("\\/", found[0])
+
+    def test_from_fxtwitter_empty(self):
+        self.assertEqual(images.from_fxtwitter(""), [])
+        self.assertEqual(images.from_fxtwitter('{"media":{}}'), [])
+
+
+class YoutubeClientsTest(unittest.TestCase):
+    """Клиенты YouTube без cookies: проба и загрузка идут одним путём."""
+
+    def test_build_options_has_clients(self):
+        from radar import media as core_media
+
+        options = core_media.build_options("/tmp/x.%(ext)s", "best")
+        self.assertIn("extractor_args", options)
+        clients = options["extractor_args"]["youtube"]["player_client"]
+        self.assertIn("ios", clients)
+
+    def test_probe_options_match_build(self):
+        from radar import media as core_media
+
+        probe = core_media.probe_options()
+        build = core_media.build_options("/tmp/x.%(ext)s", "best")
+        self.assertEqual(
+            probe["extractor_args"]["youtube"]["player_client"],
+            build["extractor_args"]["youtube"]["player_client"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

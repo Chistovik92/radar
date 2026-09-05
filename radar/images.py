@@ -343,3 +343,89 @@ async def fetch_page(session, url: str, limit_kb: int = 512) -> str:
     except Exception:  # noqa: BLE001
         log.debug("Страницу записи прочитать не удалось", exc_info=True)
         return ""
+
+
+# --------------------------------------------------------------------------
+#  Публичные зеркала записей (с 4.9.4.6)
+# --------------------------------------------------------------------------
+#
+# Сама площадка на запись без входа отвечает страницей входа, и картинок
+# в её метаданных нет. Зеркало — сторонний сервис, отдающий запись
+# анонимно: ddinstagram — HTML с теми же метаданными, fxtwitter — JSON,
+# в котором картинки твита перечислены списком.
+#
+# Зеркала не наши: закрыться или уехать может любое, поэтому это
+# именно фолбэк после основной попытки, а не замена ей. Отказ зеркала
+# не ошибка: человек просто получит объяснение, как и раньше.
+
+MIRROR_URLS = (
+    ("instagram.com", "https://ddinstagram.com", "page"),
+    ("x.com", "https://api.fxtwitter.com", "json"),
+    ("twitter.com", "https://api.fxtwitter.com", "json"),
+)
+
+# Картинки в JSON fxtwitter: адреса медиа-хоста X. Ключ в разборе
+# один — host, по нему отличаем картинку от ссылки на профиль.
+# Слэши допускаются экранированными: JSON отдаёт их как "\/".
+_FXTWITTER_IMAGE = re.compile(
+    r'"url"\s*:\s*"(https?:\\?/\\?/pbs\.twimg\.com\\?/media\\?/[^"]{8,600}?)"'
+)
+
+
+def _mirror_base(url: str) -> tuple[str, str] | None:
+    """(база зеркала, тип) или None, если зеркала для ссылки нет."""
+    try:
+        host = (urlparse(url).netloc or "").lower().removeprefix("www.")
+        path = urlparse(url).path.rstrip("/")
+    except ValueError:
+        return None
+    if not path:
+        return None
+    for domain, base, kind in MIRROR_URLS:
+        if host == domain or host.endswith("." + domain):
+            return base + path, kind
+    return None
+
+
+def mirror_for(url: str) -> str:
+    """Адрес зеркала записи или пусто."""
+    pair = _mirror_base(url)
+    return pair[0] if pair else ""
+
+
+def from_fxtwitter(payload: str) -> list[str]:
+    """Картинки из JSON-ответа fxtwitter.
+
+    Разбор по хосту адреса, а не по структуре JSON: сервис обновляет
+    схему, и строгий разбор ломался бы раньше самого сервиса.
+    """
+    found: list[str] = []
+    for raw in _FXTWITTER_IMAGE.findall(payload or ""):
+        value = raw.replace("\\/", "/")
+        if value not in found:
+            found.append(value)
+        if len(found) >= MAX_FROM_PAGE:
+            break
+    return found
+
+
+async def via_mirror(session, url: str) -> list[str]:
+    """Картинки записи через публичное зеркало. Пусто — не вышло."""
+    pair = _mirror_base(url)
+    if pair is None:
+        return []
+    target, kind = pair
+
+    try:
+        async with session.get(target) as response:
+            if response.status != 200:
+                log.info("Зеркало %s ответило кодом %s", target, response.status)
+                return []
+            payload = await response.text()
+    except Exception:  # noqa: BLE001
+        log.debug("Зеркало недоступно: %s", target, exc_info=True)
+        return []
+
+    if kind == "json":
+        return from_fxtwitter(payload)
+    return from_page(payload, target)
