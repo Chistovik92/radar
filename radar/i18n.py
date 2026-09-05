@@ -117,6 +117,60 @@ EN_STRINGS: dict[str, str] = {
     "media.quota.unlimited": "Unlimited until",
     "media.quota.buy": "⭐️ Unlimited for a month",
     "media.too_big": "The file is larger than the limit.",
+    "media.looking": "🔎 <b>Looking at the link…</b>",
+    "media.slow_probe": "❌ The site did not answer within 90 seconds.",
+    "media.pick_quality": "🎯 <b>Choose a quality:</b>",
+    "media.pick_note": "<i>Sending limit is {limit} MB. Options marked ⚠️ will not fit.</i>",
+    "media.btn_text": "📝 Description text",
+    "media.btn_cancel": "❌ Cancel",
+    "media.cancelled": "Download cancelled.",
+    "media.busy": "⏳ Another download is already running. Please wait — "
+                  "simultaneous downloads overload the server.",
+    "media.no_file": "❌ The file was not created.",
+    "media.sending": "📤 <b>Sending to Telegram…</b>",
+    "img.downloading": "🖼 <b>Downloading the image…</b>",
+    "img.looking": "🖼 <b>Looking for images in the post…</b>",
+    "img.none_found": "🖼 No images were found in this post.\n"
+                      "<i>A private post will not show them to a browser without "
+                      "logging in either.</i>",
+    "img.in_post": "Images in the post",
+    "img.not_sent": "❌ The image was downloaded but could not be sent.",
+    "zip.too_long": "📏 <b>The video is longer than can be sent as a file "
+                    "({limit} MB), and there is nothing to compress it with.</b>",
+    "zip.full_note": "Full version by link — up to {gb} GB, lives {hours} h.",
+    "zip.offer": "🗜 <b>The video will not fit: {size} MB with a limit of "
+                 "{limit} MB.</b>",
+    "zip.free_line": "Free: compress to {height}p — roughly {limit} MB, takes "
+                     "<b>{time}</b> — the single-board computer's CPU is weak, and "
+                     "compression runs at low priority so alerts are not delayed.",
+    "zip.btn_zip": "🗜 Compress to {height}p ({time}) — free",
+    "zip.btn_full": "⭐️ Full version by link — up to {gb} GB",
+    "zip.btn_other": "◀️ Choose another quality",
+    "zip.running": "🗜 <b>Compressing to {height}p</b>",
+    "zip.running_pct": "🗜 <b>Compressing to {height}p</b> — {pct}%",
+    "zip.time_note": "Takes {time}. Alerts run as usual meanwhile.",
+    "sub.needed_title": "⭐️ <b>The full version comes with the subscription</b>",
+    "sub.needed_line": "The whole file, {label} quality, by a link — up to "
+                       "{gb} GB for {hours} h.",
+    "sub.needed_note": "The subscription opens this, video downloads without "
+                       "a daily cap, and all news digest topics. Danger alerts "
+                       "are free always.",
+    "sub.btn": "💳 Subscribe",
+    "linkcheck.choice": "🔗 <b>What should I do with the link?</b>",
+    "linkcheck.btn_check": "🔍 Check it",
+    "linkcheck.btn_video": "🎬 Download video",
+    "linkcheck.btn_images": "🖼 Images from the post",
+    "linkcheck.btn_nothing": "❌ Nothing",
+    "drop.preparing": "🔗 <b>Preparing the download link…</b>",
+    "drop.ready_size": "Size",
+    "drop.ready_note": "larger than the Telegram limit, so the file is given "
+                       "as a link.",
+    "drop.download": "⬇️ Download the file",
+    "drop.ttl": "<i>The link lives {hours} h, after that the file is deleted "
+                "from the server.</i>",
+    "drop.too_large": "⚠️ The file is over {gb} GB — such files are not shared "
+                      "by link. Choose a lower quality.",
+    "drop.over_limit": "⚠️ <b>The file is over the Telegram limit.</b>",
 
     # --- подборки ---
     "digest.title": "News digests",

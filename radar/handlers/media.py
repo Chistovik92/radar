@@ -32,6 +32,7 @@ from aiogram.types import (
 from .. import (
     config,
     features,
+    i18n,
     identity,
     images,
     media,
@@ -75,7 +76,7 @@ def _cleanup_pending() -> None:
 
 
 def _keyboard(token: str, formats: list[media.Format], limit_mb: int,
-              has_text: bool = False) -> InlineKeyboardMarkup:
+              has_text: bool = False, lang: str = "ru") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for index, item in enumerate(formats):
         mark = ""
@@ -88,8 +89,11 @@ def _keyboard(token: str, formats: list[media.Format], limit_mb: int,
         ])
     if has_text:
         rows.append([InlineKeyboardButton(
-            text="📝 Текст описания", callback_data=f"med:txt:{token}")])
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"med:drop:{token}")])
+            text=i18n.t("media.btn_text", lang, "📝 Текст описания"),
+            callback_data=f"med:txt:{token}")])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("media.btn_cancel", lang, "❌ Отмена"),
+        callback_data=f"med:drop:{token}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -98,9 +102,11 @@ def _keyboard(token: str, formats: list[media.Format], limit_mb: int,
 # --------------------------------------------------------------------------
 
 @router.message(StateFilter(None), F.text.func(media.looks_like_url))
-async def handle_link(message: Message, role: str) -> None:
+async def handle_link(message: Message, role: str, user: dict) -> None:
     if not _allowed(role):
         return  # ссылка уйдёт дальше по цепочке роутеров
+
+    lang = i18n.language_of(user)
 
     try:
         import yt_dlp  # noqa: F401
@@ -116,15 +122,19 @@ async def handle_link(message: Message, role: str) -> None:
     # Картинка перехватывается раньше: гнать её через yt-dlp значило бы
     # обвешать простую задачу выбором качества и склейкой.
     if images.looks_like_image(url):
-        await _send_image(message, url)
+        await _send_image(message, url, user)
         return
 
-    notice = await message.answer("🔎 <b>Смотрю, что за ссылка…</b>")
+    notice = await message.answer(
+        i18n.t("media.looking", lang, "🔎 <b>Смотрю, что за ссылка…</b>")
+    )
 
     try:
         info = await asyncio.wait_for(_probe(url), timeout=90)
     except asyncio.TimeoutError:
-        await notice.edit_text("❌ Площадка не ответила за 90 секунд.")
+        await notice.edit_text(
+            i18n.t("media.slow_probe", lang, "❌ Площадка не ответила за 90 секунд.")
+        )
         return
     except Exception as exc:  # noqa: BLE001
         log.warning("Разбор ссылки не удался: %s", exc)
@@ -157,17 +167,48 @@ async def handle_link(message: Message, role: str) -> None:
         "info": info,
     }
 
-    lines = [media.describe(info), "", "🎯 <b>Выберите качество:</b>"]
+    lines = [media.describe(info), "",
+             i18n.t("media.pick_quality", lang, "🎯 <b>Выберите качество:</b>")]
     if not config.uses_local_api():
         lines.append(
-            f"<i>Предел отправки — {limit_mb} МБ. Отмеченные ⚠️ варианты "
-            "не поместятся.</i>"
+            i18n.t(
+                "media.pick_note", lang,
+                f"<i>Предел отправки — {limit_mb} МБ. Отмеченные ⚠️ варианты "
+                "не поместятся.</i>",
+            ).replace("{limit}", str(limit_mb))
         )
     await notice.edit_text(
         "\n".join(lines),
         reply_markup=_keyboard(token, formats, limit_mb,
-                               has_text=bool(images.description_of(info))),
+                               has_text=bool(images.description_of(info)),
+                               lang=lang),
     )
+
+
+async def post_images(message: Message, url: str, user: dict | None = None) -> None:
+    """Картинки из записи — прямой путь, мимо yt-dlp.
+
+    До 4.9.4.3 до них можно было добраться только «наугад»: yt-dlp
+    сначала тратил до 90 секунд на пробу записи и лишь потом, не найдя
+    видео, бот искал картинки. Из выбора ссылки и из медиа-меню теперь
+    идёт сразу сюда.
+    """
+    lang = i18n.language_of(user)
+    notice = await message.answer(
+        i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
+    )
+    found = await _send_post_images(message, url, notice)
+    if not found:
+        try:
+            await notice.edit_text(
+                i18n.t(
+                    "img.none_found", lang,
+                    "🖼 В этой записи не нашлось картинок.\n"
+                    "<i>Закрытая запись не покажет их и браузеру без входа.</i>",
+                )
+            )
+        except TelegramBadRequest:
+            pass
 
 
 async def _send_post_images(message: Message, url: str, notice) -> bool:
@@ -181,7 +222,11 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     import aiohttp
     from aiogram.types import BufferedInputFile, InputMediaPhoto
 
-    await notice.edit_text("🖼 <b>Видео нет — ищу картинки в записи…</b>")
+    owner = storage.get_user(message.from_user.id)
+    lang = i18n.language_of(owner)
+    await notice.edit_text(
+        i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
+    )
 
     # Обычный User-Agent, а не наш: метаданные предпросмотра площадки
     # отдают браузерам и краулерам, а незнакомому агенту нередко
@@ -276,12 +321,15 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
 
 
 
-async def _send_image(message: Message, url: str) -> None:
+async def _send_image(message: Message, url: str, user: dict | None = None) -> None:
     """Скачивает картинку и отдаёт её фотографией или документом."""
     import aiohttp
     from aiogram.types import BufferedInputFile
 
-    notice = await message.answer("🖼 <b>Скачиваю картинку…</b>")
+    lang = i18n.language_of(user)
+    notice = await message.answer(
+        i18n.t("img.downloading", lang, "🖼 <b>Скачиваю картинку…</b>")
+    )
     limit_mb = media.size_limit_mb(config.uses_local_api())
 
     timeout = aiohttp.ClientTimeout(total=120)
@@ -317,7 +365,9 @@ async def _send_image(message: Message, url: str) -> None:
             pass
     except Exception as exc:  # noqa: BLE001
         log.warning("Картинка не отправлена: %s", exc)
-        await notice.edit_text("❌ Картинку скачал, но отправить не удалось.")
+        await notice.edit_text(
+            i18n.t("img.not_sent", lang, "❌ Картинку скачал, но отправить не удалось.")
+        )
 
 
 @router.callback_query(F.data.startswith("med:txt:"))

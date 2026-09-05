@@ -33,7 +33,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from .. import config, features, i18n, media, secrets, storage, subscription
+from .. import config, features, i18n, images, media, secrets, storage, subscription
 
 log = logging.getLogger("radar.handlers.linkcheck")
 router = Router(name="linkcheck")
@@ -292,13 +292,22 @@ async def plain_link(message: Message, user: dict, role: str) -> None:
         raise SkipHandler
 
     url = (message.text or "").strip().split()[0]
+    lang = i18n.language_of(user)
+
+    # Прямая ссылка на картинку — сразу в загрузку картинки, без
+    # выбора: проверять там нечего, а «скачать видео» про картинку
+    # не говорят. До 4.9.4.3 такой линк застревал в выборе.
+    if images.looks_like_image(url):
+        raise SkipHandler
 
     # Загрузчик недоступен — проверяем сразу, выбора нет.
     if not _media_available():
         await _run_check(message, user, role, url)
         return
 
-    # Включены обе возможности: спрашиваем.
+    # Включены обе возможности: спрашиваем. Картинки из записи —
+    # отдельная дорога: yt-dlp тратил бы до 90 секунд на пробу и лишь
+    # потом падал с «видео нет», а человек хотел снимки поста.
     _cleanup_pending()
     token = uuid.uuid4().hex[:10]
     _pending[token] = {
@@ -308,13 +317,20 @@ async def plain_link(message: Message, user: dict, role: str) -> None:
         "created": time.time(),
     }
     await message.answer(
-        "🔗 <b>Что сделать со ссылкой?</b>",
+        i18n.t("linkcheck.choice", lang, "🔗 <b>Что сделать со ссылкой?</b>"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Проверить на мошенничество",
-                                  callback_data=f"lchk:go:{token}"),
-             InlineKeyboardButton(text="🎬 Скачать видео",
-                                  callback_data=f"lchk:dl:{token}")],
-            [InlineKeyboardButton(text="❌ Ничего", callback_data=f"lchk:skip:{token}")],
+            [InlineKeyboardButton(
+                text=i18n.t("linkcheck.btn_check", lang, "🔍 Проверить"),
+                callback_data=f"lchk:go:{token}"),
+             InlineKeyboardButton(
+                 text=i18n.t("linkcheck.btn_video", lang, "🎬 Скачать видео"),
+                 callback_data=f"lchk:dl:{token}")],
+            [InlineKeyboardButton(
+                text=i18n.t("linkcheck.btn_images", lang, "🖼 Картинки из записи"),
+                callback_data=f"lchk:img:{token}")],
+            [InlineKeyboardButton(
+                text=i18n.t("linkcheck.btn_nothing", lang, "❌ Ничего"),
+                callback_data=f"lchk:skip:{token}")],
         ]),
     )
 
@@ -349,7 +365,7 @@ async def choice_check(call: CallbackQuery, user: dict, role: str) -> None:
 
 
 @router.callback_query(F.data.startswith("lchk:dl:"))
-async def choice_download(call: CallbackQuery, role: str) -> None:
+async def choice_download(call: CallbackQuery, role: str, user: dict) -> None:
     token = call.data.split(":")[2]
     item = _pending_of(call, token)
     if item is None:
@@ -363,7 +379,24 @@ async def choice_download(call: CallbackQuery, role: str) -> None:
     # проверки, свои сообщения и своя обработка ошибок.
     from . import media as media_handler
 
-    await media_handler.handle_link(item["message"], role)
+    await media_handler.handle_link(item["message"], role, user)
+
+
+@router.callback_query(F.data.startswith("lchk:img:"))
+async def choice_images(call: CallbackQuery, user: dict) -> None:
+    """Картинки из записи напрямую — без 90-секундной пробы yt-dlp."""
+    token = call.data.split(":")[2]
+    item = _pending_of(call, token)
+    if item is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    _pending.pop(token, None)
+    await call.answer()
+    await _drop_choice(call)
+
+    from . import media as media_handler
+
+    await media_handler.post_images(item["message"], item["url"], user)
 
 
 @router.callback_query(F.data.startswith("lchk:skip:"))

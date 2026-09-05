@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.4.2 — автономный установщик.
+# Система «Радар» v4.9.4.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.4.2"
+VERSION="4.9.4.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2960,6 +2960,18 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.4.3", [
+        "🖼 <b>Картинки из записи — прямой дорогой.</b> В выборе ссылки "
+        "появилась кнопка «Картинки из записи»: раньше до них можно было "
+        "добраться только наугад — yt-dlp сперва тратил до 90 секунд "
+        "на пробу записи и лишь потом, не найдя видео, бот искал снимки. "
+        "Прямая ссылка на картинку снова скачивается сразу, минуя выбор.",
+        "🌍 <b>Медиа-экраны переведены на английский.</b> Загрузка "
+        "картинок, выбор качества, стена размера с предложением сжать "
+        "и премиум-ссылкой, выдача файла ссылкой, выбор «что сделать "
+        "со ссылкой» — всё двуязычно, как остальной пользовательский "
+        "интерфейс.",
+    ]),
     ("4.9.4.2", [
         "🔗 <b>Простая ссылка больше не улетает в загрузчик молча.</b> "
         "Если включены и проверка, и загрузка видео — бот спрашивает, "
@@ -4059,7 +4071,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.4.2"
+__version__ = "4.9.4.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -11869,6 +11881,60 @@ EN_STRINGS: dict[str, str] = {
     "media.quota.unlimited": "Unlimited until",
     "media.quota.buy": "⭐️ Unlimited for a month",
     "media.too_big": "The file is larger than the limit.",
+    "media.looking": "🔎 <b>Looking at the link…</b>",
+    "media.slow_probe": "❌ The site did not answer within 90 seconds.",
+    "media.pick_quality": "🎯 <b>Choose a quality:</b>",
+    "media.pick_note": "<i>Sending limit is {limit} MB. Options marked ⚠️ will not fit.</i>",
+    "media.btn_text": "📝 Description text",
+    "media.btn_cancel": "❌ Cancel",
+    "media.cancelled": "Download cancelled.",
+    "media.busy": "⏳ Another download is already running. Please wait — "
+                  "simultaneous downloads overload the server.",
+    "media.no_file": "❌ The file was not created.",
+    "media.sending": "📤 <b>Sending to Telegram…</b>",
+    "img.downloading": "🖼 <b>Downloading the image…</b>",
+    "img.looking": "🖼 <b>Looking for images in the post…</b>",
+    "img.none_found": "🖼 No images were found in this post.\n"
+                      "<i>A private post will not show them to a browser without "
+                      "logging in either.</i>",
+    "img.in_post": "Images in the post",
+    "img.not_sent": "❌ The image was downloaded but could not be sent.",
+    "zip.too_long": "📏 <b>The video is longer than can be sent as a file "
+                    "({limit} MB), and there is nothing to compress it with.</b>",
+    "zip.full_note": "Full version by link — up to {gb} GB, lives {hours} h.",
+    "zip.offer": "🗜 <b>The video will not fit: {size} MB with a limit of "
+                 "{limit} MB.</b>",
+    "zip.free_line": "Free: compress to {height}p — roughly {limit} MB, takes "
+                     "<b>{time}</b> — the single-board computer's CPU is weak, and "
+                     "compression runs at low priority so alerts are not delayed.",
+    "zip.btn_zip": "🗜 Compress to {height}p ({time}) — free",
+    "zip.btn_full": "⭐️ Full version by link — up to {gb} GB",
+    "zip.btn_other": "◀️ Choose another quality",
+    "zip.running": "🗜 <b>Compressing to {height}p</b>",
+    "zip.running_pct": "🗜 <b>Compressing to {height}p</b> — {pct}%",
+    "zip.time_note": "Takes {time}. Alerts run as usual meanwhile.",
+    "sub.needed_title": "⭐️ <b>The full version comes with the subscription</b>",
+    "sub.needed_line": "The whole file, {label} quality, by a link — up to "
+                       "{gb} GB for {hours} h.",
+    "sub.needed_note": "The subscription opens this, video downloads without "
+                       "a daily cap, and all news digest topics. Danger alerts "
+                       "are free always.",
+    "sub.btn": "💳 Subscribe",
+    "linkcheck.choice": "🔗 <b>What should I do with the link?</b>",
+    "linkcheck.btn_check": "🔍 Check it",
+    "linkcheck.btn_video": "🎬 Download video",
+    "linkcheck.btn_images": "🖼 Images from the post",
+    "linkcheck.btn_nothing": "❌ Nothing",
+    "drop.preparing": "🔗 <b>Preparing the download link…</b>",
+    "drop.ready_size": "Size",
+    "drop.ready_note": "larger than the Telegram limit, so the file is given "
+                       "as a link.",
+    "drop.download": "⬇️ Download the file",
+    "drop.ttl": "<i>The link lives {hours} h, after that the file is deleted "
+                "from the server.</i>",
+    "drop.too_large": "⚠️ The file is over {gb} GB — such files are not shared "
+                      "by link. Choose a lower quality.",
+    "drop.over_limit": "⚠️ <b>The file is over the Telegram limit.</b>",
 
     # --- подборки ---
     "digest.title": "News digests",
@@ -27996,6 +28062,7 @@ from aiogram.types import (
 from .. import (
     config,
     features,
+    i18n,
     identity,
     images,
     media,
@@ -28039,7 +28106,7 @@ def _cleanup_pending() -> None:
 
 
 def _keyboard(token: str, formats: list[media.Format], limit_mb: int,
-              has_text: bool = False) -> InlineKeyboardMarkup:
+              has_text: bool = False, lang: str = "ru") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for index, item in enumerate(formats):
         mark = ""
@@ -28052,8 +28119,11 @@ def _keyboard(token: str, formats: list[media.Format], limit_mb: int,
         ])
     if has_text:
         rows.append([InlineKeyboardButton(
-            text="📝 Текст описания", callback_data=f"med:txt:{token}")])
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"med:drop:{token}")])
+            text=i18n.t("media.btn_text", lang, "📝 Текст описания"),
+            callback_data=f"med:txt:{token}")])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("media.btn_cancel", lang, "❌ Отмена"),
+        callback_data=f"med:drop:{token}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -28062,9 +28132,11 @@ def _keyboard(token: str, formats: list[media.Format], limit_mb: int,
 # --------------------------------------------------------------------------
 
 @router.message(StateFilter(None), F.text.func(media.looks_like_url))
-async def handle_link(message: Message, role: str) -> None:
+async def handle_link(message: Message, role: str, user: dict) -> None:
     if not _allowed(role):
         return  # ссылка уйдёт дальше по цепочке роутеров
+
+    lang = i18n.language_of(user)
 
     try:
         import yt_dlp  # noqa: F401
@@ -28080,15 +28152,19 @@ async def handle_link(message: Message, role: str) -> None:
     # Картинка перехватывается раньше: гнать её через yt-dlp значило бы
     # обвешать простую задачу выбором качества и склейкой.
     if images.looks_like_image(url):
-        await _send_image(message, url)
+        await _send_image(message, url, user)
         return
 
-    notice = await message.answer("🔎 <b>Смотрю, что за ссылка…</b>")
+    notice = await message.answer(
+        i18n.t("media.looking", lang, "🔎 <b>Смотрю, что за ссылка…</b>")
+    )
 
     try:
         info = await asyncio.wait_for(_probe(url), timeout=90)
     except asyncio.TimeoutError:
-        await notice.edit_text("❌ Площадка не ответила за 90 секунд.")
+        await notice.edit_text(
+            i18n.t("media.slow_probe", lang, "❌ Площадка не ответила за 90 секунд.")
+        )
         return
     except Exception as exc:  # noqa: BLE001
         log.warning("Разбор ссылки не удался: %s", exc)
@@ -28121,17 +28197,48 @@ async def handle_link(message: Message, role: str) -> None:
         "info": info,
     }
 
-    lines = [media.describe(info), "", "🎯 <b>Выберите качество:</b>"]
+    lines = [media.describe(info), "",
+             i18n.t("media.pick_quality", lang, "🎯 <b>Выберите качество:</b>")]
     if not config.uses_local_api():
         lines.append(
-            f"<i>Предел отправки — {limit_mb} МБ. Отмеченные ⚠️ варианты "
-            "не поместятся.</i>"
+            i18n.t(
+                "media.pick_note", lang,
+                f"<i>Предел отправки — {limit_mb} МБ. Отмеченные ⚠️ варианты "
+                "не поместятся.</i>",
+            ).replace("{limit}", str(limit_mb))
         )
     await notice.edit_text(
         "\n".join(lines),
         reply_markup=_keyboard(token, formats, limit_mb,
-                               has_text=bool(images.description_of(info))),
+                               has_text=bool(images.description_of(info)),
+                               lang=lang),
     )
+
+
+async def post_images(message: Message, url: str, user: dict | None = None) -> None:
+    """Картинки из записи — прямой путь, мимо yt-dlp.
+
+    До 4.9.4.3 до них можно было добраться только «наугад»: yt-dlp
+    сначала тратил до 90 секунд на пробу записи и лишь потом, не найдя
+    видео, бот искал картинки. Из выбора ссылки и из медиа-меню теперь
+    идёт сразу сюда.
+    """
+    lang = i18n.language_of(user)
+    notice = await message.answer(
+        i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
+    )
+    found = await _send_post_images(message, url, notice)
+    if not found:
+        try:
+            await notice.edit_text(
+                i18n.t(
+                    "img.none_found", lang,
+                    "🖼 В этой записи не нашлось картинок.\n"
+                    "<i>Закрытая запись не покажет их и браузеру без входа.</i>",
+                )
+            )
+        except TelegramBadRequest:
+            pass
 
 
 async def _send_post_images(message: Message, url: str, notice) -> bool:
@@ -28145,7 +28252,11 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     import aiohttp
     from aiogram.types import BufferedInputFile, InputMediaPhoto
 
-    await notice.edit_text("🖼 <b>Видео нет — ищу картинки в записи…</b>")
+    owner = storage.get_user(message.from_user.id)
+    lang = i18n.language_of(owner)
+    await notice.edit_text(
+        i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
+    )
 
     # Обычный User-Agent, а не наш: метаданные предпросмотра площадки
     # отдают браузерам и краулерам, а незнакомому агенту нередко
@@ -28240,12 +28351,15 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
 
 
 
-async def _send_image(message: Message, url: str) -> None:
+async def _send_image(message: Message, url: str, user: dict | None = None) -> None:
     """Скачивает картинку и отдаёт её фотографией или документом."""
     import aiohttp
     from aiogram.types import BufferedInputFile
 
-    notice = await message.answer("🖼 <b>Скачиваю картинку…</b>")
+    lang = i18n.language_of(user)
+    notice = await message.answer(
+        i18n.t("img.downloading", lang, "🖼 <b>Скачиваю картинку…</b>")
+    )
     limit_mb = media.size_limit_mb(config.uses_local_api())
 
     timeout = aiohttp.ClientTimeout(total=120)
@@ -28281,7 +28395,9 @@ async def _send_image(message: Message, url: str) -> None:
             pass
     except Exception as exc:  # noqa: BLE001
         log.warning("Картинка не отправлена: %s", exc)
-        await notice.edit_text("❌ Картинку скачал, но отправить не удалось.")
+        await notice.edit_text(
+            i18n.t("img.not_sent", lang, "❌ Картинку скачал, но отправить не удалось.")
+        )
 
 
 @router.callback_query(F.data.startswith("med:txt:"))
@@ -31003,7 +31119,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from .. import config, features, i18n, media, secrets, storage, subscription
+from .. import config, features, i18n, images, media, secrets, storage, subscription
 
 log = logging.getLogger("radar.handlers.linkcheck")
 router = Router(name="linkcheck")
@@ -31262,13 +31378,22 @@ async def plain_link(message: Message, user: dict, role: str) -> None:
         raise SkipHandler
 
     url = (message.text or "").strip().split()[0]
+    lang = i18n.language_of(user)
+
+    # Прямая ссылка на картинку — сразу в загрузку картинки, без
+    # выбора: проверять там нечего, а «скачать видео» про картинку
+    # не говорят. До 4.9.4.3 такой линк застревал в выборе.
+    if images.looks_like_image(url):
+        raise SkipHandler
 
     # Загрузчик недоступен — проверяем сразу, выбора нет.
     if not _media_available():
         await _run_check(message, user, role, url)
         return
 
-    # Включены обе возможности: спрашиваем.
+    # Включены обе возможности: спрашиваем. Картинки из записи —
+    # отдельная дорога: yt-dlp тратил бы до 90 секунд на пробу и лишь
+    # потом падал с «видео нет», а человек хотел снимки поста.
     _cleanup_pending()
     token = uuid.uuid4().hex[:10]
     _pending[token] = {
@@ -31278,13 +31403,20 @@ async def plain_link(message: Message, user: dict, role: str) -> None:
         "created": time.time(),
     }
     await message.answer(
-        "🔗 <b>Что сделать со ссылкой?</b>",
+        i18n.t("linkcheck.choice", lang, "🔗 <b>Что сделать со ссылкой?</b>"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Проверить на мошенничество",
-                                  callback_data=f"lchk:go:{token}"),
-             InlineKeyboardButton(text="🎬 Скачать видео",
-                                  callback_data=f"lchk:dl:{token}")],
-            [InlineKeyboardButton(text="❌ Ничего", callback_data=f"lchk:skip:{token}")],
+            [InlineKeyboardButton(
+                text=i18n.t("linkcheck.btn_check", lang, "🔍 Проверить"),
+                callback_data=f"lchk:go:{token}"),
+             InlineKeyboardButton(
+                 text=i18n.t("linkcheck.btn_video", lang, "🎬 Скачать видео"),
+                 callback_data=f"lchk:dl:{token}")],
+            [InlineKeyboardButton(
+                text=i18n.t("linkcheck.btn_images", lang, "🖼 Картинки из записи"),
+                callback_data=f"lchk:img:{token}")],
+            [InlineKeyboardButton(
+                text=i18n.t("linkcheck.btn_nothing", lang, "❌ Ничего"),
+                callback_data=f"lchk:skip:{token}")],
         ]),
     )
 
@@ -31319,7 +31451,7 @@ async def choice_check(call: CallbackQuery, user: dict, role: str) -> None:
 
 
 @router.callback_query(F.data.startswith("lchk:dl:"))
-async def choice_download(call: CallbackQuery, role: str) -> None:
+async def choice_download(call: CallbackQuery, role: str, user: dict) -> None:
     token = call.data.split(":")[2]
     item = _pending_of(call, token)
     if item is None:
@@ -31333,7 +31465,24 @@ async def choice_download(call: CallbackQuery, role: str) -> None:
     # проверки, свои сообщения и своя обработка ошибок.
     from . import media as media_handler
 
-    await media_handler.handle_link(item["message"], role)
+    await media_handler.handle_link(item["message"], role, user)
+
+
+@router.callback_query(F.data.startswith("lchk:img:"))
+async def choice_images(call: CallbackQuery, user: dict) -> None:
+    """Картинки из записи напрямую — без 90-секундной пробы yt-dlp."""
+    token = call.data.split(":")[2]
+    item = _pending_of(call, token)
+    if item is None:
+        await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    _pending.pop(token, None)
+    await call.answer()
+    await _drop_choice(call)
+
+    from . import media as media_handler
+
+    await media_handler.post_images(item["message"], item["url"], user)
 
 
 @router.callback_query(F.data.startswith("lchk:skip:"))

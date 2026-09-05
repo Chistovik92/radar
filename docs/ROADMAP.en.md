@@ -1057,6 +1057,13 @@ for signs of fraud.
    checking and video download enabled, the bot asks which one to do;
    with checking alone, the link is checked at once; with it disabled,
    the downloader's old path works unchanged.
+   In 4.9.4.3 the choice gained a "🖼 Images from the post" button:
+   until then the only way to reach them was by chance — yt-dlp spent
+   up to 90 seconds probing the post and only then, finding no video,
+   the bot looked for images. Direct image links download at once,
+   skipping the choice. The media screens (images, quality choice,
+   the size wall, handout by link) and the "what to do with the link"
+   choice are translated to English.
    Decisions:
    - the `linkcheck` feature flag, off by default — new code arrives
      disabled and is enabled on a live system;
