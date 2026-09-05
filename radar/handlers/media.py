@@ -38,6 +38,7 @@ from .. import (
     mediaquota,
     roles,
     storage,
+    subscription,
     transcode,
 )
 from ..textutils import esc
@@ -357,53 +358,101 @@ async def drop_request(call: CallbackQuery) -> None:
 
 def _compression_offer(token: str, index: int, request: dict,
                        chosen: media.Format, limit_mb: int):
-    """Предложение сжать. None — предлагать нечего, пусть идёт обычный путь.
+    """Стена размера: сжать или полная версия по ссылке. None — нечего предлагать.
 
     Отдельной функцией, чтобы решение «можно ли и сколько это займёт»
     проверялось без запуска бота.
+
+    С 4.9.3 выбор честный и полный: бесплатный путь — сжать и попытаться
+    уместиться в предел; премиум — полная версия по ссылке до 5 ГБ
+    на сутки. Раньше предлагалось только сжатие, а ссылка выдавалась
+    всем без подписки уже после загрузки: платная часть не продавалась
+    там, где человек упирается в неё лбом.
     """
     if not features.enabled("media_transcode"):
         return None
 
+    from .. import filedrop
+
     duration = int(request.get("duration") or 0)
+
+    premium_rows = []
+    if filedrop.enabled():
+        premium_rows.append([InlineKeyboardButton(
+            text=f"⭐️ Полная версия по ссылке — до "
+                 f"{filedrop.MAX_FILE_MB // 1024} ГБ",
+            callback_data=f"med:full:{token}:{index}",
+        )])
+
     if duration <= 0:
-        return None
+        if not premium_rows:
+            return None
+        return (
+            f"📏 <b>Ролик длиннее, чем можно отправить файлом "
+            f"({limit_mb} МБ), и сжать его нечем.</b>\n\n"
+            f"По подписке полную версию можно забрать ссылкой — "
+            f"до {filedrop.MAX_FILE_MB // 1024} ГБ, живёт "
+            f"{filedrop.TTL_HOURS} ч.",
+            InlineKeyboardMarkup(inline_keyboard=premium_rows + [[
+                InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                     callback_data=f"med:back:{token}")
+            ]]),
+        )
 
     plan = transcode.plan(duration, limit_mb, chosen.height)
     if plan is None:
         # Длительность такова, что сжимать бессмысленно. Сказать правду
         # честнее, чем выдать нечитаемое видео.
+        if not premium_rows:
+            return (
+                f"📏 {esc(transcode.too_long_message(duration, limit_mb))}",
+                back_kb(),
+            )
         return (
-            f"📏 {esc(transcode.too_long_message(duration, limit_mb))}",
-            back_kb(),
+            f"📏 <b>{esc(transcode.too_long_message(duration, limit_mb))}</b>\n\n"
+            f"По подписке полную версию можно забрать ссылкой — до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ, живёт {filedrop.TTL_HOURS} ч.",
+            InlineKeyboardMarkup(inline_keyboard=premium_rows + [[
+                InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                     callback_data=f"med:back:{token}")
+            ]]),
         )
 
     spent = transcode.human_time(transcode.estimate_seconds(plan))
+    rows = [[InlineKeyboardButton(text=f"🗜 Сжать до {plan.height}p ({spent}) — бесплатно",
+                                  callback_data=f"med:zip:{token}:{index}")]]
+    rows.extend(premium_rows)
+    rows.append([InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                      callback_data=f"med:back:{token}")])
     text = (
         f"🗜 <b>Ролик не поместится: {chosen.size_mb:.0f} МБ при пределе "
         f"{limit_mb} МБ.</b>\n\n"
-        f"Его можно сжать до {plan.height}p — получится примерно "
-        f"{limit_mb} МБ.\n"
-        f"Займёт <b>{spent}</b>: процессор одноплатника слабый, и сжатие "
-        f"идёт с пониженным приоритетом, чтобы не задерживать оповещения.\n\n"
-        f"<i>Можно и просто выбрать качество ниже — это мгновенно.</i>"
+        f"Бесплатно: сжать до {plan.height}p — получится примерно "
+        f"{limit_mb} МБ, займёт <b>{spent}</b> — процессор одноплатника "
+        f"слабый, и сжатие идёт с пониженным приоритетом, чтобы не "
+        f"задерживать оповещения.\n\n"
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🗜 Сжать ({spent})",
-                              callback_data=f"med:zip:{token}:{index}")],
-        [InlineKeyboardButton(text="◀️ Выбрать другое качество",
-                              callback_data=f"med:back:{token}")],
-    ])
-    return text, keyboard
+    if premium_rows:
+        text += (
+            f"По подписке: полная версия ссылкой — до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ, живёт "
+            f"{filedrop.TTL_HOURS} ч.\n\n"
+        )
+    text += "<i>Можно и просто выбрать качество ниже — это мгновенно.</i>"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.callback_query(F.data.startswith("med:get:"))
 @router.callback_query(F.data.startswith("med:zip:"))
+@router.callback_query(F.data.startswith("med:full:"))
 async def download(call: CallbackQuery, role: str, user: dict) -> None:
     # med:zip — тот же путь, но с последующим сжатием. Разделять их
     # раньше загрузки нельзя: решение влияет на то, ставить ли предел
     # размера самой загрузке (см. ниже).
+    # med:full — полная версия по ссылке: путь подписки, предел
+    # загрузке не ставится вовсе, файл уходит в раздачу.
     compress = call.data.startswith("med:zip:")
+    full = call.data.startswith("med:full:")
     quota = mediaquota.quota_of(user, role)
     if not quota.allowed(mediaquota.today()):
         await call.answer(
@@ -435,11 +484,35 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
 
     limit_mb = media.size_limit_mb(config.uses_local_api())
 
+    # Полная версия — часть подписки. Кнопка ведёт сюда и без подписки:
+    # место, где человек упёрся в размер, — лучшая точка продажи,
+    # и здесь же честно говорится, что именно открывается.
+    if full and not subscription.active(user, role):
+        from .. import filedrop
+
+        await safe_edit(
+            call,
+            "⭐️ <b>Полная версия — по подписке</b>\n\n"
+            f"Файл целиком, качеством {esc(chosen.label)}, ссылкой — "
+            f"до {filedrop.MAX_FILE_MB // 1024} ГБ на "
+            f"{filedrop.TTL_HOURS} ч.\n\n"
+            "Подписка открывает это и загрузку видео без дневного "
+            "предела, и все тематики новостных подборок. Оповещения "
+            "об опасности бесплатны всегда.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Оформить подписку",
+                                      callback_data="sub:menu")],
+                [InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                      callback_data=f"med:back:{token}")],
+            ]),
+        )
+        return
+
     # Вариант крупнее предела: вместо отказа предлагаем сжать. Спрашиваем
     # ДО загрузки, потому что от ответа зависит, ставить ли ей предел
     # размера: для сжатия нужен полный исходник, а обычной загрузке
     # выкачивать заведомо лишнее незачем.
-    if not compress and chosen.size_mb and chosen.size_mb > limit_mb:
+    if not compress and not full and chosen.size_mb and chosen.size_mb > limit_mb:
         offer = _compression_offer(token, index, request, chosen, limit_mb)
         if offer is not None:
             await safe_edit(call, offer[0], offer[1])
@@ -476,7 +549,7 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             # иначе обрывать его на половине — значит сжимать половину.
             path = await _run_download(
                 request["url"], chosen, target, progress, status,
-                limit_mb=0 if compress else limit_mb,
+                limit_mb=0 if (compress or full) else limit_mb,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("Скачивание не удалось: %s", exc)
@@ -516,7 +589,7 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
                 # открыта панель, — человек заберёт его по ссылке. Раньше
                 # разговор заканчивался советом «выберите качество ниже»,
                 # которого может не существовать.
-                if await _offer_link(call, status, path, request):
+                if await _offer_link(call, status, path, request, user, role):
                     # Файл переехал в раздачу — удалять его в finally
                     # нельзя. Обнуляем ОБА имени: после сжатия исходник
                     # и отправляемое различаются, а до сжатия совпадают,
@@ -553,12 +626,18 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
 
 
 async def _offer_link(call: CallbackQuery, status: Message, path: str,
-                      request: dict) -> bool:
+                      request: dict, user: dict, role: str) -> bool:
     """Отдаёт скачанный файл ссылкой. False — нечем, обычный отказ.
 
     Условие одно: человек должен быть пользователем бота. Оно выполняется
     самим фактом переписки — ссылку выдаёт бот в ответ на нажатие, — но
     проверяем явно: заблокированному отдавать файлы незачем.
+
+    С 4.9.3 ссылка — часть подписки: до этого она выдавалась всем,
+    и платная часть не продавалась именно там, где человек упирается
+    в неё лбом. Без подписки показываем предложение оформить её —
+    и возвращаем False, чтобы файл убрался с диска: держать гигабайт
+    в ожидании оплаты никто не станет.
     """
     from .. import filedrop
 
@@ -567,6 +646,21 @@ async def _offer_link(call: CallbackQuery, status: Message, path: str,
 
     owner = storage.get_user(call.from_user.id)
     if owner is None or owner.get("blocked"):
+        return False
+
+    if not subscription.active(user, role):
+        await _safe_text(
+            status,
+            f"⚠️ <b>Файл больше предела Telegram.</b>\n\n"
+            f"По подписке его можно забрать целиком — ссылкой до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ на {filedrop.TTL_HOURS} ч.\n\n"
+            "Подписка открывает это и загрузку видео без дневного "
+            "предела, и все тематики подборок.",
+            InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="💳 Оформить подписку",
+                                     callback_data="sub:menu"),
+            ]]),
+        )
         return False
 
     # Предел одной ссылки. Подписка его не снимает: она про доступ
@@ -730,9 +824,10 @@ async def _run_download(url: str, chosen: media.Format, target: str,
     return None
 
 
-async def _safe_text(message: Message, text: str) -> None:
+async def _safe_text(message: Message, text: str,
+                     keyboard=None) -> None:
     try:
-        await message.edit_text(text)
+        await message.edit_text(text, reply_markup=keyboard)
     except TelegramBadRequest:
         pass  # «message is not modified» и подобное — не повод падать
     except Exception:  # noqa: BLE001
@@ -833,37 +928,21 @@ def _quota_keyboard(quota) -> InlineKeyboardMarkup:
 
 @router.callback_query(F.data == "med:buy")
 async def buy_unlimited(call: CallbackQuery, user: dict, role: str) -> None:
-    from aiogram.types import LabeledPrice
-
-    quota = mediaquota.quota_of(user, role)
-    if quota.unlimited:
-        await call.answer(
-            f"Безлимит уже активен, осталось дней: {quota.days_left}",
-            show_alert=True,
-        )
-        return
-
+    """Старый отдельный вход покупки безлимита. С 4.9 подписка одна
+    на бота и продаётся из одного места, поэтому кнопка из старых
+    сообщений ведёт в общее меню — показывать тут вторую кассу
+    значило бы вернуться к двум товарам за одну услугу."""
     await call.answer()
-    try:
-        await call.message.answer_invoice(
-            title=f"Загрузка видео без лимита — {mediaquota.SUBSCRIPTION_DAYS} дней",
-            description=(
-                f"Снимает дневной предел в {mediaquota.FREE_PER_DAY} видео "
-                "и открывает новостные подборки: подписка одна на всё.\n\n"
-                "Предел размера файла в 50 МБ остаётся: это ограничение "
-                "Telegram, а не наше решение, и подпиской оно не снимается."
-            ),
-            payload=f"media:{mediaquota.SUBSCRIPTION_DAYS}",
-            currency="XTR",
-            prices=[LabeledPrice(
-                label=f"{mediaquota.SUBSCRIPTION_DAYS} дней",
-                amount=mediaquota.STARS_PRICE,
-            )],
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Счёт за видео не выставлен: %s", exc)
-        await call.message.answer("❌ Не удалось выставить счёт. Попробуйте позже.",
-                                  reply_markup=back_kb())
+    await safe_edit(
+        call,
+        "💳 <b>Подписка одна на бота</b>\n\nОна открывает загрузку видео "
+        "без дневного предела и все тематики новостных подборок. "
+        "Раздельно эти части не продаются.",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="⭐️ К подписке",
+                                 callback_data="sub:menu"),
+        ]]),
+    )
 
 
 async def apply_media_payment(message, user: dict, payload: str,

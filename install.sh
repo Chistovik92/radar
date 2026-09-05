@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.2 — автономный установщик.
+# Система «Радар» v4.9.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.2"
+VERSION="4.9.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2958,6 +2958,23 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.3", [
+        "🔗 <b>Полная версия ролика — по подписке.</b> На стене размера "
+        "теперь честный выбор: сжать бесплатно и попытаться уместиться "
+        "в предел, или оформить подписку и забрать файл целиком "
+        "ссылкой — до 5 ГБ, на сутки. Ссылка выдавалась всем и без "
+        "подписки: платная часть не продавалась там, где человек "
+        "упирается в неё лбом.",
+        "✂️ <b>Сжиматель ссылок — привилегия администрации.</b> /short "
+        "и /shorts работают у администратора и выше, ссылкам их — "
+        "без срока годности. На веб-панели появилась страница «Ссылки»: "
+        "кто завёл, куда ведёт, сколько переходов; чистить можно "
+        "по одной или все разом. В боте — /shortclear на все сразу.",
+        "🧹 <b>Старые отдельные кассы убраны.</b> Кнопки покупки "
+        "из старых сообщений теперь ведут в общее меню подписки: "
+        "подписка одна на бота, и продавать её из двух мест "
+        "значило бы вернуться к двум товарам за одну услугу.",
+    ]),
     ("4.9.2", [
         "🧵 <b>Тексты про подписку сведены.</b> В одном месте бот писал «все двенадцать тематик», в другом — «все 18»: число было вписано словом и отстало от списка. Теперь оно считается. Раздел подборок ведёт в общую подписку, а не в своё отдельное предложение.",
         "📏 <b>5 ГБ стали настоящими пятью.</b> Предел хранился как 5000 МБ, а при переводе в гигабайты целочисленным делением превращался в «до 4 ГБ». Мегабайты теперь двоичные, и подпись совпадает с пределом. Предел, бюджет и срок жизни ссылки вынесены в .env.",
@@ -3990,7 +4007,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.2"
+__version__ = "4.9.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -14182,6 +14199,7 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/users", "Пользователи", "users"))
     if roles.is_admin(role):
         links.append(("/events", "События", "events"))
+        links.append(("/links", "Ссылки", "links"))
     if roles.is_superadmin(role):
         links.append(("/keys", "Ключи", "keys"))
         links.append(("/agents", "Агенты", "agents"))
@@ -14534,7 +14552,75 @@ def _files_body(session, message: str = "", failed: str = "") -> str:
     return _note("ok", message) + _note("bad", failed) + head + table
 
 
-async def _models_section(session) -> str:
+async def _links_body(session, message: str = "", failed: str = "") -> str:
+    """Сокращённые ссылки: кто завёл, куда ведёт, живы ли переходы.
+
+    Страница построена по образцу «Файлов»: ссылки бессрочные, и без
+    обзора они копились бы в таблице бесконечно. Выборочное удаление —
+    только здесь: в боте ссылки целиком не видны, и чистить по одной
+    оттуда значило бы чистить вслепую.
+    """
+    from ..db import repo
+
+    token = auth.csrf_token(session)
+    try:
+        items = await repo.short_link_list()
+    except Exception:  # noqa: BLE001
+        return _note("bad", "Список ссылок недоступен — смотрите журнал.")
+
+    if not items:
+        return (_note("ok", message) + _note("bad", failed)
+                + '<div class="card muted">Сокращённых ссылок нет.</div>')
+
+    rows = []
+    for item in items:
+        creator = item.get("created_by") or 0
+        owner = storage.get_user(creator) if creator else None
+        if owner is not None:
+            name = owner.get("username") or creator
+            who = html.escape(str(name))
+        elif creator:
+            who = '<span class="muted">неизвестен</span>'
+        else:
+            who = '<span class="muted">подборки (авто)</span>'
+        hits = int(item.get("hits") or 0)
+        hits_line = (f'<span class="ok">переходов: {hits}</span>' if hits
+                     else '<span class="muted">переходов нет</span>')
+        short = html.escape(shortener.short_url(str(item["code"])))
+        rows.append(
+            "<tr>"
+            f'<td><a href="{short}"><code>{html.escape(str(item["code"]))}</code></a></td>'
+            f'<td style="max-width:22em;overflow:hidden;text-overflow:ellipsis;'
+            f'white-space:nowrap"><span title="{html.escape(str(item["url"])[:300])}">'
+            f'{html.escape(str(item["url"])[:90])}</span></td>'
+            f"<td>{who}</td>"
+            f"<td>{hits_line}</td>"
+            '<td style="text-align:right;width:1%">'
+            '<form method="post" action="/links/remove">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="code" value="{html.escape(str(item["code"]))}">'
+            '<button class="ghost danger" type="submit">удалить</button>'
+            "</form></td></tr>"
+        )
+
+    table = (
+        '<div class="card"><table><tr>'
+        "<th>Код</th><th>Куда ведёт</th><th>Кем создана</th>"
+        "<th>Переходы</th><th></th></tr>"
+        + "".join(rows) + "</table></div>"
+    )
+
+    clear_all = (
+        '<div class="card"><b>Удалить все ссылки.</b> '
+        '<span class="muted">Разосланные в старых сообщениях перестанут '
+        "открываться; автоссылки подборок появятся снова при следующем "
+        "выпуске.</span>"
+        '<form method="post" action="/links/clear">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        '<button class="ghost danger" type="submit">удалить все</button>'
+        "</form></div>"
+    )
+    return _note("ok", message) + _note("bad", failed) + table + clear_all
     """Выбор модели у встроенных провайдеров, где он вообще есть.
 
     У OpenRouter моделей десятки, и вписывать имя руками — верный способ
@@ -15141,6 +15227,46 @@ async def create_app() -> Any:
             raise web.HTTPFound("/files?ok=" + quote("Ссылка отключена, файл удалён"))
         raise web.HTTPFound("/files?err=" + quote("Такой ссылки уже нет"))
 
+    @admin_only
+    async def links_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Ссылки",
+                await _links_body(session,
+                                  request.query.get("ok", ""),
+                                  request.query.get("err", "")),
+                "links", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def links_remove(request):
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "admin")
+        code = str(data.get("code", ""))
+        try:
+            removed = await repo.remove_short_link(code)
+        except Exception:  # noqa: BLE001
+            log.exception("Удаление ссылки не удалось")
+            raise web.HTTPFound("/links?err=" + quote("Не удалось удалить — журнал"))
+        if removed:
+            audit.record(session.user_key, "короткая ссылка удалена", code)
+            raise web.HTTPFound("/links?ok=" + quote(f"Ссылка {code} удалена"))
+        raise web.HTTPFound("/links?err=" + quote("Такой ссылки уже нет"))
+
+    async def links_clear(request):
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "admin")
+        try:
+            removed = await repo.clear_short_links()
+        except Exception:  # noqa: BLE001
+            log.exception("Очистка ссылок не удалась")
+            raise web.HTTPFound("/links?err=" + quote("Не удалось очистить — журнал"))
+        audit.record(session.user_key, "короткие ссылки очищены", f"штук: {removed}")
+        raise web.HTTPFound("/links?ok=" + quote(f"Удалено ссылок: {removed}"))
+
     @owner_only
     async def agents_page(request, session):
         return web.Response(
@@ -15539,6 +15665,9 @@ async def create_app() -> Any:
         web.post("/agents/remove", agents_remove),
         web.get("/files", files_page),
         web.post("/files/remove", files_remove),
+        web.get("/links", links_page),
+        web.post("/links/remove", links_remove),
+        web.post("/links/clear", links_clear),
         web.post("/keys/set", keys_set),
         web.get("/events", events_page),
         web.get("/features", features_page),
@@ -17068,6 +17197,51 @@ async def short_link_stats(limit: int = 20) -> list[dict[str, Any]]:
              "created_at": row.created_at}
             for row in result.scalars()
         ]
+
+
+async def short_link_list(limit: int = 500) -> list[dict[str, Any]]:
+    """Ссылки с владельцем — для страницы панели.
+
+    В отличие от short_link_stats, здесь есть created_by: страница
+    показывает, кто сократил, и без этого поля была бы списком
+    безымянных адресов.
+    """
+    async with session() as active:
+        result = await active.execute(
+            select(ShortLink).order_by(ShortLink.created_at.desc()).limit(limit)
+        )
+        return [
+            {"code": row.code, "url": row.url, "hits": row.hits,
+             "created_by": row.created_by, "created_at": row.created_at,
+             "last_hit": row.last_hit}
+            for row in result.scalars()
+        ]
+
+
+async def remove_short_link(code: str) -> bool:
+    """Удаляет одну ссылку. False — такой не было."""
+    async with session() as active:
+        row = await active.get(ShortLink, code)
+        if row is None:
+            return False
+        await active.delete(row)
+        await active.commit()
+    return True
+
+
+async def clear_short_links() -> int:
+    """Удаляет все ссылки. Возвращает, сколько снесено.
+
+    Автосокращение подборок создаёт их само и переживает чистку:
+    при следующем выпуске ссылки появятся снова с теми же кодами.
+    """
+    async with session() as active:
+        result = await active.execute(select(ShortLink))
+        rows = list(result.scalars())
+        for row in rows:
+            await active.delete(row)
+        await active.commit()
+    return len(rows)
 
 
 # --------------------------------------------------------------------------
@@ -26100,12 +26274,17 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
 RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
 cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_85'
-"""Сокращение ссылок — суперадминистратору.
+"""Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
 завести кто угодно, притягивает фишинг и спам, а расплачивается за это
 домен — вместе со всем, что на нём живёт, включая ссылки в оповещениях
 об опасности.
+
+С 4.9.3 это привилегия роли «администратор» и выше, а не только
+суперадминистратора: ссылка без срока годности с именем владельца —
+ровно то, за что роль и существует. Автоссылки подборок живут
+в той же таблице и видны всем администраторам.
 """
 
 # --------------------------------------------------------------------------
@@ -26118,9 +26297,9 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .. import roles, shortener
 from ..db import repo
@@ -26131,10 +26310,14 @@ log = logging.getLogger("radar.handlers.shortlink")
 router = Router(name="shortlink")
 
 
+def _denied() -> str:
+    return "⛔️ Сокращение ссылок доступно администратору и выше."
+
+
 @router.message(Command("short"))
 async def cmd_short(message: Message, role: str) -> None:
-    if not roles.is_superadmin(role):
-        await message.answer("⛔️ Сокращение ссылок доступно суперадминистратору.")
+    if not roles.is_admin(role):
+        await message.answer(_denied())
         return
 
     if not shortener.enabled():
@@ -26184,8 +26367,8 @@ async def cmd_short(message: Message, role: str) -> None:
 @router.message(Command("shorts"))
 async def cmd_shorts(message: Message, role: str) -> None:
     """Последние сокращения и число переходов."""
-    if not roles.is_superadmin(role):
-        await message.answer("⛔️ Доступно суперадминистратору.")
+    if not roles.is_admin(role):
+        await message.answer(_denied())
         return
 
     try:
@@ -26206,6 +26389,67 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
+
+
+# --------------------------------------------------------------------------
+#  Очистка (с 4.9.3)
+# --------------------------------------------------------------------------
+#
+# Ссылки бессрочные, и накопившиеся — от разовых сокращений, от прошлых
+# рассылок — со временем превращают таблицу в свалку. Чистить по одной
+# из бота неудобно: здесь их не видно целиком. Поэтому в боте — только
+# «удалить все», а выборочная чистка — на странице «Ссылки» веб-панели.
+
+@router.message(Command("shortclear"))
+async def cmd_shortclear(message: Message, role: str) -> None:
+    if not roles.is_admin(role):
+        await message.answer(_denied())
+        return
+
+    try:
+        total = len(await repo.short_link_list())
+    except Exception:  # noqa: BLE001
+        log.exception("Список ссылок недоступен")
+        await message.answer("Список ссылок недоступен — смотрите журнал.")
+        return
+
+    if not total:
+        await message.answer("Сокращённых ссылок и так нет.", reply_markup=back_kb())
+        return
+
+    await message.answer(
+        "🔗 <b>Удалить все сокращённые ссылки?</b>\n\n"
+        f"Сейчас их <b>{total}</b>. Разосланные в старых сообщениях "
+        "перестанут открываться. Автоссылки подборок появятся снова "
+        "при следующем выпуске.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить все",
+                                  callback_data="short:clearall")],
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="menu:main")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "short:clearall")
+async def clear_all(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Доступно администратору и выше.", show_alert=True)
+        return
+
+    try:
+        removed = await repo.clear_short_links()
+    except Exception:  # noqa: BLE001
+        log.exception("Очистка ссылок не удалась")
+        await call.answer("Не удалось — смотрите журнал.", show_alert=True)
+        return
+
+    log.info("Очищено коротких ссылок: %d", removed)
+    await call.answer(f"Удалено: {removed}")
+    await call.message.edit_text(
+        f"✅ Сокращённые ссылки удалены: <b>{removed}</b>.\n"
+        "Выборочно их можно чистить на странице «Ссылки» веб-панели.",
+        reply_markup=back_kb(),
+    )
 RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
 cat > "radar/handlers/partners.py" <<'RADAR_FILE_86'
@@ -27444,6 +27688,7 @@ from .. import (
     mediaquota,
     roles,
     storage,
+    subscription,
     transcode,
 )
 from ..textutils import esc
@@ -27763,53 +28008,101 @@ async def drop_request(call: CallbackQuery) -> None:
 
 def _compression_offer(token: str, index: int, request: dict,
                        chosen: media.Format, limit_mb: int):
-    """Предложение сжать. None — предлагать нечего, пусть идёт обычный путь.
+    """Стена размера: сжать или полная версия по ссылке. None — нечего предлагать.
 
     Отдельной функцией, чтобы решение «можно ли и сколько это займёт»
     проверялось без запуска бота.
+
+    С 4.9.3 выбор честный и полный: бесплатный путь — сжать и попытаться
+    уместиться в предел; премиум — полная версия по ссылке до 5 ГБ
+    на сутки. Раньше предлагалось только сжатие, а ссылка выдавалась
+    всем без подписки уже после загрузки: платная часть не продавалась
+    там, где человек упирается в неё лбом.
     """
     if not features.enabled("media_transcode"):
         return None
 
+    from .. import filedrop
+
     duration = int(request.get("duration") or 0)
+
+    premium_rows = []
+    if filedrop.enabled():
+        premium_rows.append([InlineKeyboardButton(
+            text=f"⭐️ Полная версия по ссылке — до "
+                 f"{filedrop.MAX_FILE_MB // 1024} ГБ",
+            callback_data=f"med:full:{token}:{index}",
+        )])
+
     if duration <= 0:
-        return None
+        if not premium_rows:
+            return None
+        return (
+            f"📏 <b>Ролик длиннее, чем можно отправить файлом "
+            f"({limit_mb} МБ), и сжать его нечем.</b>\n\n"
+            f"По подписке полную версию можно забрать ссылкой — "
+            f"до {filedrop.MAX_FILE_MB // 1024} ГБ, живёт "
+            f"{filedrop.TTL_HOURS} ч.",
+            InlineKeyboardMarkup(inline_keyboard=premium_rows + [[
+                InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                     callback_data=f"med:back:{token}")
+            ]]),
+        )
 
     plan = transcode.plan(duration, limit_mb, chosen.height)
     if plan is None:
         # Длительность такова, что сжимать бессмысленно. Сказать правду
         # честнее, чем выдать нечитаемое видео.
+        if not premium_rows:
+            return (
+                f"📏 {esc(transcode.too_long_message(duration, limit_mb))}",
+                back_kb(),
+            )
         return (
-            f"📏 {esc(transcode.too_long_message(duration, limit_mb))}",
-            back_kb(),
+            f"📏 <b>{esc(transcode.too_long_message(duration, limit_mb))}</b>\n\n"
+            f"По подписке полную версию можно забрать ссылкой — до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ, живёт {filedrop.TTL_HOURS} ч.",
+            InlineKeyboardMarkup(inline_keyboard=premium_rows + [[
+                InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                     callback_data=f"med:back:{token}")
+            ]]),
         )
 
     spent = transcode.human_time(transcode.estimate_seconds(plan))
+    rows = [[InlineKeyboardButton(text=f"🗜 Сжать до {plan.height}p ({spent}) — бесплатно",
+                                  callback_data=f"med:zip:{token}:{index}")]]
+    rows.extend(premium_rows)
+    rows.append([InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                      callback_data=f"med:back:{token}")])
     text = (
         f"🗜 <b>Ролик не поместится: {chosen.size_mb:.0f} МБ при пределе "
         f"{limit_mb} МБ.</b>\n\n"
-        f"Его можно сжать до {plan.height}p — получится примерно "
-        f"{limit_mb} МБ.\n"
-        f"Займёт <b>{spent}</b>: процессор одноплатника слабый, и сжатие "
-        f"идёт с пониженным приоритетом, чтобы не задерживать оповещения.\n\n"
-        f"<i>Можно и просто выбрать качество ниже — это мгновенно.</i>"
+        f"Бесплатно: сжать до {plan.height}p — получится примерно "
+        f"{limit_mb} МБ, займёт <b>{spent}</b> — процессор одноплатника "
+        f"слабый, и сжатие идёт с пониженным приоритетом, чтобы не "
+        f"задерживать оповещения.\n\n"
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🗜 Сжать ({spent})",
-                              callback_data=f"med:zip:{token}:{index}")],
-        [InlineKeyboardButton(text="◀️ Выбрать другое качество",
-                              callback_data=f"med:back:{token}")],
-    ])
-    return text, keyboard
+    if premium_rows:
+        text += (
+            f"По подписке: полная версия ссылкой — до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ, живёт "
+            f"{filedrop.TTL_HOURS} ч.\n\n"
+        )
+    text += "<i>Можно и просто выбрать качество ниже — это мгновенно.</i>"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.callback_query(F.data.startswith("med:get:"))
 @router.callback_query(F.data.startswith("med:zip:"))
+@router.callback_query(F.data.startswith("med:full:"))
 async def download(call: CallbackQuery, role: str, user: dict) -> None:
     # med:zip — тот же путь, но с последующим сжатием. Разделять их
     # раньше загрузки нельзя: решение влияет на то, ставить ли предел
     # размера самой загрузке (см. ниже).
+    # med:full — полная версия по ссылке: путь подписки, предел
+    # загрузке не ставится вовсе, файл уходит в раздачу.
     compress = call.data.startswith("med:zip:")
+    full = call.data.startswith("med:full:")
     quota = mediaquota.quota_of(user, role)
     if not quota.allowed(mediaquota.today()):
         await call.answer(
@@ -27841,11 +28134,35 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
 
     limit_mb = media.size_limit_mb(config.uses_local_api())
 
+    # Полная версия — часть подписки. Кнопка ведёт сюда и без подписки:
+    # место, где человек упёрся в размер, — лучшая точка продажи,
+    # и здесь же честно говорится, что именно открывается.
+    if full and not subscription.active(user, role):
+        from .. import filedrop
+
+        await safe_edit(
+            call,
+            "⭐️ <b>Полная версия — по подписке</b>\n\n"
+            f"Файл целиком, качеством {esc(chosen.label)}, ссылкой — "
+            f"до {filedrop.MAX_FILE_MB // 1024} ГБ на "
+            f"{filedrop.TTL_HOURS} ч.\n\n"
+            "Подписка открывает это и загрузку видео без дневного "
+            "предела, и все тематики новостных подборок. Оповещения "
+            "об опасности бесплатны всегда.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Оформить подписку",
+                                      callback_data="sub:menu")],
+                [InlineKeyboardButton(text="◀️ Выбрать другое качество",
+                                      callback_data=f"med:back:{token}")],
+            ]),
+        )
+        return
+
     # Вариант крупнее предела: вместо отказа предлагаем сжать. Спрашиваем
     # ДО загрузки, потому что от ответа зависит, ставить ли ей предел
     # размера: для сжатия нужен полный исходник, а обычной загрузке
     # выкачивать заведомо лишнее незачем.
-    if not compress and chosen.size_mb and chosen.size_mb > limit_mb:
+    if not compress and not full and chosen.size_mb and chosen.size_mb > limit_mb:
         offer = _compression_offer(token, index, request, chosen, limit_mb)
         if offer is not None:
             await safe_edit(call, offer[0], offer[1])
@@ -27882,7 +28199,7 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
             # иначе обрывать его на половине — значит сжимать половину.
             path = await _run_download(
                 request["url"], chosen, target, progress, status,
-                limit_mb=0 if compress else limit_mb,
+                limit_mb=0 if (compress or full) else limit_mb,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("Скачивание не удалось: %s", exc)
@@ -27922,7 +28239,7 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
                 # открыта панель, — человек заберёт его по ссылке. Раньше
                 # разговор заканчивался советом «выберите качество ниже»,
                 # которого может не существовать.
-                if await _offer_link(call, status, path, request):
+                if await _offer_link(call, status, path, request, user, role):
                     # Файл переехал в раздачу — удалять его в finally
                     # нельзя. Обнуляем ОБА имени: после сжатия исходник
                     # и отправляемое различаются, а до сжатия совпадают,
@@ -27959,12 +28276,18 @@ async def download(call: CallbackQuery, role: str, user: dict) -> None:
 
 
 async def _offer_link(call: CallbackQuery, status: Message, path: str,
-                      request: dict) -> bool:
+                      request: dict, user: dict, role: str) -> bool:
     """Отдаёт скачанный файл ссылкой. False — нечем, обычный отказ.
 
     Условие одно: человек должен быть пользователем бота. Оно выполняется
     самим фактом переписки — ссылку выдаёт бот в ответ на нажатие, — но
     проверяем явно: заблокированному отдавать файлы незачем.
+
+    С 4.9.3 ссылка — часть подписки: до этого она выдавалась всем,
+    и платная часть не продавалась именно там, где человек упирается
+    в неё лбом. Без подписки показываем предложение оформить её —
+    и возвращаем False, чтобы файл убрался с диска: держать гигабайт
+    в ожидании оплаты никто не станет.
     """
     from .. import filedrop
 
@@ -27973,6 +28296,21 @@ async def _offer_link(call: CallbackQuery, status: Message, path: str,
 
     owner = storage.get_user(call.from_user.id)
     if owner is None or owner.get("blocked"):
+        return False
+
+    if not subscription.active(user, role):
+        await _safe_text(
+            status,
+            f"⚠️ <b>Файл больше предела Telegram.</b>\n\n"
+            f"По подписке его можно забрать целиком — ссылкой до "
+            f"{filedrop.MAX_FILE_MB // 1024} ГБ на {filedrop.TTL_HOURS} ч.\n\n"
+            "Подписка открывает это и загрузку видео без дневного "
+            "предела, и все тематики подборок.",
+            InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="💳 Оформить подписку",
+                                     callback_data="sub:menu"),
+            ]]),
+        )
         return False
 
     # Предел одной ссылки. Подписка его не снимает: она про доступ
@@ -28136,9 +28474,10 @@ async def _run_download(url: str, chosen: media.Format, target: str,
     return None
 
 
-async def _safe_text(message: Message, text: str) -> None:
+async def _safe_text(message: Message, text: str,
+                     keyboard=None) -> None:
     try:
-        await message.edit_text(text)
+        await message.edit_text(text, reply_markup=keyboard)
     except TelegramBadRequest:
         pass  # «message is not modified» и подобное — не повод падать
     except Exception:  # noqa: BLE001
@@ -28239,37 +28578,21 @@ def _quota_keyboard(quota) -> InlineKeyboardMarkup:
 
 @router.callback_query(F.data == "med:buy")
 async def buy_unlimited(call: CallbackQuery, user: dict, role: str) -> None:
-    from aiogram.types import LabeledPrice
-
-    quota = mediaquota.quota_of(user, role)
-    if quota.unlimited:
-        await call.answer(
-            f"Безлимит уже активен, осталось дней: {quota.days_left}",
-            show_alert=True,
-        )
-        return
-
+    """Старый отдельный вход покупки безлимита. С 4.9 подписка одна
+    на бота и продаётся из одного места, поэтому кнопка из старых
+    сообщений ведёт в общее меню — показывать тут вторую кассу
+    значило бы вернуться к двум товарам за одну услугу."""
     await call.answer()
-    try:
-        await call.message.answer_invoice(
-            title=f"Загрузка видео без лимита — {mediaquota.SUBSCRIPTION_DAYS} дней",
-            description=(
-                f"Снимает дневной предел в {mediaquota.FREE_PER_DAY} видео "
-                "и открывает новостные подборки: подписка одна на всё.\n\n"
-                "Предел размера файла в 50 МБ остаётся: это ограничение "
-                "Telegram, а не наше решение, и подпиской оно не снимается."
-            ),
-            payload=f"media:{mediaquota.SUBSCRIPTION_DAYS}",
-            currency="XTR",
-            prices=[LabeledPrice(
-                label=f"{mediaquota.SUBSCRIPTION_DAYS} дней",
-                amount=mediaquota.STARS_PRICE,
-            )],
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Счёт за видео не выставлен: %s", exc)
-        await call.message.answer("❌ Не удалось выставить счёт. Попробуйте позже.",
-                                  reply_markup=back_kb())
+    await safe_edit(
+        call,
+        "💳 <b>Подписка одна на бота</b>\n\nОна открывает загрузку видео "
+        "без дневного предела и все тематики новостных подборок. "
+        "Раздельно эти части не продаются.",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="⭐️ К подписке",
+                                 callback_data="sub:menu"),
+        ]]),
+    )
 
 
 async def apply_media_payment(message, user: dict, payload: str,
@@ -29751,29 +30074,21 @@ async def save_time(message: Message, state: FSMContext, user: dict) -> None:
 
 @router.callback_query(F.data == "dig:buy")
 async def show_plans(call: CallbackQuery) -> None:
+    """Старый отдельный вход покупки подборок. С 4.9 подписка одна
+    на бота, и кнопка из старых сообщений ведёт в общее меню."""
     if not features.enabled("digest_paid"):
         await call.answer("Подписка отключена.", show_alert=True)
         return
 
     await call.answer()
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"{days} дней — {stars} ⭐️",
-                callback_data=f"dig:pay:{days}:{stars}",
-            )
-        ]
-        for days, stars in _plans()
-    ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="dig:menu")])
-
     await safe_edit(
         call,
-        "⭐️ <b>Подписка на подборки</b>\n\n"
-        f"Открывает все тематики — сейчас их {len(digest.TOPICS)}. Оплата — звёздами Telegram.\n\n"
-        "<i>Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
-        "всегда и от подписки не зависят.</i>",
-        InlineKeyboardMarkup(inline_keyboard=rows),
+        "💳 <b>Подписка одна на бота</b>\n\nОна открывает все тематики "
+        f"подборок — сейчас их {len(digest.TOPICS)} — и загрузку видео "
+        "без дневного предела. Раздельно эти части не продаются.",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="⭐️ К подписке", callback_data="sub:menu"),
+        ]]),
     )
 
 

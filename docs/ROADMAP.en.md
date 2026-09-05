@@ -230,9 +230,11 @@ digests went ahead of them.
      verify is a rumor, not news.
 4. **Link shortening.** ✅ implemented in 4.6.1, an internal utility.
    Built into the web panel (`/s/<code>`), no separate certificate needed.
-   Only the superadministrator can add links: a public shortener attracts
-   phishing, and the domain pays for it — along with the links inside
-   danger alerts. Settings: `SHORT_BASE_URL`, `SHORT_SALT`.
+   Since 4.9.3 admins and above can add links: they carry no expiry, show
+   their owner, and the panel's "Links" page removes them one at a time
+   or all at once. A public shortener attracts phishing, and the domain
+   pays for it — along with the links inside danger alerts.
+   Settings: `SHORT_BASE_URL`, `SHORT_SALT`.
 5. **Weather as an image — reworked.** ✅ implemented in 4.6.0.
    - A global switch for everyone: the `weather_image_all` flag overrides
      personal choice without erasing it. Turn the flag off and the previous
@@ -996,6 +998,12 @@ became item 21.
    from two places, and people reasonably concluded they had to buy both.
    There is a single entry point now, a 7-day trial, and a separate
    management button.
+   In 4.9.3 the subscription is also sold at the video size wall: the
+   choice is "compress for free or take the full version by link up to
+   5 GB for a day" — the link used to be given to everyone without a
+   subscription, and the paid part was not being sold exactly where a
+   person runs into it head first. The old separate purchase screens
+   (dig:buy, med:buy) lead to the shared menu.
 
 2. **Updates without downtime, one-command rollback** ✅ effectively done.
    The schema is extended via `ALTER TABLE` at start-up, and the installer
@@ -1018,6 +1026,13 @@ became item 21.
    would need the Docker socket, which is effectively full access to the
    server. The project declined that deliberately, and we are not trading
    the decision for a convenient line in a report.
+
+7. **Link shortener — an administrator privilege** ✅ done in 4.9.3.
+   `/short` and `/shorts` work for admins and above; links have no
+   expiry, the owner is visible. The panel's "Links" page follows the
+   "Files" pattern: remove one at a time or all at once; in the bot,
+   `/shortclear` wipes them all. Shortening stays deliberately closed
+   to the public (see the monetization section).
 
 ## 4.9.5 — music and playlists
 

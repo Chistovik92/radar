@@ -177,6 +177,7 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/users", "Пользователи", "users"))
     if roles.is_admin(role):
         links.append(("/events", "События", "events"))
+        links.append(("/links", "Ссылки", "links"))
     if roles.is_superadmin(role):
         links.append(("/keys", "Ключи", "keys"))
         links.append(("/agents", "Агенты", "agents"))
@@ -527,6 +528,77 @@ def _files_body(session, message: str = "", failed: str = "") -> str:
         "конца срока.</p></div>"
     )
     return _note("ok", message) + _note("bad", failed) + head + table
+
+
+async def _links_body(session, message: str = "", failed: str = "") -> str:
+    """Сокращённые ссылки: кто завёл, куда ведёт, живы ли переходы.
+
+    Страница построена по образцу «Файлов»: ссылки бессрочные, и без
+    обзора они копились бы в таблице бесконечно. Выборочное удаление —
+    только здесь: в боте ссылки целиком не видны, и чистить по одной
+    оттуда значило бы чистить вслепую.
+    """
+    from ..db import repo
+
+    token = auth.csrf_token(session)
+    try:
+        items = await repo.short_link_list()
+    except Exception:  # noqa: BLE001
+        return _note("bad", "Список ссылок недоступен — смотрите журнал.")
+
+    if not items:
+        return (_note("ok", message) + _note("bad", failed)
+                + '<div class="card muted">Сокращённых ссылок нет.</div>')
+
+    rows = []
+    for item in items:
+        creator = item.get("created_by") or 0
+        owner = storage.get_user(creator) if creator else None
+        if owner is not None:
+            name = owner.get("username") or creator
+            who = html.escape(str(name))
+        elif creator:
+            who = '<span class="muted">неизвестен</span>'
+        else:
+            who = '<span class="muted">подборки (авто)</span>'
+        hits = int(item.get("hits") or 0)
+        hits_line = (f'<span class="ok">переходов: {hits}</span>' if hits
+                     else '<span class="muted">переходов нет</span>')
+        short = html.escape(shortener.short_url(str(item["code"])))
+        rows.append(
+            "<tr>"
+            f'<td><a href="{short}"><code>{html.escape(str(item["code"]))}</code></a></td>'
+            f'<td style="max-width:22em;overflow:hidden;text-overflow:ellipsis;'
+            f'white-space:nowrap"><span title="{html.escape(str(item["url"])[:300])}">'
+            f'{html.escape(str(item["url"])[:90])}</span></td>'
+            f"<td>{who}</td>"
+            f"<td>{hits_line}</td>"
+            '<td style="text-align:right;width:1%">'
+            '<form method="post" action="/links/remove">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="code" value="{html.escape(str(item["code"]))}">'
+            '<button class="ghost danger" type="submit">удалить</button>'
+            "</form></td></tr>"
+        )
+
+    table = (
+        '<div class="card"><table><tr>'
+        "<th>Код</th><th>Куда ведёт</th><th>Кем создана</th>"
+        "<th>Переходы</th><th></th></tr>"
+        + "".join(rows) + "</table></div>"
+    )
+
+    clear_all = (
+        '<div class="card"><b>Удалить все ссылки.</b> '
+        '<span class="muted">Разосланные в старых сообщениях перестанут '
+        "открываться; автоссылки подборок появятся снова при следующем "
+        "выпуске.</span>"
+        '<form method="post" action="/links/clear">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        '<button class="ghost danger" type="submit">удалить все</button>'
+        "</form></div>"
+    )
+    return _note("ok", message) + _note("bad", failed) + table + clear_all
 
 
 async def _models_section(session) -> str:
@@ -1136,6 +1208,46 @@ async def create_app() -> Any:
             raise web.HTTPFound("/files?ok=" + quote("Ссылка отключена, файл удалён"))
         raise web.HTTPFound("/files?err=" + quote("Такой ссылки уже нет"))
 
+    @admin_only
+    async def links_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Ссылки",
+                await _links_body(session,
+                                  request.query.get("ok", ""),
+                                  request.query.get("err", "")),
+                "links", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def links_remove(request):
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "admin")
+        code = str(data.get("code", ""))
+        try:
+            removed = await repo.remove_short_link(code)
+        except Exception:  # noqa: BLE001
+            log.exception("Удаление ссылки не удалось")
+            raise web.HTTPFound("/links?err=" + quote("Не удалось удалить — журнал"))
+        if removed:
+            audit.record(session.user_key, "короткая ссылка удалена", code)
+            raise web.HTTPFound("/links?ok=" + quote(f"Ссылка {code} удалена"))
+        raise web.HTTPFound("/links?err=" + quote("Такой ссылки уже нет"))
+
+    async def links_clear(request):
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "admin")
+        try:
+            removed = await repo.clear_short_links()
+        except Exception:  # noqa: BLE001
+            log.exception("Очистка ссылок не удалась")
+            raise web.HTTPFound("/links?err=" + quote("Не удалось очистить — журнал"))
+        audit.record(session.user_key, "короткие ссылки очищены", f"штук: {removed}")
+        raise web.HTTPFound("/links?ok=" + quote(f"Удалено ссылок: {removed}"))
+
     @owner_only
     async def agents_page(request, session):
         return web.Response(
@@ -1534,6 +1646,9 @@ async def create_app() -> Any:
         web.post("/agents/remove", agents_remove),
         web.get("/files", files_page),
         web.post("/files/remove", files_remove),
+        web.get("/links", links_page),
+        web.post("/links/remove", links_remove),
+        web.post("/links/clear", links_clear),
         web.post("/keys/set", keys_set),
         web.get("/events", events_page),
         web.get("/features", features_page),

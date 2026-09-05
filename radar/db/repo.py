@@ -580,6 +580,51 @@ async def short_link_stats(limit: int = 20) -> list[dict[str, Any]]:
         ]
 
 
+async def short_link_list(limit: int = 500) -> list[dict[str, Any]]:
+    """Ссылки с владельцем — для страницы панели.
+
+    В отличие от short_link_stats, здесь есть created_by: страница
+    показывает, кто сократил, и без этого поля была бы списком
+    безымянных адресов.
+    """
+    async with session() as active:
+        result = await active.execute(
+            select(ShortLink).order_by(ShortLink.created_at.desc()).limit(limit)
+        )
+        return [
+            {"code": row.code, "url": row.url, "hits": row.hits,
+             "created_by": row.created_by, "created_at": row.created_at,
+             "last_hit": row.last_hit}
+            for row in result.scalars()
+        ]
+
+
+async def remove_short_link(code: str) -> bool:
+    """Удаляет одну ссылку. False — такой не было."""
+    async with session() as active:
+        row = await active.get(ShortLink, code)
+        if row is None:
+            return False
+        await active.delete(row)
+        await active.commit()
+    return True
+
+
+async def clear_short_links() -> int:
+    """Удаляет все ссылки. Возвращает, сколько снесено.
+
+    Автосокращение подборок создаёт их само и переживает чистку:
+    при следующем выпуске ссылки появятся снова с теми же кодами.
+    """
+    async with session() as active:
+        result = await active.execute(select(ShortLink))
+        rows = list(result.scalars())
+        for row in rows:
+            await active.delete(row)
+        await active.commit()
+    return len(rows)
+
+
 # --------------------------------------------------------------------------
 #  Промокоды (с 4.7)
 # --------------------------------------------------------------------------

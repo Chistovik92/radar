@@ -197,29 +197,21 @@ async def save_time(message: Message, state: FSMContext, user: dict) -> None:
 
 @router.callback_query(F.data == "dig:buy")
 async def show_plans(call: CallbackQuery) -> None:
+    """Старый отдельный вход покупки подборок. С 4.9 подписка одна
+    на бота, и кнопка из старых сообщений ведёт в общее меню."""
     if not features.enabled("digest_paid"):
         await call.answer("Подписка отключена.", show_alert=True)
         return
 
     await call.answer()
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"{days} дней — {stars} ⭐️",
-                callback_data=f"dig:pay:{days}:{stars}",
-            )
-        ]
-        for days, stars in _plans()
-    ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="dig:menu")])
-
     await safe_edit(
         call,
-        "⭐️ <b>Подписка на подборки</b>\n\n"
-        f"Открывает все тематики — сейчас их {len(digest.TOPICS)}. Оплата — звёздами Telegram.\n\n"
-        "<i>Оповещения об опасности, ЖКХ, погода и SOS остаются бесплатными "
-        "всегда и от подписки не зависят.</i>",
-        InlineKeyboardMarkup(inline_keyboard=rows),
+        "💳 <b>Подписка одна на бота</b>\n\nОна открывает все тематики "
+        f"подборок — сейчас их {len(digest.TOPICS)} — и загрузку видео "
+        "без дневного предела. Раздельно эти части не продаются.",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="⭐️ К подписке", callback_data="sub:menu"),
+        ]]),
     )
 
 

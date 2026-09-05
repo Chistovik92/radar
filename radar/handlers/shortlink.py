@@ -1,9 +1,14 @@
-"""Сокращение ссылок — суперадминистратору.
+"""Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
 завести кто угодно, притягивает фишинг и спам, а расплачивается за это
 домен — вместе со всем, что на нём живёт, включая ссылки в оповещениях
 об опасности.
+
+С 4.9.3 это привилегия роли «администратор» и выше, а не только
+суперадминистратора: ссылка без срока годности с именем владельца —
+ровно то, за что роль и существует. Автоссылки подборок живут
+в той же таблице и видны всем администраторам.
 """
 
 # --------------------------------------------------------------------------
@@ -16,9 +21,9 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .. import roles, shortener
 from ..db import repo
@@ -29,10 +34,14 @@ log = logging.getLogger("radar.handlers.shortlink")
 router = Router(name="shortlink")
 
 
+def _denied() -> str:
+    return "⛔️ Сокращение ссылок доступно администратору и выше."
+
+
 @router.message(Command("short"))
 async def cmd_short(message: Message, role: str) -> None:
-    if not roles.is_superadmin(role):
-        await message.answer("⛔️ Сокращение ссылок доступно суперадминистратору.")
+    if not roles.is_admin(role):
+        await message.answer(_denied())
         return
 
     if not shortener.enabled():
@@ -82,8 +91,8 @@ async def cmd_short(message: Message, role: str) -> None:
 @router.message(Command("shorts"))
 async def cmd_shorts(message: Message, role: str) -> None:
     """Последние сокращения и число переходов."""
-    if not roles.is_superadmin(role):
-        await message.answer("⛔️ Доступно суперадминистратору.")
+    if not roles.is_admin(role):
+        await message.answer(_denied())
         return
 
     try:
@@ -104,3 +113,64 @@ async def cmd_shorts(message: Message, role: str) -> None:
             f"  <i>{esc(str(row['url'])[:90])}</i>"
         )
     await message.answer("\n".join(lines), reply_markup=back_kb())
+
+
+# --------------------------------------------------------------------------
+#  Очистка (с 4.9.3)
+# --------------------------------------------------------------------------
+#
+# Ссылки бессрочные, и накопившиеся — от разовых сокращений, от прошлых
+# рассылок — со временем превращают таблицу в свалку. Чистить по одной
+# из бота неудобно: здесь их не видно целиком. Поэтому в боте — только
+# «удалить все», а выборочная чистка — на странице «Ссылки» веб-панели.
+
+@router.message(Command("shortclear"))
+async def cmd_shortclear(message: Message, role: str) -> None:
+    if not roles.is_admin(role):
+        await message.answer(_denied())
+        return
+
+    try:
+        total = len(await repo.short_link_list())
+    except Exception:  # noqa: BLE001
+        log.exception("Список ссылок недоступен")
+        await message.answer("Список ссылок недоступен — смотрите журнал.")
+        return
+
+    if not total:
+        await message.answer("Сокращённых ссылок и так нет.", reply_markup=back_kb())
+        return
+
+    await message.answer(
+        "🔗 <b>Удалить все сокращённые ссылки?</b>\n\n"
+        f"Сейчас их <b>{total}</b>. Разосланные в старых сообщениях "
+        "перестанут открываться. Автоссылки подборок появятся снова "
+        "при следующем выпуске.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить все",
+                                  callback_data="short:clearall")],
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="menu:main")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "short:clearall")
+async def clear_all(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Доступно администратору и выше.", show_alert=True)
+        return
+
+    try:
+        removed = await repo.clear_short_links()
+    except Exception:  # noqa: BLE001
+        log.exception("Очистка ссылок не удалась")
+        await call.answer("Не удалось — смотрите журнал.", show_alert=True)
+        return
+
+    log.info("Очищено коротких ссылок: %d", removed)
+    await call.answer(f"Удалено: {removed}")
+    await call.message.edit_text(
+        f"✅ Сокращённые ссылки удалены: <b>{removed}</b>.\n"
+        "Выборочно их можно чистить на странице «Ссылки» веб-панели.",
+        reply_markup=back_kb(),
+    )
