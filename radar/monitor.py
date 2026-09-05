@@ -36,6 +36,7 @@ from . import (
     sourcecheck,
     sources,
     media,
+    music,
     storage,
     timezones,
     weather,
@@ -663,6 +664,22 @@ async def run() -> None:
                         )
                 except Exception:  # noqa: BLE001
                     log.exception("Обслуживание базы не удалось")
+
+                # Диски — тем же ночным письмом (с 4.9.5.4). Сюда входит
+                # и внешний носитель музыки, если каталог вынесен
+                # командой mount: у него своя точка и свои проценты.
+                # Письмо уходит только когда место реально тратится:
+                # «диски в порядке» каждое утро — шум.
+                if features.enabled("disk_watch"):
+                    try:
+                        report = music.disk_report(
+                            [".", music.DIRECTORY, config.MEDIA_DIR]
+                        )
+                        if report and "⚠️" in report:
+                            log.warning("Диск заполнен: см. ночной отчёт")
+                            await _notify_admins(report)
+                    except Exception:  # noqa: BLE001
+                        log.exception("Отчёт о дисках не удался")
 
                 # Проверка источников по расписанию — тем же ночным
                 # механизмом, что копии и база. Письмо уходит только

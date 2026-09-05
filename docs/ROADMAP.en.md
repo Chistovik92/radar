@@ -1149,6 +1149,11 @@ in 4.9.5.2 — the skeleton is ready:
 4. **Mixing** ✅ partly in 4.9.5.3: shuffling a playlist with the new
    order remembered. A selection by genre or artist is the next step,
    on top of the ready similar-tracks matching.
+   In 4.9.5.4 **track compression** was added: opus at the source
+   bitrate (48–96 kbps), the size drops several times with no audible
+   loss; and **external storage**: the music directory moves to
+   a separate drive (mount or `MUSIC_DIR`), disk usage goes into the
+   nightly letter at ≥85% full (the `disk_watch` flag).
 5. **A constraint that cannot be worked around.** Distributing other
    people's recordings is distribution, not personal listening, and paid
    access to tracks would turn the bot into a piracy service with all the

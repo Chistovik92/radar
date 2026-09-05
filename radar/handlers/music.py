@@ -53,7 +53,8 @@ def _menu(user: dict, role: str) -> InlineKeyboardMarkup:
 
 
 def _track_kb(track_id: str, playlists: list[dict],
-              has_similar: bool = False) -> InlineKeyboardMarkup:
+              has_similar: bool = False,
+              heavy: bool = False) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(
         text="▶️ Играть", callback_data=f"mus:play:{track_id}")]]
     for pl in playlists:
@@ -65,6 +66,12 @@ def _track_kb(track_id: str, playlists: list[dict],
         rows.append([InlineKeyboardButton(
             text="✨ Похожие из моих треков",
             callback_data=f"mus:similar:{track_id}")])
+    if heavy:
+        # Пережатие — только когда есть чем сэкономить: кнопка на треке
+        # в 2 МБ обещала бы впустую.
+        rows.append([InlineKeyboardButton(
+            text="🗜 Сжать без потери качества на слух",
+            callback_data=f"mus:zip:{track_id}")])
     rows.append([InlineKeyboardButton(
         text="🗑 Удалить", callback_data=f"mus:del:{track_id}")])
     rows.append([InlineKeyboardButton(text="◀️ К музыке",
@@ -269,12 +276,16 @@ async def track_card(call, user: dict) -> None:
     title = track.get("title") or track.get("name") or "Трек"
     label = f"{artist} — {title}" if artist else title
     has_similar = bool(music.similar(user, track_id))
+    size = int(track.get("size") or 0)
+    heavy = music.worth_compress(size)
+    size_line = f"\nВес: {music.format_size(size)}" if size else ""
     await safe_edit(
         call,
         f"🎵 <b>{label[:80]}</b>\n"
-        f"Файл: {track.get('name', '')[:60]}{track.get('ext', '')}",
+        f"Файл: {track.get('name', '')[:60]}{track.get('ext', '')}"
+        f"{size_line}",
         _track_kb(track_id, music.playlists_of(user),
-                  has_similar=has_similar),
+                  has_similar=has_similar, heavy=heavy),
     )
 
 
@@ -344,6 +355,49 @@ async def add_similar(call, user: dict) -> None:
     await storage.save(call.from_user.id)
     await call.answer(f"Добавлено: {added}")
     await playlist_view(call, user)
+
+
+@router.callback_query(F.data.startswith("mus:zip:"))
+async def compress(call, user: dict) -> None:
+    """Пережать трек: opus при битрейте исходника, файл заменяется.
+
+    Тегов и места в плейлистах это не касается — трек тот же,
+    просто полегче. Процессор одноплатника слабее музыки: запускаем
+    с низким приоритетом, оповещения не ждут.
+    """
+    track_id = call.data.split(":")[2]
+    track = next((t for t in music.tracks_of(user)
+                  if t.get("id") == track_id), None)
+    if track is None:
+        await call.answer("Трек не найден.", show_alert=True)
+        return
+
+    await call.answer()
+    notice = await call.message.answer(
+        "🗜 <b>Сжимаю трек…</b>\n"
+        "<i>Занимает до пары минут, оповещения идут как обычно.</i>"
+    )
+    old_size = int(track.get("size") or 0)
+    ok, complaint, new_size = await music.compress_track(track)
+    if not ok:
+        try:
+            await notice.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        await call.message.answer(f"ℹ️ {complaint}.")
+        return
+
+    track["size"] = new_size
+    await storage.save(call.from_user.id)
+    try:
+        await notice.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    saved = f", было {music.format_size(old_size)}" if old_size else ""
+    await call.message.answer(
+        f"✅ Трек сжат: теперь {music.format_size(new_size)}{saved}.\n"
+        "Качество — opus при битрейте исходника: на слух разницы нет.",
+    )
 
 
 @router.callback_query(F.data.startswith("mus:shuf:"))

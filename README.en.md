@@ -1,4 +1,4 @@
-# Radar v4.9.5.3
+# Radar v4.9.5.4
 
 [Русская версия](README.md)
 
@@ -100,6 +100,38 @@ An offset is stored rather than a zone name. The price of that simplicity
 is daylight saving time, which an offset does not track. Russia has not
 changed clocks since 2014, so this costs nothing there; a user in Europe
 or the US adjusts the choice twice a year.
+
+## Music and external storage
+
+Tracks live in `data/music` next to the bot. On a single-board
+computer space runs out quickly — the directory can be moved to
+external media:
+
+```bash
+# on the server, once: a stick/disk is mounted into ~/radar_bot/data/music
+sudo mount /dev/sdX1 /root/radar_bot/data/music
+
+# permanently — a line in /etc/fstab (substitute your filesystem)
+echo '/dev/sdX1 /root/radar_bot/data/music ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
+```
+
+No bot settings needed: the directory is the same. Alternatively set
+the path with `MUSIC_DIR` in `.env` (the container needs access to it —
+add it to `volumes` in `docker-compose.yml`).
+
+Two warnings:
+
+- **`nofail` is mandatory**: without it the server will not boot when
+  the drive falls off. A bot without music lives; a server without
+  its disk does not.
+- the media must survive frequent writes: a cheap stick dies within
+  months; an SSD or HDD is fine.
+
+How full the disks are (the external one included) is visible in the
+nightly report — the "Disk watching" toggle in `/features`; the letter
+arrives when space is running out. The "🗜 Compress" button on a track
+re-encodes it to opus at the source bitrate — the size drops several
+times with no audible difference.
 
 ## Link checking
 

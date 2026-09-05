@@ -192,5 +192,60 @@ class TestShuffle(unittest.TestCase):
         self.assertEqual(first, second)
 
 
+class TestCompress(unittest.TestCase):
+    """Пережатие: битрейт честен к исходнику и не жаден."""
+
+    def test_bitrate_capped_at_music(self):
+        """FLAC 900 kbps → музыкальный потолок 96: выше незачем."""
+        # 10 МБ на 90 секунд ≈ 888 kbps
+        size = 10 * 1024 * 1024
+        self.assertEqual(music.compress_bitrate_k(size, 90),
+                         music.MUSIC_BITRATE_K)
+
+    def test_bitrate_not_above_source(self):
+        """Тихий mp3 ~64 kbps не разгоняется до потолка."""
+        size = 720 * 1024          # 90 секунд при ~64,5 kbps
+        self.assertLessEqual(music.compress_bitrate_k(size, 90), 66)
+        self.assertGreater(music.compress_bitrate_k(size, 90),
+                           music.VOICE_BITRATE_K)
+
+    def test_bitrate_floor_is_voice(self):
+        """Ниже голосового порога не опускаемся."""
+        self.assertEqual(music.compress_bitrate_k(1, 1000),
+                         music.VOICE_BITRATE_K)
+
+    def test_no_duration_uses_music(self):
+        self.assertEqual(music.compress_bitrate_k(0, 0),
+                         music.MUSIC_BITRATE_K)
+
+    def test_worth_compress(self):
+        self.assertFalse(music.worth_compress(1024))
+        self.assertTrue(music.worth_compress(music.COMPRESS_MIN_MB * 1024 * 1024))
+
+
+class TestDiskReport(unittest.TestCase):
+    """Сводка по дискам: точки считаются, повторы схлопываются."""
+
+    def test_report_has_current_disk(self):
+        report = music.disk_report(["."])
+        self.assertIn("Диски", report)
+        self.assertIn("%", report)
+
+    def test_duplicates_collapsed(self):
+        # Один и тот же диск дважды — одна строка
+        one = music.disk_report(["."]).count("•")
+        two = music.disk_report([".", "."]).count("•")
+        self.assertEqual(one, two)
+
+    def test_missing_path_skipped(self):
+        report = music.disk_report(["Z:/нет/такого/пути", "."])
+        self.assertIn("Диски", report)
+
+    def test_warn_threshold_flag(self):
+        # Порог, при котором появляется предупреждение
+        self.assertGreater(music.DISK_WARN_PERCENT, 50)
+        self.assertLess(music.DISK_WARN_PERCENT, 100)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

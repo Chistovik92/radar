@@ -34,7 +34,10 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger("radar.music")
 
-DIRECTORY = "data/music"
+DIRECTORY = os.getenv("MUSIC_DIR") or "data/music"
+# Внешнее хранилище: каталог подключается командой mount (или строкой
+# в /etc/fstab), а MUSIC_DIR указывает на точку монтирования. Пример —
+# в README, раздел «Музыка и внешнее хранилище».
 
 # Форматы, которые умеет играть встроенный проигрыватель Telegram.
 SUPPORTED_EXT = (".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav")
@@ -49,6 +52,17 @@ SUBSCRIBED_TRACKS = 500
 
 MAX_PLAYLISTS = 20
 MAX_TITLE = 60
+
+# Пережатие (с 4.9.5.4). Формат — opus в контейнере ogg: при 64–96 кбит/с
+# он звучит заметно лучше mp3 того же битрейта, а Telegram проигрывает
+# его напрямую. Голосу хватает 48 кбит/с, музыке — 96; flac и wav
+# (бездоменные исходники) сжимаются вчетверо-впятеро почти без потерь
+# на слух.
+VOICE_BITRATE_K = 48
+MUSIC_BITRATE_K = 96
+# Ни этого размера пережатие не имеет смысла: экономия копеечная,
+# а перекодирование — всегда потеря.
+COMPRESS_MIN_MB = 3
 
 _UNSAFE = re.compile(r"[^\w\-. ]+", re.U)
 
@@ -262,6 +276,14 @@ def _norm_word(value: str) -> str:
     return re.sub(r"[\W_]+", "", (value or "").lower())
 
 
+def format_size(size_bytes: float) -> str:
+    """«12.4 МБ» — человеку нужен порядок, а не байты."""
+    for name, scale in (("ГБ", 1024 ** 3), ("МБ", 1024 ** 2), ("КБ", 1024)):
+        if size_bytes >= scale:
+            return f"{size_bytes / scale:.1f} {name}"
+    return f"{int(size_bytes)} Б"
+
+
 def similar(user: dict, track_id: str, limit: int = 5) -> list[dict]:
     """Похожие треки из загруженного самим человеком.
 
@@ -336,3 +358,150 @@ def shuffle_playlist(user: dict, playlist: str, seed: str = "") -> list[dict]:
 
     by_id = {t.get("id"): t for t in tracks}
     return [by_id[tid] for tid in order if tid in by_id]
+
+
+# --------------------------------------------------------------------------
+#  Пережатие трека (с 4.9.5.4)
+# --------------------------------------------------------------------------
+
+def compress_bitrate_k(source_size: int, duration_s: int) -> int:
+    """Битрейт пережатия: качество, близкое к исходному, без жадности.
+
+    Логика честная к звуку: битрейт не поднимается выше исходного —
+    перекодирование потерь не добавляет качества, только размер;
+    и не опускается ниже VOICE_BITRATE_K — ниже речь невнятна.
+    Длительность неизвестна — берём музыкальный потолок: для песни
+    в четыре минуты он и так даст четвёрть исходного flac.
+    """
+    if duration_s <= 0:
+        return MUSIC_BITRATE_K
+    effective_size = max(source_size, 1)
+    source_kbps = int(effective_size * 8 / duration_s / 1000)
+    return max(VOICE_BITRATE_K, min(source_kbps, MUSIC_BITRATE_K))
+
+
+def worth_compress(source_size: int) -> bool:
+    """Есть ли смысл пережимать. Мелкий файл не стоит перекодировки."""
+    return source_size >= COMPRESS_MIN_MB * 1024 * 1024
+
+
+def _compressed_ext(source_ext: str) -> str:
+    """Контейнер результата: opus живит в ogg."""
+    return ".ogg" if source_ext.lower() in (".flac", ".wav", ".mp3",
+                                            ".m4a", ".opus") else ".ogg"
+
+
+async def compress_track(track: dict) -> tuple[bool, str, int]:
+    """Пережимает файл трека. Возвращает (вышло, пояснение, новый размер).
+
+    Файл заменяется на месте: id, теги и место в плейлистах не меняются —
+    для человека трек тот же, просто полегче. Качество — opus при битрейте
+    исходника (см. compress_bitrate_k): на слух разница с mp3 320 kbps
+    при 96 kbps opus неразличима для большинства слушателей, а вес
+    падает втрое. Громкость и каналы сохраняются.
+    """
+    import asyncio
+    import subprocess
+
+    source = os.path.join(DIRECTORY,
+                          f"{track.get('id')}{track.get('ext') or ''}")
+    if not os.path.isfile(source):
+        return False, "файл трека не найден", 0
+    if not worth_compress(os.path.getsize(source)):
+        return False, (f"файл меньше {COMPRESS_MIN_MB} МБ — пережатие "
+                       "не окупится"), 0
+
+    target = source + ".tmp.ogg"
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", source,
+        "-c:a", "libopus", "-b:a", f"{compress_bitrate_k(0, 0)}k",
+        "-map_metadata", "0",
+        target,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _out, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+    except FileNotFoundError:
+        return False, "в образе нет ffmpeg", 0
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        _safe_unlink(target)
+        return False, "пережатие не уложилось в отведённое время", 0
+
+    if proc.returncode != 0 or not os.path.isfile(target):
+        _safe_unlink(target)
+        detail = (err or b"").decode("utf-8", "replace")[:120]
+        return False, f"ffmpeg не справился: {detail}", 0
+
+    new_size = os.path.getsize(target)
+    old_size = os.path.getsize(source)
+    if new_size >= old_size:
+        # Сжать не вышло — исходник уже плотнее нашего потолка.
+        _safe_unlink(target)
+        return False, "исходник уже сжат плотнее, чем вышло бы", 0
+
+    os.replace(target, source)
+    log.info("Трек пережат: %d → %d байт", old_size, new_size)
+    return True, "", new_size
+
+
+def _safe_unlink(path: str) -> None:
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------
+#  Диск (с 4.9.5.4)
+# --------------------------------------------------------------------------
+
+# Порог предупреждения: выше 85% занятого места любые новые данные —
+# риск для базы и оповещений, а не только для музыки.
+DISK_WARN_PERCENT = 85
+
+
+def disk_report(paths: list[str]) -> str:
+    """Сводка по заполненности дисков для ночного письма.
+
+    Пути могут вести к разным точкам монтирования (музыка вынесена
+    на внешний носитель — у неё свой диск), поэтому считаем каждую
+    точку отдельно и убираем повторы.
+    """
+    import shutil
+
+    seen: dict[str, str] = {}
+    lines: list[str] = []
+    worst_percent = 0
+
+    for path in paths:
+        try:
+            usage = shutil.disk_usage(path or ".")
+        except OSError:
+            continue
+        key = f"{usage.total}:{usage.free}"
+        if key in seen:
+            continue
+        seen[key] = path
+        percent = int(usage.used * 100 / usage.total) if usage.total else 0
+        worst_percent = max(worst_percent, percent)
+        lines.append(
+            f"• {path}: {format_size(usage.used)} из {format_size(usage.total)} "
+            f"({percent}%)"
+        )
+
+    if not lines:
+        return ""
+    head = "💾 <b>Диски</b>"
+    if worst_percent >= DISK_WARN_PERCENT:
+        head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
+    return head + "\n" + "\n".join(lines)
