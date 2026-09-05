@@ -1048,6 +1048,11 @@ for signs of fraud.
    certificate lifetime, Google Safe Browsing lists. The output lists
    the signs with weights and never says "the link is safe": promising
    a guarantee would be dishonest.
+   In 4.9.4.1 the "🔍 Check a link" button was added to the main menu
+   with a section screen, and a quota: 200 checks per day free for
+   everyone, no daily limit for subscribers; the remainder is shown
+   under each report, and whoever runs out gets the subscription
+   offer.
    Decisions:
    - the `linkcheck` feature flag, off by default — new code arrives
      disabled and is enabled on a live system;

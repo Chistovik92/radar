@@ -71,6 +71,18 @@ EN_STRINGS: dict[str, str] = {
                        "<code>/check https://example.com/page</code>",
     "linkcheck.working": "⏳ Checking the link…",
     "linkcheck.slow_down": "⚠️ Too many checks in a row. Wait a minute.",
+    "linkcheck.limit": "🔒 The daily limit of checks is used up "
+                       "(200 per day).\n\nA subscription removes the "
+                       "limit. Danger alerts are free always and do not "
+                       "depend on it.",
+    "linkcheck.left": "Left today",
+    "linkcheck.unlimited": "Checks without a daily limit — with the subscription.",
+    "linkcheck.section": "🔍 <b>Link checking</b>\n\n"
+                         "Analyses an address for fraud signs: homoglyphs "
+                         "imitating a brand, someone else's domain, "
+                         "redirects, domain age, Safe Browsing lists.",
+    "menu.linkcheck": "🔍 Check a link",
+    "menu.sub_button": "💳 Subscription — unlimited checks",
     "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
 
     # --- оповещения: самое важное ---

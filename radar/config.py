@@ -208,6 +208,9 @@ MAX_WEBHOOK_PORT: int = _int("MAX_WEBHOOK_PORT", 8081)
 LINKCHECK_NET: bool = (os.getenv("LINKCHECK_NET") or "1").strip().lower() in ("1", "true", "yes")
 LINKCHECK_TIMEOUT: int = max(5, _int("LINKCHECK_TIMEOUT", 15))
 LINKCHECK_RATE_LIMIT: int = max(1, _int("LINKCHECK_RATE_LIMIT", 5))
+# Бесплатных проверок в сутки; подписка снимает предел. Считаем штуки,
+# а не минуты чужих сервисов: человеку «осталось 17 из 200» понятно.
+LINKCHECK_FREE_PER_DAY: int = max(1, _int("LINKCHECK_FREE_PER_DAY", 200))
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 # Каталог журналов. Лежит внутри data/, чтобы его видели и бот, и хост:

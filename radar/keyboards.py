@@ -63,15 +63,25 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
 
     # Журнал и загрузка видео жили без входа: журнал не вызывался ниоткуда,
     # видео открывалось только командой /media, о которой надо было знать.
+    # Проверка ссылок — туда же: команда /check сама по себе ничем
+    # не отличается от «знать заранее».
     extra = []
     if features.enabled("history"):
         extra.append(InlineKeyboardButton(text=label("menu.history", "📖 Журнал"),
                                           callback_data="menu:history"))
+    if features.enabled("linkcheck"):
+        extra.append(InlineKeyboardButton(text=label("menu.linkcheck", "🔍 Проверить ссылку"),
+                                          callback_data="lchk:menu"))
     if features.enabled("media_download"):
         extra.append(InlineKeyboardButton(text=label("menu.media", "🎬 Скачать видео"),
                                           callback_data="med:menu"))
     if extra:
-        rows.append(extra)
+        # Три кнопки в ряд не влезают — вторая строка, если набралось много.
+        if len(extra) > 2:
+            rows.append(extra[:2])
+            rows.append(extra[2:])
+        else:
+            rows.append(extra)
 
     if roles.can_use_assistant(role):
         rows.append([InlineKeyboardButton(text=label("menu.assistant", "🧠 ИИ-ассистент"),
