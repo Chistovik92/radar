@@ -115,7 +115,9 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
     if roles.is_admin(role):
         rows.append([
             InlineKeyboardButton(text=label("manage.stats", "📊 Статистика"),
-                                 callback_data="menu:stats")
+                                 callback_data="menu:stats"),
+            InlineKeyboardButton(text=label("manage.links", "🔗 Ссылки"),
+                                 callback_data="short:menu"),
         ])
 
     if roles.is_superadmin(role):

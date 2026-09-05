@@ -58,10 +58,8 @@ def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMa
         # Ведём в общий раздел подписки: своё предложение здесь читалось
         # как отдельный товар, хотя подписка одна на бота.
         rows.append([InlineKeyboardButton(text=label, callback_data="sub:menu")])
-    if roles.is_superadmin(role):
-        rows.append([
-            InlineKeyboardButton(text="💰 Тарифы и оплата", callback_data="dig:price")
-        ])
+    # Тарифы правятся из «Управления → Подписка», а не из пользовательского
+    # раздела: служебные кнопки в чужом меню приходится искать по всему боту.
     rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -306,7 +304,9 @@ async def pricing(call: CallbackQuery, state: FSMContext, role: str) -> None:
         return
     await call.answer()
     await state.set_state(Form.digest_price)
-    await safe_edit(call, _pricing_text(), back_kb("dig:menu", "Отмена"))
+    # Возврат — в управление подпиской: оттуда сюда и входят (с 4.9.3.2
+    # отдельной кнопки в разделе подборок нет).
+    await safe_edit(call, _pricing_text(), back_kb("sub:admin", "Отмена"))
 
 
 @router.message(Command("digestprice"))
@@ -319,7 +319,7 @@ async def set_price(message: Message, state: FSMContext, role: str) -> None:
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
         await state.set_state(Form.digest_price)
-        await message.answer(_pricing_text(), reply_markup=back_kb("dig:menu", "Отмена"))
+        await message.answer(_pricing_text(), reply_markup=back_kb("sub:admin", "Отмена"))
         return
 
     await _apply_plans(message, state, parts[1].strip())
@@ -355,5 +355,5 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
     plans = ", ".join(f"{days} дн. — {stars} ⭐️" for days, stars in _plans())
     await message.answer(
         f"✅ Тарифы обновлены: {esc(plans)}",
-        reply_markup=back_kb("dig:menu", "◀️ Назад"),
+        reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )

@@ -27,4 +27,5 @@ class Form(StatesGroup):
     proxy_key = State()            # ключ или подписка для выхода в сеть
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
+    short_link = State()           # сокращение ссылки (администратор)
     quiet_hours = State()          # интервал тихих часов

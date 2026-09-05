@@ -436,6 +436,7 @@ EN_STRINGS: dict[str, str] = {
     "manage.sources": "📡 Sources",
     "manage.users": "👥 Users",
     "manage.stats": "📊 Statistics",
+    "manage.links": "🔗 Links",
     "manage.features": "⚙️ Features",
     "manage.keys": "🔑 Access keys",
     "manage.ai": "🧠 AI management",
@@ -445,7 +446,7 @@ EN_STRINGS: dict[str, str] = {
     "manage.panel": "🖥 Web panel",
     "manage.role_line": "Your role",
     "manage.all_sections": "All sections are available, including access keys and logs.",
-    "manage.admin_sections": "Sources, users, statistics and invites are available.",
+    "manage.admin_sections": "Sources, users, statistics, links and invites are available.",
     "manage.mod_sections": "Sources and user settings editing are available.",
 }
 

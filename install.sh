@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.3.1 — автономный установщик.
+# Система «Радар» v4.9.3.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.3.1"
+VERSION="4.9.3.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2958,6 +2958,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.3.2", [
+        "🔗 <b>Кнопка создания короткой ссылки.</b> Раздел «Ссылки» "
+        "появился в «Управлении» у администратора и выше: сократить "
+        "адрес, посмотреть список, очистить все — без заучивания "
+        "команд /short и /shorts.",
+        "🧹 <b>Служебные кнопки вернулись в «Управление».</b> «Тарифы "
+        "и оплата» снова торчали в пользовательском разделе подборок, "
+        "хотя правятся из «Управления → Подписка» — оттуда теперь "
+        "и вход, и возврат.",
+    ]),
     ("4.9.3.1", [
         "🔧 <b>Починен установщик релиза 4.9.3.</b> В его сборку попала "
         "панель без одной функции: страница агентов вела бы к ошибке. "
@@ -4018,7 +4028,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.3.1"
+__version__ = "4.9.3.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -12123,6 +12133,7 @@ EN_STRINGS: dict[str, str] = {
     "manage.sources": "📡 Sources",
     "manage.users": "👥 Users",
     "manage.stats": "📊 Statistics",
+    "manage.links": "🔗 Links",
     "manage.features": "⚙️ Features",
     "manage.keys": "🔑 Access keys",
     "manage.ai": "🧠 AI management",
@@ -12132,7 +12143,7 @@ EN_STRINGS: dict[str, str] = {
     "manage.panel": "🖥 Web panel",
     "manage.role_line": "Your role",
     "manage.all_sections": "All sections are available, including access keys and logs.",
-    "manage.admin_sections": "Sources, users, statistics and invites are available.",
+    "manage.admin_sections": "Sources, users, statistics, links and invites are available.",
     "manage.mod_sections": "Sources and user settings editing are available.",
 }
 
@@ -22335,7 +22346,9 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
     if roles.is_admin(role):
         rows.append([
             InlineKeyboardButton(text=label("manage.stats", "📊 Статистика"),
-                                 callback_data="menu:stats")
+                                 callback_data="menu:stats"),
+            InlineKeyboardButton(text=label("manage.links", "🔗 Ссылки"),
+                                 callback_data="short:menu"),
         ])
 
     if roles.is_superadmin(role):
@@ -22818,6 +22831,7 @@ class Form(StatesGroup):
     proxy_key = State()            # ключ или подписка для выхода в сеть
     digest_time = State()          # время доставки новостной подборки
     digest_price = State()         # тарифы подписки (суперадминистратор)
+    short_link = State()           # сокращение ссылки (администратор)
     quiet_hours = State()          # интервал тихих часов
 RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
@@ -23923,7 +23937,7 @@ async def menu_manage(call: CallbackQuery, state: FSMContext, role: str, user: d
         ))
     elif roles.is_admin(role):
         lines.append(_(
-            "manage.admin_sections", "Доступны источники, пользователи, статистика и приглашения."
+            "manage.admin_sections", "Доступны источники, пользователи, статистика, ссылки и приглашения."
         ))
     else:
         lines.append(_(
@@ -26313,12 +26327,14 @@ import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .. import roles, shortener
 from ..db import repo
+from ..states import Form
 from ..textutils import esc
-from ..tg import back_kb
+from ..tg import back_kb, safe_edit
 
 log = logging.getLogger("radar.handlers.shortlink")
 router = Router(name="shortlink")
@@ -26326,6 +26342,28 @@ router = Router(name="shortlink")
 
 def _denied() -> str:
     return "⛔️ Сокращение ссылок доступно администратору и выше."
+
+
+def _not_configured_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage"),
+    ]])
+
+
+def _section_kb(total: int) -> InlineKeyboardMarkup:
+    """Клавиатура раздела «Ссылки». total — сколько их сейчас."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="➕ Сократить ссылку",
+                              callback_data="short:new")],
+    ]
+    if total:
+        rows.append([InlineKeyboardButton(text="📋 Список ссылок",
+                                          callback_data="short:list")])
+        rows.append([InlineKeyboardButton(text="🗑 Очистить все",
+                                          callback_data="short:clearask")])
+    rows.append([InlineKeyboardButton(text="◀️ К управлению",
+                                      callback_data="menu:manage")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(Command("short"))
@@ -26462,7 +26500,177 @@ async def clear_all(call: CallbackQuery, role: str) -> None:
     await call.message.edit_text(
         f"✅ Сокращённые ссылки удалены: <b>{removed}</b>.\n"
         "Выборочно их можно чистить на странице «Ссылки» веб-панели.",
-        reply_markup=back_kb(),
+        reply_markup=back_kb("menu:manage", "◀️ К управлению"),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Раздел «Ссылки» в управлении (с 4.9.3.2)
+# --------------------------------------------------------------------------
+#
+# До этого раздел жил только командами /short, /shorts, /shortclear —
+# о них надо было знать заранее. Управление собирает все служебные
+# разделы под одной кнопкой, и ссылки — не исключение.
+
+@router.callback_query(F.data == "short:menu")
+async def section_menu(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Доступно администратору и выше.", show_alert=True)
+        return
+    await call.answer()
+
+    if not shortener.enabled():
+        await safe_edit(
+            call,
+            "🔗 <b>Ссылки</b>\n\n"
+            "Сокращение не настроено: задайте <code>SHORT_BASE_URL</code> "
+            "в разделе ключей — адрес, на котором открыта веб-панель.",
+            _not_configured_kb(),
+        )
+        return
+
+    try:
+        total = len(await repo.short_link_list())
+    except Exception:  # noqa: BLE001
+        log.exception("Список ссылок недоступен")
+        total = -1
+
+    lines = [
+        "🔗 <b>Ссылки</b>", "",
+        "Сокращённые ссылки: без срока годности, с именем владельца.",
+        f"Сейчас их: <b>{total}</b>." if total >= 0 else "Список недоступен.",
+        "",
+        f"Команды: /short &lt;адрес&gt;, /shorts, /shortclear.",
+        "Выборочная чистка — на странице «Ссылки» веб-панели.",
+    ]
+    await safe_edit(call, "\n".join(lines), _section_kb(max(total, 0)))
+
+
+@router.callback_query(F.data == "short:new")
+async def ask_url(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Доступно администратору и выше.", show_alert=True)
+        return
+    if not shortener.enabled():
+        await call.answer("Сокращение не настроено.", show_alert=True)
+        return
+
+    await call.answer()
+    await state.set_state(Form.short_link)
+    await safe_edit(
+        call,
+        "➕ <b>Сокращение ссылки</b>\n\n"
+        "Пришлите полный адрес одним сообщением — должен начинаться "
+        "с <code>http://</code> или <code>https://</code>.\n"
+        "<i>/cancel — отмена.</i>",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu"),
+        ]]),
+    )
+
+
+@router.message(Form.short_link)
+async def take_url(message: Message, state: FSMContext, role: str) -> None:
+    await state.clear()
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+
+    if not roles.is_admin(role):
+        await message.answer(_denied())
+        return
+    if not shortener.valid(text):
+        await message.answer(
+            "Это не похоже на ссылку. Нужен полный адрес со схемой "
+            "<code>http://</code> или <code>https://</code> — попробуйте ещё раз.",
+        )
+        await state.set_state(Form.short_link)
+        return
+
+    code = shortener.code_for(text)
+    try:
+        await repo.save_short_link(code, text, message.from_user.id)
+    except Exception:  # noqa: BLE001
+        log.exception("Не удалось сохранить короткую ссылку")
+        await message.answer("Не удалось сохранить ссылку — смотрите журнал.",
+                             reply_markup=back_kb("short:menu", "◀️ К ссылкам"))
+        return
+
+    short = shortener.short_url(code)
+    log.info("Сокращена ссылка: %s", code)
+    await message.answer(
+        f"🔗 <code>{esc(short)}</code>\n\n<i>{esc(text[:200])}</i>",
+        reply_markup=back_kb("short:menu", "◀️ К ссылкам"),
+    )
+
+
+@router.callback_query(F.data == "short:list")
+async def section_list(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Доступно администратору и выше.", show_alert=True)
+        return
+    await call.answer()
+
+    await _show_list(call)
+
+
+async def _show_list(call: CallbackQuery) -> None:
+    try:
+        rows = await repo.short_link_stats(15)
+    except Exception:  # noqa: BLE001
+        log.exception("Статистика ссылок недоступна")
+        await safe_edit(call, "Статистика недоступна — смотрите журнал.",
+                        back_kb("short:menu", "◀️ К ссылкам"))
+        return
+
+    if not rows:
+        await safe_edit(call, "Сокращённых ссылок пока нет.",
+                        back_kb("short:menu", "◀️ К ссылкам"))
+        return
+
+    lines = ["🔗 <b>Последние ссылки</b>", ""]
+    for row in rows:
+        lines.append(
+            f"<code>{esc(row['code'])}</code> — переходов: {row['hits']}\n"
+            f"  <i>{esc(str(row['url'])[:90])}</i>"
+        )
+    lines.append("")
+    lines.append("Выборочная чистка — на странице «Ссылки» веб-панели.")
+    await safe_edit(call, "\n".join(lines), back_kb("short:menu", "◀️ К ссылкам"))
+
+
+@router.callback_query(F.data == "short:clearask")
+async def section_clear_ask(call: CallbackQuery, role: str) -> None:
+    """Подтверждение очистки из раздела: возврат ведёт назад в раздел."""
+    if not roles.is_admin(role):
+        await call.answer("Доступно администратору и выше.", show_alert=True)
+        return
+    await call.answer()
+
+    try:
+        total = len(await repo.short_link_list())
+    except Exception:  # noqa: BLE001
+        log.exception("Список ссылок недоступен")
+        await safe_edit(call, "Список ссылок недоступен — смотрите журнал.",
+                        back_kb("short:menu", "◀️ К ссылкам"))
+        return
+
+    if not total:
+        await safe_edit(call, "Сокращённых ссылок и так нет.",
+                        back_kb("short:menu", "◀️ К ссылкам"))
+        return
+
+    await safe_edit(
+        call,
+        "🔗 <b>Удалить все сокращённые ссылки?</b>\n\n"
+        f"Сейчас их <b>{total}</b>. Разосланные в старых сообщениях "
+        "перестанут открываться. Автоссылки подборок появятся снова "
+        "при следующем выпуске.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить все",
+                                  callback_data="short:clearall")],
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
+        ]),
     )
 RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
@@ -29949,10 +30157,8 @@ def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMa
         # Ведём в общий раздел подписки: своё предложение здесь читалось
         # как отдельный товар, хотя подписка одна на бота.
         rows.append([InlineKeyboardButton(text=label, callback_data="sub:menu")])
-    if roles.is_superadmin(role):
-        rows.append([
-            InlineKeyboardButton(text="💰 Тарифы и оплата", callback_data="dig:price")
-        ])
+    # Тарифы правятся из «Управления → Подписка», а не из пользовательского
+    # раздела: служебные кнопки в чужом меню приходится искать по всему боту.
     rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -30197,7 +30403,9 @@ async def pricing(call: CallbackQuery, state: FSMContext, role: str) -> None:
         return
     await call.answer()
     await state.set_state(Form.digest_price)
-    await safe_edit(call, _pricing_text(), back_kb("dig:menu", "Отмена"))
+    # Возврат — в управление подпиской: оттуда сюда и входят (с 4.9.3.2
+    # отдельной кнопки в разделе подборок нет).
+    await safe_edit(call, _pricing_text(), back_kb("sub:admin", "Отмена"))
 
 
 @router.message(Command("digestprice"))
@@ -30210,7 +30418,7 @@ async def set_price(message: Message, state: FSMContext, role: str) -> None:
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
         await state.set_state(Form.digest_price)
-        await message.answer(_pricing_text(), reply_markup=back_kb("dig:menu", "Отмена"))
+        await message.answer(_pricing_text(), reply_markup=back_kb("sub:admin", "Отмена"))
         return
 
     await _apply_plans(message, state, parts[1].strip())
@@ -30246,7 +30454,7 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
     plans = ", ".join(f"{days} дн. — {stars} ⭐️" for days, stars in _plans())
     await message.answer(
         f"✅ Тарифы обновлены: {esc(plans)}",
-        reply_markup=back_kb("dig:menu", "◀️ Назад"),
+        reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
 RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"

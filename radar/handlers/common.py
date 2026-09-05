@@ -233,7 +233,7 @@ async def menu_manage(call: CallbackQuery, state: FSMContext, role: str, user: d
         ))
     elif roles.is_admin(role):
         lines.append(_(
-            "manage.admin_sections", "Доступны источники, пользователи, статистика и приглашения."
+            "manage.admin_sections", "Доступны источники, пользователи, статистика, ссылки и приглашения."
         ))
     else:
         lines.append(_(
