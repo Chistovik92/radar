@@ -201,6 +201,14 @@ MAX_MODE: str = (os.getenv("MAX_MODE") or "polling").strip().lower()  # polling 
 MAX_WEBHOOK_URL: str = (os.getenv("MAX_WEBHOOK_URL") or "").strip()
 MAX_WEBHOOK_PORT: int = _int("MAX_WEBHOOK_PORT", 8081)
 
+# --- проверка ссылок (multitool/linkcheck, включается в 4.9.4) ---
+# Сетевые проверки (редиректы, возраст домена, Safe Browsing) ходят
+# в чужие сервисы и занимают до десятков секунд; без них остаётся
+# мгновенный разбор адреса, которого для явного фишинга хватает.
+LINKCHECK_NET: bool = (os.getenv("LINKCHECK_NET") or "1").strip().lower() in ("1", "true", "yes")
+LINKCHECK_TIMEOUT: int = max(5, _int("LINKCHECK_TIMEOUT", 15))
+LINKCHECK_RATE_LIMIT: int = max(1, _int("LINKCHECK_RATE_LIMIT", 5))
+
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 # Каталог журналов. Лежит внутри data/, чтобы его видели и бот, и хост:
 # только так бот может отдавать журналы установки и свои собственные.

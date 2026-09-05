@@ -1034,11 +1034,46 @@ became item 21.
    `/shortclear` wipes them all. Shortening stays deliberately closed
    to the public (see the monetization section).
 
+## 4.9.4 — tools: link checking ✅ done
+
+A detour from the plan by the author's decision (September 2026): music
+will wait, and multitool — a utilities package started as a separate
+project — merges into Radar. The first tool is linkcheck, checking links
+for signs of fraud.
+
+1. **Link checking** ✅ done in 4.9.4. The `/check <link>` command:
+   static analysis of the address (homoglyphs, a brand outside its
+   domain, credentials before `@`, executable schemes, bait words) plus
+   optional network checks — the redirect chain, domain age via RDAP,
+   certificate lifetime, Google Safe Browsing lists. The output lists
+   the signs with weights and never says "the link is safe": promising
+   a guarantee would be dishonest.
+   Decisions:
+   - the `linkcheck` feature flag, off by default — new code arrives
+     disabled and is enabled on a live system;
+   - the separate bot with its own token is dead: you had to know about
+     it in advance, while /check lives in the main bot;
+   - the `multitool/` package does not import `radar`: editing a tool
+     cannot break the alerts bot;
+   - network checks are disabled with `LINKCHECK_NET=0` — the instant
+     address analysis remains, which is enough for obvious phishing;
+   - the Safe Browsing key lives in the keys section, group "Защита"
+     ("Protection");
+   - requests to private addresses (127.0.0.1, 10.x) are blocked: the
+     bot lives on a server, and a link check must not probe the server
+     itself.
+2. ⚠️ **Translating the check screen to English.** The command and the
+   handler's messages are bilingual; the report is Russian for now —
+   to be translated separately, like the weather summary once was.
+
 ## 4.9.5 — music and playlists
 
 An idea from August 2026: uploading tracks to the bot, personal playlists,
 similar-track suggestions. A subsystem separate from monitoring — placed
 here for exactly that reason: it must never delay danger alerts.
+
+**Postponed by the author's decision, September 2026** — for a few steps:
+multitool tools come first. The plan below is not cancelled.
 
 1. **Upload and storage.** A track is sent as a file or a link, sorted
    into playlists, and plays through Telegram's built-in player. The

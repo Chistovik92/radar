@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.3.2 — автономный установщик.
+# Система «Радар» v4.9.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.3.2"
+VERSION="4.9.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2652,8 +2652,8 @@ fi
 
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
 
-mkdir -p "migrations" "migrations/versions" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=96
+mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
+FILE_COUNT=102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2708,6 +2708,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py alembic.ini ./
 # Диагностика лежит внутри пакета: tools/ исключён из контекста сборки
 COPY radar ./radar
+# Утилиты мультитула: код бота импортирует их по команде /check
+COPY multitool ./multitool
 COPY migrations ./migrations
 
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app
@@ -2958,6 +2960,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.4", [
+        "🔍 <b>Проверка ссылок на мошенничество — часть «Радара».</b> "
+        "Отдельный бот linkcheck влився в систему: команда /check "
+        "разбирает адрес на признаки фишинга — подмена букв, чужой "
+        "бренд, недавний домен, базы Safe Browsing. Вывод перечисляет "
+        "признаки и никогда не говорит «ссылка безопасна». Включается "
+        "тумблером «Проверка ссылок», по умолчанию выключено.",
+        "🧰 <b>Утилиты мультитула едут в одном образе.</b> Пакет "
+        "multitool не импортирует код радара: правка утилиты не может "
+        "уронить бота оповещений. Сетевые проверки можно отключить "
+        "переменной LINKCHECK_NET=0 — останется мгновенный разбор "
+        "адреса.",
+    ]),
     ("4.9.3.2", [
         "🔗 <b>Кнопка создания короткой ссылки.</b> Раздел «Ссылки» "
         "появился в «Управлении» у администратора и выше: сократить "
@@ -4028,7 +4043,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.3.2"
+__version__ = "4.9.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -4241,6 +4256,14 @@ MAX_API_URL: str = (os.getenv("MAX_API_URL") or "https://platform-api2.max.ru").
 MAX_MODE: str = (os.getenv("MAX_MODE") or "polling").strip().lower()  # polling | webhook
 MAX_WEBHOOK_URL: str = (os.getenv("MAX_WEBHOOK_URL") or "").strip()
 MAX_WEBHOOK_PORT: int = _int("MAX_WEBHOOK_PORT", 8081)
+
+# --- проверка ссылок (multitool/linkcheck, включается в 4.9.4) ---
+# Сетевые проверки (редиректы, возраст домена, Safe Browsing) ходят
+# в чужие сервисы и занимают до десятков секунд; без них остаётся
+# мгновенный разбор адреса, которого для явного фишинга хватает.
+LINKCHECK_NET: bool = (os.getenv("LINKCHECK_NET") or "1").strip().lower() in ("1", "true", "yes")
+LINKCHECK_TIMEOUT: int = max(5, _int("LINKCHECK_TIMEOUT", 15))
+LINKCHECK_RATE_LIMIT: int = max(1, _int("LINKCHECK_RATE_LIMIT", 5))
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 # Каталог журналов. Лежит внутри data/, чтобы его видели и бот, и хост:
@@ -5840,6 +5863,13 @@ FLAGS: tuple[Flag, ...] = (
          "Скачивание роликов с внешних площадок с выбором качества. "
          "Требует yt-dlp и ffmpeg в образе.",
          group="Медиа", since="4.2", default=False),
+
+    # --- защита ---
+    Flag("linkcheck", "Проверка ссылок",
+         "Команда /check: разбор ссылки на признаки мошенничества — "
+         "подмена букв, чужой бренд, недавний домен, базы Safe Browsing. "
+         "Вывод перечисляет признаки и не выдаёт «безопасна».",
+         group="Защита", since="4.9.4", default=False),
 
     # --- данные ---
     Flag("history", "История событий", "Журнал того, что приходило по адресу.",
@@ -8474,6 +8504,12 @@ SETTINGS: tuple[Setting, ...] = (
             "чтобы они не совпадали. Менять после запуска нельзя: "
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
+
+    # --- защита ---
+    Setting("SAFE_BROWSING_API_KEY", "Google Safe Browsing",
+            "Базы вредоносных сайтов для проверки ссылок (/check). "
+            "Без ключа сетевые проверки работают частично.",
+            "Защита", where="console.cloud.google.com → Safe Browsing API"),
 )
 
 # --------------------------------------------------------------------------
@@ -11761,6 +11797,14 @@ EN_STRINGS: dict[str, str] = {
     "menu.partners": "🤝 Partner projects",
     "menu.home": "🏠 Main menu",
     "menu.back": "◀️ Back",
+
+    # --- проверка ссылок ---
+    "linkcheck.off": "Link checking is disabled.",
+    "linkcheck.usage": "🔍 Send a link after the command:\n"
+                       "<code>/check https://example.com/page</code>",
+    "linkcheck.working": "⏳ Checking the link…",
+    "linkcheck.slow_down": "⚠️ Too many checks in a row. Wait a minute.",
+    "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
 
     # --- оповещения: самое важное ---
     "alert.danger": "DANGER",
@@ -23657,6 +23701,7 @@ from . import (
     features,
     history,
     language,
+    linkcheck,
     locations,
     logs,
     media,
@@ -23687,6 +23732,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(partners.router)
     dp.include_router(perf.router)
     dp.include_router(shortlink.router)
+    dp.include_router(linkcheck.router)
     dp.include_router(digest.router)
     dp.include_router(sos.router)
     # Подписка держит обработчик кодов: он ловит только то, что
@@ -23720,7 +23766,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
-from .. import ai, config, i18n, keyboards, monitor, roles, storage
+from .. import ai, config, features, i18n, keyboards, monitor, roles, storage
 from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit
 
@@ -23861,6 +23907,11 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
         _("help.cmd_basic", "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод"),
         _("help.cmd_partner", "/partner — партнёрский проект"),
     ]
+    if features.enabled("linkcheck"):
+        lines.append(_(
+            "help.cmd_linkcheck",
+            "/check &lt;ссылка&gt; — проверить ссылку на признаки мошенничества",
+        ))
     if roles.can_use_assistant(role):
         lines.append(_(
             "help.cmd_assistant",
@@ -30874,6 +30925,978 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
 
     await run(message, text)
 RADAR_FILE_95
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_96'
+"""Проверка ссылок на признаки мошенничества — команда /check.
+
+Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
+за флагом возможности): статический разбор адреса плюс необязательные
+сетевые проверки. Вывод перечисляет признаки и никогда не говорит
+«ссылка безопасна» — это честнее, чем обещать гарантию.
+
+Отдельного процесса и токена больше нет: тот бот пришлось бы узнавать
+заранее, а /check живёт в основном боте и включается тумблером.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from collections import defaultdict
+from datetime import datetime, timezone
+
+from aiogram import Router
+from aiogram.filters import Command
+from aiogram.types import Message
+
+from .. import config, features, i18n, secrets
+from ..tg import back_kb
+
+log = logging.getLogger("radar.handlers.linkcheck")
+router = Router(name="linkcheck")
+
+URL_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
+
+# Ограничение частоты: сетевые проверки ходят в чужие сервисы, и один
+# человек очередью ссылок мог бы занять их на всех.
+_hits: dict[int, list[float]] = defaultdict(list)
+
+
+def _allowed(user_id: int) -> bool:
+    now = datetime.now(timezone.utc).timestamp()
+    _hits[user_id] = [t for t in _hits[user_id] if now - t < 60]
+    if len(_hits[user_id]) >= config.LINKCHECK_RATE_LIMIT:
+        return False
+    _hits[user_id].append(now)
+    return True
+
+
+@router.message(Command("check"))
+async def cmd_check(message: Message, user: dict) -> None:
+    lang = i18n.language_of(user)
+
+    if not features.enabled("linkcheck"):
+        await message.answer(
+            i18n.t("linkcheck.off", lang, "Проверка ссылок отключена.")
+        )
+        return
+
+    args = (message.text or "").split(maxsplit=1)
+    match = URL_RE.search(args[1] if len(args) > 1 else "")
+    if not match:
+        await message.answer(
+            i18n.t(
+                "linkcheck.usage", lang,
+                "🔍 Пришлите ссылку после команды:\n"
+                "<code>/check https://пример.рф/страница</code>",
+            ),
+            reply_markup=back_kb(),
+        )
+        return
+
+    if not _allowed(message.from_user.id):
+        await message.answer(
+            i18n.t(
+                "linkcheck.slow_down", lang,
+                "⚠️ Слишком много проверок подряд. Подождите минуту.",
+            )
+        )
+        return
+
+    url = match.group(0)
+    await message.answer(i18n.t("linkcheck.working", lang, "⏳ Проверяю ссылку…"))
+
+    # Импорт внутри обработчика: утилиты мультитула не грузятся, пока
+    # флаг выключен, и правка в них не трогает остального бота.
+    from multitool.linkcheck.analyze import analyze
+    from multitool.linkcheck.report import build_report
+
+    verdict = analyze(url)
+
+    if config.LINKCHECK_NET:
+        from multitool.linkcheck.netcheck import NetResult, full_check
+
+        key = (secrets.get("SAFE_BROWSING_API_KEY") or "").strip()
+        try:
+            verdict.net = await asyncio.wait_for(
+                full_check(url, key), timeout=config.LINKCHECK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            verdict.net = NetResult(notes=["timeout"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Сетевая проверка не удалась: %s", exc)
+            verdict.net = NetResult(notes=[f"error: {type(exc).__name__}"])
+
+    log.info("Проверена ссылка: %s (счёт %d)", url[:80], verdict.score)
+    await message.answer(
+        build_report(verdict),
+        disable_web_page_preview=True,
+    )
+RADAR_FILE_96
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
+cat > "multitool/__init__.py" <<'RADAR_FILE_97'
+"""Мультитул — отдельные утилиты рядом с «Радаром».
+
+Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
+защита от мошенничества, проверка адресов, разбор файлов. С 4.9.4 пакет
+живёт в репозитории «Радара» и ставится вместе с ним, но остаётся
+отдельным: утилиты не импортируют `radar` и не могут уронить бота
+оповещений своей правкой.
+
+Активирует их бот «Радара» через флаги возможностей: например, linkcheck
+включается тумблером «Проверка ссылок» и работает командой /check.
+
+Содержимое:
+
+* `linkcheck` — проверка ссылок на признаки мошенничества.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+__all__ = ["linkcheck"]
+RADAR_FILE_97
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_98'
+"""Проверка ссылок на признаки мошенничества.
+
+Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
+«мошенническая ли она». Второе неразрешимо: сайт может быть безупречен
+по всем формальным признакам и при этом обманывать, а может выглядеть
+подозрительно и быть честным. Поэтому вывод всегда перечисляет признаки
+и никогда не выдаёт «ссылка безопасна».
+
+Устройство:
+
+* `analyze` — разбор самого адреса, без сети. Подмена букв, бренд
+  в поддомене, данные пользователя перед `@`, опасная схема. Работает
+  всегда и мгновенно, ошибиться в сторону молчания не может;
+* `netcheck` — то, что требует сети: раскрытие сокращателей, возраст
+  домена, база Safe Browsing. Каждая проверка необязательна, её отказ
+  не отменяет вердикт;
+* `report` — сборка ответа для Telegram.
+
+Точка входа — не свой бот, а команда /check бота «Радар» (с 4.9.4):
+отдельный процесс со своим токеном умер — функция живёт за флагом
+возможности и включается суперадминистратором.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+__all__ = ["analyze", "netcheck", "report"]
+RADAR_FILE_98
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_99'
+"""Разбор ссылки на признаки мошенничества без обращения к сети.
+
+Результат — список признаков с весом и кратким пояснением.
+Сумма весов даёт вердикт: 0–14 = «признаков не найдено»,
+15–34 = «следует обратить внимание», 35–59 = «подозрительно»,
+60+ = «опасно». Ни один признак не даёт гарантии: сайт может
+быть подозрительным в одном аспекте и полностью честным в другом.
+
+Модуль нарочно не знает ни о Telegram, ни о «Радаре»: чистая функция
+от строки, тестируемая без сети и без бота.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from dataclasses import dataclass, field
+
+SCORE_MAX = 100
+
+SIGNALS = [
+    ("scheme_http", 20, "незащищённое HTTP"),
+    ("scheme_suspicious", 35, "опасная схема"),
+    ("executable_scheme", 60, "исполняемая схема"),
+    ("userinfo", 45, "учётные данные перед @"),
+    ("ip_literal", 10, "IP вместо домена"),
+    ("punycode", 15, "пуньякод (идн-домен)"),
+    ("mixed_script", 25, "смешанные алфавиты"),
+    ("homograph_brand", 70, "подмена букв с имитацией бренда"),
+    ("brand_wrong_domain", 40, "бренд в домене, но не в реестре"),
+    ("brand_path", 12, "бренд в пути"),
+    ("typosquat", 30, "подобный бренду домен"),
+    ("suspicious_tld", 5, "подозрительная зона"),
+    ("subdomain_depth", 6, "глубокая вложенность"),
+    ("hyphen_label", 3, "дефис в метке домена"),
+    ("shortener", 5, "сокращатель ссылки"),
+    ("nonstandard_port", 2, "нестандартный порт"),
+    ("bait_word", 8, "слова-призыв в пути"),
+    ("executable_ext", 15, "исполняемый файл"),
+    ("double_ext", 30, "двойное расширение"),
+    ("many_escapes", 4, "много кодов экранирования"),
+    ("trailing_dot", 3, "точка в конце домена"),
+    ("zero_width", 20, "невидимые символы"),
+    ("digits_in_brand", 6, "цифры в имени домена"),
+    ("free_hosting", 4, "свободный хостинг"),
+]
+
+VERDICT = {
+    0: "ok",
+    15: "attention",
+    35: "suspect",
+    60: "danger",
+}
+
+MULTI_SUFFIXES = frozenset({
+    "co.uk", "ac.uk", "gov.uk", "org.uk", "edu.uk", "ne.uk", "lc.uk",
+    "com.au", "net.au", "org.au", "gov.au", "edu.au", "id.au",
+    "com.br", "net.br", "org.br", "gov.br", "edu.br",
+    "com.ru", "net.ru", "org.ru", "pp.ru", "info.ru", "srv.ru",
+    "su", "tj", "ws", "cc", "tv", "co", "mobi", "name",
+})
+
+SUSPICIOUS_TLD = frozenset({
+    "tk", "ml", "ga", "cf", "gq", "zip", "top", "xyz", "click", "work",
+    "loan", "link", "ru.name",
+})
+
+URL_SHORTENERS = frozenset({
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "buff.ly",
+    "rebrandly.com", "lnkd.in", "wp.me", "cutt.ly", "shrt.co",
+    "soo.gd", "adf.ly", "y2u.be", "b2n.me", "clck.ru",
+})
+
+BAIT_WORDS = frozenset({
+    "login", "signin", "sign-in", "sign_in",
+    "verify", "verification", "verify-account",
+    "secure", "security", "secure-account",
+    "account", "update", "reset", "reset-password",
+    "password", "recovery", "wallet", "cryptocurrency",
+    "bitcoin", "ethereum", "gift", "prize", "bonus", "cashback",
+    "free", "scan", "phishing", "virus", "trojan",
+    "captcha", "auth", "token",
+    "вход", "авторизация", "подтверждение", "пароль",
+    "деньги", "зарплата", "подарок", "бонус", "кешбэк",
+    "кошелёк", "криптовалюта", "биткоин", "эфириум",
+    "скан", "фишинг", "вирус", "троянский",
+    "капча", "аутентификация", "токен",
+})
+
+EXECUTABLE_EXT = frozenset({
+    "exe", "scr", "bat", "cmd", "msi", "vbs", "vbe", "jar", "com",
+    "pif", "vb", "js", "jse", "ps1", "hta", "cpl", "run",
+})
+
+CONFUSER = {
+    "а": "a", "б": "b", "в": "b", "г": "r", "д": "g", "е": "e", "ё": "e",
+    "ж": "zh", "з": "3", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+    "н": "h", "о": "o", "п": "n", "р": "p", "с": "c", "т": "t", "у": "y",
+    "ф": "f", "х": "x", "ц": "u", "ч": "4", "ш": "w", "щ": "w", "ъ": "",
+    "ы": "bi", "ь": "", "э": "e", "ю": "io", "я": "ya",
+    "ѕ": "s", "і": "i", "ї": "i", "ј": "j", "љ": "lj", "њ": "nj",
+    "ћ": "c", "џ": "dz", "ґ": "g",
+    "α": "a", "ε": "e", "κ": "k", "ν": "n",
+    "ο": "o", "ρ": "p", "σ": "s", "τ": "t", "υ": "u", "ω": "o",
+}
+
+DIGIT_LETTER = {"0": "o", "4": "a", "3": "e", "5": "s", "6": "g", "8": "b", "9": "g"}
+
+BRANDS: dict[str, list[str]] = {}
+for block in [
+    {"sberbank": ["sberbank.ru", "sber.ru", "sb.ru", "sberbank.com"]},
+    {"tinkoff": ["tinkoff.ru"]},
+    {"alfa-bank": ["alfabank.ru", "alfa-bank.ru"]},
+    {"vtb": ["vtb.ru"]},
+    {"gosuslugi": ["gosuslugi.ru"]},
+    {"vk": ["vk.com", "vkontakte.ru"]},
+    {"telegram": ["telegram.org", "telegram.com"]},
+    {"youtube": ["youtube.com"]},
+    {"facebook": ["facebook.com"]},
+    {"instagram": ["instagram.com"]},
+    {"twitter": ["twitter.com", "x.com"]},
+    {"linkedin": ["linkedin.com"]},
+    {"paypal": ["paypal.com"]},
+    {"apple": ["apple.com"]},
+    {"microsoft": ["microsoft.com"]},
+    {"google": ["google.com"]},
+    {"yandex": ["yandex.ru", "ya.ru"]},
+    {"ozon": ["ozon.ru"]},
+    {"wildberries": ["wildberries.ru"]},
+    {"aliexpress": ["aliexpress.com"]},
+    {"amazon": ["amazon.com"]},
+    {"ebay": ["ebay.com"]},
+    {"visa": ["visa.com"]},
+    {"mastercard": ["mastercard.com"]},
+]:
+    BRANDS.update(block)
+
+ALL_LEGIT = frozenset(d for v in BRANDS.values() for d in v)
+
+
+@dataclass(slots=True)
+class Signal:
+    code: str
+    weight: int
+    title: str
+    detail: str | None = None
+
+    @property
+    def verdict(self) -> str:
+        if self.weight <= 14:
+            return "ok"
+        if self.weight <= 34:
+            return "attention"
+        if self.weight <= 59:
+            return "suspect"
+        return "danger"
+
+
+@dataclass(slots=True)
+class NetResult:
+    success: bool = False
+    final_url: str = ""
+    chain: list[str] = field(default_factory=list)
+    domain_age_days: int | None = None
+    cert_valid_days: int | None = None
+    threats: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class Verdict:
+    url: str
+    signals: list[Signal] = field(default_factory=list)
+    net: NetResult | None = None
+
+    @property
+    def score(self) -> int:
+        return min(sum(s.weight for s in self.signals), SCORE_MAX)
+
+    @property
+    def level(self) -> str:
+        for threshold, label in reversed(VERDICT.items()):
+            if self.score >= threshold:
+                return label
+        return "ok"
+
+
+def _deconfuse(text: str) -> str:
+    """Сводит похожие символы к латинице: цифры и чужие алфавиты."""
+    out = []
+    for ch in text:
+        out.append(CONFUSER.get(ch, DIGIT_LETTER.get(ch, ch)))
+    return "".join(out)
+
+
+def _norm(text: str) -> str:
+    """Нормализованный вид домена: только a-z0-9 после деоцифровки."""
+    return re.sub(r"[^a-z0-9]", "", _deconfuse(text))
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        import ipaddress
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_puny(host: str) -> bool:
+    return any(label.lower().startswith("xn--") for label in host.split("."))
+
+
+def _mixed_script(host: str) -> bool:
+    scripts = set()
+    for ch in host.lower():
+        name = unicodedata.name(ch, "")
+        if "LATIN" in name:
+            scripts.add("latin")
+        elif "CYRILLIC" in name:
+            scripts.add("cyrillic")
+        elif "GREEK" in name:
+            scripts.add("greek")
+    return len(scripts) > 1
+
+
+def _extract_registrable(host: str) -> tuple[str, str]:
+    host = host.lower().rstrip(".")
+    labels = host.split(".")
+    if len(labels) == 2:
+        return (labels[0], labels[1])
+    if len(labels) <= 1:
+        return (host, "")
+    s2 = ".".join(labels[-2:])
+    s3 = ".".join(labels[-3:])
+    if s3 in MULTI_SUFFIXES:
+        return (".".join(labels[:-3]) or "", s3)
+    if s2 in MULTI_SUFFIXES:
+        return (".".join(labels[:-2]), s2)
+    if host.endswith(".ru") or host.endswith(".ua"):
+        return (".".join(labels[:-1]), labels[-1])
+    return (".".join(labels[:-2]), s2)
+
+
+def _is_executable(path: str) -> bool:
+    segments = path.split("/")
+    for seg in segments:
+        ext = seg.rsplit(".", 1)[-1].lower() if "." in seg else ""
+        if ext in EXECUTABLE_EXT:
+            return True
+    return False
+
+
+def _is_double_ext(path: str) -> bool:
+    segments = path.split("/")
+    for seg in segments:
+        parts = seg.rsplit(".", 1)
+        if len(parts) == 2 and parts[-1].lower() in EXECUTABLE_EXT and "." in parts[0]:
+            return True
+    return False
+
+
+def analyze(url: str) -> Verdict:
+    v = Verdict(url=url)
+    raw = url.strip()
+
+    if re.search(r"[\u200b\u200c\u200d\u200e\u200f\ufeff]", raw):
+        v.signals.append(Signal("zero_width", 20, "невидимый символ в ссылке"))
+    if raw.rstrip().endswith(".") or raw.endswith("\u2026"):
+        v.signals.append(Signal("trailing_dot", 3, "точка в конце домена"))
+
+    if raw.startswith("javascript:") or raw.startswith("data:") or raw.startswith("file:"):
+        v.signals.append(Signal("executable_scheme", 60, "исполняемая схема"))
+        return v
+
+    if "://" not in raw and re.match(r'^[a-z0-9.-]+\.[a-z]{2,}', raw, re.I):
+        raw = "http://" + raw
+        v.signals.append(Signal("scheme_http", 20, "незащищённое HTTP"))
+
+    match = re.match(r'^([a-z][a-z0-9+.-]*):(?:/{2,3})?([^/]*)(/.*)?$', raw, re.I | re.S)
+    if not match:
+        return v
+
+    scheme, host_part, path_part = match.group(1), match.group(2), match.group(3) or ""
+    scheme = scheme.lower() + ":"
+
+    if scheme not in ("http:", "https:", "ftp:", "mailto:", "tel:", "whatsapp:", "tg:"):
+        v.signals.append(Signal("scheme_suspicious", 35, f"неизвестная схема: {scheme}"))
+    if scheme == "http:":
+        v.signals.append(Signal("scheme_http", 20, "незащищённое HTTP"))
+
+    if "@" in host_part:
+        cred = host_part.split("@")[0]
+        host_part = host_part.split("@")[1]
+        v.signals.append(Signal("userinfo", 45, f"учётные данные: {cred}"))
+
+    if not host_part:
+        return v
+
+    host_clean = host_part.split(":")[0].rstrip(".")
+
+    if _is_ip(host_clean):
+        v.signals.append(Signal("ip_literal", 10, f"IP: {host_clean}"))
+    elif _is_puny(host_clean):
+        v.signals.append(Signal("punycode", 15, "пуньякод"))
+
+    if _mixed_script(host_clean):
+        v.signals.append(Signal("mixed_script", 25, "смешанные алфавиты"))
+        confusable = _deconfuse(host_clean)
+        for brand in BRANDS:
+            if brand in confusable and brand not in host_clean:
+                v.signals.append(Signal("homograph_brand", 70, f"подмена букв с имитацией {brand}"))
+                break
+
+    reg_label, tld = _extract_registrable(host_clean)
+    reg_lower = reg_label.lower()
+
+    for brand, legit in BRANDS.items():
+        if brand in reg_lower:
+            is_legit = any(host_clean == d or host_clean.endswith("." + d) for d in legit)
+            if not is_legit:
+                v.signals.append(Signal("brand_wrong_domain", 40, f"бренд {brand}, домен не из списка"))
+
+    if tld.lstrip(".") in SUSPICIOUS_TLD:
+        v.signals.append(Signal("suspicious_tld", 5, f"подозрительная зона: {tld}"))
+
+    labels = reg_label.split("-")
+    if len(labels) > 1 and any(len(l) > 4 for l in labels):
+        v.signals.append(Signal("hyphen_label", 3, "дефис в метке домена"))
+
+    host_count = len(host_clean.split("."))
+    if host_count > 4:
+        v.signals.append(Signal("subdomain_depth", 6, "глубокая вложенность домена"))
+
+    full = host_clean
+    for short in URL_SHORTENERS:
+        if short in full:
+            v.signals.append(Signal("shortener", 5, f"сокращатель: {short}"))
+            break
+
+    if path_part:
+        path_lower = path_part.lower()
+        for brand in BRANDS:
+            if brand in path_lower and brand not in ALL_LEGIT:
+                v.signals.append(Signal("brand_path", 12, f"бренд {brand} в пути"))
+                break
+
+        for keyword in BAIT_WORDS:
+            if keyword in path_lower or keyword in full:
+                v.signals.append(Signal("bait_word", 8, f"слово-призыв: {keyword}"))
+                break
+
+        if _is_double_ext(path_lower):
+            v.signals.append(Signal("double_ext", 30, "двойное расширение файла"))
+        if _is_executable(path_lower):
+            v.signals.append(Signal("executable_ext", 15, "исполняемый файл"))
+
+    percent = len(re.findall(r"%[0-9a-fA-F]{2}", url))
+    if percent > 3:
+        v.signals.append(Signal("many_escapes", 4, f"{percent} закодированных октетов"))
+
+    domain_norm = _norm(reg_lower)
+    for brand, legit in BRANDS.items():
+        brand_norm = _norm(brand)
+        if levenshtein(domain_norm, brand_norm) <= 2 and domain_norm != brand_norm:
+            if f"{reg_label}.{tld}" not in legit:
+                v.signals.append(Signal("typosquat", 30, f"подобно бренду: {brand}"))
+                break
+
+    for ch in reg_label:
+        if ch.isdigit():
+            v.signals.append(Signal("digits_in_brand", 6, "цифры в имени домена"))
+            break
+
+    return v
+
+
+def levenshtein(a: str, b: str, limit: int = 2) -> int:
+    la, lb = len(a), len(b)
+    if la < lb:
+        a, b, la, lb = b, a, lb, la
+    prev = list(range(lb + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (ca != cb)))
+        prev = curr
+        if min(prev) > limit:
+            return limit + 1
+    return prev[-1]
+RADAR_FILE_99
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_100'
+"""Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
+
+Все функции асинхронны, каждая возвращает деградированный результат
+вместо исключения — так тесты могут подменять сессию, а бот не падает.
+
+Адрес проверяемой ссылки проверяется на частные подсети: запрос
+к 127.0.0.1 или 10.x из бота, живущего на сервере, — это обращение
+к самому серверу, и отдавать его наружу нельзя.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import socket
+import ssl
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+import aiohttp
+
+log = logging.getLogger("radar.linkcheck.netcheck")
+
+TIMEOUT = aiohttp.ClientTimeout(total=12, connect=6)
+MAX_REDIRECTS = 5
+RDAP_BOOTSTRAP = "https://rdap.org/domain/"
+
+
+async def _session() -> aiohttp.ClientSession:
+    return aiohttp.ClientSession(
+        timeout=TIMEOUT,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; LinkCheck/1.0)"},
+        trust_env=True,
+    )
+
+
+def _is_public_ip(ip: str) -> bool:
+    try:
+        import ipaddress
+        addr = ipaddress.ip_address(ip)
+        return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast)
+    except ValueError:
+        return False
+
+
+async def _resolve(host: str) -> list[str]:
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+        return [info[4][0] for info in infos]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("resolve failed %s: %s", host, exc)
+        return []
+
+
+async def expand(url: str) -> "NetResult":
+    from .analyze import NetResult
+
+    res = NetResult()
+    res.chain = [url]
+    cur = url
+
+    for _ in range(MAX_REDIRECTS):
+        parsed = urlparse(cur)
+        host = parsed.netloc.split("@")[-1].split(":")[0]
+        ips = await _resolve(host)
+        if not ips:
+            res.notes.append("dns failed")
+            res.final_url = cur
+            return res
+        if not all(_is_public_ip(ip) for ip in ips):
+            res.notes.append("private ip blocked")
+            res.final_url = cur
+            return res
+
+        try:
+            async with _session() as sess:
+                async with sess.head(cur, allow_redirects=False) as resp:
+                    if 300 <= resp.status < 400:
+                        location = resp.headers.get("Location")
+                        if not location:
+                            break
+                        cur = location if location.startswith("http") else f"{parsed.scheme}://{host}{location}"
+                        res.chain.append(cur)
+                        continue
+                    res.success = True
+                    res.final_url = cur
+                    return res
+        except asyncio.TimeoutError:
+            res.notes.append("timeout")
+            break
+        except Exception as exc:  # noqa: BLE001
+            log.warning("expand failed %s: %s", cur, exc)
+            res.notes.append(f"error: {type(exc).__name__}")
+            break
+    res.final_url = cur
+    return res
+
+
+async def domain_age(host: str) -> "NetResult":
+    from .analyze import NetResult
+
+    res = NetResult()
+    try:
+        async with _session() as sess:
+            async with sess.get(f"{RDAP_BOOTSTRAP}{host}") as resp:
+                if resp.status != 200:
+                    res.notes.append(f"rdap {resp.status}")
+                    return res
+                data = await resp.json(content_type=None)
+                events = data.get("events", [])
+                for ev in events:
+                    if ev.get("eventAction") == "registration":
+                        reg = ev.get("eventDate")
+                        if reg:
+                            dt = datetime.fromisoformat(reg.replace("Z", "+00:00"))
+                            res.domain_age_days = (datetime.now(timezone.utc) - dt).days
+                            break
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rdap failed %s: %s", host, exc)
+        res.notes.append(f"rdap error: {type(exc).__name__}")
+    return res
+
+
+async def safe_browsing(url: str, api_key: str | None) -> "NetResult":
+    from .analyze import NetResult
+
+    res = NetResult()
+    if not api_key:
+        res.notes.append("no api key")
+        return res
+    try:
+        body = {
+            "client": {"clientId": "radar-linkcheck", "clientVersion": "1.0"},
+            "threatInfo": {
+                "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING",
+                                "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"],
+                "platformTypes": ["ANY_PLATFORM"],
+                "threatEntryTypes": ["URL"],
+                "threatEntries": [{"url": url}],
+            },
+        }
+        async with _session() as sess:
+            async with sess.post(
+                f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={api_key}",
+                json=body,
+            ) as resp:
+                if resp.status != 200:
+                    res.notes.append(f"safebrowsing {resp.status}")
+                    return res
+                data = await resp.json(content_type=None)
+                matches = data.get("threatMatches", [])
+                for m in matches:
+                    t = m.get("threatType", "unknown")
+                    res.threats.append(t)
+                res.success = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("safebrowsing failed %s: %s", url, exc)
+        res.notes.append(f"safebrowsing error: {type(exc).__name__}")
+    return res
+
+
+async def cert_info(host: str) -> "NetResult":
+    from .analyze import NetResult
+
+    res = NetResult()
+    writer = None
+    try:
+        loop = asyncio.get_running_loop()
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        # Соединение закрывается в finally независимо от того, дошло ли
+        # дело до сертификата: раньше при отсутствии сокета у writer оно
+        # утекало и висело до таймаута.
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, 443, ssl=ctx),
+            timeout=6,
+        )
+        sock = writer.get_extra_info("socket")
+        if sock:
+            cert = sock.getpeercert()
+            not_after = cert.get("notAfter")
+            if not_after:
+                expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
+                expires = expires.replace(tzinfo=timezone.utc)
+                res.cert_valid_days = (expires - datetime.now(timezone.utc)).days
+                res.success = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cert failed %s: %s", host, exc)
+        res.notes.append(f"cert error: {type(exc).__name__}")
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+    return res
+
+
+async def full_check(url: str, api_key: str | None = None) -> "NetResult":
+    from .analyze import NetResult
+
+    chain = await expand(url)
+    if not chain.success:
+        return chain
+
+    parsed = urlparse(chain.final_url)
+    host = parsed.netloc.split("@")[-1].split(":")[0]
+
+    age = await domain_age(host)
+    sb = await safe_browsing(chain.final_url, api_key)
+    cert = await cert_info(host)
+
+    return NetResult(
+        success=True,
+        final_url=chain.final_url,
+        chain=chain.chain,
+        domain_age_days=age.domain_age_days,
+        cert_valid_days=cert.cert_valid_days,
+        threats=sb.threats,
+        notes=chain.notes + age.notes + sb.notes + cert.notes,
+    )
+RADAR_FILE_100
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_101'
+"""Формирование отчёта для Telegram в виде HTML-сообщения.
+
+Отчёт содержит перечень найденных признаков и сетевые проверки,
+но никогда не утверждает, что ссылка «безопасна».
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import html
+from typing import Any
+
+from .analyze import Verdict
+
+
+def _verdict_icon(level: str) -> str:
+    return {"ok": "✅", "attention": "⚠️", "suspect": "🔶", "danger": "🚨"}.get(level, "❓")
+
+
+def build_report(v: Verdict) -> str:
+    if not v.signals and not v.net:
+        return "Ничего не удалось проанализировать."
+
+    lines: list[str] = ["<b>Результат проверки ссылки</b>\n"]
+    url = html.escape(v.url)
+    lines.append(f"<b>Ссылка:</b> <code>{url}</code>\n")
+
+    if v.signals:
+        lines.append("<b>Признаки из адреса:</b>")
+        for sig in sorted(v.signals, key=lambda s: s.weight, reverse=True):
+            title = html.escape(sig.title)
+            detail = html.escape(sig.detail) if sig.detail else ""
+            lines.append(f"  • <i>{title}</i> ({sig.weight})")
+            if detail:
+                lines.append(f"      <code>{detail}</code>")
+        lines.append("")
+
+    if v.net:
+        lines.append("<b>Сетевые проверки:</b>")
+        if not v.net.success:
+            lines.append("  <i>Не удалось завершить сетевую проверку</i>")
+            if v.net.notes:
+                for note in v.net.notes:
+                    lines.append(f"      <code>{html.escape(note)}</code>")
+        else:
+            if v.net.chain and len(v.net.chain) > 1:
+                lines.append("  <b>Перенаправления:</b>")
+                for hop in v.net.chain:
+                    lines.append(f"      <code>{html.escape(hop)}</code>")
+                lines.append("")
+            if v.net.domain_age_days is not None:
+                age = v.net.domain_age_days
+                lines.append(f"  <i>Возраст домена:</i> {age} дн.")
+                if age < 30:
+                    lines.append("      <i>(домен зарегистрирован недавно)</i>")
+                lines.append("")
+            if v.net.cert_valid_days is not None:
+                days = v.net.cert_valid_days
+                lines.append(f"  <i>Сертификат валиден:</i> {days} дн.")
+                if days < 0:
+                    lines.append("      <i>(сертификат просрочен)</i>")
+                elif days < 7:
+                    lines.append("      <i>(сертификат скоро истекает)</i>")
+                lines.append("")
+            if v.net.threats:
+                lines.append("  <b>⚠️ Обнаружены угрозы по Safe Browsing:</b>")
+                for t in v.net.threats:
+                    lines.append(f"      <code>{html.escape(t)}</code>")
+                lines.append("")
+            if v.net.notes:
+                lines.append("  <b>Примечания сети:</b>")
+                for note in v.net.notes:
+                    lines.append(f"      <code>{html.escape(note)}</code>")
+                lines.append("")
+    score = v.score
+    level = v.level
+    icon = _verdict_icon(level)
+    lines.append(f"<b>Итоговый счёт:</b> {score}/100 {icon}")
+    lines.append(f"<b>Уровень риска:</b> {level.title()}")
+    lines.append("")
+    lines.append(
+        "⚠️ <i>Это не гарантия безопасности. "
+        "Отсутствие признаков не означает, что ссылка полностью безопасна. "
+        "Всегда проверяйте источник через официальные каналы.</i>"
+    )
+    return "\n".join(lines)
+
+
+def build_report_plain(v: Verdict) -> str:
+    if not v.signals and not v.net:
+        return "Ничего не удалось проанализировать."
+
+    lines: list[str] = ["Результат проверки ссылки"]
+    lines.append("")
+    lines.append(f"Ссылка: {v.url}")
+    lines.append("")
+
+    if v.signals:
+        lines.append("Признаки из адреса:")
+        for sig in sorted(v.signals, key=lambda s: s.weight, reverse=True):
+            lines.append(f"  • {sig.title} ({sig.weight})")
+            if sig.detail:
+                lines.append(f"      {sig.detail}")
+        lines.append("")
+
+    if v.net:
+        lines.append("Сетевые проверки:")
+        if not v.net.success:
+            lines.append("  Не удалось завершить сетевую проверку")
+            if v.net.notes:
+                for note in v.net.notes:
+                    lines.append(f"      {note}")
+        else:
+            if v.net.chain and len(v.net.chain) > 1:
+                lines.append("  Перенаправления:")
+                for hop in v.net.chain:
+                    lines.append(f"      {hop}")
+                lines.append("")
+            if v.net.domain_age_days is not None:
+                age = v.net.domain_age_days
+                lines.append(f"  Возраст домена: {age} дн.")
+                if age < 30:
+                    lines.append("      (домен зарегистрирован недавно)")
+                lines.append("")
+            if v.net.cert_valid_days is not None:
+                days = v.net.cert_valid_days
+                lines.append(f"  Сертификат валиден: {days} дн.")
+                if days < 0:
+                    lines.append("      (сертификат просрочен)")
+                elif days < 7:
+                    lines.append("      (сертификат скоро истекает)")
+                lines.append("")
+            if v.net.threats:
+                lines.append("  ⚠️ Обнаружены угрозы по Safe Browsing:")
+                for t in v.net.threats:
+                    lines.append(f"      {t}")
+                lines.append("")
+            if v.net.notes:
+                lines.append("  Примечания сети:")
+                for note in v.net.notes:
+                    lines.append(f"      {note}")
+                lines.append("")
+    score = v.score
+    level = v.level
+    icon = _verdict_icon(level)
+    lines.append(f"Итоговый счёт: {score}/100 {icon}")
+    lines.append(f"Уровень риска: {level.title()}")
+    lines.append("")
+    lines.append(
+        "⚠️ Это не гарантия безопасности. "
+        "Отсутствие признаков не означает, что ссылка полностью безопасна. "
+        "Всегда проверяйте источник через официальные каналы."
+    )
+    return "\n".join(lines)
+RADAR_FILE_101
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

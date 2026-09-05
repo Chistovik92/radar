@@ -122,6 +122,12 @@ MANIFEST = [
     "radar/handlers/digest.py",
     "radar/handlers/subscription.py",
     "radar/handlers/assistant.py",
+    "radar/handlers/linkcheck.py",
+    "multitool/__init__.py",
+    "multitool/linkcheck/__init__.py",
+    "multitool/linkcheck/analyze.py",
+    "multitool/linkcheck/netcheck.py",
+    "multitool/linkcheck/report.py",
 ]
 
 def version() -> str:

@@ -25,6 +25,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py alembic.ini ./
 # Диагностика лежит внутри пакета: tools/ исключён из контекста сборки
 COPY radar ./radar
+# Утилиты мультитула: код бота импортирует их по команде /check
+COPY multitool ./multitool
 COPY migrations ./migrations
 
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app

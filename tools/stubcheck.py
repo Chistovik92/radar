@@ -249,8 +249,10 @@ def main() -> int:
         "radar.tg", "radar.keyboards", "radar.states", "radar.middlewares",
         "radar.monitor", "radar.handlers", "radar.handlers.common",
         "radar.handlers.locations", "radar.handlers.settings",
-        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.settings_admin", "radar.handlers.network", "radar.handlers.digest", "radar.handlers.perf", "radar.handlers.shortlink", "radar.handlers.partners", "radar.handlers.history", "radar.handlers.language", "radar.handlers.assistant",
+        "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.settings_admin", "radar.handlers.network", "radar.handlers.digest", "radar.handlers.perf", "radar.handlers.shortlink", "radar.handlers.partners", "radar.handlers.history", "radar.handlers.language", "radar.handlers.assistant", "radar.handlers.linkcheck", "radar.handlers.subscription", "radar.filedrop", "radar.redeem", "radar.sourceedit", "radar.agents", "radar.timezones",
         "radar.platforms", "radar.platforms.base", "radar.platforms.max",
+        "multitool", "multitool.linkcheck", "multitool.linkcheck.analyze",
+        "multitool.linkcheck.netcheck", "multitool.linkcheck.report",
         "main",
     ]
     failures = 0

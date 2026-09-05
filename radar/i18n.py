@@ -65,6 +65,14 @@ EN_STRINGS: dict[str, str] = {
     "menu.home": "🏠 Main menu",
     "menu.back": "◀️ Back",
 
+    # --- проверка ссылок ---
+    "linkcheck.off": "Link checking is disabled.",
+    "linkcheck.usage": "🔍 Send a link after the command:\n"
+                       "<code>/check https://example.com/page</code>",
+    "linkcheck.working": "⏳ Checking the link…",
+    "linkcheck.slow_down": "⚠️ Too many checks in a row. Wait a minute.",
+    "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
+
     # --- оповещения: самое важное ---
     "alert.danger": "DANGER",
     "alert.utility": "Utilities and outages",

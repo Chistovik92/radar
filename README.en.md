@@ -1,4 +1,4 @@
-# Radar v4.9.3.2
+# Radar v4.9.4
 
 [Русская версия](README.md)
 
@@ -100,6 +100,21 @@ An offset is stored rather than a zone name. The price of that simplicity
 is daylight saving time, which an offset does not track. Russia has not
 changed clocks since 2014, so this costs nothing there; a user in Europe
 or the US adjusts the choice twice a year.
+
+## Link checking
+
+The `/check <link>` command (the `linkcheck` feature flag, off by default)
+analyses an address for phishing signs: homoglyphs imitating a brand,
+a brand in someone else's domain, credentials before `@`, executable
+schemes and files, bait words, shorteners. Network checks: the redirect
+chain, domain age (RDAP), certificate lifetime, Google Safe Browsing
+lists (the key lives in the keys section; without it the network part
+works partially). Disable with `LINKCHECK_NET=0`; the rate is
+`LINKCHECK_RATE_LIMIT` checks per minute (5 by default).
+
+The output lists the signs with weights and **never says "the link is
+safe"** — the absence of signs is not a guarantee. Verify sources through
+official channels.
 
 ## Subscription
 

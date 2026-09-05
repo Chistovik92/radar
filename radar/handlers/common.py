@@ -16,7 +16,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, LinkPreviewOptions, Message
 
-from .. import ai, config, i18n, keyboards, monitor, roles, storage
+from .. import ai, config, features, i18n, keyboards, monitor, roles, storage
 from ..textutils import esc, split_text
 from ..tg import back_kb, safe_edit
 
@@ -157,6 +157,11 @@ async def cmd_help(message: Message, role: str, user: dict) -> None:
         _("help.cmd_basic", "/menu — меню - /id — ваш ID и роль - /cancel — сбросить ввод"),
         _("help.cmd_partner", "/partner — партнёрский проект"),
     ]
+    if features.enabled("linkcheck"):
+        lines.append(_(
+            "help.cmd_linkcheck",
+            "/check &lt;ссылка&gt; — проверить ссылку на признаки мошенничества",
+        ))
     if roles.can_use_assistant(role):
         lines.append(_(
             "help.cmd_assistant",
