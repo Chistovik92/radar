@@ -70,8 +70,7 @@ def host_dir() -> str:
 def ready() -> tuple[bool, str]:
     """Можно ли запускать обновление отсюда. Второе — причина отказа."""
     if not features.enabled("panel_update"):
-        return False, ("Возможность «Обновление из панели» выключена. "
-                       "Включите её в разделе «Возможности».")
+        return False, "Возможность «Обновление из панели» выключена."
     if not os.path.exists(SOCKET):
         return False, ("Сокет Docker не проброшен в контейнер: обновление "
                        "запускать нечем. Нужен свежий docker-compose.yml "

@@ -131,8 +131,21 @@ class PanelRoutes(unittest.TestCase):
         body = self.source[index:index + 400]
         self.assertIn('_guarded_form(request, "superadmin")', body)
 
-    def test_menu_item_follows_the_flag(self) -> None:
-        self.assertIn('if features.enabled("panel_update")', self.source)
+    def test_menu_item_always_visible(self) -> None:
+        # Раздел не прячется за выключенной возможностью: спрятанный пункт
+        # не находят, и включать его человеку оказывается нечем.
+        index = self.source.index('links.append(("/update", "Обновление", "update"))')
+        head = self.source[index - 300:index]
+        self.assertNotIn('if features.enabled("panel_update")', head)
+
+    def test_page_offers_to_enable_itself(self) -> None:
+        self.assertIn('name="key" value="panel_update"', self.source)
+        self.assertIn("Включить обновление из панели", self.source)
+
+    def test_toggle_returns_where_it_came_from(self) -> None:
+        # Иначе включение из раздела «Обновление» выбрасывало бы человека
+        # в «Возможности», и дорогу назад он ищет сам.
+        self.assertIn('name="back" value="/update"', self.source)
 
 
 if __name__ == "__main__":

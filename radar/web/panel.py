@@ -295,8 +295,10 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
-        if features.enabled("panel_update"):
-            links.append(("/update", "Обновление", "update"))
+        # Раздел виден всегда, даже когда возможность выключена: спрятанный
+        # пункт человек не найдёт, а включать будет нечего — тумблер он тоже
+        # не нашёл. Страница сама объясняет, что включить и какой ценой.
+        links.append(("/update", "Обновление", "update"))
         if features.enabled("partners"):
             links.append(("/partners", "Партнёры", "partners"))
     return links
@@ -327,6 +329,29 @@ def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
 
     if not allowed:
         parts.append(f'<div class="card warn">{html.escape(reason)}</div>')
+        if not features.enabled("panel_update"):
+            parts.append(
+                '<div class="card">'
+                '<form method="post" action="/features/toggle">'
+                f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+                '<input type="hidden" name="key" value="panel_update">'
+                '<input type="hidden" name="back" value="/update">'
+                '<button type="submit">Включить обновление из панели</button>'
+                "</form>"
+                "<p class=\"muted\">Чем это оплачено: контейнеру нужен сокет "
+                "Docker, а сокет Docker внутри контейнера равносилен правам "
+                "root на хосте — доступ к панели станет доступом к серверу. "
+                "Выключить можно там же или в разделе «Возможности».</p>"
+                "</div>"
+            )
+        elif "Сокет Docker" in reason or "RADAR_HOST_DIR" in reason:
+            parts.append(
+                '<div class="card muted">Контейнер запущен по старому '
+                "docker-compose.yml. На сервере, в каталоге установки:"
+                "<pre class=\"log\">docker compose up -d --force-recreate</pre>"
+                "Перезапуска мало: сокет и путь установки прописаны в compose "
+                "и подхватываются только при пересоздании контейнера.</div>"
+            )
     elif running:
         parts.append(
             '<div class="card busy"><b>Обновление идёт.</b> '
@@ -1714,7 +1739,13 @@ async def create_app() -> Any:
         audit.record(session.user_key,
                      "возможность включена" if value else "возможность выключена",
                      flag.key)
-        raise web.HTTPFound("/features?ok=" + quote(
+        # Возврат туда, откуда включали: тумблер доступен не только
+        # со страницы возможностей, и выбрасывать человека в другой
+        # раздел — значит заставлять его искать дорогу обратно.
+        back = str(data.get("back", "")) or "/features"
+        if not back.startswith("/") or back.startswith("//"):
+            back = "/features"
+        raise web.HTTPFound(back + "?ok=" + quote(
             f"{flag.title}: {'включено' if value else 'выключено'}"))
 
     async def user_time(request):
