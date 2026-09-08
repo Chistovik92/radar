@@ -3290,6 +3290,18 @@ TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 
 step "$(t step_build)"
 
+# Номер группы docker с этой машины. Сокет принадлежит root:docker с правами
+# 660, а бот работает под uid 1000: без совпадающего номера группы обновление
+# из панели упирается в «Permission denied» на /var/run/docker.sock. Значение
+# у каждой системы своё, поэтому берём его здесь, а не зашиваем в compose.
+DOCKER_GID_VALUE="$(getent group docker 2>/dev/null | cut -d: -f3)"
+if [ -n "$DOCKER_GID_VALUE" ]; then
+    set_env_value DOCKER_GID "$DOCKER_GID_VALUE"
+else
+    warn "Группа docker не найдена — обновление из панели будет недоступно"
+fi
+
+
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"
 info "Часовой пояс: $TZ_VALUE"

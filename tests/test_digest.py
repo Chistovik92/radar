@@ -502,20 +502,45 @@ class TestWebAuth(unittest.TestCase):
         self.assertEqual(session.role, "moderator")
 
     def test_sections_scoped_by_role(self):
-        """Разделы панели повторяют права бота, а не расширяют их."""
+        """Разделы панели повторяют права бота, а не расширяют их.
+
+        С 4.9.8 меню двухуровневое: редкое (копии, партнёры, возможности,
+        журнал) убрано на страницу «Обслуживание». Здесь проверяется
+        доступность, а не место пункта в разметке.
+        """
         from radar.web.panel import _links_for
 
         moderator = {key for _href, _name, key in _links_for("moderator")}
         admin = {key for _href, _name, key in _links_for("admin")}
         owner = {key for _href, _name, key in _links_for("superadmin")}
 
-        self.assertNotIn("features", moderator)
-        self.assertNotIn("audit", moderator)
-        self.assertNotIn("backup", admin)
+        self.assertNotIn("maintenance", moderator)
+        self.assertNotIn("keys", moderator)
+        self.assertNotIn("maintenance", admin)
+        self.assertNotIn("files", admin)
         self.assertIn("events", admin)
-        self.assertIn("backup", owner)
-        self.assertIn("audit", owner)
+        self.assertIn("maintenance", owner)
+        self.assertIn("keys", owner)
+        self.assertIn("media", owner)
         self.assertTrue(moderator < admin < owner)
+
+    def test_navigation_order_matches_use(self):
+        """Порядок разделов: обзор, люди, источники, медиа, агенты."""
+        from radar.web.panel import _nav_groups
+
+        self.assertEqual([group[2] for group in _nav_groups("superadmin")],
+                         ["home", "users", "sources", "media", "agents"])
+
+    def test_rare_pages_still_owner_only(self):
+        """Убрали из меню — не значит открыли: страницы закрыты ролью."""
+        import os
+
+        source = open(os.path.join(ROOT, "radar", "web", "panel.py"),
+                      encoding="utf-8").read()
+        for handler in ("backup_page", "audit_page", "features_page",
+                        "maintenance_page", "media_page"):
+            index = source.index(f"async def {handler}")
+            self.assertIn("@owner_only", source[index - 40:index], handler)
 
     def test_full_flow_admin_passes(self):
         data = self._sign({"id": "42", "auth_date": str(int(time.time()))})

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.7 — автономный установщик.
+# Система «Радар» v4.9.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.7"
+VERSION="4.9.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2750,6 +2750,13 @@ services:
     # WEB_BIND=0.0.0.0 и обязательно WEB_HTTPS=1 с reverse proxy.
     ports:
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+    # Группа docker с хоста. Сокет принадлежит root:docker с правами 660,
+    # а бот работает под пользователем radar (uid 1000): без этой строки
+    # сокет виден, но недоступен — «Permission denied» при первом же
+    # обращении. Номер группы у каждой системы свой, его подставляет
+    # установщик; 999 — самое частое значение в Debian и Ubuntu.
+    group_add:
+      - "${DOCKER_GID:-999}"
     environment:
       # Путь установки на хосте. Нужен обновлению из панели: контейнер
       # монтирует каталог исполнителю по тому же пути, иначе docker compose
@@ -2975,6 +2982,22 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8", [
+        "🗂 <b>Разделы панели перестроены.</b> Их было тринадцать в один "
+        "ряд, стало пять: обзор, пользователи, источники, медиа, агенты. "
+        "Редкое ушло на второй уровень — в подменю раздела: события, "
+        "обслуживание и обновление внутри обзора, ссылки, файлы "
+        "и плейлисты внутри медиа, ключи рядом с агентами.",
+        "📊 <b>Обзор показывает сам бот и сервер.</b> Версия, время "
+        "без перезапуска, память процесса, база, способ отправки файлов, "
+        "нагрузка с долей от числа ядер и занятость диска. Раньше "
+        "на вопрос «почему бот тормозит» панель не отвечала вовсе.",
+        "🔧 <b>Обновление из панели починено.</b> Сокет Docker был виден "
+        "контейнеру, но недоступен: он открыт группе docker, а бот "
+        "работает не от root. Установщик теперь передаёт номер этой "
+        "группы, а страница различает «сокета нет» и «не хватает прав» "
+        "и показывает точные команды.",
+    ]),
     ("4.9.7", [
         "🎛 <b>Четыре темы панели.</b> К светлой и тёмной добавились "
         "«Матрица» — зелёный терминал с дождём символов, командной строкой "
@@ -4254,7 +4277,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.7"
+__version__ = "4.9.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -14788,6 +14811,17 @@ nav a.active { color:#fff; font-weight:600;
 .who { color:var(--muted); font-size:14px; }
 .who a { color:var(--link-dim); }
 
+/* Второй ряд разделов: он часть шапки, поэтому липнет к ней, а не уезжает
+   вверх при прокрутке длинного списка. */
+.subnav { position:sticky; top:0; z-index:4; display:flex; gap:2px;
+          padding:8px 22px; background:var(--surface-2);
+          border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.subnav a { color:var(--muted); text-decoration:none; padding:5px 12px;
+            border-radius:8px; font-size:13.5px; white-space:nowrap; }
+.subnav a:hover { color:var(--text); background:var(--surface-3); }
+.subnav a.active { color:var(--link); background:var(--surface);
+                   box-shadow:inset 0 0 0 1px var(--line); font-weight:600; }
+
 main { padding:24px 22px 40px; max-width:1100px; margin:0 auto; }
 h1 { font-size:22px; margin:0 0 20px; letter-spacing:-.01em; }
 h2 { font-size:16px; margin:0 0 12px; }
@@ -14915,6 +14949,9 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
         scrollbar-width:none; padding-bottom:2px; }
   nav::-webkit-scrollbar { display:none; }
   main { padding:16px 14px 32px; }
+  .subnav { padding:7px 14px; flex-wrap:nowrap; overflow-x:auto;
+            scrollbar-width:none; }
+  .subnav::-webkit-scrollbar { display:none; }
   th, td { padding:9px 10px; }
   .who { font-size:13px; }
 }
@@ -14972,6 +15009,9 @@ THEME_STYLE = """
 @keyframes blink { 50% { opacity:0; } }
 [data-theme="matrix"] nav a.active { background:var(--surface-3); color:var(--accent);
   box-shadow:inset 0 0 0 1px var(--accent); }
+[data-theme="matrix"] .subnav { background:rgba(4,20,10,.9); }
+[data-theme="matrix"] .subnav a.active { color:var(--accent);
+  box-shadow:inset 0 0 0 1px var(--line); }
 [data-theme="matrix"] th { text-transform:uppercase; letter-spacing:.12em;
   color:var(--accent); background:rgba(10,48,24,.6); }
 [data-theme="matrix"] a { text-decoration:underline dotted; }
@@ -15045,6 +15085,9 @@ THEME_STYLE = """
 [data-theme="ark"] th { color:var(--accent); letter-spacing:.1em; }
 [data-theme="ark"] nav a.active { background:transparent; color:var(--accent);
   box-shadow:inset 0 0 0 1px var(--accent), 0 0 16px var(--accent-soft); }
+[data-theme="ark"] .subnav { background:rgba(6,13,22,.7); backdrop-filter:blur(6px); }
+[data-theme="ark"] .subnav a.active { color:var(--accent); background:transparent;
+  box-shadow:inset 0 0 0 1px var(--line); }
 [data-theme="ark"] button { background:linear-gradient(135deg,
   rgba(55,200,255,.18), rgba(255,182,72,.14)); color:var(--text);
   border:1px solid var(--accent); text-transform:uppercase; letter-spacing:.06em;
@@ -15229,29 +15272,77 @@ LIVE_SCRIPT = """
 """
 
 
-def _links_for(role: str) -> list[tuple[str, str, str]]:
-    """Разделы по роли: панель повторяет права бота, а не расширяет их."""
-    links = [("/", "Обзор", "home"), ("/sources", "Источники", "sources")]
-    if roles.is_moderator(role):
-        links.append(("/users", "Пользователи", "users"))
-    if roles.is_admin(role):
-        links.append(("/events", "События", "events"))
-        links.append(("/links", "Ссылки", "links"))
-    if roles.is_superadmin(role):
-        links.append(("/keys", "Ключи", "keys"))
-        links.append(("/agents", "Агенты", "agents"))
-        links.append(("/files", "Файлы", "files"))
-        links.append(("/features", "Возможности", "features"))
-        links.append(("/backup", "Копии", "backup"))
-        links.append(("/audit", "Журнал", "audit"))
+# --------------------------------------------------------------------------
+#  Разделы панели (перестроены в 4.9.8)
+# --------------------------------------------------------------------------
+#
+# Разделов набралось тринадцать, и они лежали одним рядом: «Ключи» стояли
+# рядом с «Копиями», а «Обновление» — рядом с «Журналом». Найти нужное
+# получалось только перебором. Теперь их пять, а редкое спрятано на второй
+# уровень — в подменю раздела, а не в общий ряд.
+#
+# Правила прежние: панель повторяет права бота, а не расширяет их. Пункт,
+# закрытый ролью, не показывается, и раздел без единого доступного пункта
+# не показывается тоже.
+
+def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str]]]]:
+    """Разделы верхнего уровня и их подпункты: (адрес, имя, ключ, подпункты)."""
+    moderator = roles.is_moderator(role)
+    admin = roles.is_admin(role)
+    owner = roles.is_superadmin(role)
+
+    overview = [("/", "Сводка", "home")]
+    if admin:
+        overview.append(("/events", "События", "events"))
+    if owner:
+        overview.append(("/maintenance", "Обслуживание", "maintenance"))
         # Раздел виден всегда, даже когда возможность выключена: спрятанный
         # пункт человек не найдёт, а включать будет нечего — тумблер он тоже
         # не нашёл. Страница сама объясняет, что включить и какой ценой.
-        links.append(("/update", "Обновление", "update"))
-        if features.enabled("partners"):
-            links.append(("/partners", "Партнёры", "partners"))
-    return links
+        overview.append(("/update", "Обновление", "update"))
 
+    media: list[tuple[str, str, str]] = []
+    if admin:
+        media.append(("/links", "Ссылки", "links"))
+    if owner:
+        media.append(("/files", "Файлы", "files"))
+        media.append(("/media", "Плейлисты", "media"))
+
+    agent_items: list[tuple[str, str, str]] = []
+    if owner:
+        agent_items.append(("/agents", "Агенты", "agents"))
+        agent_items.append(("/keys", "Ключи", "keys"))
+
+    groups: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
+        ("/", "Обзор", "home", overview),
+    ]
+    if moderator:
+        groups.append(("/users", "Пользователи", "users", []))
+    groups.append(("/sources", "Источники", "sources", []))
+    if media:
+        groups.append((media[0][0], "Медиа", "media", media))
+    if agent_items:
+        groups.append((agent_items[0][0], "Агенты", "agents", agent_items))
+    return groups
+
+
+def _active_group(groups, active: str):
+    """Раздел, которому принадлежит открытая страница."""
+    for href, name, key, items in groups:
+        if key == active or any(item[2] == active for item in items):
+            return (href, name, key, items)
+    return None
+
+
+def _links_for(role: str) -> list[tuple[str, str, str]]:
+    """Плоский список доступных страниц. Используется проверками прав."""
+    flat: list[tuple[str, str, str]] = []
+    for href, name, key, items in _nav_groups(role):
+        if items:
+            flat.extend(items)
+        else:
+            flat.append((href, name, key))
+    return flat
 
 
 def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
@@ -15292,6 +15383,20 @@ def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
                 "root на хосте — доступ к панели станет доступом к серверу. "
                 "Выключить можно там же или в разделе «Возможности».</p>"
                 "</div>"
+            )
+        elif "не хватает прав" in reason:
+            # Самый частый случай на живом сервере: сокет проброшен, но
+            # контейнер не в группе docker. Даём точные две команды —
+            # искать их по документации в этот момент незачем.
+            parts.append(
+                '<div class="card muted">Контейнеру нужно передать номер '
+                "группы <code>docker</code> с этой машины. На сервере, "
+                "в каталоге установки:"
+                "<pre class=\"log\">echo \"DOCKER_GID=$(getent group docker | "
+                "cut -d: -f3)\" >> .env\n"
+                "docker compose up -d --force-recreate</pre>"
+                "Обновление установщиком делает это само — команды нужны "
+                "только тем, кто обновлялся до 4.9.8.</div>"
             )
         elif "Сокет Docker" in reason or "RADAR_HOST_DIR" in reason:
             parts.append(
@@ -15334,6 +15439,99 @@ def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
     return "".join(parts)
 
 
+def _maintenance_body() -> str:
+    """Обслуживание: то, к чему обращаются редко и по делу.
+
+    Копии, партнёры, возможности и журнал действий раньше висели в общем
+    ряду разделов и мешали каждый день, а нужны раз в месяц. Здесь они
+    собраны вместе, и рядом с каждым — то число, ради которого туда
+    обычно и заходят.
+    """
+    from .. import backup as backup_core
+
+    try:
+        copies = backup_core.listing()
+        last = copies[0].when if copies else "копий нет"
+        copies_line = f"{len(copies)} шт., последняя: {last}"
+    except Exception:  # noqa: BLE001
+        copies_line = "список недоступен"
+
+    try:
+        active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
+        flags_line = f"включено {active} из {len(features.FLAGS)}"
+    except Exception:  # noqa: BLE001
+        flags_line = ""
+
+    items = [
+        ("/backup", "Копии", "Снимок базы и настроек перед изменениями.",
+         copies_line),
+        ("/features", "Возможности", "Что включено в боте прямо сейчас.",
+         flags_line),
+        ("/audit", "Журнал действий", "Кто и что менял через панель.", ""),
+    ]
+    if features.enabled("partners"):
+        items.append(("/partners", "Партнёры", "Проекты и промокоды.", ""))
+
+    cards = "".join(
+        f'<div class="card"><h3><a href="{href}">{html.escape(name)}</a></h3>'
+        f'<p class="muted">{html.escape(about)}</p>'
+        + (f'<p><b>{html.escape(extra)}</b></p>' if extra else "")
+        + "</div>"
+        for href, name, about, extra in items
+    )
+    return f'<div class="grid">{cards}</div>'
+
+
+def _media_body() -> str:
+    """Медиатека: треки и плейлисты по людям.
+
+    Файлы лежат у каждого свои — общей библиотеки в системе нет
+    и не будет. Поэтому здесь не список песен, а расход: у кого сколько
+    занято, чтобы понимать, куда уходит диск одноплатника.
+    """
+    from .. import music
+
+    rows = []
+    total_tracks = 0
+    total_bytes = 0
+    for uid, user in storage.users().items():
+        tracks = music.tracks_of(user)
+        if not tracks:
+            continue
+        size = sum(int(item.get("size") or 0) for item in tracks)
+        total_tracks += len(tracks)
+        total_bytes += size
+        name = user.get("username") or uid
+        rows.append(
+            f"<tr><td>@{html.escape(str(name))}</td>"
+            f"<td>{len(tracks)}</td>"
+            f"<td>{len(music.playlists_of(user))}</td>"
+            f"<td>{html.escape(music.format_size(size))}</td></tr>"
+        )
+
+    if not rows:
+        table = ('<div class="card muted">Треков пока никто не загружал. '
+                 "Раздел включается возможностью «Музыка и плейлисты».</div>")
+    else:
+        table = ('<div class="card"><table><tr><th>Кто</th><th>Треков</th>'
+                 "<th>Плейлистов</th><th>Занято</th></tr>"
+                 + "".join(rows) + "</table></div>")
+
+    state = "включена" if features.enabled("music") else "выключена"
+    return (
+        f'<div class="grid">'
+        f'<div class="card metric"><b>{total_tracks}</b><span>треков всего</span></div>'
+        f'<div class="card metric"><b>{html.escape(music.format_size(total_bytes))}</b>'
+        f"<span>занято на диске</span></div>"
+        f'<div class="card metric"><b>{html.escape(state)}</b>'
+        f"<span>возможность «Музыка»</span></div></div>"
+        f"{table}"
+        '<div class="card muted">Каждый слушает только то, что загрузил сам: '
+        "общей библиотеки нет намеренно — раздача чужих фонограмм превратила бы "
+        "бота в пиратский сервис.</div>"
+    )
+
+
 def _safe_slug(value: str) -> str:
     """Только буквы, цифры, дефис и подчёркивание — для имени файла."""
     return re.sub(r"[^A-Za-z0-9_-]", "", str(value))[:32] or "export"
@@ -15341,16 +15539,26 @@ def _safe_slug(value: str) -> str:
 
 def _layout(title: str, body: str, active: str = "", role: str = "",
             role_key: str = "", refresh: int = 0) -> str:
-    links = _links_for(role_key)
+    groups = _nav_groups(role_key)
+    current = _active_group(groups, active)
     # Автообновление нужно ровно одной странице — той, где идёт обновление
     # системы: шаги дописываются в журнал, и человек должен видеть их
     # без нажатий. На остальных страницах перезагрузка мешала бы формам.
     meta_refresh = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                     if refresh else "")
     nav = "".join(
-        f'<a href="{href}" class="{"active" if key == active else ""}">{name}</a>'
-        for href, name, key in links
+        f'<a href="{href}" class="{"active" if current and key == current[2] else ""}">'
+        f"{name}</a>"
+        for href, name, key, _items in groups
     )
+    # Второй ряд рисуется только там, где есть из чего выбирать: у «Пользователей»
+    # и «Источников» подпунктов нет, и пустая полоса под шапкой сбивала бы с толку.
+    subnav = ""
+    if current and len(current[3]) > 1:
+        subnav = '<div class="subnav">' + "".join(
+            f'<a href="{href}" class="{"active" if key == active else ""}">{name}</a>'
+            for href, name, key in current[3]
+        ) + "</div>"
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -15367,6 +15575,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
   <button id="theme" type="button" aria-label="Сменить тему">☀</button>
   <span class="who">{html.escape(role)} · <a href="/logout">выйти</a></span>
 </header>
+{subnav}
 <main><h1>{html.escape(title)}</h1>{body}</main>
 <script>{THEME_TOGGLE}</script>
 <script>{LIVE_SCRIPT}</script>
@@ -15454,8 +15663,82 @@ def _overview_body() -> str:
     )
     return (
         f'<div class="grid">{cards}</div>'
+        f"{_bot_and_server()}"
         f'<div class="card"><h3>Роли</h3><table>'
         f"<tr><th>Роль</th><th>Человек</th></tr>{roles_rows}</table></div>"
+    )
+
+
+def _human_time(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    if days:
+        return f"{days} д {hours} ч"
+    if hours:
+        return f"{hours} ч {minutes} мин"
+    return f"{minutes} мин"
+
+
+def _bot_and_server() -> str:
+    """Состояние самого бота и машины под ним.
+
+    До 4.9.8 обзор показывал только пересчёт сущностей — сколько
+    пользователей и лент. На вопрос «почему бот тормозит» он не отвечал
+    вовсе, и приходилось идти по SSH. Показания снимаются с /proc
+    средствами `radar/profiling.py`, без лишних зависимостей.
+    """
+    import shutil
+
+    from .. import profiling
+
+    try:
+        memory = profiling.memory_mb()
+        cpu = profiling.cpu_seconds()
+        one, five, fifteen = profiling.load_average()
+        cores = profiling.cpu_count() or 1
+        alive = profiling.uptime()
+    except Exception:  # noqa: BLE001
+        log.warning("Показания производительности недоступны", exc_info=True)
+        return '<div class="card muted">Показания сервера недоступны.</div>'
+
+    # Нагрузка сама по себе ничего не говорит: 2.0 на четырёх ядрах — это
+    # половина машины, а на одном — двойная очередь. Показываем долю.
+    share = one / cores * 100
+    load_class = "ok" if share < 70 else ("warn" if share < 110 else "bad")
+
+    try:
+        usage = shutil.disk_usage("data")
+        free_gb = usage.free / 1024 ** 3
+        used_share = (usage.used / usage.total * 100) if usage.total else 0
+        disk_class = "ok" if used_share < 80 else ("warn" if used_share < 92 else "bad")
+        disk = (f'<tr><td>Диск</td><td class="{disk_class}">'
+                f"занято {used_share:.0f}%, свободно {free_gb:.1f} ГБ</td></tr>")
+    except OSError:
+        disk = '<tr><td>Диск</td><td class="muted">не определён</td></tr>'
+
+    database = "PostgreSQL" if config.DB_BACKEND == "postgres" else "SQLite"
+    api = "свой Bot API Server" if config.uses_local_api() else "общий Telegram"
+
+    return (
+        '<div class="card"><h3>Бот</h3><table>'
+        f"<tr><td>Версия</td><td><b>{html.escape(config.VERSION)}</b></td></tr>"
+        f"<tr><td>Работает без перезапуска</td><td>{_human_time(alive)}</td></tr>"
+        f"<tr><td>Память процесса</td><td>{memory:.0f} МБ</td></tr>"
+        f"<tr><td>Процессорное время</td><td>{_human_time(cpu)}</td></tr>"
+        f"<tr><td>База</td><td>{database}</td></tr>"
+        f"<tr><td>Отправка файлов</td><td>{api}</td></tr>"
+        "</table></div>"
+        '<div class="card"><h3>Сервер</h3><table>'
+        f'<tr><td>Нагрузка</td><td class="{load_class}">{one:.2f} / {five:.2f} / '
+        f"{fifteen:.2f} <span class=\"muted\">({share:.0f}% от {cores} "
+        f"ядер)</span></td></tr>"
+        f"{disk}"
+        "</table>"
+        '<p class="muted">Три числа — средняя очередь за 1, 5 и 15 минут. '
+        "Растущее первое при спокойном третьем значит, что нагрузка "
+        "только что появилась.</p></div>"
     )
 
 
@@ -16797,6 +17080,22 @@ async def create_app() -> Any:
         return web.FileResponse(target)
 
     @owner_only
+    async def maintenance_page(_request, session):
+        return web.Response(
+            text=_layout("Обслуживание", _maintenance_body(), "maintenance",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @owner_only
+    async def media_page(_request, session):
+        return web.Response(
+            text=_layout("Плейлисты", _media_body(), "media",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @owner_only
     async def update_page(request, session):
         from .. import updater
 
@@ -16876,6 +17175,8 @@ async def create_app() -> Any:
         web.get("/backup", backup_page),
         web.post("/backup/create", backup_create),
         web.get("/backup/download", backup_download),
+        web.get("/maintenance", maintenance_page),
+        web.get("/media", media_page),
         web.get("/update", update_page),
         web.post("/update/start", update_start),
         web.get("/health", health),
@@ -25118,6 +25419,15 @@ def ready() -> tuple[bool, str]:
         return False, ("Сокет Docker не проброшен в контейнер: обновление "
                        "запускать нечем. Нужен свежий docker-compose.yml "
                        "и пересоздание контейнера.")
+    # Сокет может быть виден и всё равно недоступен: он принадлежит
+    # root:docker с правами 660, а бот работает под uid 1000. Проверяем
+    # доступ, а не наличие, — иначе человек нажимает кнопку и получает
+    # «Permission denied» вместо понятного объяснения.
+    if not os.access(SOCKET, os.W_OK):
+        return False, ("Сокет Docker виден, но контейнеру не хватает прав "
+                       "на него: бот работает не от root, а сокет открыт "
+                       "только группе docker. Нужно передать контейнеру "
+                       "номер этой группы — DOCKER_GID.")
     if not host_dir():
         return False, ("Не передан путь установки на хосте (RADAR_HOST_DIR). "
                        "Обновите docker-compose.yml и пересоздайте контейнер.")
@@ -36063,6 +36373,18 @@ TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 # --------------------------------------------------------------------------
 
 step "$(t step_build)"
+
+# Номер группы docker с этой машины. Сокет принадлежит root:docker с правами
+# 660, а бот работает под uid 1000: без совпадающего номера группы обновление
+# из панели упирается в «Permission denied» на /var/run/docker.sock. Значение
+# у каждой системы своё, поэтому берём его здесь, а не зашиваем в compose.
+DOCKER_GID_VALUE="$(getent group docker 2>/dev/null | cut -d: -f3)"
+if [ -n "$DOCKER_GID_VALUE" ]; then
+    set_env_value DOCKER_GID "$DOCKER_GID_VALUE"
+else
+    warn "Группа docker не найдена — обновление из панели будет недоступно"
+fi
+
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"

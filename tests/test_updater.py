@@ -57,9 +57,21 @@ class Readiness(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("Сокет Docker", reason)
 
+    def test_refuses_when_socket_not_writable(self) -> None:
+        # Живой случай с сервера: сокет проброшен, но контейнер не в группе
+        # docker — кнопка отвечала «Permission denied» вместо объяснения.
+        features.set_local("panel_update", True)
+        with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.access", return_value=False):
+            allowed, reason = updater.ready()
+        self.assertFalse(allowed)
+        self.assertIn("прав", reason)
+        self.assertIn("DOCKER_GID", reason)
+
     def test_refuses_without_host_dir(self) -> None:
         features.set_local("panel_update", True)
         with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.access", return_value=True), \
              mock.patch.dict(os.environ, {"RADAR_HOST_DIR": ""}, clear=False):
             allowed, reason = updater.ready()
         self.assertFalse(allowed)
@@ -68,6 +80,7 @@ class Readiness(unittest.TestCase):
     def test_ready_when_all_three_hold(self) -> None:
         features.set_local("panel_update", True)
         with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.access", return_value=True), \
              mock.patch.dict(os.environ, {"RADAR_HOST_DIR": "/root/radar_bot"}):
             allowed, reason = updater.ready()
         self.assertTrue(allowed, reason)
@@ -89,6 +102,20 @@ class RunnerRecipe(unittest.TestCase):
                       encoding="utf-8").read()
         self.assertIn('"RADAR_ASKED=1"', source)
         self.assertIn('"NO_ANIMATION=1"', source)
+
+    def test_compose_passes_docker_group(self) -> None:
+        # Без группы docker сокет виден, но недоступен: это и был отказ
+        # «Permission denied» на живом сервере в 4.9.6.1.
+        compose = open(os.path.join(ROOT, "docker-compose.yml"),
+                       encoding="utf-8").read()
+        self.assertIn("group_add", compose)
+        self.assertIn("DOCKER_GID", compose)
+
+    def test_installer_fills_docker_group(self) -> None:
+        template = open(os.path.join(ROOT, "tools", "install.template.sh"),
+                        encoding="utf-8").read()
+        self.assertIn("getent group docker", template)
+        self.assertIn("set_env_value DOCKER_GID", template)
 
     def test_host_path_is_mounted_as_itself(self) -> None:
         # Каталог обязан попасть в исполнитель по своему же пути: иначе
@@ -133,10 +160,25 @@ class PanelRoutes(unittest.TestCase):
 
     def test_menu_item_always_visible(self) -> None:
         # Раздел не прячется за выключенной возможностью: спрятанный пункт
-        # не находят, и включать его человеку оказывается нечем.
-        index = self.source.index('links.append(("/update", "Обновление", "update"))')
-        head = self.source[index - 300:index]
-        self.assertNotIn('if features.enabled("panel_update")', head)
+        # не находят, и включать его человеку оказывается нечем. Проверяем
+        # само меню, а не текст файла: разметка меняется, правило — нет.
+        from radar import features
+        from radar.web import panel
+
+        was = features.enabled("panel_update")
+        features.set_local("panel_update", False)
+        try:
+            pages = [item[2] for item in panel._links_for("superadmin")]
+        finally:
+            features.set_local("panel_update", was)
+        self.assertIn("update", pages)
+
+    def test_update_lives_under_overview(self) -> None:
+        from radar.web import panel
+
+        overview = next(group for group in panel._nav_groups("superadmin")
+                        if group[2] == "home")
+        self.assertIn("update", [item[2] for item in overview[3]])
 
     def test_page_offers_to_enable_itself(self) -> None:
         self.assertIn('name="key" value="panel_update"', self.source)
