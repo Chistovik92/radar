@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.5.5 — автономный установщик.
+# Система «Радар» v4.9.5.6 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.5.5"
+VERSION="4.9.5.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1215,7 +1215,10 @@ set_env_value() {     # set_env_value <ключ> <значение>
     cat "$tmp" > "$file"
     rm -f "$tmp"
     env_fix_perms
-    log_raw "ENV   ${key}=${value}"
+    # Значение в журнал не пишем: через set_env_value проходят пароль базы,
+    # api_hash и соль сократителя, а журналы установки бот отдаёт файлом
+    # и они же уезжают в архив для поддержки.
+    log_raw "ENV   ${key} задан (${#value} знаков)"
 }
 
 get_env_value() {     # get_env_value <ключ>
@@ -2650,10 +2653,12 @@ if [ -d "$APP_DIR/radar" ]; then
     fi
 fi
 
-chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
+# Если chown не прошёл (запуск не от root), права даём владельцу и группе,
+# но не всему миру: в data лежат база, копии с .env внутри и журналы.
+chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=105
+FILE_COUNT=106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2960,6 +2965,23 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.5.6", [
+        "🛡 <b>Ссылки не уводят бота внутрь сети.</b> Разбор ссылки на "
+        "картинку, запись или видео шёл без проверки адреса, и ссылкой "
+        "вида http://127.0.0.1 бота можно было использовать как "
+        "посредника для опроса внутренних служб. Теперь соединение "
+        "открывается только с внешними адресами — и на самом запросе, "
+        "и на каждом перенаправлении.",
+        "🎟 <b>Код подписки не гасится дважды.</b> Два сообщения с одним "
+        "кодом подряд успевали пройти проверку до записи, и дни "
+        "начислялись дважды.",
+        "🔐 <b>Права в панели снимаются сразу.</b> Роль запоминалась при "
+        "входе и жила четыре часа: понижённый администратор всё это "
+        "время сохранял доступ к ключам и копиям.",
+        "🧾 <b>Секреты не попадают в журналы.</b> Пароль базы и ключи "
+        "больше не пишутся в журнал установки, а снимок контейнера "
+        "в архиве для поддержки собирается без переменных окружения.",
+    ]),
     ("4.9.5.5", [
         "🔒 <b>Тариф подписки сверяется со списком.</b> Срок и цена "
         "приходили из нажатой кнопки и принимались на веру, а само "
@@ -4181,7 +4203,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.5.5"
+__version__ = "4.9.5.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -14324,6 +14346,11 @@ class Session:
 _sessions: dict[str, Session] = {}
 _attempts: dict[str, list[float]] = {}
 
+# Чем узнавать роль в дальнейшем. Панель передаёт свой способ при входе:
+# завязываться здесь на хранилище напрямую значило бы тянуть в модуль
+# входа половину бота (и ломать офлайн-проверки).
+_role_lookup = None
+
 
 def _secret_key(bot_token: str) -> bytes:
     """Ключ подписи виджета — SHA-256 от токена бота."""
@@ -14412,6 +14439,9 @@ def authenticate(
     if address:
         clear_failures(address)
 
+    global _role_lookup
+    _role_lookup = role_lookup
+
     session = Session(
         token=secrets_module.token_urlsafe(32),
         user_key=user_key,
@@ -14423,14 +14453,53 @@ def authenticate(
 
 
 def session_by_token(token: str) -> Session | None:
+    """Сессия по токену. Роль перечитывается, а не берётся из снимка.
+
+    До 4.9.5.6 роль запоминалась при входе и жила в сессии четыре часа:
+    понижённый или удалённый суперадминистратор продолжал открывать
+    ключи, возможности и резервные копии до истечения этого срока —
+    в боте права снимались сразу, а в панели нет.
+    """
     session = _sessions.get(token or "")
     if session is None:
         return None
     if session.expired:
         _sessions.pop(token, None)
         return None
+
+    from .. import roles as role_module
+
+    current = current_role(session.user_key)
+    if current is None or not role_module.is_moderator(current):
+        # Права сняли, пока сессия жила: держать её открытой незачем.
+        log.info("Веб-панель: сессия %s закрыта — прав больше нет", session.user_key)
+        _sessions.pop(token, None)
+        return None
+    session.role = current
+
     session.seen = time.time()
     return session
+
+
+def current_role(user_key: str) -> str | None:
+    """Роль из хранилища. None — пользователя больше нет.
+
+    Импорт внутри: хранилище тянет за собой почти весь бот, а модуль
+    входа должен оставаться пригодным для офлайн-проверок.
+    """
+    if _role_lookup is not None:
+        try:
+            return _role_lookup(str(user_key)) or None
+        except Exception:  # noqa: BLE001
+            log.warning("Роль %s не перечитана", user_key, exc_info=True)
+            return None
+
+    try:
+        from .. import storage
+    except Exception:  # noqa: BLE001
+        return None
+
+    return storage.role_of(str(user_key))
 
 
 def drop_session(token: str) -> None:
@@ -14575,6 +14644,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -14744,6 +14814,11 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         if features.enabled("partners"):
             links.append(("/partners", "Партнёры", "partners"))
     return links
+
+
+def _safe_slug(value: str) -> str:
+    """Только буквы, цифры, дефис и подчёркивание — для имени файла."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(value))[:32] or "export"
 
 
 def _layout(title: str, body: str, active: str = "", role: str = "",
@@ -15664,7 +15739,15 @@ async def create_app() -> Any:
 
     async def authenticate(request):
         data = dict(request.query)
-        address = request.headers.get("X-Forwarded-For", request.remote or "")
+        # Заголовку верим только когда панель заведомо стоит за обратным
+        # прокси (WEB_HTTPS=1). Иначе его пишет кто угодно: ротацией
+        # значения обходился лимит попыток, а чужим адресом можно было
+        # закрыть вход конкретному человеку на десять минут.
+        if config.WEB_HTTPS:
+            address = request.headers.get("X-Forwarded-For",
+                                          request.remote or "").split(",")[0].strip()
+        else:
+            address = request.remote or ""
 
         def role_lookup(key: str) -> str:
             user = storage.get_user(key)
@@ -16043,7 +16126,10 @@ async def create_app() -> Any:
             body=payload.encode("utf-8"),
             content_type="text/csv",
             headers={
-                "Content-Disposition": f'attachment; filename="promo-{slug}.csv"',
+                # slug приходит из адреса: кавычка в нём разорвала бы
+                # заголовок, поэтому оставляем только безопасные знаки.
+                "Content-Disposition":
+                    f'attachment; filename="promo-{_safe_slug(slug)}.csv"',
             },
         )
 
@@ -16097,6 +16183,13 @@ async def create_app() -> Any:
         if target is None:
             raise web.HTTPFound("/users?err=" + quote("Пользователь не найден"))
 
+        # В боте эта же правка закрыта can_edit_user, а здесь проверки
+        # не было: модератор менял пояс и время погоды суперадминистратору.
+        # Панель повторяет права бота, а не расширяет их.
+        if not roles.can_edit_user(session.role, target.get("role")):
+            audit.record(session.user_key, "отказ в правке пользователя", key)
+            raise web.HTTPFound("/users?err=" + quote("Недостаточно прав"))
+
         changed = []
         tz = str(data.get("tz", "")).strip()
         if tz:
@@ -16139,13 +16232,17 @@ async def create_app() -> Any:
         from . import backup as backup_module
 
         return web.Response(
-            text=_layout("Резервные копии", backup_module.body(), "backup",
+            text=_layout("Резервные копии",
+                         backup_module.body(auth.csrf_token(session)), "backup",
                          roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @owner_only
-    async def backup_create(request, session):
+    async def backup_create(request):
+        # Было GET: чужая страница редиректом заставляла панель собрать
+        # архив (а в нём копия .env) и занять место на диске. Теперь это
+        # POST с токеном формы, как остальные изменяющие действия.
+        session, _data = await _guarded_form(request, "superadmin")
         from . import backup as backup_module
 
         path, error = await backup_module.create(f"панель:{session.user_key}")
@@ -16167,7 +16264,9 @@ async def create_app() -> Any:
         return web.FileResponse(target)
 
     async def health(_request):
-        return web.json_response({"status": "ok", "version": config.VERSION})
+        # Версию отсюда убрали: маршрут открыт без входа, а точная версия
+        # снаружи — это готовый ответ на вопрос «что здесь уязвимо».
+        return web.json_response({"status": "ok"})
 
     async def follow(request):
         """Переход по короткой ссылке.
@@ -16212,7 +16311,7 @@ async def create_app() -> Any:
         web.post("/users/time", user_time),
         web.get("/audit", audit_page),
         web.get("/backup", backup_page),
-        web.get("/backup/create", backup_create),
+        web.post("/backup/create", backup_create),
         web.get("/backup/download", backup_download),
         web.get("/health", health),
         web.get("/s/{code}", follow),
@@ -16273,7 +16372,7 @@ create = backup_module.create
 find = backup_module.find
 
 
-def body() -> str:
+def body(csrf: str = "") -> str:
     items = backup_module.listing()
     rows = "".join(
         f"<tr><td><code>{html.escape(item.name)}</code></td>"
@@ -16285,7 +16384,11 @@ def body() -> str:
     )
     return (
         '<div class="card">'
-        '<a href="/backup/create" style="color:#5ea8ff">Создать копию сейчас</a>'
+        # Форма, а не ссылка: сборка копии меняет состояние сервера,
+        # и по чужому редиректу она запускаться не должна.
+        '<form method="post" action="/backup/create">'
+        f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
+        '<button type="submit">Создать копию сейчас</button></form>'
         '<p class="muted">В копию входят база целиком, файл настроек '
         "и версия проекта. Журналы не включаются — восстановление от них "
         "не зависит.</p></div>"
@@ -22360,12 +22463,16 @@ cat > "radar/redeem.py" <<'RADAR_FILE_69'
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
 
 log = logging.getLogger("radar.redeem")
+
+# Одна блокировка на весь модуль: гасить коды параллельно нельзя.
+_LOCK = asyncio.Lock()
 
 META_KEY = "redeem_codes"
 
@@ -22448,11 +22555,23 @@ async def redeem(code: str, user_key: str) -> int:
 
     Одноразовость проверяется по записи, а не по факту начисления: иначе
     один и тот же код, введённый дважды подряд, дал бы дни дважды.
+
+    Между проверкой «использован ли код» и записью результата стоит await,
+    а апдейты aiogram обрабатываются параллельными задачами: без общей
+    блокировки два сообщения с одним кодом, отправленные подряд, успевали
+    пройти проверку до первой записи, и дни начислялись дважды. Список
+    лежит одним значением в базе, поэтому уникальным индексом, как
+    у партнёрских промокодов, здесь не обойтись — нужна блокировка.
     """
     code = normalize(code)
     if not CODE_RE.match(code):
         return 0
 
+    async with _LOCK:
+        return await _redeem_locked(code, user_key)
+
+
+async def _redeem_locked(code: str, user_key: str) -> int:
     items = await load()
     for item in items:
         if str(item.get("code")) != code:
@@ -24215,8 +24334,148 @@ async def run() -> None:
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
 RADAR_FILE_75
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netguard.py"
+cat > "radar/netguard.py" <<'RADAR_FILE_76'
+"""Куда боту можно ходить по ссылке, присланной человеком.
+
+Ссылку в бот присылает кто угодно, а запрос по ней делает бот — изнутри
+docker-сети, где рядом стоят база, sing-box и Bot API Server, а у облачных
+хостингов по адресу 169.254.169.254 отвечает служба метаданных. Ссылка
+вида `http://radar_db:5432` или `http://127.0.0.1:8080/keys` превращает
+бота в посредника, через которого снаружи щупают внутреннюю сеть: даже
+код ответа, показанный человеку («сервер ответил кодом 200»), уже
+говорит, что за этим адресом кто-то живёт.
+
+Проверять адрес до запроса мало: сервер отвечает редиректом на
+`127.0.0.1`, а домен с коротким TTL отдаёт публичный адрес на проверку
+и внутренний — на само соединение (DNS rebinding). Поэтому фильтр стоит
+не перед запросом, а в резолвере соединения: aiohttp соединяется только
+с теми адресами, которые вернул резолвер, и каждый редирект проходит
+ту же проверку заново.
+
+Модуль появился в 4.9.5.6 по итогам разбора: в linkcheck такая проверка
+была с самого начала (`multitool/linkcheck/netcheck.py`), а в разборе
+ссылок на картинки и видео её не было вовсе.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import ipaddress
+import logging
+import socket
+from urllib.parse import urlparse
+
+log = logging.getLogger("radar.netguard")
+
+
+def is_public_ip(value: str) -> bool:
+    """Публичный ли адрес. Всё сомнительное считаем внутренним."""
+    try:
+        addr = ipaddress.ip_address(value.split("%", 1)[0])
+    except ValueError:
+        return False
+    return not (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+def _resolver_base():
+    """DefaultResolver aiohttp. Импорт внутри: офлайн-проверки без сети."""
+    import aiohttp
+
+    return aiohttp.DefaultResolver()
+
+
+def resolver():
+    """Резолвер, который отдаёт только публичные адреса.
+
+    Наследование объявлено здесь, а не на уровне модуля: базовый класс
+    живёт в aiohttp, а он в офлайн-проверках подменяется заглушкой.
+    """
+    import aiohttp
+
+    class PublicOnlyResolver(aiohttp.abc.AbstractResolver):
+        def __init__(self) -> None:
+            self._inner = _resolver_base()
+
+        async def resolve(self, host, port=0, family=socket.AF_INET):
+            infos = await self._inner.resolve(host, port, family)
+            allowed = [item for item in infos if is_public_ip(str(item["host"]))]
+            if not allowed:
+                log.info("Адрес %s ведёт во внутреннюю сеть — запрос отклонён", host)
+                raise OSError(f"адрес {host} ведёт во внутреннюю сеть")
+            return allowed
+
+        async def close(self) -> None:
+            await self._inner.close()
+
+    return PublicOnlyResolver()
+
+
+def connector(**kwargs):
+    """TCPConnector, который не соединится с внутренним адресом."""
+    import aiohttp
+
+    kwargs.setdefault("resolver", resolver())
+    kwargs.setdefault("ttl_dns_cache", 0)   # иначе кэш пережил бы проверку
+    return aiohttp.TCPConnector(**kwargs)
+
+
+def host_of(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").strip()
+    except ValueError:
+        return ""
+
+
+async def allowed(url: str) -> bool:
+    """Ведёт ли ссылка наружу. Для тех, кому резолвер не подставить.
+
+    yt-dlp ходит своей сетевой частью, и резолвер aiohttp на неё
+    не действует — там остаётся только проверка до запроса. От подмены
+    адреса между проверкой и запросом она не спасает, но закрывает
+    прямые ссылки на внутренние адреса, а это основной случай.
+    """
+    import asyncio
+
+    host = host_of(url)
+    if not host:
+        return False
+
+    # Адрес мог быть записан числом — тогда резолвить нечего.
+    try:
+        ipaddress.ip_address(host)
+        return is_public_ip(host)
+    except ValueError:
+        pass
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        log.info("Имя %s не разобрано: %s", host, exc)
+        return False
+
+    addresses = [str(info[4][0]) for info in infos]
+    if not addresses:
+        return False
+    # Достаточно одного внутреннего адреса, чтобы отказать: имя с двумя
+    # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
+    return all(is_public_ip(item) for item in addresses)
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_77'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -24282,9 +24541,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_78'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -24727,9 +24986,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_79'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -24895,9 +25154,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_80'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -25016,6 +25275,12 @@ async def set_interval(call: CallbackQuery, user: dict[str, Any], role: str) -> 
         minutes = int(parts[2])
     except (IndexError, ValueError):
         await call.answer()
+        return
+    # Кнопки предлагают разумные значения, но callback_data пишет клиент:
+    # без границ «раз в минуту» гнало бы погоду на каждый цикл монитора
+    # по каждой локации. Текстовый ввод те же границы проверял всегда.
+    if minutes and not 15 <= minutes <= 1440:
+        await call.answer("Интервал — от 15 минут до суток.", show_alert=True)
         return
     target = parts[3] if len(parts) > 3 else ""
 
@@ -25396,9 +25661,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_81'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -25873,9 +26138,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_82'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -26242,9 +26507,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_83'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -26391,9 +26656,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_84'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -26681,9 +26946,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_85'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -26890,9 +27155,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_86'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -27263,9 +27528,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_87'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -27840,9 +28105,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_88'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -27943,9 +28208,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_89'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -28035,9 +28300,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_90'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -28458,9 +28723,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_91'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -28500,6 +28765,7 @@ from .. import (
     images,
     media,
     mediaquota,
+    netguard,
     roles,
     storage,
     subscription,
@@ -28714,7 +28980,10 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     photos: list[tuple[bytes, str]] = []
     heavy: list[tuple[bytes, str]] = []
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+    # Резолвер отсекает внутренние адреса — и на самом запросе,
+    # и на каждом редиректе: ссылку присылает кто угодно.
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers,
+                                     connector=netguard.connector()) as session:
         markup = await images.fetch_page(session, url)
         links = images.from_page(markup, url)
         if not links:
@@ -28808,9 +29077,10 @@ async def _send_image(message: Message, url: str, user: dict | None = None) -> N
 
     timeout = aiohttp.ClientTimeout(total=120)
     headers = {"User-Agent": config.USER_AGENT}
-    connector = None
+    # Тот же резолвер, что и для страниц записей: ссылка на картинку —
+    # это ссылка от человека, и вести она может куда угодно.
     async with aiohttp.ClientSession(timeout=timeout, headers=headers,
-                                     connector=connector) as session:
+                                     connector=netguard.connector()) as session:
         data, complaint = await images.fetch(session, url, limit_mb)
 
     if not data:
@@ -28851,6 +29121,11 @@ async def send_description(call: CallbackQuery) -> None:
     request = _pending.get(token)
     if request is None:
         await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    # Владельца сверяем, как в med:get: токен короткий, а описание чужой
+    # публикации показывать посторонним незачем.
+    if request.get("owner") != call.from_user.id:
+        await call.answer("Это чужой запрос.", show_alert=True)
         return
     await call.answer()
     await call.message.answer(images.format_description(request.get("info") or {}))
@@ -29393,6 +29668,9 @@ async def back_to_formats(call: CallbackQuery) -> None:
     if request is None:
         await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
         return
+    if request.get("owner") != call.from_user.id:
+        await call.answer("Это чужой запрос.", show_alert=True)
+        return
     await call.answer()
     limit_mb = media.size_limit_mb(config.uses_local_api())
     await safe_edit(
@@ -29610,9 +29888,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_92'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -30343,9 +30621,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_93'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -30664,6 +30942,9 @@ def _write_config(server: proxy.Server) -> bool:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(proxy.render_config(server))
+        # В файле адрес узла и его пароль либо UUID: каталог data
+        # смонтирован с хоста, и права по умолчанию отдали бы их всем.
+        os.chmod(path, 0o600)
         return True
     except OSError as exc:
         log.error("Конфигурация sing-box не записана: %s", exc)
@@ -30866,9 +31147,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_92
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_94'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -31281,9 +31562,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_93
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_95'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -31546,9 +31827,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_94
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_96'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -31698,9 +31979,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_95
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_97'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -32168,9 +32449,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_96
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_97'
+cat > "radar/cookies.py" <<'RADAR_FILE_98'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -32301,9 +32582,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_98'
+cat > "radar/music.py" <<'RADAR_FILE_99'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -32811,9 +33092,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_100'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -33318,9 +33599,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_100'
+cat > "multitool/__init__.py" <<'RADAR_FILE_101'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -33346,9 +33627,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_100'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_101'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_102'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -33381,9 +33662,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_101'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_101
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_102'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_103'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -33789,9 +34070,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_102
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_103'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_104'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -33827,10 +34108,32 @@ RDAP_BOOTSTRAP = "https://rdap.org/domain/"
 
 
 async def _session() -> aiohttp.ClientSession:
+    """Сессия, которая не соединится с внутренним адресом.
+
+    Проверка `_is_public_ip` ниже делается ДО запроса, а соединение
+    открывается по имени — то есть с повторным разрешением имени.
+    Домен с коротким TTL отдавал публичный адрес на проверку
+    и `127.0.0.1` на само соединение (DNS rebinding). Резолвер
+    в соединителе закрывает и это, и редиректы.
+    """
+    connector = None
+    try:
+        import sys, os
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from radar import netguard
+
+        connector = netguard.connector()
+    except Exception:  # noqa: BLE001
+        # Модуль бота рядом не оказался — остаётся проверка до запроса.
+        log.warning("netguard недоступен, соединение без фильтра адресов")
+
     return aiohttp.ClientSession(
         timeout=TIMEOUT,
         headers={"User-Agent": "Mozilla/5.0 (compatible; LinkCheck/1.0)"},
         trust_env=True,
+        connector=connector,
     )
 
 
@@ -34160,9 +34463,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_103
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_104'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_105'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -34349,7 +34652,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_104
+RADAR_FILE_105
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -34379,7 +34682,18 @@ cp "$APP_DIR"/data/logs/bot.log* "$STAGE/bot/" 2>/dev/null || true
 for container in radar_container radar_db; do
     if docker inspect "$container" >/dev/null 2>&1; then
         docker logs --tail 3000 "$container" > "$STAGE/docker/$container.log" 2>&1 || true
-        docker inspect "$container" > "$STAGE/docker/$container.inspect.json" 2>/dev/null || true
+        # Без --format в снимок попадал Config.Env, а туда Compose кладёт
+        # весь .env: токен бота, ключи ИИ и пароль базы уезжали в архив,
+        # на котором ниже написано «секреты не попадают».
+        {
+            printf '{\n'
+            printf '  "Image": %s,\n' "$(docker inspect --format '{{json .Config.Image}}' "$container" 2>/dev/null || echo null)"
+            printf '  "Created": %s,\n' "$(docker inspect --format '{{json .Created}}' "$container" 2>/dev/null || echo null)"
+            printf '  "RestartCount": %s,\n' "$(docker inspect --format '{{.RestartCount}}' "$container" 2>/dev/null || echo 0)"
+            printf '  "State": %s,\n' "$(docker inspect --format '{{json .State}}' "$container" 2>/dev/null || echo null)"
+            printf '  "Mounts": %s\n' "$(docker inspect --format '{{json .Mounts}}' "$container" 2>/dev/null || echo null)"
+            printf '}\n'
+        } > "$STAGE/docker/$container.inspect.json" 2>/dev/null || true
         echo "  + $container"
     fi
 done
@@ -35446,6 +35760,11 @@ offer_tls() {
 
     if RADAR_HOME="$APP_DIR" bash "$APP_DIR/tls.sh" "$domain"; then
         setup_shortener "$domain"
+
+        # Панель теперь за HTTPS, и cookie сессии обязана уходить только
+        # по нему. Раньше флаг нигде не выставлялся: сертификат был,
+        # а кука ходила без Secure — при первом заходе на http её видно.
+        set_env_value WEB_HTTPS 1
 
         # Домен для входа в панель привязывается у BotFather, а не здесь.
         # Без этого шага виджет Telegram пишет «Bot domain invalid»,

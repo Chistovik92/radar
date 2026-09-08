@@ -16,7 +16,7 @@ create = backup_module.create
 find = backup_module.find
 
 
-def body() -> str:
+def body(csrf: str = "") -> str:
     items = backup_module.listing()
     rows = "".join(
         f"<tr><td><code>{html.escape(item.name)}</code></td>"
@@ -28,7 +28,11 @@ def body() -> str:
     )
     return (
         '<div class="card">'
-        '<a href="/backup/create" style="color:#5ea8ff">Создать копию сейчас</a>'
+        # Форма, а не ссылка: сборка копии меняет состояние сервера,
+        # и по чужому редиректу она запускаться не должна.
+        '<form method="post" action="/backup/create">'
+        f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
+        '<button type="submit">Создать копию сейчас</button></form>'
         '<p class="muted">В копию входят база целиком, файл настроек '
         "и версия проекта. Журналы не включаются — восстановление от них "
         "не зависит.</p></div>"

@@ -37,6 +37,7 @@ from .. import (
     images,
     media,
     mediaquota,
+    netguard,
     roles,
     storage,
     subscription,
@@ -251,7 +252,10 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     photos: list[tuple[bytes, str]] = []
     heavy: list[tuple[bytes, str]] = []
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+    # Резолвер отсекает внутренние адреса — и на самом запросе,
+    # и на каждом редиректе: ссылку присылает кто угодно.
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers,
+                                     connector=netguard.connector()) as session:
         markup = await images.fetch_page(session, url)
         links = images.from_page(markup, url)
         if not links:
@@ -345,9 +349,10 @@ async def _send_image(message: Message, url: str, user: dict | None = None) -> N
 
     timeout = aiohttp.ClientTimeout(total=120)
     headers = {"User-Agent": config.USER_AGENT}
-    connector = None
+    # Тот же резолвер, что и для страниц записей: ссылка на картинку —
+    # это ссылка от человека, и вести она может куда угодно.
     async with aiohttp.ClientSession(timeout=timeout, headers=headers,
-                                     connector=connector) as session:
+                                     connector=netguard.connector()) as session:
         data, complaint = await images.fetch(session, url, limit_mb)
 
     if not data:
@@ -388,6 +393,11 @@ async def send_description(call: CallbackQuery) -> None:
     request = _pending.get(token)
     if request is None:
         await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    # Владельца сверяем, как в med:get: токен короткий, а описание чужой
+    # публикации показывать посторонним незачем.
+    if request.get("owner") != call.from_user.id:
+        await call.answer("Это чужой запрос.", show_alert=True)
         return
     await call.answer()
     await call.message.answer(images.format_description(request.get("info") or {}))
@@ -929,6 +939,9 @@ async def back_to_formats(call: CallbackQuery) -> None:
     request = _pending.get(token)
     if request is None:
         await call.answer("Запрос устарел — пришлите ссылку заново.", show_alert=True)
+        return
+    if request.get("owner") != call.from_user.id:
+        await call.answer("Это чужой запрос.", show_alert=True)
         return
     await call.answer()
     limit_mb = media.size_limit_mb(config.uses_local_api())

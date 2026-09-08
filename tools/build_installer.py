@@ -102,6 +102,7 @@ MANIFEST = [
     "radar/states.py",
     "radar/middlewares.py",
     "radar/monitor.py",
+    "radar/netguard.py",
     "radar/handlers/__init__.py",
     "radar/handlers/common.py",
     "radar/handlers/locations.py",

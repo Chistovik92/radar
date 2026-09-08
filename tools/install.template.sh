@@ -1215,7 +1215,10 @@ set_env_value() {     # set_env_value <ключ> <значение>
     cat "$tmp" > "$file"
     rm -f "$tmp"
     env_fix_perms
-    log_raw "ENV   ${key}=${value}"
+    # Значение в журнал не пишем: через set_env_value проходят пароль базы,
+    # api_hash и соль сократителя, а журналы установки бот отдаёт файлом
+    # и они же уезжают в архив для поддержки.
+    log_raw "ENV   ${key} задан (${#value} знаков)"
 }
 
 get_env_value() {     # get_env_value <ключ>
@@ -2650,7 +2653,9 @@ if [ -d "$APP_DIR/radar" ]; then
     fi
 fi
 
-chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R a+rwX "$APP_DIR/data"
+# Если chown не прошёл (запуск не от root), права даём владельцу и группе,
+# но не всему миру: в data лежат база, копии с .env внутри и журналы.
+chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 @@FILES@@
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
@@ -2682,7 +2687,18 @@ cp "$APP_DIR"/data/logs/bot.log* "$STAGE/bot/" 2>/dev/null || true
 for container in radar_container radar_db; do
     if docker inspect "$container" >/dev/null 2>&1; then
         docker logs --tail 3000 "$container" > "$STAGE/docker/$container.log" 2>&1 || true
-        docker inspect "$container" > "$STAGE/docker/$container.inspect.json" 2>/dev/null || true
+        # Без --format в снимок попадал Config.Env, а туда Compose кладёт
+        # весь .env: токен бота, ключи ИИ и пароль базы уезжали в архив,
+        # на котором ниже написано «секреты не попадают».
+        {
+            printf '{\n'
+            printf '  "Image": %s,\n' "$(docker inspect --format '{{json .Config.Image}}' "$container" 2>/dev/null || echo null)"
+            printf '  "Created": %s,\n' "$(docker inspect --format '{{json .Created}}' "$container" 2>/dev/null || echo null)"
+            printf '  "RestartCount": %s,\n' "$(docker inspect --format '{{.RestartCount}}' "$container" 2>/dev/null || echo 0)"
+            printf '  "State": %s,\n' "$(docker inspect --format '{{json .State}}' "$container" 2>/dev/null || echo null)"
+            printf '  "Mounts": %s\n' "$(docker inspect --format '{{json .Mounts}}' "$container" 2>/dev/null || echo null)"
+            printf '}\n'
+        } > "$STAGE/docker/$container.inspect.json" 2>/dev/null || true
         echo "  + $container"
     fi
 done
@@ -3749,6 +3765,11 @@ offer_tls() {
 
     if RADAR_HOME="$APP_DIR" bash "$APP_DIR/tls.sh" "$domain"; then
         setup_shortener "$domain"
+
+        # Панель теперь за HTTPS, и cookie сессии обязана уходить только
+        # по нему. Раньше флаг нигде не выставлялся: сертификат был,
+        # а кука ходила без Secure — при первом заходе на http её видно.
+        set_env_value WEB_HTTPS 1
 
         # Домен для входа в панель привязывается у BotFather, а не здесь.
         # Без этого шага виджет Telegram пишет «Bot domain invalid»,

@@ -27,12 +27,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
 
 log = logging.getLogger("radar.redeem")
+
+# Одна блокировка на весь модуль: гасить коды параллельно нельзя.
+_LOCK = asyncio.Lock()
 
 META_KEY = "redeem_codes"
 
@@ -115,11 +119,23 @@ async def redeem(code: str, user_key: str) -> int:
 
     Одноразовость проверяется по записи, а не по факту начисления: иначе
     один и тот же код, введённый дважды подряд, дал бы дни дважды.
+
+    Между проверкой «использован ли код» и записью результата стоит await,
+    а апдейты aiogram обрабатываются параллельными задачами: без общей
+    блокировки два сообщения с одним кодом, отправленные подряд, успевали
+    пройти проверку до первой записи, и дни начислялись дважды. Список
+    лежит одним значением в базе, поэтому уникальным индексом, как
+    у партнёрских промокодов, здесь не обойтись — нужна блокировка.
     """
     code = normalize(code)
     if not CODE_RE.match(code):
         return 0
 
+    async with _LOCK:
+        return await _redeem_locked(code, user_key)
+
+
+async def _redeem_locked(code: str, user_key: str) -> int:
     items = await load()
     for item in items:
         if str(item.get("code")) != code:

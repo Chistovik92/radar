@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -188,6 +189,11 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         if features.enabled("partners"):
             links.append(("/partners", "Партнёры", "partners"))
     return links
+
+
+def _safe_slug(value: str) -> str:
+    """Только буквы, цифры, дефис и подчёркивание — для имени файла."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(value))[:32] or "export"
 
 
 def _layout(title: str, body: str, active: str = "", role: str = "",
@@ -1108,7 +1114,15 @@ async def create_app() -> Any:
 
     async def authenticate(request):
         data = dict(request.query)
-        address = request.headers.get("X-Forwarded-For", request.remote or "")
+        # Заголовку верим только когда панель заведомо стоит за обратным
+        # прокси (WEB_HTTPS=1). Иначе его пишет кто угодно: ротацией
+        # значения обходился лимит попыток, а чужим адресом можно было
+        # закрыть вход конкретному человеку на десять минут.
+        if config.WEB_HTTPS:
+            address = request.headers.get("X-Forwarded-For",
+                                          request.remote or "").split(",")[0].strip()
+        else:
+            address = request.remote or ""
 
         def role_lookup(key: str) -> str:
             user = storage.get_user(key)
@@ -1487,7 +1501,10 @@ async def create_app() -> Any:
             body=payload.encode("utf-8"),
             content_type="text/csv",
             headers={
-                "Content-Disposition": f'attachment; filename="promo-{slug}.csv"',
+                # slug приходит из адреса: кавычка в нём разорвала бы
+                # заголовок, поэтому оставляем только безопасные знаки.
+                "Content-Disposition":
+                    f'attachment; filename="promo-{_safe_slug(slug)}.csv"',
             },
         )
 
@@ -1541,6 +1558,13 @@ async def create_app() -> Any:
         if target is None:
             raise web.HTTPFound("/users?err=" + quote("Пользователь не найден"))
 
+        # В боте эта же правка закрыта can_edit_user, а здесь проверки
+        # не было: модератор менял пояс и время погоды суперадминистратору.
+        # Панель повторяет права бота, а не расширяет их.
+        if not roles.can_edit_user(session.role, target.get("role")):
+            audit.record(session.user_key, "отказ в правке пользователя", key)
+            raise web.HTTPFound("/users?err=" + quote("Недостаточно прав"))
+
         changed = []
         tz = str(data.get("tz", "")).strip()
         if tz:
@@ -1583,13 +1607,17 @@ async def create_app() -> Any:
         from . import backup as backup_module
 
         return web.Response(
-            text=_layout("Резервные копии", backup_module.body(), "backup",
+            text=_layout("Резервные копии",
+                         backup_module.body(auth.csrf_token(session)), "backup",
                          roles.title(session.role), session.role),
             content_type="text/html",
         )
 
-    @owner_only
-    async def backup_create(request, session):
+    async def backup_create(request):
+        # Было GET: чужая страница редиректом заставляла панель собрать
+        # архив (а в нём копия .env) и занять место на диске. Теперь это
+        # POST с токеном формы, как остальные изменяющие действия.
+        session, _data = await _guarded_form(request, "superadmin")
         from . import backup as backup_module
 
         path, error = await backup_module.create(f"панель:{session.user_key}")
@@ -1611,7 +1639,9 @@ async def create_app() -> Any:
         return web.FileResponse(target)
 
     async def health(_request):
-        return web.json_response({"status": "ok", "version": config.VERSION})
+        # Версию отсюда убрали: маршрут открыт без входа, а точная версия
+        # снаружи — это готовый ответ на вопрос «что здесь уязвимо».
+        return web.json_response({"status": "ok"})
 
     async def follow(request):
         """Переход по короткой ссылке.
@@ -1656,7 +1686,7 @@ async def create_app() -> Any:
         web.post("/users/time", user_time),
         web.get("/audit", audit_page),
         web.get("/backup", backup_page),
-        web.get("/backup/create", backup_create),
+        web.post("/backup/create", backup_create),
         web.get("/backup/download", backup_download),
         web.get("/health", health),
         web.get("/s/{code}", follow),

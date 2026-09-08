@@ -56,6 +56,11 @@ class Session:
 _sessions: dict[str, Session] = {}
 _attempts: dict[str, list[float]] = {}
 
+# Чем узнавать роль в дальнейшем. Панель передаёт свой способ при входе:
+# завязываться здесь на хранилище напрямую значило бы тянуть в модуль
+# входа половину бота (и ломать офлайн-проверки).
+_role_lookup = None
+
 
 def _secret_key(bot_token: str) -> bytes:
     """Ключ подписи виджета — SHA-256 от токена бота."""
@@ -144,6 +149,9 @@ def authenticate(
     if address:
         clear_failures(address)
 
+    global _role_lookup
+    _role_lookup = role_lookup
+
     session = Session(
         token=secrets_module.token_urlsafe(32),
         user_key=user_key,
@@ -155,14 +163,53 @@ def authenticate(
 
 
 def session_by_token(token: str) -> Session | None:
+    """Сессия по токену. Роль перечитывается, а не берётся из снимка.
+
+    До 4.9.5.6 роль запоминалась при входе и жила в сессии четыре часа:
+    понижённый или удалённый суперадминистратор продолжал открывать
+    ключи, возможности и резервные копии до истечения этого срока —
+    в боте права снимались сразу, а в панели нет.
+    """
     session = _sessions.get(token or "")
     if session is None:
         return None
     if session.expired:
         _sessions.pop(token, None)
         return None
+
+    from .. import roles as role_module
+
+    current = current_role(session.user_key)
+    if current is None or not role_module.is_moderator(current):
+        # Права сняли, пока сессия жила: держать её открытой незачем.
+        log.info("Веб-панель: сессия %s закрыта — прав больше нет", session.user_key)
+        _sessions.pop(token, None)
+        return None
+    session.role = current
+
     session.seen = time.time()
     return session
+
+
+def current_role(user_key: str) -> str | None:
+    """Роль из хранилища. None — пользователя больше нет.
+
+    Импорт внутри: хранилище тянет за собой почти весь бот, а модуль
+    входа должен оставаться пригодным для офлайн-проверок.
+    """
+    if _role_lookup is not None:
+        try:
+            return _role_lookup(str(user_key)) or None
+        except Exception:  # noqa: BLE001
+            log.warning("Роль %s не перечитана", user_key, exc_info=True)
+            return None
+
+    try:
+        from .. import storage
+    except Exception:  # noqa: BLE001
+        return None
+
+    return storage.role_of(str(user_key))
 
 
 def drop_session(token: str) -> None:

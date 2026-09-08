@@ -316,6 +316,9 @@ def _write_config(server: proxy.Server) -> bool:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(proxy.render_config(server))
+        # В файле адрес узла и его пароль либо UUID: каталог data
+        # смонтирован с хоста, и права по умолчанию отдали бы их всем.
+        os.chmod(path, 0o600)
         return True
     except OSError as exc:
         log.error("Конфигурация sing-box не записана: %s", exc)

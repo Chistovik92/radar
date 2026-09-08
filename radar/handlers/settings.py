@@ -117,6 +117,12 @@ async def set_interval(call: CallbackQuery, user: dict[str, Any], role: str) -> 
     except (IndexError, ValueError):
         await call.answer()
         return
+    # Кнопки предлагают разумные значения, но callback_data пишет клиент:
+    # без границ «раз в минуту» гнало бы погоду на каждый цикл монитора
+    # по каждой локации. Текстовый ввод те же границы проверял всегда.
+    if minutes and not 15 <= minutes <= 1440:
+        await call.answer("Интервал — от 15 минут до суток.", show_alert=True)
+        return
     target = parts[3] if len(parts) > 3 else ""
 
     subject = _subject(call, user, role, target)

@@ -33,10 +33,32 @@ RDAP_BOOTSTRAP = "https://rdap.org/domain/"
 
 
 async def _session() -> aiohttp.ClientSession:
+    """Сессия, которая не соединится с внутренним адресом.
+
+    Проверка `_is_public_ip` ниже делается ДО запроса, а соединение
+    открывается по имени — то есть с повторным разрешением имени.
+    Домен с коротким TTL отдавал публичный адрес на проверку
+    и `127.0.0.1` на само соединение (DNS rebinding). Резолвер
+    в соединителе закрывает и это, и редиректы.
+    """
+    connector = None
+    try:
+        import sys, os
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from radar import netguard
+
+        connector = netguard.connector()
+    except Exception:  # noqa: BLE001
+        # Модуль бота рядом не оказался — остаётся проверка до запроса.
+        log.warning("netguard недоступен, соединение без фильтра адресов")
+
     return aiohttp.ClientSession(
         timeout=TIMEOUT,
         headers={"User-Agent": "Mozilla/5.0 (compatible; LinkCheck/1.0)"},
         trust_env=True,
+        connector=connector,
     )
 
 
