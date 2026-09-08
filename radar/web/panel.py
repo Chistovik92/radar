@@ -30,107 +30,216 @@ from . import auth
 log = logging.getLogger("radar.web")
 
 PAGE_STYLE = """
-/* Две темы. Значения собраны в переменные, чтобы правка цвета
-   не расползалась по десятку правил: у панели один набор ролей —
-   фон, поверхность, текст, приглушённый текст, рамка, ссылка. */
+/* Оформление панели. Две темы, один набор ролей у цвета: фон, поверхность,
+   текст, приглушённый текст, рамка, ссылка и три состояния — хорошо,
+   внимание, плохо. Правка цвета делается в одном месте, а не расползается
+   по десятку правил.
+
+   Насыщенность здесь не для красоты: администрация открывает панель
+   в основном когда что-то пошло не так, и состояние должно читаться
+   до чтения текста — цветом строки и полосой на карточке. */
 :root {
-  --bg: #171b24; --surface: #1f2532; --surface-2: #262d3d;
-  --text: #e8ecf3; --muted: #92a0b8; --line: #2b3242;
-  --link: #5ea8ff; --link-dim: #9fb4d4;
-  --ok: #6bd08a; --warn: #ffc45e; --bad: #ff7a7a;
-  --shadow: 0 1px 3px rgba(0,0,0,.35);
+  --bg: #141824; --surface: #1c2230; --surface-2: #232b3b; --surface-3: #2b3446;
+  --text: #e9edf5; --muted: #93a1ba; --line: #2c3548;
+  --link: #62a9ff; --link-dim: #a3b6d6;
+  --accent: #4f8cff; --accent-2: #7b6bff;
+  --ok: #5ed49a; --warn: #ffc861; --bad: #ff7d85;
+  --ok-soft: rgba(94,212,154,.14); --warn-soft: rgba(255,200,97,.14);
+  --bad-soft: rgba(255,125,133,.14); --accent-soft: rgba(79,140,255,.14);
+  --shadow: 0 1px 2px rgba(0,0,0,.30), 0 8px 24px rgba(0,0,0,.22);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.28);
+  --radius: 14px;
   color-scheme: dark;
 }
-/* Светлая тема. Не инверсия тёмной: на белом фоне те же насыщенности
-   выжигают глаза, поэтому акценты взяты темнее, а поверхности — почти
-   белые с ощутимой рамкой, иначе карточки сливаются с фоном. */
+/* Светлая тема — не инверсия тёмной: на белом те же насыщенности выжигают
+   глаза, поэтому акценты темнее, поверхности почти белые, а рамка заметная,
+   иначе карточки сливаются с фоном. */
 [data-theme="light"] {
-  --bg: #eef1f6; --surface: #ffffff; --surface-2: #f4f6fa;
-  --text: #1b212c; --muted: #5d6a80; --line: #d7dde8;
-  --link: #1f6fd0; --link-dim: #46536a;
-  --ok: #1f8a4c; --warn: #96650a; --bad: #c0342c;
-  --shadow: 0 1px 3px rgba(16,24,40,.08);
+  --bg: #eef1f7; --surface: #ffffff; --surface-2: #f4f6fb; --surface-3: #e9edf5;
+  --text: #182031; --muted: #5b6880; --line: #d9dfeb;
+  --link: #1a68ce; --link-dim: #44526a;
+  --accent: #2f6fe0; --accent-2: #6a52e0;
+  --ok: #157f47; --warn: #8a5a06; --bad: #c3302c;
+  --ok-soft: rgba(21,127,71,.10); --warn-soft: rgba(138,90,6,.10);
+  --bad-soft: rgba(195,48,44,.10); --accent-soft: rgba(47,111,224,.10);
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 10px 24px rgba(16,24,40,.07);
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.07);
   color-scheme: light;
 }
 
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
-       font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+       font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       -webkit-font-smoothing:antialiased; }
 
-header { background:var(--surface); padding:12px 22px; display:flex;
-         align-items:center; gap:16px; border-bottom:1px solid var(--line);
-         position:sticky; top:0; z-index:5; flex-wrap:wrap; }
-header .brand { font-weight:700; font-size:17px; letter-spacing:.2px; }
-/* Версия рядом с названием: по скриншоту из панели должно быть видно,
-   какая версия установлена, — иначе разбор «а у вас какая?» начинается
-   с лишнего вопроса. */
-.version { color:var(--muted); font-size:12px; margin-left:-10px;
-           align-self:flex-start; padding-top:2px; }
+/* --- шапка ------------------------------------------------------------ */
+header { background:var(--surface); padding:10px 22px; display:flex;
+         align-items:center; gap:14px; border-bottom:1px solid var(--line);
+         position:sticky; top:0; z-index:5; flex-wrap:wrap;
+         box-shadow:var(--shadow-sm); }
+/* Тонкая цветная полоса сверху: единственное чисто декоративное место,
+   зато панель ни с чем не спутаешь на скриншоте. */
+header::before { content:""; position:absolute; inset:0 0 auto 0; height:3px;
+                 background:linear-gradient(90deg,var(--accent),var(--accent-2)); }
+header .brand { font-weight:700; font-size:17px; letter-spacing:.2px;
+                display:flex; align-items:center; gap:8px; }
+header .brand::before { content:""; width:9px; height:9px; border-radius:50%;
+                        background:var(--ok);
+                        box-shadow:0 0 0 4px var(--ok-soft); }
+/* Версия рядом с названием: по скриншоту должно быть видно, какая версия
+   установлена, иначе разбор начинается с лишнего вопроса. */
+.version { color:var(--muted); font-size:12px; margin-left:-4px;
+           padding:2px 8px; border-radius:999px; background:var(--surface-2);
+           border:1px solid var(--line); }
+
 nav { display:flex; gap:4px; flex-wrap:wrap; }
-nav a { color:var(--link-dim); text-decoration:none; padding:6px 10px;
-        border-radius:7px; white-space:nowrap; }
-nav a:hover { color:var(--link); background:var(--surface-2); }
-nav a.active { color:var(--link); background:var(--surface-2); font-weight:600; }
+nav a { color:var(--link-dim); text-decoration:none; padding:7px 12px;
+        border-radius:999px; white-space:nowrap; font-size:14px;
+        transition:background .15s, color .15s; }
+nav a:hover { color:var(--text); background:var(--surface-2); }
+nav a.active { color:#fff; font-weight:600;
+               background:linear-gradient(135deg,var(--accent),var(--accent-2));
+               box-shadow:0 2px 10px var(--accent-soft); }
+[data-theme="light"] nav a.active { color:#fff; }
 .spacer { margin-left:auto; }
 .who { color:var(--muted); font-size:14px; }
 .who a { color:var(--link-dim); }
 
-main { padding:22px; max-width:1100px; margin:0 auto; }
-h1 { font-size:21px; margin:0 0 18px; }
+main { padding:24px 22px 40px; max-width:1100px; margin:0 auto; }
+h1 { font-size:22px; margin:0 0 20px; letter-spacing:-.01em; }
+h2 { font-size:16px; margin:0 0 12px; }
 h3 { margin:0 0 12px; font-size:16px; }
+a { color:var(--link); }
 
+/* --- таблицы ---------------------------------------------------------- */
 table { width:100%; border-collapse:collapse; background:var(--surface);
-        border-radius:10px; overflow:hidden; box-shadow:var(--shadow); }
-th, td { padding:10px 14px; text-align:left; border-bottom:1px solid var(--line); }
-th { color:var(--muted); font-weight:600; font-size:13px; text-transform:uppercase;
-     letter-spacing:.03em; }
+        border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow-sm); }
+th, td { padding:11px 14px; text-align:left; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase;
+     letter-spacing:.04em; background:var(--surface-2); position:sticky; top:0; }
+tbody tr:nth-child(even) td, tr:nth-child(even) td { background:var(--surface-2); }
+tr:hover td { background:var(--surface-3); }
 tr:last-child td { border-bottom:none; }
+td code { font-size:13px; }
 
-.card { background:var(--surface); border-radius:10px; padding:18px;
-        margin-bottom:16px; box-shadow:var(--shadow); }
+/* --- карточки --------------------------------------------------------- */
+.card { background:var(--surface); border-radius:var(--radius); padding:18px 20px;
+        margin-bottom:16px; box-shadow:var(--shadow-sm);
+        border:1px solid var(--line); transition:box-shadow .18s, transform .18s; }
+.card:hover { box-shadow:var(--shadow); }
 .card table { box-shadow:none; background:transparent; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+.card th { position:static; }
+.card > :first-child { margin-top:0; }
+.card > :last-child { margin-bottom:0; }
+/* Состояние карточки читается полосой слева — до чтения самого текста. */
+.card.warn, .card.bad, .card.busy, .card.good {
+  border-left:4px solid var(--line); }
+.card.warn { border-left-color:var(--warn); background:
+             linear-gradient(90deg,var(--warn-soft),transparent 240px), var(--surface);
+             color:var(--text); }
+.card.bad  { border-left-color:var(--bad); background:
+             linear-gradient(90deg,var(--bad-soft),transparent 240px), var(--surface);
+             color:var(--text); }
+.card.good { border-left-color:var(--ok); background:
+             linear-gradient(90deg,var(--ok-soft),transparent 240px), var(--surface); }
+.card.busy { border-left-color:var(--accent); position:relative; overflow:hidden; }
+/* Полоса «идёт работа»: без неё страница с журналом выглядит замершей. */
+.card.busy::after { content:""; position:absolute; left:0; right:0; bottom:0;
+  height:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  animation:slide 1.6s linear infinite; }
+@keyframes slide { from { transform:translateX(-100%); }
+                   to   { transform:translateX(100%); } }
+
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
         gap:14px; margin-bottom:20px; }
-.metric b { display:block; font-size:26px; margin-bottom:4px; }
+.metric { position:relative; }
+.metric b { display:block; font-size:28px; line-height:1.15; margin-bottom:4px;
+            letter-spacing:-.02em; }
 .metric span { color:var(--muted); font-size:13px; }
+
 .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
 .muted { color:var(--muted); }
-.login { max-width:420px; margin:80px auto; text-align:center; }
+.hint { color:var(--muted); font-size:13px; }
+.login { max-width:430px; margin:80px auto; text-align:center; }
 
+/* Значок состояния — для мест, где слово «включено» тонет в тексте. */
+.badge { display:inline-block; padding:2px 9px; border-radius:999px;
+         font-size:12px; font-weight:600; border:1px solid transparent; }
+.badge.ok { background:var(--ok-soft); border-color:var(--ok); }
+.badge.warn { background:var(--warn-soft); border-color:var(--warn); }
+.badge.bad { background:var(--bad-soft); border-color:var(--bad); }
+
+/* --- формы ------------------------------------------------------------ */
 form.inline { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
 input[type=text], input[type=password], input[type=url], textarea, select {
-  padding:9px 12px; border-radius:8px; border:1px solid var(--line);
-  background:var(--bg); color:var(--text); font:inherit; }
+  padding:10px 12px; border-radius:10px; border:1px solid var(--line);
+  background:var(--bg); color:var(--text); font:inherit;
+  transition:border-color .15s, box-shadow .15s; }
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 form.inline input[type=text], form.inline input[type=password],
 form.inline input[type=url] { flex:1 1 240px; }
 textarea { width:100%; min-height:70px; resize:vertical; }
-button { padding:9px 16px; border-radius:8px; border:none; cursor:pointer;
-         background:var(--link); color:#fff; font:inherit; }
-button:hover { filter:brightness(1.08); }
-button.ghost { background:var(--surface-2); color:var(--text);
-               padding:5px 11px; font-size:13px; }
-button.ghost:hover { filter:brightness(1.06); }
-button.danger { background:var(--bad); }
 
-.note { padding:11px 14px; border-radius:8px; margin-bottom:16px; }
-.note.good { background:color-mix(in srgb, var(--ok) 18%, var(--surface));
-             color:var(--ok); }
-.note.bad { background:color-mix(in srgb, var(--bad) 18%, var(--surface));
-            color:var(--bad); }
-.keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:12px 0;
+button { padding:10px 18px; border-radius:10px; border:none; cursor:pointer;
+         background:linear-gradient(135deg,var(--accent),var(--accent-2));
+         color:#fff; font:inherit; font-weight:600;
+         box-shadow:0 2px 10px var(--accent-soft);
+         transition:transform .12s, filter .15s, box-shadow .15s; }
+button:hover { filter:brightness(1.06); transform:translateY(-1px); }
+button:active { transform:translateY(0); }
+button:focus-visible { outline:none; box-shadow:0 0 0 3px var(--accent-soft); }
+button.ghost { background:var(--surface-2); color:var(--text); box-shadow:none;
+               border:1px solid var(--line); padding:6px 12px; font-size:13px;
+               font-weight:500; }
+button.ghost:hover { background:var(--surface-3); }
+button.danger { background:linear-gradient(135deg,var(--bad),#d9534f);
+                box-shadow:0 2px 10px var(--bad-soft); }
+button.ghost.danger { background:var(--surface-2); color:var(--bad);
+                      border-color:var(--bad); }
+
+.note { padding:12px 15px; border-radius:10px; margin-bottom:16px;
+        border:1px solid transparent; font-weight:500; }
+.note.good { background:var(--ok-soft); color:var(--ok); border-color:var(--ok); }
+.note.bad { background:var(--bad-soft); color:var(--bad); border-color:var(--bad); }
+
+.keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:13px 0;
           border-bottom:1px solid var(--line); }
 .keyrow:last-child { border-bottom:none; }
 .keyrow .hint { color:var(--muted); font-size:13px; }
 
-/* Переключатель темы. Кнопка, а не хитрый ползунок: она читается
-   без объяснений и работает без мыши. */
-#theme { background:var(--surface-2); color:var(--text); padding:6px 11px;
-         font-size:14px; line-height:1; }
+/* Журнал установки: моноширинный, со своей прокруткой — иначе длинные
+   строки установщика растягивают страницу по горизонтали. */
+pre.log { background:var(--bg); border:1px solid var(--line); border-radius:10px;
+          padding:14px; max-height:420px; overflow:auto; font-size:12.5px;
+          line-height:1.5; white-space:pre-wrap; word-break:break-word;
+          margin:0; color:var(--text); }
+code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
+       font-size:13px; }
 
-@media (max-width: 640px) {
+/* Переключатель темы. Кнопка, а не хитрый ползунок: читается без
+   объяснений и работает без мыши. */
+#theme { background:var(--surface-2); color:var(--text); padding:7px 11px;
+         font-size:14px; line-height:1; box-shadow:none;
+         border:1px solid var(--line); font-weight:400; }
+#theme:hover { background:var(--surface-3); transform:none; }
+
+@media (max-width: 780px) {
   header { padding:10px 14px; gap:10px; }
-  main { padding:14px; }
-  th, td { padding:8px 10px; }
+  /* Разделов много, и на телефоне они не должны занимать пол-экрана:
+     строка прокручивается вбок, а не переносится. */
+  nav { flex-wrap:nowrap; overflow-x:auto; max-width:100%;
+        scrollbar-width:none; padding-bottom:2px; }
+  nav::-webkit-scrollbar { display:none; }
+  main { padding:16px 14px 32px; }
+  th, td { padding:9px 10px; }
+  .who { font-size:13px; }
+}
+
+/* Уважение к системной настройке: анимация полосы «идёт работа»
+   выключается, если человек попросил меньше движения. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation:none !important; transition:none !important; }
 }
 """
 
@@ -186,9 +295,69 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
+        if features.enabled("panel_update"):
+            links.append(("/update", "Обновление", "update"))
         if features.enabled("partners"):
             links.append(("/partners", "Партнёры", "partners"))
     return links
+
+
+
+def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
+    """Страница обновления системы.
+
+    Показывает не «идёт/не идёт», а сами шаги: установщик пишет журнал
+    в data/logs, и человеку важно видеть, на чём он сейчас — иначе
+    минуты сборки образа выглядят как зависшая кнопка.
+    """
+    from .. import updater
+
+    allowed, reason = updater.ready()
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    parts.append(
+        '<div class="card">'
+        f"<p>Установленная версия: <b>{html.escape(config.VERSION)}</b></p>"
+        "<p class=\"muted\">Обновление выполняет тот же <code>install.sh</code>, "
+        "что и на сервере: снимок перед заменой, сборка образа, перезапуск. "
+        "Ответы на вопросы установщику не нужны — он идёт по обычному пути "
+        "обновления поверх.</p></div>"
+    )
+
+    if not allowed:
+        parts.append(f'<div class="card warn">{html.escape(reason)}</div>')
+    elif running:
+        parts.append(
+            '<div class="card busy"><b>Обновление идёт.</b> '
+            "<p class=\"muted\">Страница обновляется сама каждые пять секунд. "
+            "На шаге пересборки панель ненадолго станет недоступна — "
+            "это перезапускается сам контейнер бота. После возврата "
+            "откройте эту страницу снова: журнал дочитается до конца.</p></div>"
+        )
+    else:
+        parts.append(
+            '<div class="card">'
+            '<form method="post" action="/update/start">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            '<button type="submit" class="danger">Обновить систему</button>'
+            "</form>"
+            "<p class=\"muted\">Бот будет недоступен несколько минут: "
+            "на одноплатнике сборка образа занимает больше всего времени. "
+            "Оповещения в это время не рассылаются.</p></div>"
+        )
+
+    name, text = updater.progress(60)
+    if text:
+        parts.append(
+            '<div class="card"><h2>Шаги установки</h2>'
+            f'<p class="muted">Журнал: <code>{html.escape(name)}</code></p>'
+            f"<pre class=\"log\">{html.escape(text)}</pre></div>"
+        )
+    else:
+        parts.append('<div class="card muted">Журналов установки пока нет.</div>')
+
+    return "".join(parts)
 
 
 def _safe_slug(value: str) -> str:
@@ -197,8 +366,13 @@ def _safe_slug(value: str) -> str:
 
 
 def _layout(title: str, body: str, active: str = "", role: str = "",
-            role_key: str = "") -> str:
+            role_key: str = "", refresh: int = 0) -> str:
     links = _links_for(role_key)
+    # Автообновление нужно ровно одной странице — той, где идёт обновление
+    # системы: шаги дописываются в журнал, и человек должен видеть их
+    # без нажатий. На остальных страницах перезагрузка мешала бы формам.
+    meta_refresh = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
+                    if refresh else "")
     nav = "".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{name}</a>'
         for href, name, key in links
@@ -206,6 +380,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+{meta_refresh}
 <title>{html.escape(title)} — Радар</title>
 <script>{THEME_SCRIPT}</script>
 <style>{PAGE_STYLE}</style></head>
@@ -1638,6 +1813,36 @@ async def create_app() -> Any:
         audit.record(session.user_key, "скачана копия", name)
         return web.FileResponse(target)
 
+    @owner_only
+    async def update_page(request, session):
+        from .. import updater
+
+        busy = await updater.running()
+        return web.Response(
+            text=_layout(
+                "Обновление",
+                _update_body(session, busy,
+                             request.query.get("ok", ""),
+                             request.query.get("err", "")),
+                "update", roles.title(session.role), session.role,
+                refresh=5 if busy else 0,
+            ),
+            content_type="text/html",
+        )
+
+    async def update_start(request):
+        from .. import updater
+
+        session, _data = await _guarded_form(request, "superadmin")
+        started, reason = await updater.start(f"панель:{session.user_key}")
+        if not started:
+            audit.record(session.user_key, "обновление не запущено", reason)
+            raise web.HTTPFound("/update?err=" + quote(reason))
+        audit.record(session.user_key, "запущено обновление системы",
+                     config.VERSION)
+        raise web.HTTPFound("/update?ok=" + quote(
+            "Обновление запущено — шаги ниже"))
+
     async def health(_request):
         # Версию отсюда убрали: маршрут открыт без входа, а точная версия
         # снаружи — это готовый ответ на вопрос «что здесь уязвимо».
@@ -1688,6 +1893,8 @@ async def create_app() -> Any:
         web.get("/backup", backup_page),
         web.post("/backup/create", backup_create),
         web.get("/backup/download", backup_download),
+        web.get("/update", update_page),
+        web.post("/update/start", update_start),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),

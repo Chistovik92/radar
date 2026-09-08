@@ -1164,6 +1164,35 @@ in 4.9.5.2 — the skeleton is ready:
 
 ---
 
+## 4.9.6 — updating from the panel ✅ implemented
+
+Until 4.9.6 an update could only be started from the server: SSH in,
+run `install.sh`. The "Update" section in the panel does the same with
+one button and shows the steps — the installer already wrote a step-by-step
+log into `data/logs`, the panel simply reads the latest one.
+
+1. **Button and steps** ✅ an "Update" section for the superadmin:
+   installed version, the start button, and the live installer log
+   (the page refreshes itself while the work is running). During the
+   image rebuild the panel is briefly unavailable — that is the bot's
+   own container restarting.
+2. **How it runs** ✅ the panel starts a one-off `docker:cli` container
+   through the Docker socket and runs `install.sh` inside it with
+   `RADAR_ASKED=1`. The install directory is mounted at its own path:
+   otherwise `docker compose` would hand the daemon paths that do not
+   exist on the host.
+3. **The price of this.** A Docker socket inside the container is
+   equivalent to root on the host, so the `panel_update` feature is
+   **off by default** and has to be enabled deliberately. The panel still
+   runs no arbitrary commands — only one fixed scenario: there is no
+   server terminal in the panel and there never will be.
+4. **Panel styling** ✅ reworked along with the section: state reads as
+   colour (a stripe on the card, status badges in tables), the active
+   section stands out, the installer log scrolls on its own, and on
+   a phone the section row scrolls sideways instead of wrapping.
+
+---
+
 ## 5.5 — Discord
 
 The "other messengers" section is split per platform: they differ not in the

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.5.6 — автономный установщик.
+# Система «Радар» v4.9.6 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.5.6"
+VERSION="4.9.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2658,7 +2658,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=106
+FILE_COUNT=107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2750,8 +2750,18 @@ services:
     # WEB_BIND=0.0.0.0 и обязательно WEB_HTTPS=1 с reverse proxy.
     ports:
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+    environment:
+      # Путь установки на хосте. Нужен обновлению из панели: контейнер
+      # монтирует каталог исполнителю по тому же пути, иначе docker compose
+      # передал бы демону несуществующие на хосте пути томов.
+      RADAR_HOST_DIR: ${PWD}
     volumes:
       - ./data:/app/data
+      # Сокет Docker — только для обновления из панели (возможность
+      # panel_update, по умолчанию выключена). Держать его смонтированным
+      # означает дать контейнеру права, равные root на хосте: включайте
+      # возможность, только понимая эту цену.
+      - /var/run/docker.sock:/var/run/docker.sock
       # .env смонтирован, а не только передан через env_file. Без этого
       # бот читал ключи из окружения, которое Compose впрыскивает ОДИН РАЗ,
       # при создании контейнера: правка .env на хосте не действовала до
@@ -2965,6 +2975,21 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.6", [
+        "🔄 <b>Обновление из панели.</b> Раздел «Обновление» у "
+        "суперадминистратора: одна кнопка запускает тот же install.sh, "
+        "что и на сервере, а шаги установки видны прямо на странице — "
+        "она обновляется сама, пока идёт работа. На пересборке образа "
+        "панель ненадолго недоступна: перезапускается контейнер бота.",
+        "🔐 <b>Возможность выключена по умолчанию.</b> Чтобы контейнер мог "
+        "обновить систему, ему нужен сокет Docker, а это равносильно "
+        "правам root на хосте. Включать — понимая цену; произвольных "
+        "команд панель по-прежнему не выполняет.",
+        "🎨 <b>Оформление панели.</b> Состояние читается цветом: полоса "
+        "у карточки, значки в таблицах, выделенный раздел. Журнал "
+        "установки со своей прокруткой, на телефоне разделы "
+        "прокручиваются вбок вместо переноса.",
+    ]),
     ("4.9.5.6", [
         "🛡 <b>Ссылки не уводят бота внутрь сети.</b> Разбор ссылки на "
         "картинку, запись или видео шёл без проверки адреса, и ссылкой "
@@ -4203,7 +4228,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.5.6"
+__version__ = "4.9.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6073,6 +6098,13 @@ FLAGS: tuple[Flag, ...] = (
          "процессор на десятки минут, поэтому идёт с пониженным "
          "приоритетом: оповещения важнее ролика.",
          group="Инфраструктура", since="4.7.12", default=False),
+    Flag("panel_update", "Обновление из панели",
+         "Кнопка «Обновить систему» в веб-панели: обновление запускается "
+         "одноразовым контейнером, шаги видны в панели. Требует сокет "
+         "Docker внутри контейнера, а это равносильно правам root "
+         "на хосте — поэтому по умолчанию выключено и включается "
+         "осознанно.",
+         group="Инфраструктура", since="4.9.6", default=False),
     Flag("restart_notice", "Ответ написавшим во время работ",
          "После перезапуска бот пишет тем, кто обращался, пока он был "
          "выключен: их сообщения Telegram не сохраняет, и без этого "
@@ -14655,107 +14687,216 @@ from . import auth
 log = logging.getLogger("radar.web")
 
 PAGE_STYLE = """
-/* Две темы. Значения собраны в переменные, чтобы правка цвета
-   не расползалась по десятку правил: у панели один набор ролей —
-   фон, поверхность, текст, приглушённый текст, рамка, ссылка. */
+/* Оформление панели. Две темы, один набор ролей у цвета: фон, поверхность,
+   текст, приглушённый текст, рамка, ссылка и три состояния — хорошо,
+   внимание, плохо. Правка цвета делается в одном месте, а не расползается
+   по десятку правил.
+
+   Насыщенность здесь не для красоты: администрация открывает панель
+   в основном когда что-то пошло не так, и состояние должно читаться
+   до чтения текста — цветом строки и полосой на карточке. */
 :root {
-  --bg: #171b24; --surface: #1f2532; --surface-2: #262d3d;
-  --text: #e8ecf3; --muted: #92a0b8; --line: #2b3242;
-  --link: #5ea8ff; --link-dim: #9fb4d4;
-  --ok: #6bd08a; --warn: #ffc45e; --bad: #ff7a7a;
-  --shadow: 0 1px 3px rgba(0,0,0,.35);
+  --bg: #141824; --surface: #1c2230; --surface-2: #232b3b; --surface-3: #2b3446;
+  --text: #e9edf5; --muted: #93a1ba; --line: #2c3548;
+  --link: #62a9ff; --link-dim: #a3b6d6;
+  --accent: #4f8cff; --accent-2: #7b6bff;
+  --ok: #5ed49a; --warn: #ffc861; --bad: #ff7d85;
+  --ok-soft: rgba(94,212,154,.14); --warn-soft: rgba(255,200,97,.14);
+  --bad-soft: rgba(255,125,133,.14); --accent-soft: rgba(79,140,255,.14);
+  --shadow: 0 1px 2px rgba(0,0,0,.30), 0 8px 24px rgba(0,0,0,.22);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.28);
+  --radius: 14px;
   color-scheme: dark;
 }
-/* Светлая тема. Не инверсия тёмной: на белом фоне те же насыщенности
-   выжигают глаза, поэтому акценты взяты темнее, а поверхности — почти
-   белые с ощутимой рамкой, иначе карточки сливаются с фоном. */
+/* Светлая тема — не инверсия тёмной: на белом те же насыщенности выжигают
+   глаза, поэтому акценты темнее, поверхности почти белые, а рамка заметная,
+   иначе карточки сливаются с фоном. */
 [data-theme="light"] {
-  --bg: #eef1f6; --surface: #ffffff; --surface-2: #f4f6fa;
-  --text: #1b212c; --muted: #5d6a80; --line: #d7dde8;
-  --link: #1f6fd0; --link-dim: #46536a;
-  --ok: #1f8a4c; --warn: #96650a; --bad: #c0342c;
-  --shadow: 0 1px 3px rgba(16,24,40,.08);
+  --bg: #eef1f7; --surface: #ffffff; --surface-2: #f4f6fb; --surface-3: #e9edf5;
+  --text: #182031; --muted: #5b6880; --line: #d9dfeb;
+  --link: #1a68ce; --link-dim: #44526a;
+  --accent: #2f6fe0; --accent-2: #6a52e0;
+  --ok: #157f47; --warn: #8a5a06; --bad: #c3302c;
+  --ok-soft: rgba(21,127,71,.10); --warn-soft: rgba(138,90,6,.10);
+  --bad-soft: rgba(195,48,44,.10); --accent-soft: rgba(47,111,224,.10);
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 10px 24px rgba(16,24,40,.07);
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.07);
   color-scheme: light;
 }
 
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
-       font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+       font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       -webkit-font-smoothing:antialiased; }
 
-header { background:var(--surface); padding:12px 22px; display:flex;
-         align-items:center; gap:16px; border-bottom:1px solid var(--line);
-         position:sticky; top:0; z-index:5; flex-wrap:wrap; }
-header .brand { font-weight:700; font-size:17px; letter-spacing:.2px; }
-/* Версия рядом с названием: по скриншоту из панели должно быть видно,
-   какая версия установлена, — иначе разбор «а у вас какая?» начинается
-   с лишнего вопроса. */
-.version { color:var(--muted); font-size:12px; margin-left:-10px;
-           align-self:flex-start; padding-top:2px; }
+/* --- шапка ------------------------------------------------------------ */
+header { background:var(--surface); padding:10px 22px; display:flex;
+         align-items:center; gap:14px; border-bottom:1px solid var(--line);
+         position:sticky; top:0; z-index:5; flex-wrap:wrap;
+         box-shadow:var(--shadow-sm); }
+/* Тонкая цветная полоса сверху: единственное чисто декоративное место,
+   зато панель ни с чем не спутаешь на скриншоте. */
+header::before { content:""; position:absolute; inset:0 0 auto 0; height:3px;
+                 background:linear-gradient(90deg,var(--accent),var(--accent-2)); }
+header .brand { font-weight:700; font-size:17px; letter-spacing:.2px;
+                display:flex; align-items:center; gap:8px; }
+header .brand::before { content:""; width:9px; height:9px; border-radius:50%;
+                        background:var(--ok);
+                        box-shadow:0 0 0 4px var(--ok-soft); }
+/* Версия рядом с названием: по скриншоту должно быть видно, какая версия
+   установлена, иначе разбор начинается с лишнего вопроса. */
+.version { color:var(--muted); font-size:12px; margin-left:-4px;
+           padding:2px 8px; border-radius:999px; background:var(--surface-2);
+           border:1px solid var(--line); }
+
 nav { display:flex; gap:4px; flex-wrap:wrap; }
-nav a { color:var(--link-dim); text-decoration:none; padding:6px 10px;
-        border-radius:7px; white-space:nowrap; }
-nav a:hover { color:var(--link); background:var(--surface-2); }
-nav a.active { color:var(--link); background:var(--surface-2); font-weight:600; }
+nav a { color:var(--link-dim); text-decoration:none; padding:7px 12px;
+        border-radius:999px; white-space:nowrap; font-size:14px;
+        transition:background .15s, color .15s; }
+nav a:hover { color:var(--text); background:var(--surface-2); }
+nav a.active { color:#fff; font-weight:600;
+               background:linear-gradient(135deg,var(--accent),var(--accent-2));
+               box-shadow:0 2px 10px var(--accent-soft); }
+[data-theme="light"] nav a.active { color:#fff; }
 .spacer { margin-left:auto; }
 .who { color:var(--muted); font-size:14px; }
 .who a { color:var(--link-dim); }
 
-main { padding:22px; max-width:1100px; margin:0 auto; }
-h1 { font-size:21px; margin:0 0 18px; }
+main { padding:24px 22px 40px; max-width:1100px; margin:0 auto; }
+h1 { font-size:22px; margin:0 0 20px; letter-spacing:-.01em; }
+h2 { font-size:16px; margin:0 0 12px; }
 h3 { margin:0 0 12px; font-size:16px; }
+a { color:var(--link); }
 
+/* --- таблицы ---------------------------------------------------------- */
 table { width:100%; border-collapse:collapse; background:var(--surface);
-        border-radius:10px; overflow:hidden; box-shadow:var(--shadow); }
-th, td { padding:10px 14px; text-align:left; border-bottom:1px solid var(--line); }
-th { color:var(--muted); font-weight:600; font-size:13px; text-transform:uppercase;
-     letter-spacing:.03em; }
+        border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow-sm); }
+th, td { padding:11px 14px; text-align:left; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase;
+     letter-spacing:.04em; background:var(--surface-2); position:sticky; top:0; }
+tbody tr:nth-child(even) td, tr:nth-child(even) td { background:var(--surface-2); }
+tr:hover td { background:var(--surface-3); }
 tr:last-child td { border-bottom:none; }
+td code { font-size:13px; }
 
-.card { background:var(--surface); border-radius:10px; padding:18px;
-        margin-bottom:16px; box-shadow:var(--shadow); }
+/* --- карточки --------------------------------------------------------- */
+.card { background:var(--surface); border-radius:var(--radius); padding:18px 20px;
+        margin-bottom:16px; box-shadow:var(--shadow-sm);
+        border:1px solid var(--line); transition:box-shadow .18s, transform .18s; }
+.card:hover { box-shadow:var(--shadow); }
 .card table { box-shadow:none; background:transparent; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+.card th { position:static; }
+.card > :first-child { margin-top:0; }
+.card > :last-child { margin-bottom:0; }
+/* Состояние карточки читается полосой слева — до чтения самого текста. */
+.card.warn, .card.bad, .card.busy, .card.good {
+  border-left:4px solid var(--line); }
+.card.warn { border-left-color:var(--warn); background:
+             linear-gradient(90deg,var(--warn-soft),transparent 240px), var(--surface);
+             color:var(--text); }
+.card.bad  { border-left-color:var(--bad); background:
+             linear-gradient(90deg,var(--bad-soft),transparent 240px), var(--surface);
+             color:var(--text); }
+.card.good { border-left-color:var(--ok); background:
+             linear-gradient(90deg,var(--ok-soft),transparent 240px), var(--surface); }
+.card.busy { border-left-color:var(--accent); position:relative; overflow:hidden; }
+/* Полоса «идёт работа»: без неё страница с журналом выглядит замершей. */
+.card.busy::after { content:""; position:absolute; left:0; right:0; bottom:0;
+  height:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  animation:slide 1.6s linear infinite; }
+@keyframes slide { from { transform:translateX(-100%); }
+                   to   { transform:translateX(100%); } }
+
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
         gap:14px; margin-bottom:20px; }
-.metric b { display:block; font-size:26px; margin-bottom:4px; }
+.metric { position:relative; }
+.metric b { display:block; font-size:28px; line-height:1.15; margin-bottom:4px;
+            letter-spacing:-.02em; }
 .metric span { color:var(--muted); font-size:13px; }
+
 .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
 .muted { color:var(--muted); }
-.login { max-width:420px; margin:80px auto; text-align:center; }
+.hint { color:var(--muted); font-size:13px; }
+.login { max-width:430px; margin:80px auto; text-align:center; }
 
+/* Значок состояния — для мест, где слово «включено» тонет в тексте. */
+.badge { display:inline-block; padding:2px 9px; border-radius:999px;
+         font-size:12px; font-weight:600; border:1px solid transparent; }
+.badge.ok { background:var(--ok-soft); border-color:var(--ok); }
+.badge.warn { background:var(--warn-soft); border-color:var(--warn); }
+.badge.bad { background:var(--bad-soft); border-color:var(--bad); }
+
+/* --- формы ------------------------------------------------------------ */
 form.inline { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
 input[type=text], input[type=password], input[type=url], textarea, select {
-  padding:9px 12px; border-radius:8px; border:1px solid var(--line);
-  background:var(--bg); color:var(--text); font:inherit; }
+  padding:10px 12px; border-radius:10px; border:1px solid var(--line);
+  background:var(--bg); color:var(--text); font:inherit;
+  transition:border-color .15s, box-shadow .15s; }
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 form.inline input[type=text], form.inline input[type=password],
 form.inline input[type=url] { flex:1 1 240px; }
 textarea { width:100%; min-height:70px; resize:vertical; }
-button { padding:9px 16px; border-radius:8px; border:none; cursor:pointer;
-         background:var(--link); color:#fff; font:inherit; }
-button:hover { filter:brightness(1.08); }
-button.ghost { background:var(--surface-2); color:var(--text);
-               padding:5px 11px; font-size:13px; }
-button.ghost:hover { filter:brightness(1.06); }
-button.danger { background:var(--bad); }
 
-.note { padding:11px 14px; border-radius:8px; margin-bottom:16px; }
-.note.good { background:color-mix(in srgb, var(--ok) 18%, var(--surface));
-             color:var(--ok); }
-.note.bad { background:color-mix(in srgb, var(--bad) 18%, var(--surface));
-            color:var(--bad); }
-.keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:12px 0;
+button { padding:10px 18px; border-radius:10px; border:none; cursor:pointer;
+         background:linear-gradient(135deg,var(--accent),var(--accent-2));
+         color:#fff; font:inherit; font-weight:600;
+         box-shadow:0 2px 10px var(--accent-soft);
+         transition:transform .12s, filter .15s, box-shadow .15s; }
+button:hover { filter:brightness(1.06); transform:translateY(-1px); }
+button:active { transform:translateY(0); }
+button:focus-visible { outline:none; box-shadow:0 0 0 3px var(--accent-soft); }
+button.ghost { background:var(--surface-2); color:var(--text); box-shadow:none;
+               border:1px solid var(--line); padding:6px 12px; font-size:13px;
+               font-weight:500; }
+button.ghost:hover { background:var(--surface-3); }
+button.danger { background:linear-gradient(135deg,var(--bad),#d9534f);
+                box-shadow:0 2px 10px var(--bad-soft); }
+button.ghost.danger { background:var(--surface-2); color:var(--bad);
+                      border-color:var(--bad); }
+
+.note { padding:12px 15px; border-radius:10px; margin-bottom:16px;
+        border:1px solid transparent; font-weight:500; }
+.note.good { background:var(--ok-soft); color:var(--ok); border-color:var(--ok); }
+.note.bad { background:var(--bad-soft); color:var(--bad); border-color:var(--bad); }
+
+.keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:13px 0;
           border-bottom:1px solid var(--line); }
 .keyrow:last-child { border-bottom:none; }
 .keyrow .hint { color:var(--muted); font-size:13px; }
 
-/* Переключатель темы. Кнопка, а не хитрый ползунок: она читается
-   без объяснений и работает без мыши. */
-#theme { background:var(--surface-2); color:var(--text); padding:6px 11px;
-         font-size:14px; line-height:1; }
+/* Журнал установки: моноширинный, со своей прокруткой — иначе длинные
+   строки установщика растягивают страницу по горизонтали. */
+pre.log { background:var(--bg); border:1px solid var(--line); border-radius:10px;
+          padding:14px; max-height:420px; overflow:auto; font-size:12.5px;
+          line-height:1.5; white-space:pre-wrap; word-break:break-word;
+          margin:0; color:var(--text); }
+code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
+       font-size:13px; }
 
-@media (max-width: 640px) {
+/* Переключатель темы. Кнопка, а не хитрый ползунок: читается без
+   объяснений и работает без мыши. */
+#theme { background:var(--surface-2); color:var(--text); padding:7px 11px;
+         font-size:14px; line-height:1; box-shadow:none;
+         border:1px solid var(--line); font-weight:400; }
+#theme:hover { background:var(--surface-3); transform:none; }
+
+@media (max-width: 780px) {
   header { padding:10px 14px; gap:10px; }
-  main { padding:14px; }
-  th, td { padding:8px 10px; }
+  /* Разделов много, и на телефоне они не должны занимать пол-экрана:
+     строка прокручивается вбок, а не переносится. */
+  nav { flex-wrap:nowrap; overflow-x:auto; max-width:100%;
+        scrollbar-width:none; padding-bottom:2px; }
+  nav::-webkit-scrollbar { display:none; }
+  main { padding:16px 14px 32px; }
+  th, td { padding:9px 10px; }
+  .who { font-size:13px; }
+}
+
+/* Уважение к системной настройке: анимация полосы «идёт работа»
+   выключается, если человек попросил меньше движения. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation:none !important; transition:none !important; }
 }
 """
 
@@ -14811,9 +14952,69 @@ def _links_for(role: str) -> list[tuple[str, str, str]]:
         links.append(("/features", "Возможности", "features"))
         links.append(("/backup", "Копии", "backup"))
         links.append(("/audit", "Журнал", "audit"))
+        if features.enabled("panel_update"):
+            links.append(("/update", "Обновление", "update"))
         if features.enabled("partners"):
             links.append(("/partners", "Партнёры", "partners"))
     return links
+
+
+
+def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
+    """Страница обновления системы.
+
+    Показывает не «идёт/не идёт», а сами шаги: установщик пишет журнал
+    в data/logs, и человеку важно видеть, на чём он сейчас — иначе
+    минуты сборки образа выглядят как зависшая кнопка.
+    """
+    from .. import updater
+
+    allowed, reason = updater.ready()
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    parts.append(
+        '<div class="card">'
+        f"<p>Установленная версия: <b>{html.escape(config.VERSION)}</b></p>"
+        "<p class=\"muted\">Обновление выполняет тот же <code>install.sh</code>, "
+        "что и на сервере: снимок перед заменой, сборка образа, перезапуск. "
+        "Ответы на вопросы установщику не нужны — он идёт по обычному пути "
+        "обновления поверх.</p></div>"
+    )
+
+    if not allowed:
+        parts.append(f'<div class="card warn">{html.escape(reason)}</div>')
+    elif running:
+        parts.append(
+            '<div class="card busy"><b>Обновление идёт.</b> '
+            "<p class=\"muted\">Страница обновляется сама каждые пять секунд. "
+            "На шаге пересборки панель ненадолго станет недоступна — "
+            "это перезапускается сам контейнер бота. После возврата "
+            "откройте эту страницу снова: журнал дочитается до конца.</p></div>"
+        )
+    else:
+        parts.append(
+            '<div class="card">'
+            '<form method="post" action="/update/start">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            '<button type="submit" class="danger">Обновить систему</button>'
+            "</form>"
+            "<p class=\"muted\">Бот будет недоступен несколько минут: "
+            "на одноплатнике сборка образа занимает больше всего времени. "
+            "Оповещения в это время не рассылаются.</p></div>"
+        )
+
+    name, text = updater.progress(60)
+    if text:
+        parts.append(
+            '<div class="card"><h2>Шаги установки</h2>'
+            f'<p class="muted">Журнал: <code>{html.escape(name)}</code></p>'
+            f"<pre class=\"log\">{html.escape(text)}</pre></div>"
+        )
+    else:
+        parts.append('<div class="card muted">Журналов установки пока нет.</div>')
+
+    return "".join(parts)
 
 
 def _safe_slug(value: str) -> str:
@@ -14822,8 +15023,13 @@ def _safe_slug(value: str) -> str:
 
 
 def _layout(title: str, body: str, active: str = "", role: str = "",
-            role_key: str = "") -> str:
+            role_key: str = "", refresh: int = 0) -> str:
     links = _links_for(role_key)
+    # Автообновление нужно ровно одной странице — той, где идёт обновление
+    # системы: шаги дописываются в журнал, и человек должен видеть их
+    # без нажатий. На остальных страницах перезагрузка мешала бы формам.
+    meta_refresh = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
+                    if refresh else "")
     nav = "".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{name}</a>'
         for href, name, key in links
@@ -14831,6 +15037,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+{meta_refresh}
 <title>{html.escape(title)} — Радар</title>
 <script>{THEME_SCRIPT}</script>
 <style>{PAGE_STYLE}</style></head>
@@ -16263,6 +16470,36 @@ async def create_app() -> Any:
         audit.record(session.user_key, "скачана копия", name)
         return web.FileResponse(target)
 
+    @owner_only
+    async def update_page(request, session):
+        from .. import updater
+
+        busy = await updater.running()
+        return web.Response(
+            text=_layout(
+                "Обновление",
+                _update_body(session, busy,
+                             request.query.get("ok", ""),
+                             request.query.get("err", "")),
+                "update", roles.title(session.role), session.role,
+                refresh=5 if busy else 0,
+            ),
+            content_type="text/html",
+        )
+
+    async def update_start(request):
+        from .. import updater
+
+        session, _data = await _guarded_form(request, "superadmin")
+        started, reason = await updater.start(f"панель:{session.user_key}")
+        if not started:
+            audit.record(session.user_key, "обновление не запущено", reason)
+            raise web.HTTPFound("/update?err=" + quote(reason))
+        audit.record(session.user_key, "запущено обновление системы",
+                     config.VERSION)
+        raise web.HTTPFound("/update?ok=" + quote(
+            "Обновление запущено — шаги ниже"))
+
     async def health(_request):
         # Версию отсюда убрали: маршрут открыт без входа, а точная версия
         # снаружи — это готовый ответ на вопрос «что здесь уязвимо».
@@ -16313,6 +16550,8 @@ async def create_app() -> Any:
         web.get("/backup", backup_page),
         web.post("/backup/create", backup_create),
         web.get("/backup/download", backup_download),
+        web.get("/update", update_page),
+        web.post("/update/start", update_start),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),
@@ -24474,8 +24713,223 @@ async def allowed(url: str) -> bool:
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
 RADAR_FILE_76
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
+cat > "radar/updater.py" <<'RADAR_FILE_77'
+"""Обновление системы из веб-панели.
+
+Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
+пересобирает образ и перезапускает тот самый контейнер, в котором панель
+и работает. Прямо изнутри его не выполнить, поэтому обновление
+запускается одноразовым контейнером-исполнителем через сокет Docker.
+
+Что важно понимать про цену этого решения (4.9.6):
+
+* сокет Docker внутри контейнера равносилен правам root на хосте.
+  Поэтому возможность `panel_update` по умолчанию выключена: включение
+  должно быть осознанным действием, а не побочным эффектом обновления;
+* панель не выполняет произвольные команды — только один заранее
+  заданный сценарий. Терминала сервера в панели нет и не будет,
+  это правило проекта;
+* каталог установки монтируется в исполнитель ПО ТОМУ ЖЕ пути, что
+  и на хосте. Иначе `docker compose` внутри исполнителя передал бы
+  демону пути вида `/work/data`, которых на хосте не существует,
+  и тома бота развалились бы.
+
+Шаги обновления показывать отдельно не нужно: установщик уже пишет
+пошаговый журнал в `data/logs/installer_log_*.txt`, а этот каталог
+смонтирован в контейнер — панель просто читает свежий журнал.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from pathlib import Path
+
+from . import features
+
+log = logging.getLogger("radar.updater")
+
+SOCKET = "/var/run/docker.sock"
+CONTAINER = "radar_updater"
+IMAGE = "docker:cli"
+API = "http://localhost/v1.41"
+
+# Метка запуска: по ней панель отличает журнал своего обновления
+# от журналов ручных установок.
+MARKER = Path("data/update.started")
+
+# Сценарий исполнителя. bash нужен самому установщику (он не на sh),
+# compose — его основной инструмент; в образе docker:cli они не всегда есть.
+SCRIPT = (
+    "set -e; "
+    "apk add --no-cache bash >/dev/null 2>&1 || true; "
+    "docker compose version >/dev/null 2>&1 || "
+    "apk add --no-cache docker-cli-compose >/dev/null 2>&1 || true; "
+    "cd \"$RADAR_HOST_DIR\"; "
+    "bash install.sh --skip-updates"
+)
+
+
+def host_dir() -> str:
+    """Каталог установки на хосте. Пусто — значит compose его не передал."""
+    return (os.getenv("RADAR_HOST_DIR") or "").strip()
+
+
+def ready() -> tuple[bool, str]:
+    """Можно ли запускать обновление отсюда. Второе — причина отказа."""
+    if not features.enabled("panel_update"):
+        return False, ("Возможность «Обновление из панели» выключена. "
+                       "Включите её в разделе «Возможности».")
+    if not os.path.exists(SOCKET):
+        return False, ("Сокет Docker не проброшен в контейнер: обновление "
+                       "запускать нечем. Нужен свежий docker-compose.yml "
+                       "и пересоздание контейнера.")
+    if not host_dir():
+        return False, ("Не передан путь установки на хосте (RADAR_HOST_DIR). "
+                       "Обновите docker-compose.yml и пересоздайте контейнер.")
+    return True, ""
+
+
+async def _session():
+    """Сессия к сокету Docker. Импорт внутри — офлайн-проверки без aiohttp."""
+    import aiohttp
+
+    return aiohttp.ClientSession(
+        connector=aiohttp.UnixConnector(path=SOCKET),
+        timeout=aiohttp.ClientTimeout(total=30),
+    )
+
+
+async def running() -> bool:
+    """Идёт ли обновление прямо сейчас."""
+    try:
+        session = await _session()
+    except Exception:  # noqa: BLE001
+        return False
+
+    async with session:
+        try:
+            filters = json.dumps({"name": [CONTAINER], "status": ["running"]})
+            async with session.get(f"{API}/containers/json",
+                                   params={"filters": filters}) as response:
+                if response.status != 200:
+                    return False
+                return bool(await response.json())
+        except Exception:  # noqa: BLE001
+            log.debug("Состояние исполнителя не получено", exc_info=True)
+            return False
+
+
+async def _drop_old(session) -> None:
+    """Убирает исполнителя прошлого запуска, если он остался."""
+    try:
+        async with session.delete(f"{API}/containers/{CONTAINER}",
+                                  params={"force": "1"}) as response:
+            await response.read()
+    except Exception:  # noqa: BLE001
+        log.debug("Прошлый исполнитель не удалён", exc_info=True)
+
+
+async def start(actor: str) -> tuple[bool, str]:
+    """Запускает обновление. Возвращает (получилось, причина отказа)."""
+    allowed, reason = ready()
+    if not allowed:
+        return False, reason
+
+    if await running():
+        return False, "Обновление уже идёт."
+
+    directory = host_dir()
+    payload = {
+        "Image": IMAGE,
+        "Cmd": ["sh", "-c", SCRIPT],
+        "Env": [
+            f"RADAR_HOST_DIR={directory}",
+            # Установщик понимает обе переменные: вопросов не задаёт,
+            # «бегущие» полосы в журнал не пишет.
+            "RADAR_ASKED=1",
+            "NO_ANIMATION=1",
+            "HOME=/root",
+        ],
+        "WorkingDir": directory,
+        "HostConfig": {
+            "Binds": [
+                f"{SOCKET}:{SOCKET}",
+                f"{directory}:{directory}",
+            ],
+            "AutoRemove": False,
+            "NetworkMode": "bridge",
+        },
+    }
+
+    try:
+        session = await _session()
+    except Exception as exc:  # noqa: BLE001
+        log.error("Сокет Docker недоступен: %s", exc)
+        return False, "Сокет Docker недоступен."
+
+    async with session:
+        await _drop_old(session)
+        try:
+            async with session.post(f"{API}/containers/create",
+                                    params={"name": CONTAINER},
+                                    json=payload) as response:
+                body = await response.json()
+                if response.status not in (200, 201):
+                    message = str(body.get("message") or body)
+                    log.error("Исполнитель не создан: %s", message)
+                    return False, f"Исполнитель не создан: {message}"
+                container_id = body.get("Id") or CONTAINER
+
+            async with session.post(f"{API}/containers/{container_id}/start") as response:
+                if response.status not in (204, 304):
+                    message = (await response.text())[:200]
+                    log.error("Исполнитель не запущен: %s", message)
+                    return False, f"Исполнитель не запущен: {message}"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Обновление не запущено")
+            return False, f"Обновление не запущено: {exc}"
+
+    try:
+        MARKER.parent.mkdir(parents=True, exist_ok=True)
+        MARKER.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        log.debug("Метка запуска не записана", exc_info=True)
+
+    log.warning("Обновление системы запущено из панели (%s)", actor)
+    return True, ""
+
+
+def started_at() -> float:
+    """Когда обновление запускали из панели. 0 — не запускали."""
+    try:
+        return float(MARKER.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def progress(lines: int = 40) -> tuple[str, str]:
+    """Последние строки журнала установки: (имя журнала, текст)."""
+    from . import logs as logs_module
+
+    items = [item for item in logs_module.collect()
+             if item.name.startswith("installer_log_")]
+    if not items:
+        return "", ""
+    latest = items[0]
+    return latest.name, logs_module.tail(latest, lines)
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_77'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_78'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -24541,9 +24995,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_79'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -24986,9 +25440,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_80'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -25154,9 +25608,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_81'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -25661,9 +26115,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_82'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -26138,9 +26592,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_83'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -26507,9 +26961,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_84'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -26656,9 +27110,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_85'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -26946,9 +27400,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_86'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -27155,9 +27609,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_87'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -27528,9 +27982,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_88'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -28105,9 +28559,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_89'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -28208,9 +28662,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_90'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -28300,9 +28754,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_91'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -28723,9 +29177,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_92'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -29888,9 +30342,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_93'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -30621,9 +31075,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_92
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_94'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -31147,9 +31601,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_93
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_95'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -31562,9 +32016,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_94
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_96'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -31827,9 +32281,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_95
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_97'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -31979,9 +32433,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_96
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_98'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -32449,9 +32903,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_98'
+cat > "radar/cookies.py" <<'RADAR_FILE_99'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -32582,9 +33036,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_99'
+cat > "radar/music.py" <<'RADAR_FILE_100'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -33092,9 +33546,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_101'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -33599,9 +34053,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_101'
+cat > "multitool/__init__.py" <<'RADAR_FILE_102'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -33627,9 +34081,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_101'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_101
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_102'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_103'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -33662,9 +34116,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_102'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_102
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_103'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_104'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -34070,9 +34524,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_103
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_104'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_105'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -34463,9 +34917,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_104
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_105'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_106'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -34652,7 +35106,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_105
+RADAR_FILE_106
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

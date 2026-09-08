@@ -1,4 +1,4 @@
-# Radar v4.9.5.6
+# Radar v4.9.6
 
 [Русская версия](README.md)
 
@@ -196,6 +196,24 @@ switched off early.
 The panel comes in light and dark themes — the toggle sits in the header,
 the choice is remembered in the browser, and the system preference is the
 default.
+
+### Updating from the panel
+
+The "Update" section, available to the superadmin, runs exactly what
+`install.sh` runs on the server: a snapshot before replacing anything,
+downloading the new version, building the image, restarting. The steps are
+visible in the panel itself — the installer writes a step-by-step log into
+`data/logs`, and the page reads the latest one, refreshing itself while the
+work is in progress. During the image rebuild the panel is briefly
+unavailable: that is the bot's own container restarting; once it is back,
+the page finishes reading the log.
+
+**The `panel_update` feature is off by default, and not out of token
+caution.** For the container to update the system it needs the Docker
+socket, and a Docker socket inside a container is equivalent to root on the
+host: whoever reaches the panel reaches the server. Enable it knowing that
+price. The panel still runs no arbitrary commands — only one fixed
+scenario; there is no server terminal in it and there never will be.
 
 **Keys go in but never come out.** An existing value is shown only as a
 mask such as `AIza…9kQw`: enough to check which key is in place, not
