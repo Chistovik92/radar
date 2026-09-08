@@ -83,6 +83,51 @@ class Themes(unittest.TestCase):
         self.assertIn(".metric b", panel.LIVE_SCRIPT)
 
 
+class Navigation(unittest.TestCase):
+    """Из любой страницы должен быть путь обратно.
+
+    В 4.9.8 копии, возможности, журнал и партнёры уехали на страницу
+    «Обслуживание», и на них пропадало подменю: человек оказывался
+    на странице, из которой некуда вернуться. Тест закрывает именно это.
+    """
+
+    # Служебное: сюда не «переходят», отсюда не «возвращаются».
+    SERVICE = {"/auth", "/login", "/logout", "/health", "/backup/download",
+               "/partners/export"}
+
+    def _pages(self) -> set[str]:
+        with open(os.path.join(ROOT, "radar", "web", "panel.py"),
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        found = set(re.findall(r'web\.get\("(/[a-z/]*)"', source))
+        return {page for page in found
+                if page not in self.SERVICE and "{" not in page}
+
+    def test_every_page_is_reachable_and_returnable(self) -> None:
+        keys = {key for _href, _name, key in panel._links_for("superadmin")}
+        hrefs = {href for href, _name, _key in panel._links_for("superadmin")}
+        for page in self._pages():
+            with self.subTest(page=page):
+                in_menu = page in hrefs
+                has_parent = any(parent[1] and page.strip("/") == key
+                                 for key, parent in panel._PARENT_PAGE.items())
+                self.assertTrue(in_menu or has_parent,
+                                f"{page}: ни в меню, ни с возвратом")
+        self.assertIn("maintenance", keys)
+
+    def test_child_page_keeps_section_highlighted(self) -> None:
+        html = panel._layout("Резервные копии", "", "backup",
+                             "Суперадминистратор", "superadmin")
+        self.assertIn('class="back"', html)
+        self.assertIn("/maintenance", html)
+        self.assertIn("subnav", html)
+
+    def test_top_level_page_has_no_stray_back_link(self) -> None:
+        html = panel._layout("Обзор", "", "home",
+                             "Суперадминистратор", "superadmin")
+        self.assertNotIn('class="back"', html)
+
+
 class Markup(unittest.TestCase):
     def test_page_carries_theme_styles_and_script(self) -> None:
         html = panel._layout("Обзор", '<div class="card">тест</div>', "home",

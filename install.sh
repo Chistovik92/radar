@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8 — автономный установщик.
+# Система «Радар» v4.9.8.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8"
+VERSION="4.9.8.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2982,6 +2982,13 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.1", [
+        "↩️ <b>Возврат со страниц обслуживания.</b> Копии, возможности, "
+        "журнал и партнёры уехали на страницу «Обслуживание», и на них "
+        "пропадало подменю — из такой страницы некуда было вернуться. "
+        "Теперь раздел остаётся подсвеченным, а над заголовком стоит "
+        "ссылка назад.",
+    ]),
     ("4.9.8", [
         "🗂 <b>Разделы панели перестроены.</b> Их было тринадцать в один "
         "ряд, стало пять: обзор, пользователи, источники, медиа, агенты. "
@@ -4277,7 +4284,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8"
+__version__ = "4.9.8.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -14823,6 +14830,11 @@ nav a.active { color:#fff; font-weight:600;
                    box-shadow:inset 0 0 0 1px var(--line); font-weight:600; }
 
 main { padding:24px 22px 40px; max-width:1100px; margin:0 auto; }
+.back { display:inline-block; margin-bottom:10px; color:var(--muted);
+        text-decoration:none; font-size:13.5px; padding:4px 10px;
+        border-radius:8px; background:var(--surface-2);
+        border:1px solid var(--line); }
+.back:hover { color:var(--text); background:var(--surface-3); }
 h1 { font-size:22px; margin:0 0 20px; letter-spacing:-.01em; }
 h2 { font-size:16px; margin:0 0 12px; }
 h3 { margin:0 0 12px; font-size:16px; }
@@ -15326,10 +15338,25 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     return groups
 
 
+# Страницы, до которых добираются со страницы «Обслуживание». В общем меню
+# их намеренно нет — заходят туда редко, — но человек, попавший на них,
+# не должен оказаться в тупике: подсветка раздела остаётся, а над заголовком
+# появляется возврат. Пустое меню на такой странице и было тем самым
+# «некуда вернуться».
+_PARENT_PAGE: dict[str, tuple[str, str, str]] = {
+    "backup": ("maintenance", "/maintenance", "Обслуживание"),
+    "features": ("maintenance", "/maintenance", "Обслуживание"),
+    "audit": ("maintenance", "/maintenance", "Обслуживание"),
+    "partners": ("maintenance", "/maintenance", "Обслуживание"),
+}
+
+
 def _active_group(groups, active: str):
     """Раздел, которому принадлежит открытая страница."""
+    parent = _PARENT_PAGE.get(active)
+    wanted = parent[0] if parent else active
     for href, name, key, items in groups:
-        if key == active or any(item[2] == active for item in items):
+        if key == wanted or any(item[2] == wanted for item in items):
             return (href, name, key, items)
     return None
 
@@ -15553,12 +15580,20 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
     )
     # Второй ряд рисуется только там, где есть из чего выбирать: у «Пользователей»
     # и «Источников» подпунктов нет, и пустая полоса под шапкой сбивала бы с толку.
+    parent = _PARENT_PAGE.get(active)
+    marked = parent[0] if parent else active
     subnav = ""
     if current and len(current[3]) > 1:
         subnav = '<div class="subnav">' + "".join(
-            f'<a href="{href}" class="{"active" if key == active else ""}">{name}</a>'
+            f'<a href="{href}" class="{"active" if key == marked else ""}">{name}</a>'
             for href, name, key in current[3]
         ) + "</div>"
+    # Возврат к разделу, из которого сюда приходят. Ссылка, а не «назад»
+    # браузера: на страницу могли попасть из закладки или из бота.
+    back = ""
+    if parent:
+        back = (f'<a class="back" href="{parent[1]}">&larr; '
+                f"{html.escape(parent[2])}</a>")
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -15576,7 +15611,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
   <span class="who">{html.escape(role)} · <a href="/logout">выйти</a></span>
 </header>
 {subnav}
-<main><h1>{html.escape(title)}</h1>{body}</main>
+<main>{back}<h1>{html.escape(title)}</h1>{body}</main>
 <script>{THEME_TOGGLE}</script>
 <script>{LIVE_SCRIPT}</script>
 </body></html>"""
