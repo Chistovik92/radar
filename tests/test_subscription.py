@@ -218,5 +218,118 @@ class TopicCount(unittest.TestCase):
         self.assertNotIn("двенадцать", source)
 
 
+class PaidPlans(unittest.TestCase):
+    """Тариф приходит из callback_data, а его пишет клиент.
+
+    Telegram не сверяет callback_data с кнопками: клиент шлёт любые
+    байты. До 4.9.5.5 обработчик брал оттуда и срок, и цену, поэтому
+    `dig:pay:36500:1` выставлял счёт на сто лет подписки за одну
+    звезду, а начисление шло по этому же счёту.
+    """
+
+    def setUp(self) -> None:
+        from radar.handlers import digest as handler
+
+        self.handler = handler
+        self.plans = handler._plans()
+        self.days, self.stars = self.plans[0]
+
+    def run_async(self, coro):
+        return asyncio.run(coro)
+
+    # ---- заглушки ------------------------------------------------------
+    class Chat:
+        def __init__(self) -> None:
+            self.invoices: list[dict] = []
+            self.replies: list[str] = []
+
+        async def answer_invoice(self, **kwargs) -> None:
+            self.invoices.append(kwargs)
+
+        async def answer(self, text: str = "", **kwargs) -> None:
+            self.replies.append(text)
+
+    class Call:
+        def __init__(self, data: str, chat) -> None:
+            self.data = data
+            self.message = chat
+            self.from_user = type("U", (), {"id": 42})()
+            self.alerts: list[str] = []
+
+        async def answer(self, text: str = "", show_alert: bool = False) -> None:
+            self.alerts.append(text)
+
+    class Paid:
+        def __init__(self, chat, payload: str, amount: int) -> None:
+            self.successful_payment = type(
+                "P", (), {"invoice_payload": payload, "total_amount": amount})()
+            self.from_user = type("U", (), {"id": 42})()
+            self._chat = chat
+
+        async def answer(self, text: str = "", **kwargs) -> None:
+            self._chat.replies.append(text)
+
+    # ---- выставление счёта ---------------------------------------------
+    def test_known_plan_billed(self) -> None:
+        chat = self.Chat()
+        call = self.Call(f"dig:pay:{self.days}:{self.stars}", chat)
+        self.run_async(self.handler.send_invoice(call))
+        self.assertEqual(len(chat.invoices), 1)
+        self.assertEqual(chat.invoices[0]["prices"][0].amount, self.stars)
+        self.assertEqual(chat.invoices[0]["payload"], f"digest:{self.days}")
+
+    def test_forged_plan_not_billed(self) -> None:
+        chat = self.Chat()
+        call = self.Call("dig:pay:36500:1", chat)
+        self.run_async(self.handler.send_invoice(call))
+        self.assertEqual(chat.invoices, [])
+        self.assertTrue(call.alerts)
+
+    def test_own_days_at_own_price_not_billed(self) -> None:
+        # Срок настоящий, цена своя — пара всё равно должна совпасть.
+        chat = self.Chat()
+        call = self.Call(f"dig:pay:{self.days}:1", chat)
+        self.run_async(self.handler.send_invoice(call))
+        self.assertEqual(chat.invoices, [])
+
+    def test_garbage_does_not_crash(self) -> None:
+        # int() на мусоре ронял обработчик целиком.
+        chat = self.Chat()
+        call = self.Call("dig:pay:x:y", chat)
+        self.run_async(self.handler.send_invoice(call))
+        self.assertEqual(chat.invoices, [])
+        self.assertTrue(call.alerts)
+
+    # ---- начисление после оплаты ---------------------------------------
+    def _pay(self, payload: str, amount: int) -> dict:
+        chat = self.Chat()
+        user: dict = {}
+        message = self.Paid(chat, payload, amount)
+        with mock.patch("radar.storage.save", new=self._noop):
+            self.run_async(self.handler.payment_done(message, user, "user"))
+        return user
+
+    @staticmethod
+    async def _noop(*args, **kwargs) -> None:
+        return None
+
+    def test_paid_days_credited(self) -> None:
+        user = self._pay(f"digest:{self.days}", self.stars)
+        self.assertGreater(subscription.days_left(user), 0)
+
+    def test_underpaid_not_credited(self) -> None:
+        user = self._pay(f"digest:{self.days}", 1)
+        self.assertEqual(subscription.days_left(user), 0)
+
+    def test_unknown_term_not_credited(self) -> None:
+        user = self._pay("digest:36500", 1)
+        self.assertEqual(subscription.days_left(user), 0)
+
+    def test_cheaper_plan_still_credited(self) -> None:
+        # Цену снизили, пока счёт висел: человек не виноват.
+        user = self._pay(f"digest:{self.days}", self.stars + 100)
+        self.assertGreater(subscription.days_left(user), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

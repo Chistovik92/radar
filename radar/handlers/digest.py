@@ -48,6 +48,25 @@ def _plans() -> list[tuple[int, int]]:
     return plans or list(DEFAULT_PLANS)
 
 
+def plan_exists(days: int, stars: int) -> bool:
+    """Есть ли такой тариф в списке.
+
+    callback_data подделывается тривиально: клиент шлёт произвольные
+    байты, и Telegram не сверяет их с кнопками. Без этой проверки пара
+    «дни:звёзды» приходила бы прямо из сообщения, и счёт на сто лет
+    подписки за одну звезду выставлялся бы штатным обработчиком.
+    """
+    return (days, stars) in [tuple(item) for item in _plans()]
+
+
+def price_of(days: int) -> int | None:
+    """Цена срока по текущему списку. None — такого срока в списке нет."""
+    for plan_days, plan_stars in _plans():
+        if plan_days == days:
+            return plan_stars
+    return None
+
+
 def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📋 Тематики", callback_data="dig:topics")],
@@ -216,7 +235,23 @@ async def show_plans(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("dig:pay:"))
 async def send_invoice(call: CallbackQuery) -> None:
     parts = call.data.split(":")
-    days, stars = int(parts[2]), int(parts[3])
+    try:
+        days, stars = int(parts[2]), int(parts[3])
+    except (IndexError, ValueError):
+        log.warning("Счёт не выставлен: тариф не разобран (%s)", call.data)
+        await call.answer("Тариф не распознан. Откройте список заново.",
+                          show_alert=True)
+        return
+
+    # Цену и срок берём не из сообщения, а сверяем со списком тарифов:
+    # само сообщение пишет клиент, и доверять ему нельзя.
+    if not plan_exists(days, stars):
+        log.warning("Счёт не выставлен: тарифа %d дней за %d ⭐️ нет "
+                    "в списке (пользователь %s)", days, stars, call.from_user.id)
+        await call.answer("Такого тарифа нет. Откройте список заново.",
+                          show_alert=True)
+        return
+
     await call.answer()
 
     try:
@@ -262,6 +297,24 @@ async def payment_done(message: Message, user: dict, role: str) -> None:
         return
 
     days = int(match.group(1))
+
+    # Вторая застава: начисляем только то, что действительно оплачено.
+    # Счёт выставляем мы сами, но если появится ещё один путь к оплате,
+    # расхождение суммы и срока не должно превратиться в бесплатные дни.
+    paid = int(getattr(message.successful_payment, "total_amount", 0) or 0)
+    price = price_of(days)
+    # Сверяем «не меньше», а не «ровно»: если цену успели снизить, пока
+    # счёт висел неоплаченным, человек не виноват и дни получить должен.
+    if price is None or paid < price:
+        log.warning("Платёж мимо тарифа: %d дней за %d ⭐️ (пользователь %s)",
+                    days, paid, message.from_user.id)
+        await message.answer(
+            "❌ <b>Оплата не сошлась с тарифом</b>\n\n"
+            "Дни не начислены. Если звёзды списаны, напишите администрации: "
+            "возврат делает поддержка Telegram по обращению."
+        )
+        return
+
     subscription = digest.subscription_of(user)
     subscription.extend(days)
     digest.store_subscription(user, subscription)

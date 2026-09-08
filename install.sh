@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.5.4 — автономный установщик.
+# Система «Радар» v4.9.5.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.5.4"
+VERSION="4.9.5.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2960,6 +2960,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.5.5", [
+        "🔒 <b>Тариф подписки сверяется со списком.</b> Срок и цена "
+        "приходили из нажатой кнопки и принимались на веру, а само "
+        "нажатие клиент подделывает: счёт можно было выставить на "
+        "любой срок за одну звезду. Теперь пара «дни-цена» "
+        "проверяется по списку тарифов, а после оплаты сверяется "
+        "ещё и уплаченная сумма. Честные покупки не меняются.",
+    ]),
     ("4.9.5.4", [
         "🗜 <b>Пережатие треков.</b> Кнопка в карточке трека: opus "
         "при битрейте исходника — вес падает в разы, на слух разницы "
@@ -4173,7 +4181,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.5.4"
+__version__ = "4.9.5.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -30911,6 +30919,25 @@ def _plans() -> list[tuple[int, int]]:
     return plans or list(DEFAULT_PLANS)
 
 
+def plan_exists(days: int, stars: int) -> bool:
+    """Есть ли такой тариф в списке.
+
+    callback_data подделывается тривиально: клиент шлёт произвольные
+    байты, и Telegram не сверяет их с кнопками. Без этой проверки пара
+    «дни:звёзды» приходила бы прямо из сообщения, и счёт на сто лет
+    подписки за одну звезду выставлялся бы штатным обработчиком.
+    """
+    return (days, stars) in [tuple(item) for item in _plans()]
+
+
+def price_of(days: int) -> int | None:
+    """Цена срока по текущему списку. None — такого срока в списке нет."""
+    for plan_days, plan_stars in _plans():
+        if plan_days == days:
+            return plan_stars
+    return None
+
+
 def _menu(subscription: digest.Subscription, role: str = "") -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📋 Тематики", callback_data="dig:topics")],
@@ -31079,7 +31106,23 @@ async def show_plans(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("dig:pay:"))
 async def send_invoice(call: CallbackQuery) -> None:
     parts = call.data.split(":")
-    days, stars = int(parts[2]), int(parts[3])
+    try:
+        days, stars = int(parts[2]), int(parts[3])
+    except (IndexError, ValueError):
+        log.warning("Счёт не выставлен: тариф не разобран (%s)", call.data)
+        await call.answer("Тариф не распознан. Откройте список заново.",
+                          show_alert=True)
+        return
+
+    # Цену и срок берём не из сообщения, а сверяем со списком тарифов:
+    # само сообщение пишет клиент, и доверять ему нельзя.
+    if not plan_exists(days, stars):
+        log.warning("Счёт не выставлен: тарифа %d дней за %d ⭐️ нет "
+                    "в списке (пользователь %s)", days, stars, call.from_user.id)
+        await call.answer("Такого тарифа нет. Откройте список заново.",
+                          show_alert=True)
+        return
+
     await call.answer()
 
     try:
@@ -31125,6 +31168,24 @@ async def payment_done(message: Message, user: dict, role: str) -> None:
         return
 
     days = int(match.group(1))
+
+    # Вторая застава: начисляем только то, что действительно оплачено.
+    # Счёт выставляем мы сами, но если появится ещё один путь к оплате,
+    # расхождение суммы и срока не должно превратиться в бесплатные дни.
+    paid = int(getattr(message.successful_payment, "total_amount", 0) or 0)
+    price = price_of(days)
+    # Сверяем «не меньше», а не «ровно»: если цену успели снизить, пока
+    # счёт висел неоплаченным, человек не виноват и дни получить должен.
+    if price is None or paid < price:
+        log.warning("Платёж мимо тарифа: %d дней за %d ⭐️ (пользователь %s)",
+                    days, paid, message.from_user.id)
+        await message.answer(
+            "❌ <b>Оплата не сошлась с тарифом</b>\n\n"
+            "Дни не начислены. Если звёзды списаны, напишите администрации: "
+            "возврат делает поддержка Telegram по обращению."
+        )
+        return
+
     subscription = digest.subscription_of(user)
     subscription.extend(days)
     digest.store_subscription(user, subscription)
