@@ -1193,6 +1193,29 @@ log into `data/logs`, the panel simply reads the latest one.
 
 ---
 
+## 4.9.7 — panel themes ✅ implemented
+
+The panel is not opened only to fix things: it sits on a second screen and
+people live with it. So two "living" themes were added next to the two
+working ones — their job is to make the state readable from across the room.
+
+1. **Matrix** ✅ a green terminal: monospace type, a rain of glyphs on a
+   canvas behind the content, a command prompt in the heading, a sweep line.
+   The theme touches styling only, never the markup.
+2. **Ark reactor** ✅ an instrument panel: a grid under the interface,
+   bracket corners on cards, glowing figures, a pulsing indicator in the
+   header, a gauge under every metric.
+3. **Switching** ✅ the header button cycles: light → dark → Matrix →
+   Reactor. The choice is remembered in the browser; an unknown value falls
+   back to the system theme.
+4. **Lines we do not cross.** The styling requests nothing from the server
+   and loads no external fonts — a panel on a server without internet opens
+   exactly the same. Animations stop under the "reduce motion" system
+   setting and in a background tab. If the script fails to run, the panel
+   stays fully usable: no form and no permission check depends on it.
+
+---
+
 ## 5.5 — Discord
 
 The "other messengers" section is split per platform: they differ not in the

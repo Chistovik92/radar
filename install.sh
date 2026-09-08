@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.6.1 — автономный установщик.
+# Система «Радар» v4.9.7 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.6.1"
+VERSION="4.9.7"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2975,6 +2975,21 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.7", [
+        "🎛 <b>Четыре темы панели.</b> К светлой и тёмной добавились "
+        "«Матрица» — зелёный терминал с дождём символов, командной строкой "
+        "в заголовке и полосой развёртки, — и «Реактор»: приборная сетка, "
+        "уголки-скобки у карточек, свечение показателей, пульсирующий "
+        "индикатор в шапке. Кнопка в шапке переключает по кругу, выбор "
+        "запоминается в браузере.",
+        "🧮 <b>Показатели набегают.</b> Цифры на обзоре считаются от нуля "
+        "при открытии, карточки проявляются по очереди — видно, в каком "
+        "порядке читать.",
+        "🔋 <b>Не в ущерб работе.</b> Анимации выключаются системной "
+        "настройкой «меньше движения» и в фоновой вкладке, оформление "
+        "ничего не просит у сервера и не грузит внешних шрифтов: "
+        "без интернета панель открывается так же.",
+    ]),
     ("4.9.6.1", [
         "🔎 <b>Раздел «Обновление» больше не прячется.</b> Он был виден "
         "только при включённой возможности — а включить её человек мог "
@@ -4239,7 +4254,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.6.1"
+__version__ = "4.9.7"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -14911,13 +14926,168 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
 }
 """
 
+THEME_STYLE = """
+/* --------------------------------------------------------------------------
+   Темы оформления (с 4.9.7)
+
+   Светлая и тёмная — рабочие: их задача не мешать. «Матрица» и «Реактор» —
+   для тех, кто держит панель открытой на втором экране: там важнее, чтобы
+   состояние было видно от двери, чем плотность текста.
+
+   Тема меняет ТОЛЬКО оформление: те же переменные, та же разметка, никакой
+   отдельной вёрстки. Иначе каждая новая страница панели требовала бы
+   правки в четырёх местах, и темы разъехались бы к третьему выпуску.
+   -------------------------------------------------------------------------- */
+
+/* ===== Матрица =========================================================== */
+[data-theme="matrix"] {
+  --bg: #000; --surface: #04140a; --surface-2: #062112; --surface-3: #0a3018;
+  --text: #b9ffcf; --muted: #4fbf7d; --line: #0d4a24;
+  --link: #46ff9c; --link-dim: #2fd47e;
+  --accent: #22ff88; --accent-2: #0aff5a;
+  --ok: #37ff8b; --warn: #d8ff4a; --bad: #ff5f5f;
+  --ok-soft: rgba(55,255,139,.12); --warn-soft: rgba(216,255,74,.12);
+  --bad-soft: rgba(255,95,95,.14); --accent-soft: rgba(34,255,136,.16);
+  --shadow: 0 0 0 1px rgba(34,255,136,.12), 0 0 28px rgba(34,255,136,.10);
+  --shadow-sm: 0 0 0 1px rgba(34,255,136,.10);
+  --radius: 4px;
+  color-scheme: dark;
+}
+[data-theme="matrix"] body {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Mono", Consolas,
+               "Liberation Mono", monospace;
+  text-shadow: 0 0 6px rgba(34,255,136,.25);
+}
+/* Дождь символов рисуется на canvas за содержимым: разметку он не трогает
+   и снимается вместе с темой. */
+#rain { position:fixed; inset:0; z-index:0; opacity:.16; pointer-events:none; }
+[data-theme="matrix"] header, [data-theme="matrix"] main { position:relative; z-index:1; }
+[data-theme="matrix"] header { background:rgba(4,20,10,.86);
+  backdrop-filter:blur(2px); border-bottom:1px solid var(--line); }
+[data-theme="matrix"] .card { border:1px solid var(--line); background:rgba(4,20,10,.82); }
+[data-theme="matrix"] .card:hover { border-color:var(--accent); }
+[data-theme="matrix"] h1::before { content:"> "; color:var(--accent); }
+[data-theme="matrix"] h1::after {
+  content:"_"; animation:blink 1.1s step-end infinite; color:var(--accent); }
+@keyframes blink { 50% { opacity:0; } }
+[data-theme="matrix"] nav a.active { background:var(--surface-3); color:var(--accent);
+  box-shadow:inset 0 0 0 1px var(--accent); }
+[data-theme="matrix"] th { text-transform:uppercase; letter-spacing:.12em;
+  color:var(--accent); background:rgba(10,48,24,.6); }
+[data-theme="matrix"] a { text-decoration:underline dotted; }
+[data-theme="matrix"] .metric b { color:var(--accent);
+  text-shadow:0 0 12px rgba(34,255,136,.5); }
+[data-theme="matrix"] table, [data-theme="matrix"] pre.log {
+  border:1px solid var(--line); }
+[data-theme="matrix"] button { background:transparent; color:var(--accent);
+  border:1px solid var(--accent); box-shadow:none; text-transform:uppercase;
+  letter-spacing:.08em; font-size:13px; }
+[data-theme="matrix"] button:hover { background:var(--accent-soft);
+  box-shadow:0 0 14px var(--accent-soft); }
+[data-theme="matrix"] .badge { border-radius:2px; }
+/* Тонкая полоса развёртки — как на старом мониторе, но без мельтешения. */
+[data-theme="matrix"] main::after {
+  content:""; position:fixed; left:0; right:0; height:120px; z-index:2;
+  pointer-events:none; background:linear-gradient(180deg,
+    transparent, rgba(34,255,136,.05), transparent);
+  animation:sweep 7s linear infinite; }
+@keyframes sweep { from { top:-120px; } to { top:100%; } }
+
+/* ===== Реактор =========================================================== */
+[data-theme="ark"] {
+  --bg: #060d16; --surface: rgba(12,24,38,.86); --surface-2: rgba(18,34,52,.9);
+  --surface-3: rgba(24,44,66,.95);
+  --text: #dff2ff; --muted: #7fa6c4; --line: rgba(94,214,255,.22);
+  --link: #5ed6ff; --link-dim: #8fc6e6;
+  --accent: #37c8ff; --accent-2: #ffb648;
+  --ok: #4ce0b0; --warn: #ffb648; --bad: #ff6b7a;
+  --ok-soft: rgba(76,224,176,.14); --warn-soft: rgba(255,182,72,.14);
+  --bad-soft: rgba(255,107,122,.14); --accent-soft: rgba(55,200,255,.16);
+  --shadow: 0 0 0 1px rgba(55,200,255,.16), 0 10px 40px rgba(0,0,0,.5);
+  --shadow-sm: 0 0 0 1px rgba(55,200,255,.14);
+  --radius: 2px;
+  color-scheme: dark;
+}
+/* Сетка под интерфейсом: она даёт ощущение приборной панели и при этом
+   ничего не весит — два повторяющихся градиента. */
+[data-theme="ark"] body {
+  background-image:
+    linear-gradient(rgba(55,200,255,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(55,200,255,.05) 1px, transparent 1px),
+    radial-gradient(circle at 50% -10%, rgba(55,200,255,.16), transparent 60%);
+  background-size: 44px 44px, 44px 44px, 100% 100%;
+}
+[data-theme="ark"] header { background:rgba(6,13,22,.9); backdrop-filter:blur(6px); }
+[data-theme="ark"] .card { backdrop-filter:blur(4px); border:1px solid var(--line);
+  position:relative; }
+/* Уголки-скобки: та самая деталь, из-за которой интерфейс читается
+   как приборный, а не как сайт. */
+[data-theme="ark"] .card::before, [data-theme="ark"] .card::after {
+  content:""; position:absolute; width:14px; height:14px; pointer-events:none;
+  border:1px solid var(--accent); opacity:.7; }
+[data-theme="ark"] .card::before { top:-1px; left:-1px;
+  border-right:none; border-bottom:none; }
+[data-theme="ark"] .card::after { bottom:-1px; right:-1px;
+  border-left:none; border-top:none; }
+[data-theme="ark"] .metric b { color:var(--accent);
+  text-shadow:0 0 18px rgba(55,200,255,.45); font-variant-numeric:tabular-nums;
+  font-family:"JetBrains Mono",Consolas,monospace; }
+/* Полоска под метрикой — «шкала прибора»: заполняется при появлении. */
+[data-theme="ark"] .metric::after { content:""; position:absolute; left:20px;
+  right:20px; bottom:12px; height:2px; background:var(--accent); opacity:.5;
+  transform-origin:left; animation:fill .8s ease-out both; }
+@keyframes fill { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+[data-theme="ark"] h1 { text-transform:uppercase; letter-spacing:.08em;
+  font-size:19px; }
+[data-theme="ark"] h1::before { content:"// "; color:var(--accent); opacity:.7; }
+[data-theme="ark"] .card:hover { transform:translateY(-2px);
+  border-color:var(--accent); }
+[data-theme="ark"] th { color:var(--accent); letter-spacing:.1em; }
+[data-theme="ark"] nav a.active { background:transparent; color:var(--accent);
+  box-shadow:inset 0 0 0 1px var(--accent), 0 0 16px var(--accent-soft); }
+[data-theme="ark"] button { background:linear-gradient(135deg,
+  rgba(55,200,255,.18), rgba(255,182,72,.14)); color:var(--text);
+  border:1px solid var(--accent); text-transform:uppercase; letter-spacing:.06em;
+  font-size:13px; }
+[data-theme="ark"] button.danger { border-color:var(--bad);
+  background:linear-gradient(135deg, rgba(255,107,122,.2), transparent); }
+[data-theme="ark"] .brand::before { animation:pulse 2.4s ease-in-out infinite; }
+@keyframes pulse {
+  0%,100% { box-shadow:0 0 0 4px var(--accent-soft); }
+  50% { box-shadow:0 0 0 9px rgba(55,200,255,.05); } }
+[data-theme="ark"] header::before {
+  background:linear-gradient(90deg,var(--accent),var(--accent-2),var(--accent));
+  background-size:200% 100%; animation:slide-x 6s linear infinite; }
+@keyframes slide-x { to { background-position:200% 0; } }
+
+/* ===== Общее для «живых» тем ============================================ */
+/* Карточки проявляются по очереди: на длинной странице это показывает
+   порядок чтения, а не просто украшает. */
+[data-theme="matrix"] .card, [data-theme="ark"] .card {
+  animation:rise .45s ease-out both; }
+[data-theme="matrix"] .card:nth-child(2), [data-theme="ark"] .card:nth-child(2) { animation-delay:.05s; }
+[data-theme="matrix"] .card:nth-child(3), [data-theme="ark"] .card:nth-child(3) { animation-delay:.1s; }
+[data-theme="matrix"] .card:nth-child(4), [data-theme="ark"] .card:nth-child(4) { animation-delay:.15s; }
+[data-theme="matrix"] .grid .card, [data-theme="ark"] .grid .card { animation-delay:.05s; }
+@keyframes rise { from { opacity:0; transform:translateY(10px); }
+                  to   { opacity:1; transform:none; } }
+[data-theme="matrix"] tr:hover td, [data-theme="ark"] tr:hover td {
+  box-shadow:inset 2px 0 0 var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  #rain { display:none; }
+  [data-theme="matrix"] main::after { display:none; }
+}
+"""
+
 # Тема выбирается до отрисовки, иначе страница мигает тёмной и лишь потом
 # становится светлой. Скрипт крошечный и стоит в head намеренно.
 THEME_SCRIPT = """
 (function () {
   try {
+    var known = ['light', 'dark', 'matrix', 'ark'];
     var saved = localStorage.getItem('radar-theme');
-    if (!saved) {
+    if (known.indexOf(saved) < 0) {
       saved = window.matchMedia &&
               window.matchMedia('(prefers-color-scheme: light)').matches
               ? 'light' : 'dark';
@@ -14932,18 +15102,129 @@ THEME_TOGGLE = """
   var button = document.getElementById('theme');
   if (!button) { return; }
   var root = document.documentElement;
+  var themes = [
+    { key: 'light',  icon: '\u2600', name: 'Светлая' },
+    { key: 'dark',   icon: '\u263e', name: 'Тёмная' },
+    { key: 'matrix', icon: '\u2593', name: 'Матрица' },
+    { key: 'ark',    icon: '\u25cf', name: 'Реактор' }
+  ];
+  function index() {
+    var now = root.getAttribute('data-theme');
+    for (var i = 0; i < themes.length; i++) {
+      if (themes[i].key === now) { return i; }
+    }
+    return 1;
+  }
   function paint() {
-    var light = root.getAttribute('data-theme') === 'light';
-    button.textContent = light ? '\u263e' : '\u2600';
-    button.title = light ? 'Тёмная тема' : 'Светлая тема';
+    var item = themes[index()];
+    button.textContent = item.icon;
+    button.title = 'Тема: ' + item.name + ' — нажмите, чтобы сменить';
+    document.dispatchEvent(new CustomEvent('radar-theme', { detail: item.key }));
   }
   paint();
   button.addEventListener('click', function () {
-    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    var next = themes[(index() + 1) % themes.length].key;
     root.setAttribute('data-theme', next);
     try { localStorage.setItem('radar-theme', next); } catch (e) {}
     paint();
   });
+})();
+"""
+
+
+# Оживление интерфейса. Всё здесь необязательное: если скрипт не выполнится,
+# панель останется полностью рабочей — цифры просто не будут набегать,
+# а фон останется без дождя. Поэтому ни одна проверка прав, ни одна форма
+# на этот код не опирается.
+LIVE_SCRIPT = """
+(function () {
+  var root = document.documentElement;
+  var calm = window.matchMedia &&
+             window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* Счётчики: цифра набегает от нуля. Только там, где это действительно
+     число, — иначе «4.9.7» превратилось бы в мусор. */
+  function count() {
+    if (calm) { return; }
+    var nodes = document.querySelectorAll('.metric b');
+    for (var i = 0; i < nodes.length; i++) {
+      (function (node) {
+        var raw = (node.textContent || '').trim();
+        if (!/^[0-9\u00a0 ]+$/.test(raw)) { return; }
+        var target = parseInt(raw.replace(/[^0-9]/g, ''), 10);
+        if (!target || target > 1000000) { return; }
+        var started = null;
+        var grouped = /[\u00a0 ]/.test(raw);
+        function step(now) {
+          if (!started) { started = now; }
+          var part = Math.min(1, (now - started) / 700);
+          var value = Math.floor(target * (1 - Math.pow(1 - part, 3)));
+          node.textContent = grouped ? value.toLocaleString('ru-RU') : String(value);
+          if (part < 1) { requestAnimationFrame(step); }
+        }
+        node.textContent = '0';
+        requestAnimationFrame(step);
+      })(nodes[i]);
+    }
+  }
+
+  /* Дождь символов — только в теме «Матрица». Рисуется на canvas позади
+     содержимого: разметку не трогает и снимается вместе с темой. */
+  var canvas = null, timer = null, onResize = null;
+  function stopRain() {
+    if (timer) { cancelAnimationFrame(timer); timer = null; }
+    if (onResize) { window.removeEventListener('resize', onResize); onResize = null; }
+    if (canvas) { canvas.remove(); canvas = null; }
+  }
+  function startRain() {
+    if (calm || canvas) { return; }
+    canvas = document.createElement('canvas');
+    canvas.id = 'rain';
+    document.body.appendChild(canvas);
+    var context = canvas.getContext('2d');
+    if (!context) { stopRain(); return; }
+    var glyphs = '01\u0410\u0411\u0412\u0413\u0414ABCDEF<>[]{}/|=+*';
+    var columns = [], step = 16, last = 0;
+    onResize = function () {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      columns = [];
+      for (var x = 0; x < canvas.width / step; x++) {
+        columns.push(Math.random() * canvas.height);
+      }
+    };
+    onResize();
+    window.addEventListener('resize', onResize);
+    function frame(now) {
+      timer = requestAnimationFrame(frame);
+      if (now - last < 55) { return; }   /* ~18 кадров: дождь, а не мельтешение */
+      last = now;
+      context.fillStyle = 'rgba(0,0,0,.10)';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = '#22ff88';
+      context.font = step + 'px monospace';
+      for (var i = 0; i < columns.length; i++) {
+        var glyph = glyphs.charAt(Math.floor(Math.random() * glyphs.length));
+        context.fillText(glyph, i * step, columns[i]);
+        columns[i] = (columns[i] > canvas.height && Math.random() > 0.975)
+          ? 0 : columns[i] + step;
+      }
+    }
+    timer = requestAnimationFrame(frame);
+  }
+
+  function sync(theme) {
+    if (theme === 'matrix') { startRain(); } else { stopRain(); }
+  }
+  document.addEventListener('radar-theme', function (event) { sync(event.detail); });
+  /* Вкладку убрали из виду — гасим анимацию: панель часто висит фоном,
+     и жечь батарею ради невидимого дождя незачем. */
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { stopRain(); }
+    else { sync(root.getAttribute('data-theme')); }
+  });
+  sync(root.getAttribute('data-theme'));
+  count();
 })();
 """
 
@@ -15076,7 +15357,8 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
 {meta_refresh}
 <title>{html.escape(title)} — Радар</title>
 <script>{THEME_SCRIPT}</script>
-<style>{PAGE_STYLE}</style></head>
+<style>{PAGE_STYLE}</style>
+<style>{THEME_STYLE}</style></head>
 <body>
 <header>
   <span class="brand">Радар</span><span class="version">v{html.escape(config.VERSION)}</span>
@@ -15087,6 +15369,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
 </header>
 <main><h1>{html.escape(title)}</h1>{body}</main>
 <script>{THEME_TOGGLE}</script>
+<script>{LIVE_SCRIPT}</script>
 </body></html>"""
 
 
@@ -15131,7 +15414,8 @@ def _login_page(bot_username: str, message: str = "",
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Вход — Радар</title>
 <script>{THEME_SCRIPT}</script>
-<style>{PAGE_STYLE}</style></head>
+<style>{PAGE_STYLE}</style>
+<style>{THEME_STYLE}</style></head>
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
 <p class="muted">Версия {html.escape(config.VERSION)}</p>

@@ -1,4 +1,4 @@
-# Radar v4.9.6.1
+# Radar v4.9.7
 
 [Русская версия](README.md)
 
@@ -196,6 +196,20 @@ switched off early.
 The panel comes in light and dark themes — the toggle sits in the header,
 the choice is remembered in the browser, and the system preference is the
 default.
+
+### Panel themes
+
+The header button cycles the styling: **light → dark → "Matrix" →
+"Reactor"**. The choice is remembered in the browser, per administrator.
+
+"Matrix" is a green terminal with a rain of glyphs and a command prompt in
+the heading. "Reactor" is an instrument panel: a grid, bracket corners on
+cards, glowing figures.
+
+The styling requests nothing from the server and loads no external fonts:
+a panel on a machine without internet access opens exactly the same.
+Animations are disabled by the "reduce motion" system setting and stop in
+a background tab.
 
 ### Updating from the panel
 
