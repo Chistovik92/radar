@@ -618,6 +618,21 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
     results: list[Analysis | None] = [None] * len(items)
     todo: list[int] = []
 
+    # Провайдер выбирается на лету: переключение в боте действует
+    # со следующего разбора, перезапуск не нужен.
+    from . import provider as provider_choice
+
+    active = provider_choice.current()
+    active_info = provider_choice.all_infos().get(active)
+    # ENABLED смотрит только на клиент Gemini. Если выбран (и настроен)
+    # другой провайдер, разбор не должен падать на эвристику лишь потому,
+    # что GEMINI_API_KEY не задан — раньше именно так и было: выбор
+    # провайдера в боте ничего не менял, пока не наступал сам батч-цикл
+    # ниже, а до него сообщения уже уходили на regex по одной этой причине.
+    ai_available = ENABLED or (
+        active_info is not None and active_info.kind == provider_choice.KIND_OPENAI
+    )
+
     for index, item in enumerate(items):
         text, source = item[0], item[1]
         link = item[2] if len(item) > 2 else ""
@@ -639,7 +654,7 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
                 results[index] = _remember(text, probe)
                 continue
 
-        if not ENABLED:
+        if not ai_available:
             _counters["heuristic"] += 1
             results[index] = _remember(text, _fallback(text, source, link))
             continue
@@ -653,17 +668,11 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             for position, index in enumerate(chunk)
         )
         try:
-            # Провайдер выбирается на лету: переключение в боте действует
-            # со следующего разбора, перезапуск не нужен.
-            from . import provider as provider_choice
-
-            active = provider_choice.current()
-            chosen = provider_choice.all_infos().get(active)
             # Всё, кроме Gemini, говорит совместимым с OpenAI протоколом.
             # Раньше здесь проверялся один DeepSeek, и любой добавленный
             # провайдер молча уходил бы в Gemini — то есть выбор в боте
             # ничего бы не менял.
-            if chosen is not None and chosen.kind == provider_choice.KIND_OPENAI:
+            if active_info is not None and active_info.kind == provider_choice.KIND_OPENAI:
                 raw = await _openai_batch(ANALYST_PROMPT.format(items=listing), active)
             else:
                 raw = await generate(

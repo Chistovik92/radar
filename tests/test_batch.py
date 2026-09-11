@@ -23,7 +23,7 @@ import stubcheck  # noqa: E402
 
 stubcheck.install()
 
-from radar import ai, config  # noqa: E402
+from radar import ai, config, provider  # noqa: E402
 from radar.ratelimit import QuotaExceeded  # noqa: E402
 
 UTILITY = "Отключение холодной воды по ул. Чапаева, д. 12 до 18:00."
@@ -132,6 +132,40 @@ class TestAnalyzeBatch(unittest.TestCase):
         results = run(ai.analyze_batch([(UTILITY, "vodokanal")]))
         self.assertTrue(results[0].relevant)
         self.assertEqual(results[0].engine, "heuristic")
+
+    def test_disabled_gemini_still_uses_selected_provider(self):
+        """Баг из 4.9.8.1: без GEMINI_API_KEY выбранный в боте провайдер
+        вообще не вызывался, и весь разбор молча уходил на эвристику —
+        даже если у DeepSeek/OpenRouter/... есть рабочий ключ."""
+        ai.ENABLED = False
+        os.environ["DEEPSEEK_API_KEY"] = "test-key"
+        provider._selected = "deepseek"
+
+        async def fake_openai_batch(prompt, name=""):
+            self.assertEqual(name, "deepseek")
+            count = prompt.count("] источник «")
+            payload = [
+                {"index": position + 1, "relevant": True, "categories": ["jkh"],
+                 "severity": "warning", "scope": "street", "city": "Саратов",
+                 "streets": [{"street": "улица Чапаева", "houses": ["12"]}],
+                 "summary": f"Событие {position + 1}"}
+                for position in range(count)
+            ]
+            return json.dumps(payload, ensure_ascii=False)
+
+        original_openai_batch = ai._openai_batch
+        ai._openai_batch = fake_openai_batch
+        try:
+            results = run(ai.analyze_batch([(UTILITY, "vodokanal")]))
+        finally:
+            ai._openai_batch = original_openai_batch
+            provider._selected = ""
+            del os.environ["DEEPSEEK_API_KEY"]
+
+        self.assertTrue(results[0].relevant)
+        self.assertEqual(results[0].engine, "ai")
+        self.assertEqual(ai.counters()["ai"], 1)
+        self.assertEqual(ai.counters()["heuristic"], 0)
 
     def test_short_answer_from_model_is_padded(self):
         async def stingy(prompt, **kwargs):

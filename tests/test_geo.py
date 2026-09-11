@@ -113,10 +113,28 @@ class TestHistorical(unittest.TestCase):
         for text in samples:
             self.assertIsNotNone(HISTORICAL_RE.search(text), text)
 
+    def test_participle_detected_without_byl(self):
+        """Баг из 4.9.8.1: сводки МЧС/Минобороны обычно пишут «БПЛА
+        уничтожен», а не «был уничтожен» — такие формулировки уходили
+        как тревога, хотя событие уже завершилось."""
+        samples = [
+            "БПЛА уничтожен над областью",
+            "Атака отражена силами ПВО, обломки упали в поле",
+            "Накануне произошла авария на теплосети",
+            "Как стало известно, инцидент устранён",
+            "Пожар в промзоне локализован, пострадавших нет",
+        ]
+        for text in samples:
+            self.assertIsNotNone(HISTORICAL_RE.search(text), text)
+
     def test_current_alert_not_historical(self):
         samples = [
             "Внимание! Объявлена опасность атаки БПЛА",
             "В городе воздушная тревога, пройдите в укрытия",
+            "Идёт отражение атаки, БПЛА ещё не уничтожен",
+            "Атака ещё не отражена, работает ПВО",
+            "Будет объявлена воздушная тревога через час",
+            "В Промышленном районе объявлена опасность БПЛА",
         ]
         for text in samples:
             self.assertIsNone(HISTORICAL_RE.search(text), text)

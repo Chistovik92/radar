@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.1 — автономный установщик.
+# Система «Радар» v4.9.8.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.1"
+VERSION="4.9.8.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2982,6 +2982,18 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.2", [
+        "🔧 <b>Тревога по уже случившимся событиям.</b> Новости без слова "
+        "«был» рядом с глаголом («БПЛА уничтожен», «атака отражена») "
+        "уходили тревогой вместо сводки — регэксп ловил причастие только "
+        "вплотную к «был». Теперь ловится и само по себе, с защитой от "
+        "«не»/«будет» перед глаголом, чтобы не притушить настоящую угрозу.",
+        "🔧 <b>Выбор провайдера ИИ не терялся без Gemini.</b> Если "
+        "GEMINI_API_KEY не задан, а в боте выбран другой провайдер "
+        "(DeepSeek, OpenRouter и т. д.) — разбор новостей молча уходил на "
+        "резервную эвристику, сам выбор в боте не учитывался. Теперь "
+        "используется выбранный провайдер.",
+    ]),
     ("4.9.8.1", [
         "↩️ <b>Возврат со страниц обслуживания.</b> Копии, возможности, "
         "журнал и партнёры уехали на страницу «Обслуживание», и на них "
@@ -4284,7 +4296,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.1"
+__version__ = "4.9.8.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -5414,12 +5426,21 @@ _HEURISTICS: list[tuple[str, re.Pattern]] = [
 # Признаки того, что событие уже произошло и завершилось: такие сообщения
 # нужны как сводка, но поднимать по ним тревогу поздно и вредно —
 # пользователь перестаёт доверять сигналам.
+#
+# Причастия («сбит», «уничтожен», «отражён» и т. д.) ловятся и без «был»
+# рядом — сводки МЧС и Минобороны обычно пишут «БПЛА уничтожен», а не
+# «был уничтожен». Но краткая форма причастия неотличима по буквам от
+# действия, которое ещё не завершилось или не случилось: «не уничтожен»,
+# «будет уничтожен» — поэтому такие случаи явно исключены. «\bне »/«\bбудет »/
+# «\bбудут » — с границей слова, иначе слово вроде «районе» (…районЕ
+# уничтожен) ложно опознаётся как «не» перед глаголом.
 HISTORICAL_RE = re.compile(
-    r"\bвчера\b|\bпозавчера\b|на прошл\w+ (?:недел|выходн)|"
+    r"\bвчера\b|\bпозавчера\b|\bнакануне\b|на прошл\w+ (?:недел|выходн)|"
     r"\bв ночь на\b|минувш\w+ (?:ноч|сутк|день)|"
     r"по итогам (?:дня|ночи|суток)|за (?:прошедши\w+ )?(?:сутки|ночь|неделю)|"
-    r"был\w* (?:сбит|уничтожен|отражен|отражён)|"
-    r"сообщал\w* ранее|напомним|как сообщалось|"
+    r"сообщал\w* ранее|напомним|как сообщалось|как стало известно|как выяснилось|"
+    r"(?<!\bне )(?<!\bбудет )(?<!\bбудут )"
+    r"\b(?:сбит|уничтожен|отраж[её]н|ликвидирован|устран[её]н|локализован)(?:а|о|ы)?\b|"
     r"\d{1,2}\s+(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*",
     re.I,
 )
@@ -21360,6 +21381,21 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
     results: list[Analysis | None] = [None] * len(items)
     todo: list[int] = []
 
+    # Провайдер выбирается на лету: переключение в боте действует
+    # со следующего разбора, перезапуск не нужен.
+    from . import provider as provider_choice
+
+    active = provider_choice.current()
+    active_info = provider_choice.all_infos().get(active)
+    # ENABLED смотрит только на клиент Gemini. Если выбран (и настроен)
+    # другой провайдер, разбор не должен падать на эвристику лишь потому,
+    # что GEMINI_API_KEY не задан — раньше именно так и было: выбор
+    # провайдера в боте ничего не менял, пока не наступал сам батч-цикл
+    # ниже, а до него сообщения уже уходили на regex по одной этой причине.
+    ai_available = ENABLED or (
+        active_info is not None and active_info.kind == provider_choice.KIND_OPENAI
+    )
+
     for index, item in enumerate(items):
         text, source = item[0], item[1]
         link = item[2] if len(item) > 2 else ""
@@ -21381,7 +21417,7 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
                 results[index] = _remember(text, probe)
                 continue
 
-        if not ENABLED:
+        if not ai_available:
             _counters["heuristic"] += 1
             results[index] = _remember(text, _fallback(text, source, link))
             continue
@@ -21395,17 +21431,11 @@ async def analyze_batch(items: Sequence[tuple[str, ...]]) -> list[Analysis]:
             for position, index in enumerate(chunk)
         )
         try:
-            # Провайдер выбирается на лету: переключение в боте действует
-            # со следующего разбора, перезапуск не нужен.
-            from . import provider as provider_choice
-
-            active = provider_choice.current()
-            chosen = provider_choice.all_infos().get(active)
             # Всё, кроме Gemini, говорит совместимым с OpenAI протоколом.
             # Раньше здесь проверялся один DeepSeek, и любой добавленный
             # провайдер молча уходил бы в Gemini — то есть выбор в боте
             # ничего бы не менял.
-            if chosen is not None and chosen.kind == provider_choice.KIND_OPENAI:
+            if active_info is not None and active_info.kind == provider_choice.KIND_OPENAI:
                 raw = await _openai_batch(ANALYST_PROMPT.format(items=listing), active)
             else:
                 raw = await generate(
