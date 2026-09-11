@@ -1,4 +1,4 @@
-# Radar v4.9.8.2
+# Radar v4.9.8.3
 
 [Русская версия](README.md)
 
@@ -140,7 +140,7 @@ The `/check` command and the "🔍 Check a link" button in the main menu
 for phishing signs: homoglyphs imitating a brand, a brand in someone
 else's domain, credentials before `@`, executable schemes and files,
 bait words, shorteners. Network checks: the redirect chain, domain age
-(RDAP), certificate lifetime, Google Safe Browsing lists (the key lives
+and registrar (RDAP), certificate lifetime, Google Safe Browsing lists (the key lives
 in the keys section; without it the network part works partially;
 disable with `LINKCHECK_NET=0`).
 

@@ -251,5 +251,66 @@ class TestNetDeadline(unittest.TestCase):
         self.assertIn("error: RuntimeError", result.notes)
 
 
+class TestRegistrar(unittest.TestCase):
+    """4.9.8.3: единственное публичное поле классического whois, которое
+    ещё осмысленно спрашивать через RDAP — имя регистратора. Владельца,
+    контакты и nameserver'ы RDAP не отдаёт вовсе (закрыто GDPR почти
+    у всех регистраторов), поэтому whois выводил бы то же самое."""
+
+    def test_extracts_fn_from_registrar_entity(self):
+        from multitool.linkcheck.netcheck import _registrar_name
+
+        entities = [
+            {"roles": ["administrative"], "vcardArray": [
+                "vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Кто-то"]]
+            ]},
+            {"roles": ["registrar"], "vcardArray": [
+                "vcard", [["version", {}, "text", "4.0"],
+                          ["fn", {}, "text", "GoDaddy.com, LLC"]]
+            ]},
+        ]
+        self.assertEqual(_registrar_name(entities), "GoDaddy.com, LLC")
+
+    def test_missing_registrar_role_returns_empty(self):
+        from multitool.linkcheck.netcheck import _registrar_name
+
+        self.assertEqual(_registrar_name([{"roles": ["administrative"]}]), "")
+        self.assertEqual(_registrar_name(None), "")
+        self.assertEqual(_registrar_name([]), "")
+
+    def test_registrar_role_without_vcard_returns_empty(self):
+        from multitool.linkcheck.netcheck import _registrar_name
+
+        self.assertEqual(_registrar_name([{"roles": ["registrar"]}]), "")
+
+
+class TestReportRegistrar(unittest.TestCase):
+    def _verdict(self, registrar: str):
+        from multitool.linkcheck.analyze import NetResult
+
+        net = NetResult(success=True, final_url="https://example.com/",
+                        domain_age_days=400, domain_registrar=registrar)
+        return Verdict(url="https://example.com/", net=net)
+
+    def test_html_report_shows_registrar(self):
+        from multitool.linkcheck.report import build_report
+
+        text = build_report(self._verdict("GoDaddy.com, LLC"))
+        self.assertIn("Регистратор", text)
+        self.assertIn("GoDaddy.com, LLC", text)
+
+    def test_plain_report_shows_registrar(self):
+        from multitool.linkcheck.report import build_report_plain
+
+        text = build_report_plain(self._verdict("GoDaddy.com, LLC"))
+        self.assertIn("Регистратор: GoDaddy.com, LLC", text)
+
+    def test_empty_registrar_not_shown(self):
+        from multitool.linkcheck.report import build_report
+
+        text = build_report(self._verdict(""))
+        self.assertNotIn("Регистратор", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

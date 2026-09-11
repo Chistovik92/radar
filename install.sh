@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.2 — автономный установщик.
+# Система «Радар» v4.9.8.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.2"
+VERSION="4.9.8.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2982,6 +2982,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.3", [
+        "🔧 <b>Обновление из панели больше не падает на свежем сервере.</b> "
+        "Кнопка создавала контейнер-исполнитель образом <code>docker:cli</code>, "
+        "ни разу не спросив демон, есть ли такой образ локально — на новой "
+        "установке его там не было, и первая же попытка обновления валилась "
+        "с «No such image: docker:cli». Теперь образ проверяется и при "
+        "отсутствии качается сам.",
+        "🔎 <b>Проверка ссылок показывает регистратора домена.</b> RDAP "
+        "(используется вместо whois) отдаёт не только возраст домена — "
+        "в ответе есть и регистратор, ближайший публичный аналог поля "
+        "«Registrar» из whois. Владельца и контакты RDAP не раскрывает "
+        "ни для одного домена — это скрыто GDPR у всех регистраторов, "
+        "и whois-серверы отвечают тем же самым редактированием.",
+    ]),
     ("4.9.8.2", [
         "🔧 <b>Тревога по уже случившимся событиям.</b> Новости без слова "
         "«был» рядом с глаголом («БПЛА уничтожен», «атака отражена») "
@@ -4296,7 +4310,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.2"
+__version__ = "4.9.8.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -25529,6 +25543,50 @@ async def running() -> bool:
             return False
 
 
+async def _ensure_image(session) -> tuple[bool, str]:
+    """Гарантирует, что образ исполнителя есть локально.
+
+    На свежем сервере демон Docker знает только образы бота — `docker:cli`
+    туда никто не тянул, и `containers/create` тут же отвечает
+    `No such image: docker:cli`. `docker compose` в такой ситуации сам
+    делает `pull`, а прямой вызов Engine API — нет, поэтому это нужно
+    сделать явно, один раз, перед созданием исполнителя.
+    """
+    try:
+        async with session.get(f"{API}/images/{IMAGE}/json") as response:
+            if response.status == 200:
+                return True, ""
+    except Exception:  # noqa: BLE001
+        log.debug("Проверка наличия образа %s не удалась", IMAGE, exc_info=True)
+
+    log.info("Образ %s не найден локально — качаю", IMAGE)
+    name, _, tag = IMAGE.partition(":")
+    try:
+        async with session.post(
+            f"{API}/images/create",
+            params={"fromImage": name, "tag": tag or "latest"},
+        ) as response:
+            # Демон отвечает построчным JSON (по объекту на этап загрузки),
+            # а не одним документом — ошибка может прийти и с HTTP 200.
+            body = await response.text()
+            if response.status != 200:
+                return False, body[:200]
+            for line in body.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("error"):
+                    return False, str(event["error"])
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Образ %s не скачан", IMAGE)
+        return False, str(exc)
+    return True, ""
+
+
 async def _drop_old(session) -> None:
     """Убирает исполнителя прошлого запуска, если он остался."""
     try:
@@ -25578,6 +25636,11 @@ async def start(actor: str) -> tuple[bool, str]:
         return False, "Сокет Docker недоступен."
 
     async with session:
+        ok, reason = await _ensure_image(session)
+        if not ok:
+            log.error("Образ %s недоступен: %s", IMAGE, reason)
+            return False, f"Образ {IMAGE} не скачан: {reason}"
+
         await _drop_old(session)
         try:
             async with session.post(f"{API}/containers/create",
@@ -34990,6 +35053,7 @@ class NetResult:
     final_url: str = ""
     chain: list[str] = field(default_factory=list)
     domain_age_days: int | None = None
+    domain_registrar: str = ""  # регистратор из RDAP — ближайший аналог whois
     cert_valid_days: int | None = None
     threats: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -35354,6 +35418,28 @@ async def expand(url: str) -> "NetResult":
     return res
 
 
+def _registrar_name(entities: list | None) -> str:
+    """Имя регистратора из RDAP-ответа — ближайший публичный аналог поля
+    "Registrar" в классическом whois. RDAP не отдаёт владельца и контакты
+    домена вовсе: с 2018 года (GDPR) их прячут почти все регистраторы,
+    и whois-серверы отвечают тем же редактированием, так что запрашивать
+    их бессмысленно что там, что тут — RDAP выбран вместо whois именно
+    потому, что отвечает структурированным JSON вместо текста произвольного
+    формата, который пришлось бы парсить регистратор за регистратором.
+    """
+    for entity in entities or []:
+        roles = entity.get("roles") or []
+        if "registrar" not in roles:
+            continue
+        vcard = entity.get("vcardArray")
+        if not (isinstance(vcard, list) and len(vcard) > 1):
+            continue
+        for field in vcard[1]:
+            if isinstance(field, list) and len(field) >= 4 and field[0] == "fn":
+                return str(field[3])
+    return ""
+
+
 async def domain_age(host: str) -> "NetResult":
     from .analyze import NetResult
 
@@ -35365,6 +35451,7 @@ async def domain_age(host: str) -> "NetResult":
                     res.notes.append(f"rdap {resp.status}")
                     return res
                 data = await resp.json(content_type=None)
+                res.domain_registrar = _registrar_name(data.get("entities"))
                 events = data.get("events", [])
                 for ev in events:
                     if ev.get("eventAction") == "registration":
@@ -35607,6 +35694,7 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         final_url=chain.final_url,
         chain=chain.chain,
         domain_age_days=age.domain_age_days,
+        domain_registrar=age.domain_registrar,
         cert_valid_days=cert.cert_valid_days,
         threats=sb.threats,
         notes=chain.notes + age.notes + sb.notes + cert.notes + sec.notes,
@@ -35680,6 +35768,10 @@ def build_report(v: Verdict) -> str:
                 lines.append(f"  <i>Возраст домена:</i> {age} дн.")
                 if age < 30:
                     lines.append("      <i>(домен зарегистрирован недавно)</i>")
+                lines.append("")
+            if v.net.domain_registrar:
+                registrar = html.escape(v.net.domain_registrar)
+                lines.append(f"  <i>Регистратор:</i> {registrar}")
                 lines.append("")
             if v.net.cert_valid_days is not None:
                 days = v.net.cert_valid_days
@@ -35775,6 +35867,9 @@ def build_report_plain(v: Verdict) -> str:
                 lines.append(f"  Возраст домена: {age} дн.")
                 if age < 30:
                     lines.append("      (домен зарегистрирован недавно)")
+                lines.append("")
+            if v.net.domain_registrar:
+                lines.append(f"  Регистратор: {v.net.domain_registrar}")
                 lines.append("")
             if v.net.cert_valid_days is not None:
                 days = v.net.cert_valid_days

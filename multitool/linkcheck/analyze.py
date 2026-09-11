@@ -169,6 +169,7 @@ class NetResult:
     final_url: str = ""
     chain: list[str] = field(default_factory=list)
     domain_age_days: int | None = None
+    domain_registrar: str = ""  # регистратор из RDAP — ближайший аналог whois
     cert_valid_days: int | None = None
     threats: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)

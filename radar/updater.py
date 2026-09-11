@@ -120,6 +120,50 @@ async def running() -> bool:
             return False
 
 
+async def _ensure_image(session) -> tuple[bool, str]:
+    """Гарантирует, что образ исполнителя есть локально.
+
+    На свежем сервере демон Docker знает только образы бота — `docker:cli`
+    туда никто не тянул, и `containers/create` тут же отвечает
+    `No such image: docker:cli`. `docker compose` в такой ситуации сам
+    делает `pull`, а прямой вызов Engine API — нет, поэтому это нужно
+    сделать явно, один раз, перед созданием исполнителя.
+    """
+    try:
+        async with session.get(f"{API}/images/{IMAGE}/json") as response:
+            if response.status == 200:
+                return True, ""
+    except Exception:  # noqa: BLE001
+        log.debug("Проверка наличия образа %s не удалась", IMAGE, exc_info=True)
+
+    log.info("Образ %s не найден локально — качаю", IMAGE)
+    name, _, tag = IMAGE.partition(":")
+    try:
+        async with session.post(
+            f"{API}/images/create",
+            params={"fromImage": name, "tag": tag or "latest"},
+        ) as response:
+            # Демон отвечает построчным JSON (по объекту на этап загрузки),
+            # а не одним документом — ошибка может прийти и с HTTP 200.
+            body = await response.text()
+            if response.status != 200:
+                return False, body[:200]
+            for line in body.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("error"):
+                    return False, str(event["error"])
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Образ %s не скачан", IMAGE)
+        return False, str(exc)
+    return True, ""
+
+
 async def _drop_old(session) -> None:
     """Убирает исполнителя прошлого запуска, если он остался."""
     try:
@@ -169,6 +213,11 @@ async def start(actor: str) -> tuple[bool, str]:
         return False, "Сокет Docker недоступен."
 
     async with session:
+        ok, reason = await _ensure_image(session)
+        if not ok:
+            log.error("Образ %s недоступен: %s", IMAGE, reason)
+            return False, f"Образ {IMAGE} не скачан: {reason}"
+
         await _drop_old(session)
         try:
             async with session.post(f"{API}/containers/create",

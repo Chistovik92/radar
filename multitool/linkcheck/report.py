@@ -59,6 +59,10 @@ def build_report(v: Verdict) -> str:
                 if age < 30:
                     lines.append("      <i>(домен зарегистрирован недавно)</i>")
                 lines.append("")
+            if v.net.domain_registrar:
+                registrar = html.escape(v.net.domain_registrar)
+                lines.append(f"  <i>Регистратор:</i> {registrar}")
+                lines.append("")
             if v.net.cert_valid_days is not None:
                 days = v.net.cert_valid_days
                 lines.append(f"  <i>Сертификат валиден:</i> {days} дн.")
@@ -153,6 +157,9 @@ def build_report_plain(v: Verdict) -> str:
                 lines.append(f"  Возраст домена: {age} дн.")
                 if age < 30:
                     lines.append("      (домен зарегистрирован недавно)")
+                lines.append("")
+            if v.net.domain_registrar:
+                lines.append(f"  Регистратор: {v.net.domain_registrar}")
                 lines.append("")
             if v.net.cert_valid_days is not None:
                 days = v.net.cert_valid_days

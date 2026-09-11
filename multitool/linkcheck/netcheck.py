@@ -125,6 +125,28 @@ async def expand(url: str) -> "NetResult":
     return res
 
 
+def _registrar_name(entities: list | None) -> str:
+    """Имя регистратора из RDAP-ответа — ближайший публичный аналог поля
+    "Registrar" в классическом whois. RDAP не отдаёт владельца и контакты
+    домена вовсе: с 2018 года (GDPR) их прячут почти все регистраторы,
+    и whois-серверы отвечают тем же редактированием, так что запрашивать
+    их бессмысленно что там, что тут — RDAP выбран вместо whois именно
+    потому, что отвечает структурированным JSON вместо текста произвольного
+    формата, который пришлось бы парсить регистратор за регистратором.
+    """
+    for entity in entities or []:
+        roles = entity.get("roles") or []
+        if "registrar" not in roles:
+            continue
+        vcard = entity.get("vcardArray")
+        if not (isinstance(vcard, list) and len(vcard) > 1):
+            continue
+        for field in vcard[1]:
+            if isinstance(field, list) and len(field) >= 4 and field[0] == "fn":
+                return str(field[3])
+    return ""
+
+
 async def domain_age(host: str) -> "NetResult":
     from .analyze import NetResult
 
@@ -136,6 +158,7 @@ async def domain_age(host: str) -> "NetResult":
                     res.notes.append(f"rdap {resp.status}")
                     return res
                 data = await resp.json(content_type=None)
+                res.domain_registrar = _registrar_name(data.get("entities"))
                 events = data.get("events", [])
                 for ev in events:
                     if ev.get("eventAction") == "registration":
@@ -378,6 +401,7 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         final_url=chain.final_url,
         chain=chain.chain,
         domain_age_days=age.domain_age_days,
+        domain_registrar=age.domain_registrar,
         cert_valid_days=cert.cert_valid_days,
         threats=sb.threats,
         notes=chain.notes + age.notes + sb.notes + cert.notes + sec.notes,

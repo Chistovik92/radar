@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import unittest
@@ -31,6 +32,69 @@ import stubcheck  # noqa: E402
 stubcheck.install()
 
 from radar import features, updater  # noqa: E402
+
+
+class FakeResponse:
+    """Одна из немногих строк реального ответа Docker Engine API,
+    нужных исполнителю: статус, JSON, необработанный текст."""
+
+    def __init__(self, status: int, body="") -> None:
+        self.status = status
+        self._body = body
+
+    async def json(self):
+        return self._body if isinstance(self._body, (dict, list)) else {}
+
+    async def text(self) -> str:
+        if isinstance(self._body, str):
+            return self._body
+        return json.dumps(self._body, ensure_ascii=False)
+
+    async def read(self) -> bytes:
+        return b""
+
+    async def __aenter__(self) -> "FakeResponse":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
+class FakeSession:
+    """Подменяет aiohttp.ClientSession: без сокета Docker и без сети.
+
+    `routes` — {(метод, кусок пути в конце URL): FakeResponse}, сверяется
+    по суффиксу, потому что реальный код всегда обращается к одному хосту
+    (`API`), различаются только пути.
+    """
+
+    def __init__(self, routes: dict[tuple[str, str], FakeResponse]) -> None:
+        self.routes = routes
+        self.calls: list[tuple[str, str]] = []
+
+    def _resolve(self, method: str, url: str) -> FakeResponse:
+        for (want_method, suffix), response in self.routes.items():
+            if want_method == method and url.endswith(suffix):
+                return response
+        raise AssertionError(f"неожиданный запрос: {method} {url}")
+
+    def get(self, url: str, **kwargs) -> FakeResponse:
+        self.calls.append(("GET", url))
+        return self._resolve("GET", url)
+
+    def post(self, url: str, **kwargs) -> FakeResponse:
+        self.calls.append(("POST", url))
+        return self._resolve("POST", url)
+
+    def delete(self, url: str, **kwargs) -> FakeResponse:
+        self.calls.append(("DELETE", url))
+        return self._resolve("DELETE", url)
+
+    async def __aenter__(self) -> "FakeSession":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
 
 
 class Readiness(unittest.TestCase):
@@ -136,6 +200,74 @@ class RunnerRecipe(unittest.TestCase):
 
     def test_compose_is_ensured(self) -> None:
         self.assertIn("docker compose version", updater.SCRIPT)
+
+
+class ImagePull(unittest.TestCase):
+    """4.9.8.3: свежий сервер валился на первой же кнопке — демон Docker
+    не знал `docker:cli`, а код ни разу не пытался его скачать."""
+
+    def test_skips_pull_when_image_already_present(self) -> None:
+        session = FakeSession({
+            ("GET", f"/images/{updater.IMAGE}/json"): FakeResponse(200, {"Id": "sha256:x"}),
+        })
+        ok, reason = asyncio.run(updater._ensure_image(session))
+        self.assertTrue(ok, reason)
+        self.assertNotIn(("POST", f"{updater.API}/images/create"), session.calls)
+
+    def test_pulls_missing_image(self) -> None:
+        pull_log = "\n".join(json.dumps(e) for e in [
+            {"status": "Pulling from library/docker", "id": "cli"},
+            {"status": "Download complete"},
+            {"status": "Status: Downloaded newer image for docker:cli"},
+        ])
+        session = FakeSession({
+            ("GET", f"/images/{updater.IMAGE}/json"): FakeResponse(404, {"message": "no such image"}),
+            ("POST", f"{updater.API}/images/create"): FakeResponse(200, pull_log),
+        })
+        ok, reason = asyncio.run(updater._ensure_image(session))
+        self.assertTrue(ok, reason)
+        self.assertIn(("POST", f"{updater.API}/images/create"), session.calls)
+
+    def test_pull_error_is_reported(self) -> None:
+        # Docker отвечает построчным JSON и может вернуть HTTP 200
+        # с ошибкой внутри потока — например, тег не существует.
+        pull_log = json.dumps({"errorDetail": {"message": "manifest unknown"},
+                                "error": "manifest unknown"})
+        session = FakeSession({
+            ("GET", f"/images/{updater.IMAGE}/json"): FakeResponse(404, {}),
+            ("POST", f"{updater.API}/images/create"): FakeResponse(200, pull_log),
+        })
+        ok, reason = asyncio.run(updater._ensure_image(session))
+        self.assertFalse(ok)
+        self.assertIn("manifest unknown", reason)
+
+    def test_start_stops_before_create_when_pull_fails(self) -> None:
+        features.set_local("panel_update", True)
+        session = FakeSession({
+            ("GET", f"{updater.API}/containers/json"): FakeResponse(200, []),
+            ("GET", f"/images/{updater.IMAGE}/json"): FakeResponse(404, {}),
+            ("POST", f"{updater.API}/images/create"):
+                FakeResponse(500, "registry unavailable"),
+        })
+
+        async def fake_session():
+            return session
+
+        try:
+            with mock.patch("os.path.exists", return_value=True), \
+                 mock.patch("os.access", return_value=True), \
+                 mock.patch.dict(os.environ, {"RADAR_HOST_DIR": "/root/radar_bot"}), \
+                 mock.patch("radar.updater._session", fake_session):
+                started, reason = asyncio.run(updater.start("тест"))
+        finally:
+            features.set_local("panel_update", False)
+
+        self.assertFalse(started)
+        self.assertIn(f"Образ {updater.IMAGE} не скачан", reason)
+        # Главное: до создания самого исполнителя дело не дошло —
+        # иначе пользователь снова увидит «No such image» вместо
+        # понятной причины.
+        self.assertNotIn(("POST", f"{updater.API}/containers/create"), session.calls)
 
 
 class PanelRoutes(unittest.TestCase):
