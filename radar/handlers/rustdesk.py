@@ -167,6 +167,14 @@ async def ask_action(call: CallbackQuery, role: str) -> None:
     if action not in _ACTION_TITLES:
         await call.answer("Неизвестное действие.", show_alert=True)
         return
+
+    # Управлять нечем, пока контейнеров нет: кнопка ответила бы
+    # «No such container», а человеку нужна не ошибка, а причина.
+    is_deployed, reason = await rustdesk.deployed()
+    if not is_deployed:
+        await call.answer(reason, show_alert=True)
+        return
+
     await call.answer()
     await safe_edit(
         call,

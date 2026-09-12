@@ -227,6 +227,69 @@ class ConnectionsAndControl(unittest.TestCase):
         self.assertIn("delete", reason)
 
 
+class Deployed(unittest.TestCase):
+    """Развёрнут ли сервер вообще. Без этой проверки панель показывала
+    кнопки управления там, где контейнеров нет, и они отвечали
+    «No such container» — на живом сервере так и вышло (4.9.8.5)."""
+
+    def setUp(self) -> None:
+        features.set_local("rustdesk", True)
+        mock.patch("os.path.exists", return_value=True).start()
+        mock.patch("os.access", return_value=True).start()
+        mock.patch("radar.dockerapi.session", _fake_session).start()
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(features.set_local, "rustdesk", False)
+
+    def test_both_present(self):
+        async def exists(session, name):
+            return True
+
+        with mock.patch("radar.dockerapi.container_exists", exists):
+            ok, reason = run(rustdesk.deployed())
+        self.assertTrue(ok, reason)
+
+    def test_missing_container_is_named(self):
+        async def missing(session, name):
+            return False
+
+        with mock.patch("radar.dockerapi.container_exists", missing):
+            ok, reason = run(rustdesk.deployed())
+        self.assertFalse(ok)
+        self.assertIn(rustdesk.HBBS, reason)
+        self.assertIn("не разворачивали", reason)
+
+    def test_flag_off_reported_before_docker(self):
+        features.set_local("rustdesk", False)
+        ok, reason = run(rustdesk.deployed())
+        self.assertFalse(ok)
+        self.assertIn("выключена", reason)
+
+
+class InstallerAnswer(unittest.TestCase):
+    """Ответ «д» через SSH приходил с хвостом (возврат каретки), и `case`
+    со сравнением целой строкой отвечал «Пропущено» на согласие —
+    поймано на живом сервере в 4.9.8.5."""
+
+    def setUp(self) -> None:
+        self.template = open(os.path.join(ROOT, "tools", "install.template.sh"),
+                             encoding="utf-8").read()
+
+    def test_helper_exists_and_strips_tail(self):
+        self.assertIn("answer_is_yes()", self.template)
+        self.assertIn("value=\"${value//$'\\r'/}\"", self.template)
+        self.assertIn('value="${value//[[:space:]]/}"', self.template)
+
+    def test_both_questions_use_helper(self):
+        self.assertEqual(self.template.count('answer_is_yes "$answer"'), 2)
+        # Прежнее сравнение целой строкой не должно вернуться
+        self.assertNotIn("y|Y|yes|д|Д|да|ДА) : ;;", self.template)
+
+    def test_host_answer_also_trimmed(self):
+        # Адрес с «\r» на конце уехал бы в .env, и клиенты искали бы
+        # несуществующий хост.
+        self.assertIn("host_now=\"${host_now//$'\\r'/}\"", self.template)
+
+
 class InstallerIntegration(unittest.TestCase):
     """Установщик разворачивает и сверяет RustDesk сам — это закреплено
     строковыми проверками, как RunnerRecipe в test_updater.py."""

@@ -635,6 +635,30 @@ ask_action() {
     ask_updates
 }
 
+# Ответ «да» из живого терминала.
+#
+# Отдельной функцией — потому что сравнение целой строкой уже подвело
+# на живом сервере (4.9.8.5): человек отвечал «д», а установщик писал
+# «Пропущено». Ответ приходит через SSH и может нести хвост — возврат
+# каретки от клиента Windows или пробел, — а `case` сравнивает строку
+# целиком, и «д\r» не равно «д».
+#
+# Сравниваем по началу слова: «д», «да», «y», «yes» — да; пусто и всё
+# остальное — нет. Перечисление, а не скобочное выражение: в bash `[Yyд]`
+# сравнивает БАЙТЫ, а кириллица двухбайтовая — «нет» попало бы в набор
+# наравне с «да». Полученное пишем в журнал: без этого разбирать такой
+# отказ второй раз снова было бы нечем.
+answer_is_yes() {     # answer_is_yes <ответ>
+    local value="$1"
+    value="${value//$'\r'/}"
+    value="${value//[[:space:]]/}"
+    log_raw "ASK   ответ: «${value}» (${#value} знаков)"
+    case "$value" in
+        y*|Y*|д*|Д*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Собственный Bot API Server поднимает предел отправки с 50 МБ до 2 ГБ.
 # Спрашиваем, но не настаиваем: ключи берутся на стороннем сайте, и человек
 # может не иметь их под рукой прямо сейчас. Отказ ничего не записывает —
@@ -668,13 +692,10 @@ ask_bot_api_server() {
     printf "  %s " "$(t botapi_ask)"
     read -r answer < /dev/tty || answer="n"
 
-    # Перечисление, а не скобочное выражение: в bash `[YyДд]` сравнивает
-    # БАЙТЫ, а все кириллические буквы начинаются с 0xD0 — и «нет»
-    # попадало бы в набор наравне с «да». Проверено на живом bash.
-    case "$answer" in
-        y|Y|yes|д|Д|да|ДА) : ;;
-        *) info "$(t botapi_skip)"; return 0 ;;
-    esac
+    if ! answer_is_yes "$answer"; then
+        info "$(t botapi_skip)"
+        return 0
+    fi
 
     printf "  %s%s%s\n" "$C_DIM" "$(t botapi_where)" "$C_RESET"
 
@@ -752,15 +773,19 @@ ask_rustdesk() {
     printf "  %s " "$(t rustdesk_ask)"
     read -r answer < /dev/tty || answer="n"
 
-    case "$answer" in
-        y|Y|yes|д|Д|да|ДА) : ;;
-        *) info "$(t rustdesk_skip)"; return 0 ;;
-    esac
+    if ! answer_is_yes "$answer"; then
+        info "$(t rustdesk_skip)"
+        return 0
+    fi
 
     printf "  %s " "$(t rustdesk_host_ask)"
     read -r host_now < /dev/tty || host_now=""
+    # Тот же хвост от терминала, что и у ответа «да»: адрес с «\r» на конце
+    # уехал бы в .env и клиенты RustDesk искали бы несуществующий хост.
+    host_now="${host_now//$'\r'/}"
+    host_now="${host_now//[[:space:]]/}"
     case "$host_now" in
-        ''|*' '*) warn "$(t rustdesk_host_bad)"; return 0 ;;
+        '') warn "$(t rustdesk_host_bad)"; return 0 ;;
     esac
 
     set_env_value RUSTDESK_ENABLED 1

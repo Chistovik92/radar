@@ -54,6 +54,34 @@ def ready() -> tuple[bool, str]:
     return True, ""
 
 
+async def deployed() -> tuple[bool, str]:
+    """Развёрнуты ли контейнеры RustDesk на этом демоне.
+
+    Отличает «ещё не разворачивали» от «развёрнуто, но не отвечает».
+    Разница видна человеку: в первом случае нужна не кнопка перезапуска,
+    которая заведомо ответит «No such container», а две строки в `.env`
+    и один запуск профиля.
+    """
+    allowed, reason = ready()
+    if not allowed:
+        return False, reason
+
+    try:
+        session = await dockerapi.session()
+    except Exception as exc:  # noqa: BLE001
+        log.error("Сокет Docker недоступен: %s", exc)
+        return False, "Сокет Docker недоступен."
+
+    async with session:
+        for name in (HBBS, HBBR):
+            if not await dockerapi.container_exists(session, name):
+                return False, (
+                    f"Контейнер {name} не найден: RustDesk на этом сервере "
+                    "ещё не разворачивали."
+                )
+    return True, ""
+
+
 def client_info() -> tuple[bool, str | dict]:
     """Адрес и ключ для настройки клиента RustDesk.
 

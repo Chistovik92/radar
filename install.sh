@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.5 — автономный установщик.
+# Система «Радар» v4.9.8.6 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.5"
+VERSION="4.9.8.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -635,6 +635,30 @@ ask_action() {
     ask_updates
 }
 
+# Ответ «да» из живого терминала.
+#
+# Отдельной функцией — потому что сравнение целой строкой уже подвело
+# на живом сервере (4.9.8.5): человек отвечал «д», а установщик писал
+# «Пропущено». Ответ приходит через SSH и может нести хвост — возврат
+# каретки от клиента Windows или пробел, — а `case` сравнивает строку
+# целиком, и «д\r» не равно «д».
+#
+# Сравниваем по началу слова: «д», «да», «y», «yes» — да; пусто и всё
+# остальное — нет. Перечисление, а не скобочное выражение: в bash `[Yyд]`
+# сравнивает БАЙТЫ, а кириллица двухбайтовая — «нет» попало бы в набор
+# наравне с «да». Полученное пишем в журнал: без этого разбирать такой
+# отказ второй раз снова было бы нечем.
+answer_is_yes() {     # answer_is_yes <ответ>
+    local value="$1"
+    value="${value//$'\r'/}"
+    value="${value//[[:space:]]/}"
+    log_raw "ASK   ответ: «${value}» (${#value} знаков)"
+    case "$value" in
+        y*|Y*|д*|Д*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Собственный Bot API Server поднимает предел отправки с 50 МБ до 2 ГБ.
 # Спрашиваем, но не настаиваем: ключи берутся на стороннем сайте, и человек
 # может не иметь их под рукой прямо сейчас. Отказ ничего не записывает —
@@ -668,13 +692,10 @@ ask_bot_api_server() {
     printf "  %s " "$(t botapi_ask)"
     read -r answer < /dev/tty || answer="n"
 
-    # Перечисление, а не скобочное выражение: в bash `[YyДд]` сравнивает
-    # БАЙТЫ, а все кириллические буквы начинаются с 0xD0 — и «нет»
-    # попадало бы в набор наравне с «да». Проверено на живом bash.
-    case "$answer" in
-        y|Y|yes|д|Д|да|ДА) : ;;
-        *) info "$(t botapi_skip)"; return 0 ;;
-    esac
+    if ! answer_is_yes "$answer"; then
+        info "$(t botapi_skip)"
+        return 0
+    fi
 
     printf "  %s%s%s\n" "$C_DIM" "$(t botapi_where)" "$C_RESET"
 
@@ -752,15 +773,19 @@ ask_rustdesk() {
     printf "  %s " "$(t rustdesk_ask)"
     read -r answer < /dev/tty || answer="n"
 
-    case "$answer" in
-        y|Y|yes|д|Д|да|ДА) : ;;
-        *) info "$(t rustdesk_skip)"; return 0 ;;
-    esac
+    if ! answer_is_yes "$answer"; then
+        info "$(t rustdesk_skip)"
+        return 0
+    fi
 
     printf "  %s " "$(t rustdesk_host_ask)"
     read -r host_now < /dev/tty || host_now=""
+    # Тот же хвост от терминала, что и у ответа «да»: адрес с «\r» на конце
+    # уехал бы в .env и клиенты RustDesk искали бы несуществующий хост.
+    host_now="${host_now//$'\r'/}"
+    host_now="${host_now//[[:space:]]/}"
     case "$host_now" in
-        ''|*' '*) warn "$(t rustdesk_host_bad)"; return 0 ;;
+        '') warn "$(t rustdesk_host_bad)"; return 0 ;;
     esac
 
     set_env_value RUSTDESK_ENABLED 1
@@ -3120,6 +3145,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.6", [
+        "🔧 <b>Установщик принимает ответ «д».</b> На согласие он отвечал "
+        "«Пропущено»: ответ приходит через SSH с невидимым хвостом — "
+        "возвратом каретки от клиента Windows, — а сравнение шло строкой "
+        "целиком, и «д» с хвостом не совпадало ни с чем. Теперь хвост "
+        "срезается, ответ читается по началу слова, а полученное пишется "
+        "в журнал установки — чтобы такой отказ было чем разбирать.",
+        "🖥 <b>RustDesk: понятная причина вместо «No such container».</b> "
+        "Панель и бот показывали кнопки управления даже там, где "
+        "контейнеры ещё не разворачивали. Теперь вместо ошибки видно, "
+        "что именно не сделано и какие две строки в <code>.env</code> "
+        "это чинят.",
+    ]),
     ("4.9.8.5", [
         "📋 <b>RustDesk: инструкция и ссылка на клиент прямо в боте.</b> "
         "Экран «Адрес и ключ» теперь показывает, куда именно вставить эти "
@@ -4471,7 +4509,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.5"
+__version__ = "4.9.8.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -15743,6 +15781,26 @@ async def _rustdesk_body(session, ok: str = "", err: str = "") -> str:
             )
         return "".join(parts)
 
+    # Контейнеров может не быть вовсе — установщик про RustDesk не спросил
+    # или человек ответил «нет». Тогда кнопки управления бессмысленны:
+    # они ответят «No such container». Показываем то, что реально нужно, —
+    # две строки в .env и один запуск профиля.
+    is_deployed, deploy_reason = await rustdesk.deployed()
+    if not is_deployed:
+        parts.append(
+            f'<div class="card warn">{html.escape(deploy_reason)}</div>'
+            '<div class="card"><p>Разверните сервер на хосте, в каталоге '
+            "установки:</p>"
+            '<pre class="log">RUSTDESK_ENABLED=1\n'
+            "RUSTDESK_PUBLIC_HOST=внешний-адрес-или-домен</pre>"
+            "<p>— дописать в <code>.env</code>, затем:</p>"
+            '<pre class="log">docker compose --profile rustdesk up -d</pre>'
+            '<p class="muted">Это же предлагает установщик при обновлении '
+            "с терминала. Наружу откроются порты 21115-21119 — их нужно "
+            "пробросить на роутере.</p></div>"
+        )
+        return "".join(parts)
+
     ok_info, info = rustdesk.client_info()
     if ok_info:
         parts.append(
@@ -25831,6 +25889,21 @@ async def exec_run(session_, name: str, cmd: list[str]) -> tuple[bool, str]:
         return False, str(exc)
 
 
+async def container_exists(session_, name: str) -> bool:
+    """Есть ли такой контейнер у демона (хоть запущенный, хоть нет).
+
+    Нужно, чтобы отличить «RustDesk ещё не разворачивали» от «развёрнут,
+    но сломался»: в первом случае человеку нужна инструкция, а не кнопка
+    перезапуска, которая заведомо ответит «No such container».
+    """
+    try:
+        async with session_.get(f"{API}/containers/{name}/json") as response:
+            return response.status == 200
+    except Exception:  # noqa: BLE001
+        log.debug("Проверка контейнера %s не удалась", name, exc_info=True)
+        return False
+
+
 async def container_action(session_, name: str, action: str) -> tuple[bool, str]:
     """`POST /containers/{name}/{start|stop|restart}` — по имени: Docker
     API принимает имя наравне с ID, отдельный поиск ID не нужен."""
@@ -26175,6 +26248,34 @@ def ready() -> tuple[bool, str]:
     if not os.access(dockerapi.SOCKET, os.W_OK):
         return False, ("Сокет Docker виден, но недоступен на запись: "
                        "контейнеру не хватает группы docker (DOCKER_GID).")
+    return True, ""
+
+
+async def deployed() -> tuple[bool, str]:
+    """Развёрнуты ли контейнеры RustDesk на этом демоне.
+
+    Отличает «ещё не разворачивали» от «развёрнуто, но не отвечает».
+    Разница видна человеку: в первом случае нужна не кнопка перезапуска,
+    которая заведомо ответит «No such container», а две строки в `.env`
+    и один запуск профиля.
+    """
+    allowed, reason = ready()
+    if not allowed:
+        return False, reason
+
+    try:
+        session = await dockerapi.session()
+    except Exception as exc:  # noqa: BLE001
+        log.error("Сокет Docker недоступен: %s", exc)
+        return False, "Сокет Docker недоступен."
+
+    async with session:
+        for name in (HBBS, HBBR):
+            if not await dockerapi.container_exists(session, name):
+                return False, (
+                    f"Контейнер {name} не найден: RustDesk на этом сервере "
+                    "ещё не разворачивали."
+                )
     return True, ""
 
 
@@ -33134,6 +33235,14 @@ async def ask_action(call: CallbackQuery, role: str) -> None:
     if action not in _ACTION_TITLES:
         await call.answer("Неизвестное действие.", show_alert=True)
         return
+
+    # Управлять нечем, пока контейнеров нет: кнопка ответила бы
+    # «No such container», а человеку нужна не ошибка, а причина.
+    is_deployed, reason = await rustdesk.deployed()
+    if not is_deployed:
+        await call.answer(reason, show_alert=True)
+        return
+
     await call.answer()
     await safe_edit(
         call,

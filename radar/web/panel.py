@@ -790,6 +790,26 @@ async def _rustdesk_body(session, ok: str = "", err: str = "") -> str:
             )
         return "".join(parts)
 
+    # Контейнеров может не быть вовсе — установщик про RustDesk не спросил
+    # или человек ответил «нет». Тогда кнопки управления бессмысленны:
+    # они ответят «No such container». Показываем то, что реально нужно, —
+    # две строки в .env и один запуск профиля.
+    is_deployed, deploy_reason = await rustdesk.deployed()
+    if not is_deployed:
+        parts.append(
+            f'<div class="card warn">{html.escape(deploy_reason)}</div>'
+            '<div class="card"><p>Разверните сервер на хосте, в каталоге '
+            "установки:</p>"
+            '<pre class="log">RUSTDESK_ENABLED=1\n'
+            "RUSTDESK_PUBLIC_HOST=внешний-адрес-или-домен</pre>"
+            "<p>— дописать в <code>.env</code>, затем:</p>"
+            '<pre class="log">docker compose --profile rustdesk up -d</pre>'
+            '<p class="muted">Это же предлагает установщик при обновлении '
+            "с терминала. Наружу откроются порты 21115-21119 — их нужно "
+            "пробросить на роутере.</p></div>"
+        )
+        return "".join(parts)
+
     ok_info, info = rustdesk.client_info()
     if ok_info:
         parts.append(

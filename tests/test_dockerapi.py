@@ -98,6 +98,23 @@ class TestExecRun(unittest.TestCase):
         self.assertTrue(reason)
 
 
+class TestContainerExists(unittest.TestCase):
+    """Отличить «не разворачивали» от «сломалось» — иначе человек видит
+    «No such container» вместо причины."""
+
+    def test_present(self):
+        session = FakeSession({
+            ("GET", "/containers/hbbs/json"): FakeResponse(200, {"Id": "x"}),
+        })
+        self.assertTrue(run(dockerapi.container_exists(session, "hbbs")))
+
+    def test_missing(self):
+        session = FakeSession({
+            ("GET", "/containers/hbbs/json"): FakeResponse(404, {}),
+        })
+        self.assertFalse(run(dockerapi.container_exists(session, "hbbs")))
+
+
 class TestContainerAction(unittest.TestCase):
     def test_restart_success(self):
         session = FakeSession({

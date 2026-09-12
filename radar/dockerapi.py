@@ -93,6 +93,21 @@ async def exec_run(session_, name: str, cmd: list[str]) -> tuple[bool, str]:
         return False, str(exc)
 
 
+async def container_exists(session_, name: str) -> bool:
+    """Есть ли такой контейнер у демона (хоть запущенный, хоть нет).
+
+    Нужно, чтобы отличить «RustDesk ещё не разворачивали» от «развёрнут,
+    но сломался»: в первом случае человеку нужна инструкция, а не кнопка
+    перезапуска, которая заведомо ответит «No such container».
+    """
+    try:
+        async with session_.get(f"{API}/containers/{name}/json") as response:
+            return response.status == 200
+    except Exception:  # noqa: BLE001
+        log.debug("Проверка контейнера %s не удалась", name, exc_info=True)
+        return False
+
+
 async def container_action(session_, name: str, action: str) -> tuple[bool, str]:
     """`POST /containers/{name}/{start|stop|restart}` — по имени: Docker
     API принимает имя наравне с ID, отдельный поиск ID не нужен."""
