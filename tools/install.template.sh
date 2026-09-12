@@ -635,6 +635,24 @@ ask_action() {
     ask_updates
 }
 
+# Сертификат и домен панели. Объявлены здесь, а не рядом с offer_tls ниже:
+# домен нужен ещё и вопросу про RustDesk, а тот задаётся раньше, и функция,
+# объявленная после места вызова, в bash просто не существует.
+tls_certificate_present() {
+    # Сертификат живёт в томе Caddy. Проверяем и контейнер, и том:
+    # контейнер могли остановить, а сертификат при этом цел.
+    docker volume ls --format '{{.Name}}' 2>/dev/null \
+        | grep -q 'caddy_data' && return 0
+    docker ps -a --format '{{.Names}}' 2>/dev/null \
+        | grep -q '^radar_tls$' && return 0
+    return 1
+}
+
+configured_domain() {
+    [ -f "$APP_DIR/tls/Caddyfile" ] || return 1
+    head -1 "$APP_DIR/tls/Caddyfile" 2>/dev/null | awk '{print $1}'
+}
+
 # Ответ «да» из живого терминала.
 #
 # Отдельной функцией — потому что сравнение целой строкой уже подвело
@@ -778,12 +796,27 @@ ask_rustdesk() {
         return 0
     fi
 
-    printf "  %s " "$(t rustdesk_host_ask)"
+    # Домен панели уже известен, если сертификат получали через tls.sh:
+    # он записан первой строкой Caddyfile. Спрашивать его второй раз
+    # незачем — предлагаем готовый, Enter соглашается. Это ровно тот же
+    # адрес, на который выдан сертификат.
+    local suggested=""
+    if tls_certificate_present; then
+        suggested="$(configured_domain || true)"
+    fi
+
+    if [ -n "$suggested" ]; then
+        printf "  %s [%s] " "$(t rustdesk_host_ask)" "$suggested"
+    else
+        printf "  %s " "$(t rustdesk_host_ask)"
+    fi
     read -r host_now < /dev/tty || host_now=""
     # Тот же хвост от терминала, что и у ответа «да»: адрес с «\r» на конце
     # уехал бы в .env и клиенты RustDesk искали бы несуществующий хост.
     host_now="${host_now//$'\r'/}"
     host_now="${host_now//[[:space:]]/}"
+    # Пустой ответ — согласие с предложенным доменом.
+    [ -z "$host_now" ] && host_now="$suggested"
     case "$host_now" in
         '') warn "$(t rustdesk_host_bad)"; return 0 ;;
     esac
@@ -3791,21 +3824,6 @@ log_raw "=== УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО за ${ELAPSED
 # получить сертификат мало, нужно ещё прописать адрес в сократитель ссылок
 # и завести соль, иначе короткие ссылки останутся выключенными и человек
 # не поймёт, почему.
-
-tls_certificate_present() {
-    # Сертификат живёт в томе Caddy. Проверяем и контейнер, и том:
-    # контейнер могли остановить, а сертификат при этом цел.
-    docker volume ls --format '{{.Name}}' 2>/dev/null \
-        | grep -q 'caddy_data' && return 0
-    docker ps -a --format '{{.Names}}' 2>/dev/null \
-        | grep -q '^radar_tls$' && return 0
-    return 1
-}
-
-configured_domain() {
-    [ -f "$APP_DIR/tls/Caddyfile" ] || return 1
-    head -1 "$APP_DIR/tls/Caddyfile" 2>/dev/null | awk '{print $1}'
-}
 
 setup_shortener() {   # setup_shortener <домен>
     local domain="$1"

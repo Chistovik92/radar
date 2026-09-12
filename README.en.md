@@ -1,4 +1,4 @@
-# Radar v4.9.8.6
+# Radar v4.9.8.7
 
 [Русская версия](README.md)
 
@@ -176,7 +176,9 @@ Your own remote-access relay (hbbs/hbbr) next to the bot — feature flag
 `rustdesk`, off by default. The installer deploys the containers itself
 (the `rustdesk` profile in `docker-compose.yml`) and, on a re-run,
 checks that the expected container name really is `rustdesk-server`
-and not something else.
+and not something else. The external address is asked only once: when the
+panel's certificate has already been issued via `tls.sh`, the installer
+offers that same domain — Enter accepts it.
 
 The bot's menu section: connection address and key — subscribers and
 admins; connections right now — admins; start, stop and restart —

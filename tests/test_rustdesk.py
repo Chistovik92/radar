@@ -290,6 +290,34 @@ class InstallerAnswer(unittest.TestCase):
         self.assertIn("host_now=\"${host_now//$'\\r'/}\"", self.template)
 
 
+class InstallerDomainReuse(unittest.TestCase):
+    """Домен, на который выдан сертификат панели, установщик предлагает
+    сам — спрашивать тот же адрес второй раз незачем."""
+
+    def setUp(self) -> None:
+        self.template = open(os.path.join(ROOT, "tools", "install.template.sh"),
+                             encoding="utf-8").read()
+
+    def test_domain_suggested_in_prompt(self):
+        self.assertIn('printf "  %s [%s] " "$(t rustdesk_host_ask)" "$suggested"',
+                      self.template)
+
+    def test_empty_answer_accepts_suggestion(self):
+        self.assertIn('[ -z "$host_now" ] && host_now="$suggested"', self.template)
+
+    def test_helpers_defined_once(self):
+        self.assertEqual(self.template.count("configured_domain() {"), 1)
+        self.assertEqual(self.template.count("tls_certificate_present() {"), 1)
+
+    def test_helpers_defined_before_the_question_runs(self):
+        # В bash функция существует только после своего объявления.
+        # Раньше обе жили рядом с offer_tls — ниже места, где задаётся
+        # вопрос про RustDesk, и вызов оттуда упал бы «command not found».
+        definition = self.template.index("configured_domain() {")
+        call_site = self.template.index("\nask_rustdesk\n")
+        self.assertLess(definition, call_site)
+
+
 class InstallerIntegration(unittest.TestCase):
     """Установщик разворачивает и сверяет RustDesk сам — это закреплено
     строковыми проверками, как RunnerRecipe в test_updater.py."""
