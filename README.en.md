@@ -1,4 +1,4 @@
-# Radar v4.9.8.7
+# Radar v4.9.8.8
 
 [Русская версия](README.md)
 
@@ -216,6 +216,12 @@ switched off early.
 The panel comes in light and dark themes — the toggle sits in the header,
 the choice is remembered in the browser, and the system preference is the
 default.
+
+**On a phone the panel works as it is.** Sections move to their own
+full-width row, buttons and links are sized for a finger, wide tables
+scroll sideways, and the user list unfolds into "field: value" cards on
+a narrow screen. The styling is not stripped down: the "Matrix" rain and
+the "Reactor" bracket corners stay on the phone too.
 
 ### Panel themes
 

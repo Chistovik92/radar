@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.7 — автономный установщик.
+# Система «Радар» v4.9.8.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.7"
+VERSION="4.9.8.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3178,6 +3178,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.8", [
+        "📱 <b>Панель с телефона.</b> Разделы получили отдельную строку "
+        "во всю ширину, кнопки и ссылки — размер под палец, журнал "
+        "установки перестал занимать весь экран. Широкие таблицы "
+        "прокручиваются вбок, а список пользователей на узком экране "
+        "разворачивается в карточки «поле: значение».",
+        "🎨 <b>Темы остались прежними.</b> Дождь «Матрицы», размытие "
+        "и уголки-скобки «Реактора» на телефоне не отключаются — "
+        "мобильная вёрстка сделана так, чтобы их не задеть.",
+    ]),
     ("4.9.8.7", [
         "🔐 <b>Адрес RustDesk берётся от сертификата.</b> Если сертификат "
         "панели уже получен, установщик больше не спрашивает внешний адрес "
@@ -4549,7 +4559,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.7"
+__version__ = "4.9.8.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -15274,9 +15284,11 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
 @media (max-width: 780px) {
   header { padding:10px 14px; gap:10px; }
   /* Разделов много, и на телефоне они не должны занимать пол-экрана:
-     строка прокручивается вбок, а не переносится. */
-  nav { flex-wrap:nowrap; overflow-x:auto; max-width:100%;
-        scrollbar-width:none; padding-bottom:2px; }
+     строка прокручивается вбок, а не переносится. Своя строка во всю
+     ширину: иначе разделы зажаты между названием и кнопкой темы,
+     и до дальних приходится возить пальцем через всю шапку. */
+  nav { order:3; flex:1 0 100%; flex-wrap:nowrap; overflow-x:auto;
+        max-width:100%; scrollbar-width:none; padding-bottom:2px; }
   nav::-webkit-scrollbar { display:none; }
   main { padding:16px 14px 32px; }
   .subnav { padding:7px 14px; flex-wrap:nowrap; overflow-x:auto;
@@ -15284,6 +15296,52 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
   .subnav::-webkit-scrollbar { display:none; }
   th, td { padding:9px 10px; }
   .who { font-size:13px; }
+
+  /* Размер под палец. Кнопка «удалить» в строке таблицы была 28px —
+     в неё попадали через раз. */
+  nav a, .subnav a, button, #theme {
+    min-height:40px; display:inline-flex; align-items:center; }
+  button.ghost { min-height:36px; }
+
+  /* Широкие таблицы прокручиваются вбок. Прокрутка задана ТАБЛИЦЕ,
+     а не карточке: у «Реактора» карточка носит уголки-скобки
+     псевдоэлементами за своей границей, и overflow на .card срезал бы
+     их вместе с углами. Восстановление display:table у tbody нужно
+     потому, что display:block на самой таблице отключает расчёт
+     колонок, и они схлопываются в кашу. */
+  table:not(.stack) { display:block; overflow-x:auto;
+                      -webkit-overflow-scrolling:touch; }
+  table:not(.stack) > tbody { display:table; width:100%; min-width:540px; }
+  /* Липкая шапка внутри боковой прокрутки бессмысленна. */
+  th { position:static; }
+
+  /* Журнал установки занимал почти весь экран телефона. */
+  pre.log { max-height:260px; }
+  .login { margin:36px auto; }
+}
+
+/* Телефон, а не планшет: на 700px пять колонок ещё читаются,
+   на 360px — уже нет. */
+@media (max-width: 560px) {
+  /* Строка таблицы разворачивается в карточку «поле: значение».
+     Имя поля берётся из data-label самой разметки — иначе заголовок
+     таблицы, который здесь скрыт, пришлось бы дублировать в CSS
+     и чинить в двух местах при каждом изменении столбцов. */
+  table.stack, table.stack > tbody, table.stack tr, table.stack td {
+    display:block; width:auto; }
+  table.stack { min-width:0; overflow:visible; }
+  table.stack > thead { display:none; }
+  table.stack tr { border:1px solid var(--line); border-radius:10px;
+                   background:var(--surface-2); margin-bottom:10px;
+                   padding:4px 0; }
+  table.stack tr:last-child { margin-bottom:0; }
+  table.stack td { border:none; padding:7px 13px; }
+  table.stack td::before { content:attr(data-label); display:block;
+                           color:var(--muted); font-size:11.5px;
+                           text-transform:uppercase; letter-spacing:.05em; }
+  table.stack td:empty { display:none; }
+  .grid { grid-template-columns:1fr; }
+  h1 { font-size:19px; }
 }
 
 /* Уважение к системной настройке: анимация полосы «идёт работа»
@@ -16243,20 +16301,26 @@ def _users_body(session, message: str = "", failed: str = "") -> str:
                 '<button class="ghost" type="submit">Сохранить</button></form>'
             )
 
+        # data-label — имя столбца для узкого экрана: там таблица
+        # разворачивается в карточки, заголовок скрыт, и без подписи
+        # осталась бы колонка безымянных значений.
         rows.append(
-            f"<tr><td><code>{html.escape(key if full else key[:4] + '…')}</code></td>"
-            f"<td>{html.escape(roles.title(item.get('role', 'user')))}</td>"
-            f"<td>{len(locations)}</td>"
-            f"<td>{html.escape(cities or '—')}</td>"
-            f"<td>{html.escape(zone)}<br>"
+            f'<tr><td data-label="Ключ">'
+            f"<code>{html.escape(key if full else key[:4] + '…')}</code></td>"
+            f'<td data-label="Роль">'
+            f"{html.escape(roles.title(item.get('role', 'user')))}</td>"
+            f'<td data-label="Локаций">{len(locations)}</td>'
+            f'<td data-label="Города">{html.escape(cities or "—")}</td>'
+            f'<td data-label="Время">{html.escape(zone)}<br>'
             f'<span class="muted">погода: {html.escape(moment)}</span>{form}</td></tr>'
         )
 
     return (
         _note("ok", message) + _note("bad", failed)
-        + '<div class="card"><table><tr><th>Ключ</th><th>Роль</th>'
-        f"<th>Локаций</th><th>Города</th><th>Время</th></tr>"
-        f"{''.join(rows)}</table>"
+        + '<div class="card"><table class="stack"><thead>'
+        '<tr><th>Ключ</th><th>Роль</th>'
+        f"<th>Локаций</th><th>Города</th><th>Время</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
         '<p class="muted">Пустое поле времени оставляет прежнее. По выбранному '
         "поясу считаются тихие часы, время погоды и доставка подборок.</p>"
         "</div>"
