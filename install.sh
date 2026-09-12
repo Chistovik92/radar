@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.3 — автономный установщик.
+# Система «Радар» v4.9.8.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.3"
+VERSION="4.9.8.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -303,6 +303,15 @@ t() {                  # t <ключ> [подстановка]
             botapi_ready)        value="Own Bot API Server configured: the limit is now 2 GB" ;;
             botapi_have)         value="Own Bot API Server already configured" ;;
             botapi_disk)         value="Note: it caches files locally and needs noticeably more disk." ;;
+            rustdesk_title)      value="Own RustDesk server" ;;
+            rustdesk_why)        value="Runs hbbs/hbbr alongside the bot for your own remote-access relay." ;;
+            rustdesk_ports)      value="Opens 5 ports to the internet (21115-21119) — forward them on your router." ;;
+            rustdesk_ask)        value="Set it up now? [y/N]" ;;
+            rustdesk_skip)       value="Skipped. The question returns on the next run." ;;
+            rustdesk_host_ask)   value="Public address for RustDesk clients (IP or domain):" ;;
+            rustdesk_host_bad)   value="Address looks wrong (empty or contains spaces) — skipping" ;;
+            rustdesk_ready)      value="RustDesk configured: hbbs/hbbr come up with the bot" ;;
+            rustdesk_mismatch)   value="A container with this name exists but is not rustdesk-server" ;;
             env_exists)          value="The .env file already exists" ;;
             env_reuse_ask)       value="Use the current settings? (Y/n):" ;;
             migrate_serve_failed) value="Could not start the temporary server — falling back to manual copying" ;;
@@ -462,6 +471,15 @@ t() {                  # t <ключ> [подстановка]
             botapi_ready)        value="Свой Bot API Server настроен: предел стал 2 ГБ" ;;
             botapi_have)         value="Свой Bot API Server уже настроен" ;;
             botapi_disk)         value="Учтите: он кэширует файлы локально и требует заметно больше диска." ;;
+            rustdesk_title)      value="Свой сервер RustDesk" ;;
+            rustdesk_why)        value="Поднимает hbbs/hbbr вместе с ботом — свой релей удалённого доступа." ;;
+            rustdesk_ports)      value="Открывает 5 портов наружу (21115-21119) — пробросьте их на роутере." ;;
+            rustdesk_ask)        value="Настроить сейчас? [д/Н]" ;;
+            rustdesk_skip)       value="Пропущено. Вопрос вернётся при следующем запуске." ;;
+            rustdesk_host_ask)   value="Внешний адрес сервера для клиентов RustDesk (IP или домен):" ;;
+            rustdesk_host_bad)   value="Адрес выглядит неверно (пусто или с пробелом) — пропускаю" ;;
+            rustdesk_ready)      value="RustDesk настроен: hbbs/hbbr поднимутся вместе с ботом" ;;
+            rustdesk_mismatch)   value="Контейнер с этим именем есть, но это не rustdesk-server" ;;
             env_exists)          value="Файл .env уже существует" ;;
             env_reuse_ask)       value="Использовать текущие настройки? (Y/n):" ;;
             migrate_serve_failed) value="Временный сервер не запустился — переношу копию вручную" ;;
@@ -688,6 +706,68 @@ ask_bot_api_server() {
 
     ok "$(t botapi_ready)"
     info "$(t botapi_disk)"
+    return 0
+}
+
+# Обнаружение и сверка: если под ожидаемым именем контейнера уже сидит
+# что-то другое — не своя же переустановка, значит имя случайно занято
+# чужим процессом, и трогать его нельзя. Проверяем только образ:
+# состояние (работает/остановлен) установщика не касается — этим
+# управляет сам docker compose при следующем `up -d`.
+verify_rustdesk_containers() {
+    local name image
+    for name in radar_hbbs radar_hbbr; do
+        if docker inspect "$name" >/dev/null 2>&1; then
+            image="$(docker inspect --format '{{.Config.Image}}' "$name" 2>/dev/null)"
+            case "$image" in
+                rustdesk/rustdesk-server*) : ;;
+                *) warn "$(t rustdesk_mismatch) ($name: $image)" ;;
+            esac
+        fi
+    done
+}
+
+# Свой RustDesk-сервер (удалённый доступ) — hbbs/hbbr поднимаются профилем
+# rustdesk вместе с ботом (см. docker-compose.yml). Спрашиваем один раз:
+# при повторных запусках уже записанный RUSTDESK_ENABLED только сверяется
+# с verify_rustdesk_containers, вопрос не повторяется.
+ask_rustdesk() {
+    local enabled_now answer host_now
+
+    enabled_now="$(get_env_value RUSTDESK_ENABLED)"
+    if [ "$enabled_now" = "1" ]; then
+        verify_rustdesk_containers
+        return 0
+    fi
+
+    # Без живого терминала спрашивать некого.
+    if [ ! -t 0 ] && [ ! -e /dev/tty ]; then
+        return 0
+    fi
+
+    echo
+    printf "  %s%s%s\n" "$C_BOLD" "$(t rustdesk_title)" "$C_RESET"
+    printf "  %s%s%s\n" "$C_DIM" "$(t rustdesk_why)" "$C_RESET"
+    printf "  %s%s%s\n" "$C_DIM" "$(t rustdesk_ports)" "$C_RESET"
+    printf "  %s " "$(t rustdesk_ask)"
+    read -r answer < /dev/tty || answer="n"
+
+    case "$answer" in
+        y|Y|yes|д|Д|да|ДА) : ;;
+        *) info "$(t rustdesk_skip)"; return 0 ;;
+    esac
+
+    printf "  %s " "$(t rustdesk_host_ask)"
+    read -r host_now < /dev/tty || host_now=""
+    case "$host_now" in
+        ''|*' '*) warn "$(t rustdesk_host_bad)"; return 0 ;;
+    esac
+
+    set_env_value RUSTDESK_ENABLED 1
+    set_env_value RUSTDESK_PUBLIC_HOST "$host_now"
+    mkdir -p "$APP_DIR/data/rustdesk"
+
+    ok "$(t rustdesk_ready)"
     return 0
 }
 
@@ -2658,7 +2738,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=107
+FILE_COUNT=110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2781,6 +2861,11 @@ services:
       # Общий том с Bot API Server: в локальном режиме он читает файлы
       # прямо с диска, без передачи по HTTP
       - ./data/bot-api:/var/lib/telegram-bot-api
+      # Каталог данных hbbs — только для чтения. Публичный ключ RustDesk
+      # читается ботом как обычный файл, без Docker API: сокет (ниже)
+      # нужен только для подсчёта подключений и restart/stop/start,
+      # возможность panel_update тут ни при чём.
+      - ./data/rustdesk:/app/data/rustdesk:ro
     deploy:
       resources:
         limits:
@@ -2825,6 +2910,59 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Свой RustDesk-сервер (удалённый доступ). Поднимается профилем, когда
+  # установщик включил RUSTDESK_ENABLED:
+  #   docker compose --profile rustdesk up -d
+  # В отличие от остальных сервисов порты публикуются НАРУЖУ (0.0.0.0),
+  # а не на localhost — клиентам RustDesk нужно достучаться из интернета.
+  # На роутере придётся пробросить все пять портов hbbs+hbbr.
+  hbbs:
+    profiles: ["rustdesk"]
+    image: rustdesk/rustdesk-server:latest
+    container_name: radar_hbbs
+    restart: unless-stopped
+    # -r — адрес relay-сервера (hbbr), который клиент получит от id-сервера.
+    # Без него клиенты не найдут, куда идти за релеем.
+    command: ["hbbs", "-r", "${RUSTDESK_PUBLIC_HOST:-}"]
+    ports:
+      - "21115:21115"
+      - "21116:21116/tcp"
+      - "21116:21116/udp"
+      - "21118:21118"
+    volumes:
+      # Общий с hbbr том: тот должен видеть ту же пару ключей и базу.
+      - ./data/rustdesk:/root
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  hbbr:
+    profiles: ["rustdesk"]
+    image: rustdesk/rustdesk-server:latest
+    container_name: radar_hbbr
+    restart: unless-stopped
+    command: ["hbbr"]
+    ports:
+      - "21117:21117"
+      - "21119:21119"
+    volumes:
+      - ./data/rustdesk:/root
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   # Выход в сеть через внешний узел. Поднимается профилем, когда
   # суперадминистратор выбрал сервер в боте:
@@ -2982,6 +3120,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.4", [
+        "🖥 <b>Новый раздел «RustDesk».</b> Адрес и ключ своего сервера "
+        "удалённого доступа — подписчикам и администрации; число "
+        "подключений сейчас — администрации; запуск/остановка/перезапуск "
+        "— суперадминистратору. Контейнеры hbbs/hbbr разворачивает сам "
+        "установщик (профиль <code>rustdesk</code>) и при повторном "
+        "запуске сверяет, что под ожидаемым именем — именно "
+        "rustdesk-server, а не что-то чужое.",
+        "🔧 <b>Управление чужим контейнером — общим кодом.</b> Клиент "
+        "Docker Engine API, которым пользовалось только «Обновление из "
+        "панели», вынесен в отдельный модуль и получил операции exec "
+        "и start/stop/restart по имени — на них и построено управление "
+        "RustDesk.",
+    ]),
     ("4.9.8.3", [
         "🔧 <b>Обновление из панели больше не падает на свежем сервере.</b> "
         "Кнопка создавала контейнер-исполнитель образом <code>docker:cli</code>, "
@@ -4310,7 +4462,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.3"
+__version__ = "4.9.8.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -4534,6 +4686,23 @@ LINKCHECK_RATE_LIMIT: int = max(1, _int("LINKCHECK_RATE_LIMIT", 5))
 # Бесплатных проверок в сутки; подписка снимает предел. Считаем штуки,
 # а не минуты чужих сервисов: человеку «осталось 17 из 200» понятно.
 LINKCHECK_FREE_PER_DAY: int = max(1, _int("LINKCHECK_FREE_PER_DAY", 200))
+
+# --- RustDesk (профиль docker-compose, включается в 4.9.8.4) ---
+# Имена контейнеров совпадают с container_name в docker-compose.yml —
+# установщик разворачивает их сам (профиль rustdesk), их можно переопределить,
+# только если кто-то развернул RustDesk вручную под другими именами.
+RUSTDESK_HBBS_CONTAINER: str = (os.getenv("RUSTDESK_HBBS_CONTAINER") or "radar_hbbs").strip()
+RUSTDESK_HBBR_CONTAINER: str = (os.getenv("RUSTDESK_HBBR_CONTAINER") or "radar_hbbr").strip()
+# Путь читается как обычный файл — общий том с hbbs смонтирован в бота
+# только для чтения (docker-compose.yml), поэтому Docker API для этого
+# не нужен вовсе, в отличие от подсчёта подключений и restart/stop/start.
+RUSTDESK_KEY_PATH: str = (
+    os.getenv("RUSTDESK_KEY_PATH") or "data/rustdesk/id_ed25519.pub"
+).strip()
+# Внешний адрес сервера для клиентов RustDesk — это знает только
+# администратор, разумного значения по умолчанию нет. Задаётся установщиком
+# при включении профиля или вручную в .env.
+RUSTDESK_PUBLIC_HOST: str = (os.getenv("RUSTDESK_PUBLIC_HOST") or "").strip()
 
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 # Каталог журналов. Лежит внутри data/, чтобы его видели и бот, и хост:
@@ -6196,6 +6365,14 @@ FLAGS: tuple[Flag, ...] = (
          "на хосте — поэтому по умолчанию выключено и включается "
          "осознанно.",
          group="Инфраструктура", since="4.9.6", default=False),
+    Flag("rustdesk", "RustDesk",
+         "Адрес и ключ сервера — подписчикам и администрации; число "
+         "подключений и перезапуск — только администрации. Контейнеры "
+         "разворачивает установщик (профиль rustdesk в docker-compose.yml); "
+         "управление ими из бота идёт через сокет Docker, как «Обновление "
+         "из панели» — тот же уровень риска (эквивалент root на хосте), "
+         "поэтому по умолчанию выключено.",
+         group="Инфраструктура", since="4.9.8.4", default=False),
     Flag("restart_notice", "Ответ написавшим во время работ",
          "После перезапуска бот пишет тем, кто обращался, пока он был "
          "выключен: их сообщения Telegram не сохраняет, и без этого "
@@ -12364,6 +12541,18 @@ EN_STRINGS: dict[str, str] = {
     "menu.sub_button": "💳 Subscription — unlimited checks",
     "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
     "help.cmd_music": "/music — music and playlists",
+
+    # --- RustDesk ---
+    "menu.rustdesk": "🖥 RustDesk",
+    "rustdesk.title": "🖥 <b>RustDesk</b>",
+    "rustdesk.info_button": "📋 Address and key",
+    "rustdesk.conn_button": "🔌 Connections right now",
+    "rustdesk.info_title": "📋 <b>Connection details</b>",
+    "rustdesk.no_subscription": "⭐️ <b>Address and key — with a subscription</b>\n\n"
+                                "The subscription unlocks your own RustDesk "
+                                "server, unlimited video downloads, and all "
+                                "digest topics. Danger alerts stay free "
+                                "always.",
 
     # --- оповещения: самое важное ---
     "alert.danger": "DANGER",
@@ -23885,6 +24074,9 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     if features.enabled("music"):
         extra.append(InlineKeyboardButton(text=label("menu.music", "🎵 Музыка"),
                                           callback_data="mus:menu"))
+    if features.enabled("rustdesk"):
+        extra.append(InlineKeyboardButton(text=label("menu.rustdesk", "🖥 RustDesk"),
+                                          callback_data="rd:menu"))
     if extra:
         # Кнопок бывает больше двух — режем по две, чтобы строка
         # не расползалась на весь экран телефона.
@@ -25419,8 +25611,122 @@ async def allowed(url: str) -> bool:
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
 RADAR_FILE_76
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dockerapi.py"
+cat > "radar/dockerapi.py" <<'RADAR_FILE_77'
+"""Общий клиент Docker Engine API поверх Unix-сокета.
+
+Вынесено из `radar/updater.py` в 4.9.8.4: `radar/rustdesk.py` управляет
+ЧУЖИМИ контейнерами (`hbbs`/`hbbr`) через тот же сокет и той же ценой
+доступа (сокет внутри контейнера равносилен root на хосте), и второй
+копии `_session()`/константы версии API проект бы не пережил безболезненно —
+любая правка версии API пришлось бы вносить в двух местах и забывать
+об одном.
+
+Здесь же — операции, которых раньше в проекте не было: `exec` внутрь
+чужого контейнера (нужен, чтобы прочитать `/proc/net/tcp` — открытая
+версия RustDesk не отдаёт число подключений никаким API) и
+`start`/`stop`/`restart` по имени контейнера.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("radar.dockerapi")
+
+SOCKET = "/var/run/docker.sock"
+API = "http://localhost/v1.41"
+
+
+async def session():
+    """Сессия к сокету Docker. Импорт внутри — офлайн-проверки без aiohttp."""
+    import aiohttp
+
+    return aiohttp.ClientSession(
+        connector=aiohttp.UnixConnector(path=SOCKET),
+        timeout=aiohttp.ClientTimeout(total=30),
+    )
+
+
+def _demux(raw: bytes) -> str:
+    """Разбирает мультиплексированный поток `docker exec` без TTY.
+
+    На каждый кусок — 8-байтный заголовок (1 байт тип потока: stdin
+    не используется, stdout и stderr тут не различаются намеренно —
+    для `cat` это не важно; 3 нуля; 4 байта BE-длины), затем сама
+    полезная нагрузка. С включённым TTY заголовков нет вовсе, но здесь
+    TTY всегда выключен — иначе стрим нельзя было бы разобрать однозначно.
+    """
+    out = bytearray()
+    offset = 0
+    while offset + 8 <= len(raw):
+        length = int.from_bytes(raw[offset + 4:offset + 8], "big")
+        start = offset + 8
+        end = start + length
+        out += raw[start:end]
+        offset = end
+    return out.decode("utf-8", errors="replace")
+
+
+async def exec_run(session_, name: str, cmd: list[str]) -> tuple[bool, str]:
+    """Выполняет команду внутри контейнера `name`, отдаёт (успех, вывод).
+
+    Два запроса: `POST /containers/{name}/exec` создаёт исполнение,
+    `POST /exec/{id}/start` его запускает и возвращает поток целиком
+    (команды здесь короткие — `cat` файла или `/proc/net/tcp` — поэтому
+    буферизация всего ответа, а не построчное чтение, оправдана).
+    """
+    try:
+        async with session_.post(
+            f"{API}/containers/{name}/exec",
+            json={"AttachStdout": True, "AttachStderr": True, "Cmd": cmd, "Tty": False},
+        ) as response:
+            body = await response.json()
+            if response.status not in (200, 201):
+                message = str(body.get("message") or body) if isinstance(body, dict) else str(body)
+                return False, message
+            exec_id = body.get("Id") if isinstance(body, dict) else None
+            if not exec_id:
+                return False, "Docker не вернул идентификатор исполнения"
+
+        async with session_.post(
+            f"{API}/exec/{exec_id}/start",
+            json={"Detach": False, "Tty": False},
+        ) as response:
+            raw = await response.read()
+            if response.status != 200:
+                return False, raw.decode("utf-8", errors="replace")[:200]
+            return True, _demux(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("exec в контейнере %s не выполнен", name)
+        return False, str(exc)
+
+
+async def container_action(session_, name: str, action: str) -> tuple[bool, str]:
+    """`POST /containers/{name}/{start|stop|restart}` — по имени: Docker
+    API принимает имя наравне с ID, отдельный поиск ID не нужен."""
+    if action not in ("start", "stop", "restart"):
+        return False, f"неизвестное действие: {action}"
+    try:
+        async with session_.post(f"{API}/containers/{name}/{action}") as response:
+            if response.status in (204, 304):
+                return True, ""
+            if response.status == 404:
+                return False, f"контейнер {name} не найден"
+            body = await response.text()
+            return False, body[:200]
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Действие %s над контейнером %s не выполнено", action, name)
+        return False, str(exc)
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
-cat > "radar/updater.py" <<'RADAR_FILE_77'
+cat > "radar/updater.py" <<'RADAR_FILE_78'
 """Обновление системы из веб-панели.
 
 Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
@@ -25460,14 +25766,18 @@ import os
 import time
 from pathlib import Path
 
-from . import features
+from . import dockerapi, features
 
 log = logging.getLogger("radar.updater")
 
-SOCKET = "/var/run/docker.sock"
+# Сокет и версия API — общие для всего, что говорит с Docker Engine
+# по этому сокету (см. radar/dockerapi.py). Имена оставлены здесь же,
+# чтобы не переписывать остальной модуль: они те же объекты, что
+# в dockerapi, а не копии.
+SOCKET = dockerapi.SOCKET
+API = dockerapi.API
 CONTAINER = "radar_updater"
 IMAGE = "docker:cli"
-API = "http://localhost/v1.41"
 
 # Метка запуска: по ней панель отличает журнал своего обновления
 # от журналов ручных установок.
@@ -25514,13 +25824,9 @@ def ready() -> tuple[bool, str]:
 
 
 async def _session():
-    """Сессия к сокету Docker. Импорт внутри — офлайн-проверки без aiohttp."""
-    import aiohttp
-
-    return aiohttp.ClientSession(
-        connector=aiohttp.UnixConnector(path=SOCKET),
-        timeout=aiohttp.ClientTimeout(total=30),
-    )
+    """Тонкая обёртка над dockerapi.session() — сохранена ради тестов,
+    которые патчат именно `radar.updater._session`."""
+    return await dockerapi.session()
 
 
 async def running() -> bool:
@@ -25690,9 +25996,176 @@ def progress(lines: int = 40) -> tuple[str, str]:
         return "", ""
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
-RADAR_FILE_77
+RADAR_FILE_78
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
+cat > "radar/rustdesk.py" <<'RADAR_FILE_79'
+"""Управление RustDesk-сервером (hbbs/hbbr) из бота.
+
+Открытая версия `rustdesk-server` не публикует API: число подключений
+не узнать иначе, чем заглянув в `/proc/net/tcp{,6}` внутри контейнера
+через `docker exec` (см. `radar/dockerapi.py`). Публичный ключ читается
+проще — установщик монтирует каталог hbbs в бота отдельным, только для
+чтения, томом (docker-compose.yml), так что это обычное чтение файла.
+
+Управление (start/stop/restart) идёт через тот же сокет Docker, что
+и «Обновление из панели» (`radar/updater.py`) — тот же уровень риска
+(сокет внутри контейнера равносилен root на хосте), поэтому раздел
+защищён отдельным флагом `rustdesk`, выключенным по умолчанию.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+
+from . import config, dockerapi, features
+
+log = logging.getLogger("radar.rustdesk")
+
+HBBS = config.RUSTDESK_HBBS_CONTAINER
+HBBR = config.RUSTDESK_HBBR_CONTAINER
+# Стандартные порты rustdesk-server: 21116 — служебный канал hbbs
+# (по нему клиент числится «онлайн»), 21117 — релей hbbr (активная
+# сессия управления). Это не настройка — если кто-то развернул
+# RustDesk на нестандартных портах, подсчёт подключений будет неверным,
+# но остальные функции (ключ, restart) от порта не зависят.
+ID_PORT = 21116
+RELAY_PORT = 21117
+
+_ACTIONS = ("start", "stop", "restart")
+
+
+def ready() -> tuple[bool, str]:
+    """Можно ли обращаться к RustDesk отсюда. Второе — причина отказа."""
+    if not features.enabled("rustdesk"):
+        return False, "Возможность «RustDesk» выключена."
+    if not os.path.exists(dockerapi.SOCKET):
+        return False, ("Сокет Docker не проброшен в контейнер: управлять "
+                       "RustDesk нечем.")
+    if not os.access(dockerapi.SOCKET, os.W_OK):
+        return False, ("Сокет Docker виден, но недоступен на запись: "
+                       "контейнеру не хватает группы docker (DOCKER_GID).")
+    return True, ""
+
+
+def client_info() -> tuple[bool, str | dict]:
+    """Адрес и ключ для настройки клиента RustDesk.
+
+    Ключ читается как обычный файл — том с данными hbbs смонтирован
+    в бота отдельно, только для чтения (см. docker-compose.yml).
+    """
+    allowed, reason = ready()
+    if not allowed:
+        return False, reason
+    if not config.RUSTDESK_PUBLIC_HOST:
+        return False, ("Внешний адрес сервера не задан (RUSTDESK_PUBLIC_HOST "
+                       "в .env) — без него клиенту некуда подключаться.")
+    try:
+        with open(config.RUSTDESK_KEY_PATH, "r", encoding="utf-8") as handle:
+            key = handle.read().strip()
+    except OSError as exc:
+        log.warning("Публичный ключ RustDesk не прочитан: %s", exc)
+        return False, ("Файл ключа не найден — сервер ещё не разворачивался "
+                       "или не успел создать пару ключей при первом запуске.")
+    if not key:
+        return False, "Файл ключа пуст — подождите, пока hbbs его создаст."
+    return True, {
+        "host": config.RUSTDESK_PUBLIC_HOST,
+        "id_port": ID_PORT,
+        "relay_port": RELAY_PORT,
+        "key": key,
+    }
+
+
+# /proc/net/tcp{,6}: поля разделены пробелами, местный адрес — второе поле
+# в виде "HEXIP:HEXPORT" (IP — в порядке байт хоста, порт — в BE, поэтому
+# порт читается напрямую), состояние — четвёртое поле, "01" = ESTABLISHED.
+_TCP_LINE_RE = re.compile(r"^\s*\d+:\s+\S+:([0-9A-Fa-f]+)\s+\S+\s+([0-9A-Fa-f]{2})\b")
+
+
+def _count_established(text: str, port: int) -> int:
+    """Считает строки /proc/net/tcp{,6} в состоянии ESTABLISHED на порту."""
+    target = f"{port:04X}"
+    count = 0
+    for line in text.splitlines():
+        match = _TCP_LINE_RE.match(line)
+        if not match:
+            continue
+        local_port, state = match.groups()
+        if local_port.upper() == target and state == "01":
+            count += 1
+    return count
+
+
+async def connection_counts() -> tuple[bool, str | dict]:
+    """Число установленных соединений на hbbs (ID_PORT) и hbbr (RELAY_PORT).
+
+    Это оценка по TCP-соединениям, а не официальная метрика RustDesk —
+    открытая версия сервера её просто не публикует.
+    """
+    allowed, reason = ready()
+    if not allowed:
+        return False, reason
+
+    cmd = ["sh", "-c", "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null"]
+    try:
+        session = await dockerapi.session()
+    except Exception as exc:  # noqa: BLE001
+        log.error("Сокет Docker недоступен: %s", exc)
+        return False, "Сокет Docker недоступен."
+
+    async with session:
+        ok, out = await dockerapi.exec_run(session, HBBS, cmd)
+        if not ok:
+            return False, f"Не удалось прочитать состояние {HBBS}: {out}"
+        hbbs_count = _count_established(out, ID_PORT)
+
+        ok, out = await dockerapi.exec_run(session, HBBR, cmd)
+        if not ok:
+            return False, f"Не удалось прочитать состояние {HBBR}: {out}"
+        relay_count = _count_established(out, RELAY_PORT)
+
+    return True, {"hbbs": hbbs_count, "hbbr": relay_count}
+
+
+async def control(action: str) -> tuple[bool, str]:
+    """Применяет action (start/stop/restart) к hbbs и hbbr по очереди.
+
+    Ошибка одного контейнера не прерывает попытку для второго — обе
+    причины (если есть) попадают в итоговый текст.
+    """
+    if action not in _ACTIONS:
+        return False, f"неизвестное действие: {action}"
+    allowed, reason = ready()
+    if not allowed:
+        return False, reason
+
+    try:
+        session = await dockerapi.session()
+    except Exception as exc:  # noqa: BLE001
+        log.error("Сокет Docker недоступен: %s", exc)
+        return False, "Сокет Docker недоступен."
+
+    problems: list[str] = []
+    async with session:
+        for name in (HBBS, HBBR):
+            ok, msg = await dockerapi.container_action(session, name, action)
+            if not ok:
+                problems.append(f"{name}: {msg}")
+
+    if problems:
+        return False, "; ".join(problems)
+    return True, ""
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_78'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_80'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -25720,6 +26193,7 @@ from . import (
     network,
     partners,
     perf,
+    rustdesk,
     settings,
     shortlink,
     settings_admin,
@@ -25738,6 +26212,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(features.router)
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
+    dp.include_router(rustdesk.router)
     dp.include_router(logs.router)
     dp.include_router(language.router)
     dp.include_router(history.router)
@@ -25758,9 +26233,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_78
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_79'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_81'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -26203,9 +26678,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_79
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_82'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -26371,9 +26846,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_80
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_83'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -26878,9 +27353,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_81
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_84'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -27355,9 +27830,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_82
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_85'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -27724,9 +28199,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_83
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_86'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -27873,9 +28348,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_84
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_87'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -28163,9 +28638,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_85
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_88'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -28372,9 +28847,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_86
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_89'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -28745,9 +29220,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_87
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_90'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -29322,9 +29797,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_88
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_91'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -29425,9 +29900,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_89
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_92'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -29517,9 +29992,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_90
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_93'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -29940,9 +30415,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_91
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_94'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -31105,9 +31580,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_92
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_95'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -31838,9 +32313,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_93
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_96'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -32364,9 +32839,197 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_94
+RADAR_FILE_96
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_97'
+"""Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
+
+Три уровня доступа в одном разделе:
+
+* адрес и ключ — подписчикам и администрации (`subscription.active`);
+* число подключений — только администрации (`roles.is_admin`);
+* запуск/остановка/перезапуск — только суперадминистратору
+  (`roles.is_superadmin`) — тот же риск-класс, что «Обновление из панели»:
+  управление идёт через сокет Docker, который равносилен root на хосте.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+
+from .. import features, i18n, keyboards, roles, rustdesk, subscription
+from ..textutils import esc
+from ..tg import safe_edit
+
+log = logging.getLogger("radar.handlers.rustdesk")
+router = Router(name="rustdesk")
+
+_ACTION_TITLES = {
+    "restart": "🔄 Перезапустить",
+    "stop": "⏹ Остановить",
+    "start": "▶️ Запустить",
+}
+
+
+def _menu(role: str, lang: str = i18n.DEFAULT) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [[
+        InlineKeyboardButton(
+            text=i18n.t("rustdesk.info_button", lang, "📋 Адрес и ключ"),
+            callback_data="rd:info",
+        ),
+    ]]
+    if roles.is_admin(role):
+        rows.append([InlineKeyboardButton(
+            text=i18n.t("rustdesk.conn_button", lang, "🔌 Подключения сейчас"),
+            callback_data="rd:conn",
+        )])
+    if roles.is_superadmin(role):
+        rows.append([
+            InlineKeyboardButton(text=_ACTION_TITLES["restart"],
+                                 callback_data="rd:ask:restart"),
+            InlineKeyboardButton(text=_ACTION_TITLES["stop"],
+                                 callback_data="rd:ask:stop"),
+            InlineKeyboardButton(text=_ACTION_TITLES["start"],
+                                 callback_data="rd:ask:start"),
+        ])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+        callback_data="menu:main",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "rd:menu")
+async def menu_rustdesk(call: CallbackQuery, user: dict, role: str) -> None:
+    if not features.enabled("rustdesk"):
+        await call.answer("Раздел выключен.", show_alert=True)
+        return
+    await call.answer()
+    lang = i18n.language_of(user)
+    await safe_edit(
+        call,
+        i18n.t("rustdesk.title", lang, "🖥 <b>RustDesk</b>"),
+        _menu(role, lang),
+    )
+
+
+@router.callback_query(F.data == "rd:info")
+async def show_info(call: CallbackQuery, user: dict, role: str) -> None:
+    lang = i18n.language_of(user)
+    if not subscription.active(user, role):
+        await call.answer()
+        await safe_edit(
+            call,
+            i18n.t(
+                "rustdesk.no_subscription", lang,
+                "⭐️ <b>Адрес и ключ — по подписке</b>\n\n"
+                "Подписка открывает подключение к своему RustDesk-серверу, "
+                "а также загрузку видео без предела и все тематики "
+                "новостных подборок. Оповещения об опасности бесплатны "
+                "всегда.",
+            ),
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Оформить подписку",
+                                      callback_data="sub:menu")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
+            ]),
+        )
+        return
+
+    ok, payload = rustdesk.client_info()
+    if not ok:
+        await call.answer(str(payload), show_alert=True)
+        return
+
+    info = payload
+    text = (
+        f"{i18n.t('rustdesk.info_title', lang, '📋 <b>Данные для подключения</b>')}\n\n"
+        f"ID Server: <code>{esc(info['host'])}:{info['id_port']}</code>\n"
+        f"Relay Server: <code>{esc(info['host'])}:{info['relay_port']}</code>\n"
+        f"Key:\n<code>{esc(info['key'])}</code>"
+    )
+    await call.answer()
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
+    ]))
+
+
+@router.callback_query(F.data == "rd:conn")
+async def show_connections(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Только для администрации.", show_alert=True)
+        return
+
+    ok, payload = await rustdesk.connection_counts()
+    if not ok:
+        await call.answer(str(payload), show_alert=True)
+        return
+
+    counts = payload
+    text = (
+        "🔌 <b>Подключения сейчас</b>\n\n"
+        f"hbbs (устройства онлайн): <b>{counts['hbbs']}</b>\n"
+        f"hbbr (активные сессии): <b>{counts['hbbr']}</b>\n\n"
+        "<i>Это оценка по установленным TCP-соединениям — открытая "
+        "версия RustDesk не публикует эти числа официально.</i>"
+    )
+    await call.answer()
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
+    ]))
+
+
+@router.callback_query(F.data.startswith("rd:ask:"))
+async def ask_action(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    action = call.data.split(":", 2)[2]
+    if action not in _ACTION_TITLES:
+        await call.answer("Неизвестное действие.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(
+        call,
+        f"⚠️ {_ACTION_TITLES[action]} RustDesk (hbbs и hbbr)?",
+        keyboards.confirm("rd:do", action, "rd:menu"),
+    )
+
+
+@router.callback_query(F.data.startswith("rd:do:"))
+async def do_action(call: CallbackQuery, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    action = call.data.split(":", 2)[2]
+    if action not in _ACTION_TITLES:
+        await call.answer("Неизвестное действие.", show_alert=True)
+        return
+
+    await call.answer("Выполняю…")
+    ok, reason = await rustdesk.control(action)
+    log.warning("RustDesk: %s запрошен пользователем %s — %s",
+               action, call.from_user.id, "успешно" if ok else reason)
+
+    if ok:
+        text = f"✅ {_ACTION_TITLES[action]} — готово."
+    else:
+        text = f"❌ {_ACTION_TITLES[action]} не удалось: {esc(reason)}"
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
+    ]))
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_98'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -32779,9 +33442,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_95
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_99'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -33044,9 +33707,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_96
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_100'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -33196,9 +33859,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_97
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_101'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -33666,9 +34329,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_98
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_99'
+cat > "radar/cookies.py" <<'RADAR_FILE_102'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -33799,9 +34462,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_99
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_100'
+cat > "radar/music.py" <<'RADAR_FILE_103'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -34309,9 +34972,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_100
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_104'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -34816,9 +35479,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_101
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_102'
+cat > "multitool/__init__.py" <<'RADAR_FILE_105'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -34844,9 +35507,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_102'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_102
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_103'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_106'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -34879,9 +35542,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_103'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_103
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_104'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_107'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -35288,9 +35951,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_104
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_105'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_108'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -35705,9 +36368,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_105
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_106'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_109'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -35901,7 +36564,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_106
+RADAR_FILE_109
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -36690,6 +37353,18 @@ if [ "$MEDIA_VALUE" = "1" ]; then
         info "Загрузка видео будет работать с пределом 50 МБ"
         info "Ключи берутся на my.telegram.org → API development tools"
     fi
+fi
+
+# Профиль rustdesk поднимает hbbs/hbbr — свой релей удалённого доступа.
+# Образ при отсутствии подтягивается штатным поведением `docker compose
+# up` (pull-if-missing): в отличие от docker:cli в radar/updater.py,
+# здесь контейнер создаётся через compose, а не напрямую через Engine API,
+# явный docker pull не нужен.
+ask_rustdesk
+
+if [ "$(get_env_value RUSTDESK_ENABLED)" = "1" ]; then
+    COMPOSE_ARGS="$COMPOSE_ARGS --profile rustdesk"
+    info "RustDesk: контейнеры hbbs/hbbr поднимутся вместе с ботом"
 fi
 
 # --------------------------------------------------------------------------

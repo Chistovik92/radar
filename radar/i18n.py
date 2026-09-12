@@ -87,6 +87,18 @@ EN_STRINGS: dict[str, str] = {
     "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
     "help.cmd_music": "/music — music and playlists",
 
+    # --- RustDesk ---
+    "menu.rustdesk": "🖥 RustDesk",
+    "rustdesk.title": "🖥 <b>RustDesk</b>",
+    "rustdesk.info_button": "📋 Address and key",
+    "rustdesk.conn_button": "🔌 Connections right now",
+    "rustdesk.info_title": "📋 <b>Connection details</b>",
+    "rustdesk.no_subscription": "⭐️ <b>Address and key — with a subscription</b>\n\n"
+                                "The subscription unlocks your own RustDesk "
+                                "server, unlimited video downloads, and all "
+                                "digest topics. Danger alerts stay free "
+                                "always.",
+
     # --- оповещения: самое важное ---
     "alert.danger": "DANGER",
     "alert.utility": "Utilities and outages",

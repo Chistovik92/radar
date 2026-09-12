@@ -212,6 +212,23 @@ LINKCHECK_RATE_LIMIT: int = max(1, _int("LINKCHECK_RATE_LIMIT", 5))
 # а не минуты чужих сервисов: человеку «осталось 17 из 200» понятно.
 LINKCHECK_FREE_PER_DAY: int = max(1, _int("LINKCHECK_FREE_PER_DAY", 200))
 
+# --- RustDesk (профиль docker-compose, включается в 4.9.8.4) ---
+# Имена контейнеров совпадают с container_name в docker-compose.yml —
+# установщик разворачивает их сам (профиль rustdesk), их можно переопределить,
+# только если кто-то развернул RustDesk вручную под другими именами.
+RUSTDESK_HBBS_CONTAINER: str = (os.getenv("RUSTDESK_HBBS_CONTAINER") or "radar_hbbs").strip()
+RUSTDESK_HBBR_CONTAINER: str = (os.getenv("RUSTDESK_HBBR_CONTAINER") or "radar_hbbr").strip()
+# Путь читается как обычный файл — общий том с hbbs смонтирован в бота
+# только для чтения (docker-compose.yml), поэтому Docker API для этого
+# не нужен вовсе, в отличие от подсчёта подключений и restart/stop/start.
+RUSTDESK_KEY_PATH: str = (
+    os.getenv("RUSTDESK_KEY_PATH") or "data/rustdesk/id_ed25519.pub"
+).strip()
+# Внешний адрес сервера для клиентов RustDesk — это знает только
+# администратор, разумного значения по умолчанию нет. Задаётся установщиком
+# при включении профиля или вручную в .env.
+RUSTDESK_PUBLIC_HOST: str = (os.getenv("RUSTDESK_PUBLIC_HOST") or "").strip()
+
 LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 # Каталог журналов. Лежит внутри data/, чтобы его видели и бот, и хост:
 # только так бот может отдавать журналы установки и свои собственные.

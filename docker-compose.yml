@@ -55,6 +55,11 @@ services:
       # Общий том с Bot API Server: в локальном режиме он читает файлы
       # прямо с диска, без передачи по HTTP
       - ./data/bot-api:/var/lib/telegram-bot-api
+      # Каталог данных hbbs — только для чтения. Публичный ключ RustDesk
+      # читается ботом как обычный файл, без Docker API: сокет (ниже)
+      # нужен только для подсчёта подключений и restart/stop/start,
+      # возможность panel_update тут ни при чём.
+      - ./data/rustdesk:/app/data/rustdesk:ro
     deploy:
       resources:
         limits:
@@ -99,6 +104,59 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Свой RustDesk-сервер (удалённый доступ). Поднимается профилем, когда
+  # установщик включил RUSTDESK_ENABLED:
+  #   docker compose --profile rustdesk up -d
+  # В отличие от остальных сервисов порты публикуются НАРУЖУ (0.0.0.0),
+  # а не на localhost — клиентам RustDesk нужно достучаться из интернета.
+  # На роутере придётся пробросить все пять портов hbbs+hbbr.
+  hbbs:
+    profiles: ["rustdesk"]
+    image: rustdesk/rustdesk-server:latest
+    container_name: radar_hbbs
+    restart: unless-stopped
+    # -r — адрес relay-сервера (hbbr), который клиент получит от id-сервера.
+    # Без него клиенты не найдут, куда идти за релеем.
+    command: ["hbbs", "-r", "${RUSTDESK_PUBLIC_HOST:-}"]
+    ports:
+      - "21115:21115"
+      - "21116:21116/tcp"
+      - "21116:21116/udp"
+      - "21118:21118"
+    volumes:
+      # Общий с hbbr том: тот должен видеть ту же пару ключей и базу.
+      - ./data/rustdesk:/root
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  hbbr:
+    profiles: ["rustdesk"]
+    image: rustdesk/rustdesk-server:latest
+    container_name: radar_hbbr
+    restart: unless-stopped
+    command: ["hbbr"]
+    ports:
+      - "21117:21117"
+      - "21119:21119"
+    volumes:
+      - ./data/rustdesk:/root
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   # Выход в сеть через внешний узел. Поднимается профилем, когда
   # суперадминистратор выбрал сервер в боте:

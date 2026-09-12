@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""RustDesk из бота (4.9.8.4): адрес и ключ, число подключений, управление.
+
+Установщик сам разворачивает hbbs/hbbr (профиль rustdesk в
+docker-compose.yml) и сверяет, что под ожидаемым именем контейнера
+действительно образ rustdesk-server, а не что-то чужое, — строковые
+проверки в конце файла закрепляют именно это, по образцу RunnerRecipe
+в tests/test_updater.py.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+
+import stubcheck  # noqa: E402
+
+stubcheck.install()
+
+from radar import config, dockerapi, features, rustdesk  # noqa: E402
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+class _DummySession:
+    """Заглушка вместо aiohttp-сессии: exec_run/container_action здесь
+    подменяются напрямую, сама сессия ни разу не используется по-настоящему."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def _fake_session():
+    return _DummySession()
+
+
+class Readiness(unittest.TestCase):
+    def tearDown(self) -> None:
+        features.set_local("rustdesk", False)
+
+    def test_refuses_while_flag_off(self):
+        features.set_local("rustdesk", False)
+        allowed, reason = rustdesk.ready()
+        self.assertFalse(allowed)
+        self.assertIn("выключена", reason)
+
+    def test_refuses_without_socket(self):
+        features.set_local("rustdesk", True)
+        with mock.patch("os.path.exists", return_value=False):
+            allowed, reason = rustdesk.ready()
+        self.assertFalse(allowed)
+        self.assertIn("Сокет Docker", reason)
+
+    def test_refuses_when_socket_not_writable(self):
+        features.set_local("rustdesk", True)
+        with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.access", return_value=False):
+            allowed, reason = rustdesk.ready()
+        self.assertFalse(allowed)
+        self.assertIn("DOCKER_GID", reason)
+
+    def test_ready_when_all_hold(self):
+        features.set_local("rustdesk", True)
+        with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.access", return_value=True):
+            allowed, reason = rustdesk.ready()
+        self.assertTrue(allowed, reason)
+
+
+def _hex_port(port: int) -> str:
+    return f"{port:04X}"
+
+
+class TestCountEstablished(unittest.TestCase):
+    """Парсинг /proc/net/tcp{,6}: только ESTABLISHED (st=01) на нужном порту."""
+
+    def test_established_on_target_port_counted(self):
+        port = _hex_port(rustdesk.ID_PORT)
+        text = (
+            "  sl  local_address rem_address   st\n"
+            f"   0: 00000000:{port} 00000000:0000 01\n"
+            f"   1: 0100007F:{port} 00000000:0000 01\n"
+        )
+        self.assertEqual(rustdesk._count_established(text, rustdesk.ID_PORT), 2)
+
+    def test_listening_socket_not_counted(self):
+        # st=0A — LISTEN, не ESTABLISHED
+        port = _hex_port(rustdesk.ID_PORT)
+        text = f"   0: 00000000:{port} 00000000:0000 0A\n"
+        self.assertEqual(rustdesk._count_established(text, rustdesk.ID_PORT), 0)
+
+    def test_other_port_not_counted(self):
+        # Соединение установлено, но на другом порту
+        port = _hex_port(rustdesk.RELAY_PORT)
+        text = f"   0: 00000000:{port} 00000000:0000 01\n"
+        self.assertEqual(rustdesk._count_established(text, rustdesk.ID_PORT), 0)
+
+    def test_ipv6_line_counted(self):
+        # /proc/net/tcp6: местный адрес длиннее, порт всё равно последний
+        port = _hex_port(rustdesk.ID_PORT)
+        text = (
+            f"   0: 00000000000000000000000000000000:{port} "
+            "00000000000000000000000000000000:0000 01\n"
+        )
+        self.assertEqual(rustdesk._count_established(text, rustdesk.ID_PORT), 1)
+
+    def test_mixed_ports_and_states(self):
+        id_port = _hex_port(rustdesk.ID_PORT)
+        relay_port = _hex_port(rustdesk.RELAY_PORT)
+        text = "\n".join([
+            f"   0: 00000000:{id_port} 00000000:0000 01",   # свой порт, established — считается
+            f"   1: 00000000:{id_port} 00000000:0000 06",   # свой порт, но TIME_WAIT
+            f"   2: 00000000:{relay_port} 00000000:0000 01",  # established, но другой порт
+        ])
+        self.assertEqual(rustdesk._count_established(text, rustdesk.ID_PORT), 1)
+
+
+class ClientInfo(unittest.TestCase):
+    def setUp(self) -> None:
+        features.set_local("rustdesk", True)
+        self._exists = mock.patch("os.path.exists", return_value=True).start()
+        self._access = mock.patch("os.access", return_value=True).start()
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(features.set_local, "rustdesk", False)
+
+    def test_missing_public_host(self):
+        with mock.patch.object(config, "RUSTDESK_PUBLIC_HOST", ""):
+            ok, reason = rustdesk.client_info()
+        self.assertFalse(ok)
+        self.assertIn("RUSTDESK_PUBLIC_HOST", reason)
+
+    def test_missing_key_file(self):
+        with mock.patch.object(config, "RUSTDESK_PUBLIC_HOST", "1.2.3.4"), \
+             mock.patch.object(config, "RUSTDESK_KEY_PATH", "/no/such/file.pub"):
+            ok, reason = rustdesk.client_info()
+        self.assertFalse(ok)
+
+    def test_success_reads_key_file(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".pub", delete=False) as handle:
+            handle.write("AAAAC3NzaC1lZDI1NTE5AAAA...\n")
+            path = handle.name
+        try:
+            with mock.patch.object(config, "RUSTDESK_PUBLIC_HOST", "1.2.3.4"), \
+                 mock.patch.object(config, "RUSTDESK_KEY_PATH", path):
+                ok, info = rustdesk.client_info()
+            self.assertTrue(ok, info)
+            self.assertEqual(info["host"], "1.2.3.4")
+            self.assertEqual(info["id_port"], 21116)
+            self.assertEqual(info["relay_port"], 21117)
+            self.assertEqual(info["key"], "AAAAC3NzaC1lZDI1NTE5AAAA...")
+        finally:
+            os.unlink(path)
+
+
+class ConnectionsAndControl(unittest.TestCase):
+    def setUp(self) -> None:
+        features.set_local("rustdesk", True)
+        mock.patch("os.path.exists", return_value=True).start()
+        mock.patch("os.access", return_value=True).start()
+        mock.patch("radar.dockerapi.session", _fake_session).start()
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(features.set_local, "rustdesk", False)
+
+    def test_connection_counts_success(self):
+        async def fake_exec(session, name, cmd):
+            port = _hex_port(rustdesk.ID_PORT if name == rustdesk.HBBS else rustdesk.RELAY_PORT)
+            return True, f"   0: 00000000:{port} 00000000:0000 01\n"
+
+        with mock.patch("radar.dockerapi.exec_run", fake_exec):
+            ok, counts = run(rustdesk.connection_counts())
+        self.assertTrue(ok, counts)
+        self.assertEqual(counts, {"hbbs": 1, "hbbr": 1})
+
+    def test_connection_counts_reports_exec_failure(self):
+        async def fake_exec(session, name, cmd):
+            return False, "контейнер не найден"
+
+        with mock.patch("radar.dockerapi.exec_run", fake_exec):
+            ok, reason = run(rustdesk.connection_counts())
+        self.assertFalse(ok)
+        self.assertIn(rustdesk.HBBS, reason)
+
+    def test_control_restarts_both_containers(self):
+        calls = []
+
+        async def fake_action(session, name, action):
+            calls.append((name, action))
+            return True, ""
+
+        with mock.patch("radar.dockerapi.container_action", fake_action):
+            ok, reason = run(rustdesk.control("restart"))
+        self.assertTrue(ok, reason)
+        self.assertEqual(calls, [(rustdesk.HBBS, "restart"), (rustdesk.HBBR, "restart")])
+
+    def test_control_collects_both_errors(self):
+        async def fake_action(session, name, action):
+            return False, f"{name} упал"
+
+        with mock.patch("radar.dockerapi.container_action", fake_action):
+            ok, reason = run(rustdesk.control("stop"))
+        self.assertFalse(ok)
+        self.assertIn(rustdesk.HBBS, reason)
+        self.assertIn(rustdesk.HBBR, reason)
+
+    def test_control_rejects_unknown_action(self):
+        ok, reason = run(rustdesk.control("delete"))
+        self.assertFalse(ok)
+        self.assertIn("delete", reason)
+
+
+class InstallerIntegration(unittest.TestCase):
+    """Установщик разворачивает и сверяет RustDesk сам — это закреплено
+    строковыми проверками, как RunnerRecipe в test_updater.py."""
+
+    def test_compose_defines_hbbs_and_hbbr_under_rustdesk_profile(self):
+        compose = open(os.path.join(ROOT, "docker-compose.yml"),
+                       encoding="utf-8").read()
+        self.assertIn("radar_hbbs", compose)
+        self.assertIn("radar_hbbr", compose)
+        self.assertIn('profiles: ["rustdesk"]', compose)
+        self.assertIn("rustdesk/rustdesk-server", compose)
+
+    def test_bot_gets_readonly_access_to_rustdesk_data(self):
+        compose = open(os.path.join(ROOT, "docker-compose.yml"),
+                       encoding="utf-8").read()
+        self.assertIn("./data/rustdesk:/app/data/rustdesk:ro", compose)
+
+    def test_installer_asks_and_verifies(self):
+        template = open(os.path.join(ROOT, "tools", "install.template.sh"),
+                        encoding="utf-8").read()
+        self.assertIn("ask_rustdesk()", template)
+        self.assertIn("verify_rustdesk_containers()", template)
+        self.assertIn("--profile rustdesk", template)
+        self.assertIn("ask_rustdesk\n", template)
+
+    def test_installer_checks_image_not_just_name(self):
+        # Баг-класс: чужой контейнер под тем же именем не должен молча
+        # считаться "уже развёрнутым RustDesk".
+        template = open(os.path.join(ROOT, "tools", "install.template.sh"),
+                        encoding="utf-8").read()
+        self.assertIn("rustdesk_mismatch", template)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

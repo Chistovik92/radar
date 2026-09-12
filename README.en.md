@@ -1,4 +1,4 @@
-# Radar v4.9.8.3
+# Radar v4.9.8.4
 
 [Русская версия](README.md)
 
@@ -154,8 +154,10 @@ official channels.
 
 ## Subscription
 
-One subscription for the whole bot. It opens two things at once: news
-digests across all topics, and video downloads without the daily cap.
+One subscription for the whole bot. It opens several things at once: news
+digests across all topics, video downloads without the daily cap, and
+the address and key for your own RustDesk server, if that section is
+enabled (see below).
 
 **The parts are not sold separately.** The model underneath was already
 one — paying for either opened both — but people saw two offers and
@@ -167,6 +169,19 @@ a refusal to buy — otherwise only those who reach the refusal ever see it.
 
 **Danger alerts are free always** and do not depend on the subscription.
 That is a project rule, not a current setting.
+
+## RustDesk
+
+Your own remote-access relay (hbbs/hbbr) next to the bot — feature flag
+`rustdesk`, off by default. The installer deploys the containers itself
+(the `rustdesk` profile in `docker-compose.yml`) and, on a re-run,
+checks that the expected container name really is `rustdesk-server`
+and not something else.
+
+The bot's menu section: connection address and key — subscribers and
+admins; connections right now — admins; start, stop and restart —
+the superadmin. Deployment details and `.env` variables are in
+[docs/API_SETUP.md](docs/API_SETUP.md).
 
 ## Large files by link
 

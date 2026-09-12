@@ -78,6 +78,9 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     if features.enabled("music"):
         extra.append(InlineKeyboardButton(text=label("menu.music", "🎵 Музыка"),
                                           callback_data="mus:menu"))
+    if features.enabled("rustdesk"):
+        extra.append(InlineKeyboardButton(text=label("menu.rustdesk", "🖥 RustDesk"),
+                                          callback_data="rd:menu"))
     if extra:
         # Кнопок бывает больше двух — режем по две, чтобы строка
         # не расползалась на весь экран телефона.

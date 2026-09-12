@@ -25,6 +25,7 @@ from . import (
     network,
     partners,
     perf,
+    rustdesk,
     settings,
     shortlink,
     settings_admin,
@@ -43,6 +44,7 @@ def setup(dp: Dispatcher) -> None:
     dp.include_router(features.router)
     dp.include_router(settings_admin.router)
     dp.include_router(network.router)
+    dp.include_router(rustdesk.router)
     dp.include_router(logs.router)
     dp.include_router(language.router)
     dp.include_router(history.router)

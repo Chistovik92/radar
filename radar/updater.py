@@ -37,14 +37,18 @@ import os
 import time
 from pathlib import Path
 
-from . import features
+from . import dockerapi, features
 
 log = logging.getLogger("radar.updater")
 
-SOCKET = "/var/run/docker.sock"
+# Сокет и версия API — общие для всего, что говорит с Docker Engine
+# по этому сокету (см. radar/dockerapi.py). Имена оставлены здесь же,
+# чтобы не переписывать остальной модуль: они те же объекты, что
+# в dockerapi, а не копии.
+SOCKET = dockerapi.SOCKET
+API = dockerapi.API
 CONTAINER = "radar_updater"
 IMAGE = "docker:cli"
-API = "http://localhost/v1.41"
 
 # Метка запуска: по ней панель отличает журнал своего обновления
 # от журналов ручных установок.
@@ -91,13 +95,9 @@ def ready() -> tuple[bool, str]:
 
 
 async def _session():
-    """Сессия к сокету Docker. Импорт внутри — офлайн-проверки без aiohttp."""
-    import aiohttp
-
-    return aiohttp.ClientSession(
-        connector=aiohttp.UnixConnector(path=SOCKET),
-        timeout=aiohttp.ClientTimeout(total=30),
-    )
+    """Тонкая обёртка над dockerapi.session() — сохранена ради тестов,
+    которые патчат именно `radar.updater._session`."""
+    return await dockerapi.session()
 
 
 async def running() -> bool:

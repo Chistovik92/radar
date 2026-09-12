@@ -303,6 +303,15 @@ t() {                  # t <ключ> [подстановка]
             botapi_ready)        value="Own Bot API Server configured: the limit is now 2 GB" ;;
             botapi_have)         value="Own Bot API Server already configured" ;;
             botapi_disk)         value="Note: it caches files locally and needs noticeably more disk." ;;
+            rustdesk_title)      value="Own RustDesk server" ;;
+            rustdesk_why)        value="Runs hbbs/hbbr alongside the bot for your own remote-access relay." ;;
+            rustdesk_ports)      value="Opens 5 ports to the internet (21115-21119) — forward them on your router." ;;
+            rustdesk_ask)        value="Set it up now? [y/N]" ;;
+            rustdesk_skip)       value="Skipped. The question returns on the next run." ;;
+            rustdesk_host_ask)   value="Public address for RustDesk clients (IP or domain):" ;;
+            rustdesk_host_bad)   value="Address looks wrong (empty or contains spaces) — skipping" ;;
+            rustdesk_ready)      value="RustDesk configured: hbbs/hbbr come up with the bot" ;;
+            rustdesk_mismatch)   value="A container with this name exists but is not rustdesk-server" ;;
             env_exists)          value="The .env file already exists" ;;
             env_reuse_ask)       value="Use the current settings? (Y/n):" ;;
             migrate_serve_failed) value="Could not start the temporary server — falling back to manual copying" ;;
@@ -462,6 +471,15 @@ t() {                  # t <ключ> [подстановка]
             botapi_ready)        value="Свой Bot API Server настроен: предел стал 2 ГБ" ;;
             botapi_have)         value="Свой Bot API Server уже настроен" ;;
             botapi_disk)         value="Учтите: он кэширует файлы локально и требует заметно больше диска." ;;
+            rustdesk_title)      value="Свой сервер RustDesk" ;;
+            rustdesk_why)        value="Поднимает hbbs/hbbr вместе с ботом — свой релей удалённого доступа." ;;
+            rustdesk_ports)      value="Открывает 5 портов наружу (21115-21119) — пробросьте их на роутере." ;;
+            rustdesk_ask)        value="Настроить сейчас? [д/Н]" ;;
+            rustdesk_skip)       value="Пропущено. Вопрос вернётся при следующем запуске." ;;
+            rustdesk_host_ask)   value="Внешний адрес сервера для клиентов RustDesk (IP или домен):" ;;
+            rustdesk_host_bad)   value="Адрес выглядит неверно (пусто или с пробелом) — пропускаю" ;;
+            rustdesk_ready)      value="RustDesk настроен: hbbs/hbbr поднимутся вместе с ботом" ;;
+            rustdesk_mismatch)   value="Контейнер с этим именем есть, но это не rustdesk-server" ;;
             env_exists)          value="Файл .env уже существует" ;;
             env_reuse_ask)       value="Использовать текущие настройки? (Y/n):" ;;
             migrate_serve_failed) value="Временный сервер не запустился — переношу копию вручную" ;;
@@ -688,6 +706,68 @@ ask_bot_api_server() {
 
     ok "$(t botapi_ready)"
     info "$(t botapi_disk)"
+    return 0
+}
+
+# Обнаружение и сверка: если под ожидаемым именем контейнера уже сидит
+# что-то другое — не своя же переустановка, значит имя случайно занято
+# чужим процессом, и трогать его нельзя. Проверяем только образ:
+# состояние (работает/остановлен) установщика не касается — этим
+# управляет сам docker compose при следующем `up -d`.
+verify_rustdesk_containers() {
+    local name image
+    for name in radar_hbbs radar_hbbr; do
+        if docker inspect "$name" >/dev/null 2>&1; then
+            image="$(docker inspect --format '{{.Config.Image}}' "$name" 2>/dev/null)"
+            case "$image" in
+                rustdesk/rustdesk-server*) : ;;
+                *) warn "$(t rustdesk_mismatch) ($name: $image)" ;;
+            esac
+        fi
+    done
+}
+
+# Свой RustDesk-сервер (удалённый доступ) — hbbs/hbbr поднимаются профилем
+# rustdesk вместе с ботом (см. docker-compose.yml). Спрашиваем один раз:
+# при повторных запусках уже записанный RUSTDESK_ENABLED только сверяется
+# с verify_rustdesk_containers, вопрос не повторяется.
+ask_rustdesk() {
+    local enabled_now answer host_now
+
+    enabled_now="$(get_env_value RUSTDESK_ENABLED)"
+    if [ "$enabled_now" = "1" ]; then
+        verify_rustdesk_containers
+        return 0
+    fi
+
+    # Без живого терминала спрашивать некого.
+    if [ ! -t 0 ] && [ ! -e /dev/tty ]; then
+        return 0
+    fi
+
+    echo
+    printf "  %s%s%s\n" "$C_BOLD" "$(t rustdesk_title)" "$C_RESET"
+    printf "  %s%s%s\n" "$C_DIM" "$(t rustdesk_why)" "$C_RESET"
+    printf "  %s%s%s\n" "$C_DIM" "$(t rustdesk_ports)" "$C_RESET"
+    printf "  %s " "$(t rustdesk_ask)"
+    read -r answer < /dev/tty || answer="n"
+
+    case "$answer" in
+        y|Y|yes|д|Д|да|ДА) : ;;
+        *) info "$(t rustdesk_skip)"; return 0 ;;
+    esac
+
+    printf "  %s " "$(t rustdesk_host_ask)"
+    read -r host_now < /dev/tty || host_now=""
+    case "$host_now" in
+        ''|*' '*) warn "$(t rustdesk_host_bad)"; return 0 ;;
+    esac
+
+    set_env_value RUSTDESK_ENABLED 1
+    set_env_value RUSTDESK_PUBLIC_HOST "$host_now"
+    mkdir -p "$APP_DIR/data/rustdesk"
+
+    ok "$(t rustdesk_ready)"
     return 0
 }
 
@@ -3446,6 +3526,18 @@ if [ "$MEDIA_VALUE" = "1" ]; then
         info "Загрузка видео будет работать с пределом 50 МБ"
         info "Ключи берутся на my.telegram.org → API development tools"
     fi
+fi
+
+# Профиль rustdesk поднимает hbbs/hbbr — свой релей удалённого доступа.
+# Образ при отсутствии подтягивается штатным поведением `docker compose
+# up` (pull-if-missing): в отличие от docker:cli в radar/updater.py,
+# здесь контейнер создаётся через compose, а не напрямую через Engine API,
+# явный docker pull не нужен.
+ask_rustdesk
+
+if [ "$(get_env_value RUSTDESK_ENABLED)" = "1" ]; then
+    COMPOSE_ARGS="$COMPOSE_ARGS --profile rustdesk"
+    info "RustDesk: контейнеры hbbs/hbbr поднимутся вместе с ботом"
 fi
 
 # --------------------------------------------------------------------------
