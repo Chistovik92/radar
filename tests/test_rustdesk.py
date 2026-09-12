@@ -260,5 +260,51 @@ class InstallerIntegration(unittest.TestCase):
         self.assertIn("rustdesk_mismatch", template)
 
 
+class PanelRoutes(unittest.TestCase):
+    """Страница RustDesk в веб-панели закрыта правами суперадминистратора —
+    тот же риск-класс, что «Обновление», по образцу PanelRoutes
+    в tests/test_updater.py."""
+
+    def setUp(self) -> None:
+        self.source = open(os.path.join(ROOT, "radar", "web", "panel.py"),
+                           encoding="utf-8").read()
+
+    def test_page_is_owner_only(self) -> None:
+        index = self.source.index("async def rustdesk_page")
+        self.assertIn("@owner_only", self.source[index - 40:index])
+
+    def test_action_is_post_with_form_guard(self) -> None:
+        self.assertIn('web.post("/rustdesk/action", rustdesk_action)', self.source)
+        self.assertNotIn('web.get("/rustdesk/action"', self.source)
+        index = self.source.index("async def rustdesk_action")
+        body = self.source[index:index + 400]
+        self.assertIn('_guarded_form(request, "superadmin")', body)
+
+    def test_menu_item_always_visible(self) -> None:
+        was = features.enabled("rustdesk")
+        features.set_local("rustdesk", False)
+        try:
+            from radar.web import panel
+
+            pages = [item[2] for item in panel._links_for("superadmin")]
+        finally:
+            features.set_local("rustdesk", was)
+        self.assertIn("rustdesk", pages)
+
+    def test_rustdesk_lives_under_overview(self) -> None:
+        from radar.web import panel
+
+        overview = next(group for group in panel._nav_groups("superadmin")
+                        if group[2] == "home")
+        self.assertIn("rustdesk", [item[2] for item in overview[3]])
+
+    def test_page_offers_to_enable_itself(self) -> None:
+        self.assertIn('name="key" value="rustdesk"', self.source)
+        self.assertIn("Включить RustDesk", self.source)
+
+    def test_toggle_returns_where_it_came_from(self) -> None:
+        self.assertIn('name="back" value="/rustdesk"', self.source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

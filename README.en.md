@@ -1,4 +1,4 @@
-# Radar v4.9.8.4
+# Radar v4.9.8.5
 
 [Русская версия](README.md)
 
@@ -180,8 +180,11 @@ and not something else.
 
 The bot's menu section: connection address and key — subscribers and
 admins; connections right now — admins; start, stop and restart —
-the superadmin. Deployment details and `.env` variables are in
-[docs/API_SETUP.md](docs/API_SETUP.md).
+the superadmin. The address-and-key screen also shows client setup
+steps and a download link. The same three things (address and key,
+connections, control) are in the web panel too — the "RustDesk" page
+under Overview, superadmin only. Deployment details and `.env`
+variables are in [docs/API_SETUP.md](docs/API_SETUP.md).
 
 ## Large files by link
 

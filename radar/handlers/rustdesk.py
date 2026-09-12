@@ -35,6 +35,17 @@ _ACTION_TITLES = {
     "start": "▶️ Запустить",
 }
 
+# Одно и то же на каждом устройстве, которое должно видеть остальные:
+# и на том, откуда подключаются, и на том, к которому подключаются.
+RUSTDESK_SETUP_STEPS = (
+    "<b>Как подключить устройство:</b>\n"
+    "1. Установите RustDesk (кнопка ниже).\n"
+    "2. Значок ⚙️ → «Сеть» → «ID/Relay Server».\n"
+    "3. Вставьте ID Server, Relay Server и Key из этого сообщения.\n"
+    "4. Сохраните — то же самое нужно на обоих устройствах: и на том, "
+    "с которого подключаются, и на том, к которому подключаются."
+)
+
 
 def _menu(role: str, lang: str = i18n.DEFAULT) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [[
@@ -111,10 +122,13 @@ async def show_info(call: CallbackQuery, user: dict, role: str) -> None:
         f"{i18n.t('rustdesk.info_title', lang, '📋 <b>Данные для подключения</b>')}\n\n"
         f"ID Server: <code>{esc(info['host'])}:{info['id_port']}</code>\n"
         f"Relay Server: <code>{esc(info['host'])}:{info['relay_port']}</code>\n"
-        f"Key:\n<code>{esc(info['key'])}</code>"
+        f"Key:\n<code>{esc(info['key'])}</code>\n\n"
+        f"{i18n.t('rustdesk.setup_steps', lang, RUSTDESK_SETUP_STEPS)}"
     )
     await call.answer()
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬇️ Скачать клиент RustDesk",
+                              url="https://rustdesk.com/")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
 

@@ -599,6 +599,10 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
         # пункт человек не найдёт, а включать будет нечего — тумблер он тоже
         # не нашёл. Страница сама объясняет, что включить и какой ценой.
         overview.append(("/update", "Обновление", "update"))
+        # Тот же принцип, что у «Обновления»: пункт виден всегда, даже
+        # при выключенной возможности — страница сама объясняет, что
+        # включить (тот же сокет Docker, та же цена).
+        overview.append(("/rustdesk", "RustDesk", "rustdesk"))
 
     media: list[tuple[str, str, str]] = []
     if admin:
@@ -750,6 +754,82 @@ def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
     else:
         parts.append('<div class="card muted">Журналов установки пока нет.</div>')
 
+    return "".join(parts)
+
+
+async def _rustdesk_body(session, ok: str = "", err: str = "") -> str:
+    """Страница RustDesk: адрес и ключ, число подключений, управление.
+
+    Панель повторяет права бота, а не расширяет их — но раздел бота
+    делит доступ на три уровня (подписка / администрация / суперадмин),
+    а в панель попадают только модератор и выше. Здесь всё за одним
+    `@owner_only`: страница держит тот же риск, что «Обновление» —
+    и то и другое ходит через сокет Docker.
+    """
+    from .. import rustdesk
+
+    allowed, reason = rustdesk.ready()
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    if not allowed:
+        parts.append(f'<div class="card warn">{html.escape(reason)}</div>')
+        if not features.enabled("rustdesk"):
+            parts.append(
+                '<div class="card">'
+                '<form method="post" action="/features/toggle">'
+                f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+                '<input type="hidden" name="key" value="rustdesk">'
+                '<input type="hidden" name="back" value="/rustdesk">'
+                '<button type="submit">Включить RustDesk</button>'
+                "</form>"
+                '<p class="muted">Тот же сокет Docker, что и «Обновление '
+                "из панели»: доступ к панели станет доступом к серверу. "
+                "Выключить можно там же или в «Возможностях».</p>"
+                "</div>"
+            )
+        return "".join(parts)
+
+    ok_info, info = rustdesk.client_info()
+    if ok_info:
+        parts.append(
+            '<div class="card">'
+            f'<p>ID Server: <code>{html.escape(info["host"])}:{info["id_port"]}</code></p>'
+            f'<p>Relay Server: <code>{html.escape(info["host"])}:{info["relay_port"]}</code></p>'
+            f'<p>Key:</p><pre class="log">{html.escape(info["key"])}</pre>'
+            "</div>"
+        )
+    else:
+        parts.append(f'<div class="card muted">{html.escape(str(info))}</div>')
+
+    ok_conn, counts = await rustdesk.connection_counts()
+    if ok_conn:
+        parts.append(
+            '<div class="card">'
+            f'<p>hbbs (устройства онлайн): <b>{counts["hbbs"]}</b></p>'
+            f'<p>hbbr (активные сессии): <b>{counts["hbbr"]}</b></p>'
+            '<p class="muted">Оценка по установленным TCP-соединениям — '
+            "открытая версия RustDesk не публикует эти числа официально."
+            "</p></div>"
+        )
+    else:
+        parts.append(f'<div class="card muted">{html.escape(str(counts))}</div>')
+
+    buttons = "".join(
+        '<form method="post" action="/rustdesk/action" style="display:inline">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<input type="hidden" name="action" value="{action}">'
+        f'<button type="submit" class="danger">{title}</button></form> '
+        for action, title in (
+            ("restart", "🔄 Перезапустить"),
+            ("stop", "⏹ Остановить"),
+            ("start", "▶️ Запустить"),
+        )
+    )
+    parts.append(
+        f'<div class="card">{buttons}'
+        '<p class="muted">Действует на hbbs и hbbr вместе.</p></div>'
+    )
     return "".join(parts)
 
 
@@ -2447,6 +2527,31 @@ async def create_app() -> Any:
         raise web.HTTPFound("/update?ok=" + quote(
             "Обновление запущено — шаги ниже"))
 
+    @owner_only
+    async def rustdesk_page(request, session):
+        return web.Response(
+            text=_layout(
+                "RustDesk",
+                await _rustdesk_body(session,
+                                     request.query.get("ok", ""),
+                                     request.query.get("err", "")),
+                "rustdesk", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def rustdesk_action(request):
+        from .. import rustdesk
+
+        session, data = await _guarded_form(request, "superadmin")
+        action = data.get("action", "")
+        ok, reason = await rustdesk.control(action)
+        if not ok:
+            audit.record(session.user_key, f"rustdesk {action} не выполнен", reason)
+            raise web.HTTPFound("/rustdesk?err=" + quote(reason))
+        audit.record(session.user_key, f"rustdesk {action}", "")
+        raise web.HTTPFound("/rustdesk?ok=" + quote(f"{action}: готово"))
+
     async def health(_request):
         # Версию отсюда убрали: маршрут открыт без входа, а точная версия
         # снаружи — это готовый ответ на вопрос «что здесь уязвимо».
@@ -2501,6 +2606,8 @@ async def create_app() -> Any:
         web.get("/media", media_page),
         web.get("/update", update_page),
         web.post("/update/start", update_start),
+        web.get("/rustdesk", rustdesk_page),
+        web.post("/rustdesk/action", rustdesk_action),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),

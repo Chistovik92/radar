@@ -98,6 +98,13 @@ EN_STRINGS: dict[str, str] = {
                                 "server, unlimited video downloads, and all "
                                 "digest topics. Danger alerts stay free "
                                 "always.",
+    "rustdesk.setup_steps": "<b>How to add a device:</b>\n"
+                            "1. Install RustDesk (button below).\n"
+                            "2. Tap ⚙️ → \"Network\" → \"ID/Relay Server\".\n"
+                            "3. Paste the ID Server, Relay Server and Key "
+                            "from this message.\n"
+                            "4. Save — do this on both devices: the one "
+                            "you connect from and the one you connect to.",
 
     # --- оповещения: самое важное ---
     "alert.danger": "DANGER",
