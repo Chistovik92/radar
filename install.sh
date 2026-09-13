@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.8 — автономный установщик.
+# Система «Радар» v4.9.8.9 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.8"
+VERSION="4.9.8.9"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3178,6 +3178,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.9", [
+        "🔧 <b>Обновление из панели действительно обновляет.</b> Кнопка "
+        "запускала установщик, уже лежавший на сервере, а он ставит ровно "
+        "ту версию, с которой собран: все шаги проходили, версия не менялась. "
+        "Теперь скачивается установщик последнего выпуска с GitHub, "
+        "проверяется и только потом запускается; если GitHub недоступен, "
+        "причина видна в журнале на той же странице.",
+    ]),
     ("4.9.8.8", [
         "📱 <b>Панель с телефона.</b> Разделы получили отдельную строку "
         "во всю ширину, кнопки и ссылки — размер под палец, журнал "
@@ -4559,7 +4567,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.8"
+__version__ = "4.9.8.9"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -15768,8 +15776,10 @@ def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
     parts.append(
         '<div class="card">'
         f"<p>Установленная версия: <b>{html.escape(config.VERSION)}</b></p>"
-        "<p class=\"muted\">Обновление выполняет тот же <code>install.sh</code>, "
-        "что и на сервере: снимок перед заменой, сборка образа, перезапуск. "
+        "<p class=\"muted\">Обновление скачивает с GitHub <code>install.sh</code> "
+        "последнего выпуска и выполняет его: снимок перед заменой, сборка "
+        "образа, перезапуск. Если GitHub недоступен, причина появится "
+        "в журнале ниже. "
         "Ответы на вопросы установщику не нужны — он идёт по обычному пути "
         "обновления поверх.</p></div>"
     )
@@ -26083,16 +26093,60 @@ IMAGE = "docker:cli"
 # от журналов ручных установок.
 MARKER = Path("data/update.started")
 
+RELEASES_LATEST = "https://api.github.com/repos/Chistovik92/radar/releases/latest"
+RAW_BASE = "https://raw.githubusercontent.com/Chistovik92/radar"
+
 # Сценарий исполнителя. bash нужен самому установщику (он не на sh),
-# compose — его основной инструмент; в образе docker:cli они не всегда есть.
-SCRIPT = (
-    "set -e; "
-    "apk add --no-cache bash >/dev/null 2>&1 || true; "
-    "docker compose version >/dev/null 2>&1 || "
-    "apk add --no-cache docker-cli-compose >/dev/null 2>&1 || true; "
-    "cd \"$RADAR_HOST_DIR\"; "
-    "bash install.sh --skip-updates"
-)
+# compose — его основной инструмент, curl — скачать установщик; в образе
+# docker:cli их может не быть.
+#
+# До 4.9.8.9 здесь запускался install.sh, лежащий на сервере. Но установщик
+# несёт код бота ВНУТРИ себя и свою копию в каталог не обновляет — кнопка
+# «Обновить» честно проходила все девять шагов и ставила ту же версию, что
+# стояла. Теперь исполнитель берёт установщик последнего выпуска с GitHub,
+# проверяет его синтаксис и только потом подменяет серверную копию.
+#
+# Ошибки до старта установщика пишутся в data/logs/installer_log_*: панель
+# показывает самый свежий такой журнал, и без этого человек видел бы
+# «обновление запущено» над журналом ПРОШЛОЙ установки.
+# Разбор tag_name — sed, а не grep -P: в Alpine grep из busybox, -P там нет.
+SCRIPT = r"""
+set -e
+cd "$RADAR_HOST_DIR"
+mkdir -p data/logs
+note="data/logs/installer_log_$(date +%Y%m%d-%H%M%S)-fetch.txt"
+say() { printf '%s\n' "$*" | tee -a "$note"; }
+apk add --no-cache bash curl >/dev/null 2>&1 || true
+docker compose version >/dev/null 2>&1 || apk add --no-cache docker-cli-compose >/dev/null 2>&1 || true
+for tool in bash curl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        say "ОШИБКА: в исполнителе нет $tool — apk не смог его поставить (нет сети?)"
+        exit 1
+    fi
+done
+say "Узнаю последний выпуск на GitHub"
+tag="$(curl -fsSL --max-time 20 "$RADAR_RELEASES_LATEST" \
+      | sed -n 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
+if [ -z "$tag" ]; then
+    say "ОШИБКА: не удалось узнать последний выпуск (нет связи с api.github.com?)"
+    exit 1
+fi
+say "Последний выпуск: $tag"
+if ! curl -fsSL --max-time 120 -o install.sh.new "$RADAR_RAW_BASE/$tag/install.sh"; then
+    rm -f install.sh.new
+    say "ОШИБКА: не удалось скачать установщик $tag"
+    exit 1
+fi
+if ! bash -n install.sh.new; then
+    rm -f install.sh.new
+    say "ОШИБКА: скачанный установщик $tag повреждён"
+    exit 1
+fi
+mv -f install.sh.new install.sh
+chmod +x install.sh
+say "Установщик $tag на месте, запускаю"
+bash install.sh --skip-updates
+"""
 
 
 def host_dir() -> str:
@@ -26218,6 +26272,13 @@ async def start(actor: str) -> tuple[bool, str]:
         "Cmd": ["sh", "-c", SCRIPT],
         "Env": [
             f"RADAR_HOST_DIR={directory}",
+            # Каталог установщик выбирает по RADAR_HOME, а не по текущему.
+            # Без неё он брал $HOME/radar_bot, то есть /root/radar_bot
+            # ВНУТРИ исполнителя: установка из любого другого каталога
+            # уходила в одноразовый контейнер и пропадала вместе с ним.
+            f"RADAR_HOME={directory}",
+            f"RADAR_RELEASES_LATEST={RELEASES_LATEST}",
+            f"RADAR_RAW_BASE={RAW_BASE}",
             # Установщик понимает обе переменные: вопросов не задаёт,
             # «бегущие» полосы в журнал не пишет.
             "RADAR_ASKED=1",

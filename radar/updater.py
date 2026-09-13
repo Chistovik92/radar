@@ -54,16 +54,60 @@ IMAGE = "docker:cli"
 # от журналов ручных установок.
 MARKER = Path("data/update.started")
 
+RELEASES_LATEST = "https://api.github.com/repos/Chistovik92/radar/releases/latest"
+RAW_BASE = "https://raw.githubusercontent.com/Chistovik92/radar"
+
 # Сценарий исполнителя. bash нужен самому установщику (он не на sh),
-# compose — его основной инструмент; в образе docker:cli они не всегда есть.
-SCRIPT = (
-    "set -e; "
-    "apk add --no-cache bash >/dev/null 2>&1 || true; "
-    "docker compose version >/dev/null 2>&1 || "
-    "apk add --no-cache docker-cli-compose >/dev/null 2>&1 || true; "
-    "cd \"$RADAR_HOST_DIR\"; "
-    "bash install.sh --skip-updates"
-)
+# compose — его основной инструмент, curl — скачать установщик; в образе
+# docker:cli их может не быть.
+#
+# До 4.9.8.9 здесь запускался install.sh, лежащий на сервере. Но установщик
+# несёт код бота ВНУТРИ себя и свою копию в каталог не обновляет — кнопка
+# «Обновить» честно проходила все девять шагов и ставила ту же версию, что
+# стояла. Теперь исполнитель берёт установщик последнего выпуска с GitHub,
+# проверяет его синтаксис и только потом подменяет серверную копию.
+#
+# Ошибки до старта установщика пишутся в data/logs/installer_log_*: панель
+# показывает самый свежий такой журнал, и без этого человек видел бы
+# «обновление запущено» над журналом ПРОШЛОЙ установки.
+# Разбор tag_name — sed, а не grep -P: в Alpine grep из busybox, -P там нет.
+SCRIPT = r"""
+set -e
+cd "$RADAR_HOST_DIR"
+mkdir -p data/logs
+note="data/logs/installer_log_$(date +%Y%m%d-%H%M%S)-fetch.txt"
+say() { printf '%s\n' "$*" | tee -a "$note"; }
+apk add --no-cache bash curl >/dev/null 2>&1 || true
+docker compose version >/dev/null 2>&1 || apk add --no-cache docker-cli-compose >/dev/null 2>&1 || true
+for tool in bash curl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        say "ОШИБКА: в исполнителе нет $tool — apk не смог его поставить (нет сети?)"
+        exit 1
+    fi
+done
+say "Узнаю последний выпуск на GitHub"
+tag="$(curl -fsSL --max-time 20 "$RADAR_RELEASES_LATEST" \
+      | sed -n 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
+if [ -z "$tag" ]; then
+    say "ОШИБКА: не удалось узнать последний выпуск (нет связи с api.github.com?)"
+    exit 1
+fi
+say "Последний выпуск: $tag"
+if ! curl -fsSL --max-time 120 -o install.sh.new "$RADAR_RAW_BASE/$tag/install.sh"; then
+    rm -f install.sh.new
+    say "ОШИБКА: не удалось скачать установщик $tag"
+    exit 1
+fi
+if ! bash -n install.sh.new; then
+    rm -f install.sh.new
+    say "ОШИБКА: скачанный установщик $tag повреждён"
+    exit 1
+fi
+mv -f install.sh.new install.sh
+chmod +x install.sh
+say "Установщик $tag на месте, запускаю"
+bash install.sh --skip-updates
+"""
 
 
 def host_dir() -> str:
@@ -189,6 +233,13 @@ async def start(actor: str) -> tuple[bool, str]:
         "Cmd": ["sh", "-c", SCRIPT],
         "Env": [
             f"RADAR_HOST_DIR={directory}",
+            # Каталог установщик выбирает по RADAR_HOME, а не по текущему.
+            # Без неё он брал $HOME/radar_bot, то есть /root/radar_bot
+            # ВНУТРИ исполнителя: установка из любого другого каталога
+            # уходила в одноразовый контейнер и пропадала вместе с ним.
+            f"RADAR_HOME={directory}",
+            f"RADAR_RELEASES_LATEST={RELEASES_LATEST}",
+            f"RADAR_RAW_BASE={RAW_BASE}",
             # Установщик понимает обе переменные: вопросов не задаёт,
             # «бегущие» полосы в журнал не пишет.
             "RADAR_ASKED=1",

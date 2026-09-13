@@ -139,6 +139,35 @@ class RunnerRecipe(unittest.TestCase):
     def test_compose_is_ensured(self) -> None:
         self.assertIn("docker compose version", updater.SCRIPT)
 
+    def test_installer_is_fetched_not_reused(self) -> None:
+        # 4.9.8.9: запускался install.sh с сервера, а он несёт код внутри
+        # себя — кнопка проходила все шаги и ставила ту же версию.
+        self.assertTrue(updater.RELEASES_LATEST.endswith("/releases/latest"))
+        self.assertIn('"$RADAR_RAW_BASE/$tag/install.sh"', updater.SCRIPT)
+
+    def test_download_checked_before_replacing(self) -> None:
+        script = updater.SCRIPT
+        check = script.index("bash -n install.sh.new")
+        swap = script.index("mv -f install.sh.new install.sh")
+        run = script.index("bash install.sh --skip-updates")
+        self.assertLess(check, swap)
+        self.assertLess(swap, run)
+
+    def test_tag_parsed_without_gnu_grep(self) -> None:
+        # В Alpine grep из busybox: -P там нет, и разбор молча дал бы пусто.
+        self.assertNotIn("grep -oP", updater.SCRIPT)
+        self.assertIn('sed -n', updater.SCRIPT)
+
+    def test_fetch_failure_lands_in_panel_log(self) -> None:
+        # Панель показывает свежий installer_log_*; иначе над ошибкой
+        # скачивания висел бы журнал прошлой установки.
+        self.assertIn("data/logs/installer_log_", updater.SCRIPT)
+
+    def test_installer_home_is_the_host_dir(self) -> None:
+        source = open(os.path.join(ROOT, "radar", "updater.py"),
+                      encoding="utf-8").read()
+        self.assertIn('f"RADAR_HOME={directory}"', source)
+
 
 class ImagePull(unittest.TestCase):
     """4.9.8.3: свежий сервер валился на первой же кнопке — демон Docker

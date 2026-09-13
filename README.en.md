@@ -1,4 +1,4 @@
-# Radar v4.9.8.8
+# Radar v4.9.8.9
 
 [Русская версия](README.md)
 
@@ -239,9 +239,24 @@ a background tab.
 
 ### Updating from the panel
 
-The "Update" section, available to the superadmin, runs exactly what
-`install.sh` runs on the server: a snapshot before replacing anything,
-downloading the new version, building the image, restarting. The steps are
+The "Update" section, available to the superadmin, downloads the latest
+release's installer from GitHub, checks it and runs it: a snapshot before
+replacing anything, building the image, restarting. The downloaded
+installer replaces `install.sh` in the installation directory. If GitHub
+is unreachable, the reason shows up in the log on the same page.
+
+**Before 4.9.8.9 the button reinstalled the version already in place:**
+it ran the `install.sh` sitting on the server, and that file carries the
+code inside itself. The fix lives in the bot's code, so a server on
+4.9.8.8 or older has to be updated by hand once, with a fresh installer:
+
+```bash
+cd ~/radar_bot
+curl -fsSLo install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+bash install.sh
+```
+
+After that the panel button works on its own. The steps are
 visible in the panel itself — the installer writes a step-by-step log into
 `data/logs`, and the page reads the latest one, refreshing itself while the
 work is in progress. During the image rebuild the panel is briefly
