@@ -314,6 +314,12 @@ class ModeratedChat(Base):
     title: Mapped[str] = mapped_column(String(128), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     settings_json: Mapped[str] = mapped_column(String(2000), default="")
+    # Ссылка приглашения, заданная руками (с 4.9.9.1). Отдельным полем,
+    # а не в settings_json: это не правило модерации, а способ попасть
+    # в чат, и он нужен там, где настройки модерации не читаются вовсе.
+    # Пусто — ссылку ищет chatlink: публичное имя, затем ссылка
+    # владельца, затем своя.
+    invite_link: Mapped[str] = mapped_column(String(300), default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )

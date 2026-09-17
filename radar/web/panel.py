@@ -196,6 +196,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 form.inline input[type=text], form.inline input[type=password],
 form.inline input[type=url] { flex:1 1 240px; }
 textarea { width:100%; min-height:70px; resize:vertical; }
+/* Поле прямо в ячейке таблицы: ссылка приглашения правится там же,
+   где показана, — отдельная страница ради одной строки была бы лишней. */
+form.inline-form { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+form.inline-form input[type=url] { flex:1 1 180px; min-width:0;
+                                   padding:6px 10px; font-size:13px; }
+/* Показ объявления: рамка нужна, чтобы отделить чужой текст от нашего —
+   иначе не видно, где кончается интерфейс и начинается сообщение. */
+.preview { border:1px solid var(--line); border-radius:10px;
+           padding:14px 16px; background:var(--surface-2);
+           margin:12px 0; line-height:1.5; overflow-wrap:anywhere; }
 
 button { padding:10px 18px; border-radius:10px; border:none; cursor:pointer;
          background:linear-gradient(135deg,var(--accent),var(--accent-2));
@@ -689,6 +699,9 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     if owner:
         media.append(("/files", "Файлы", "files"))
         media.append(("/media", "Плейлисты", "media"))
+        # Пункт виден всегда, как «Обновление» и RustDesk: спрятанный
+        # раздел человек не найдёт, а страница сама объясняет, что задать.
+        media.append(("/cloud", "Облако", "cloud"))
 
     agent_items: list[tuple[str, str, str]] = []
     if owner:
@@ -886,6 +899,8 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         if ok_link:
             links[row["chat_id"]] = value
 
+    owner = roles.is_superadmin(session.role)
+
     def _title(row: dict) -> str:
         """Название чата ссылкой, если до группы можно дойти."""
         name = html.escape(row["title"] or "—")
@@ -895,6 +910,37 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         return (f'<a href="{html.escape(link)}" target="_blank" '
                 f'rel="noopener">{name}</a>')
 
+    def _invite_cell(row: dict) -> str:
+        """Ссылка приглашения: своя или найденная ботом (с 4.9.9.1).
+
+        Показывается всем, кто видит раздел, а меняется только
+        суперадминистратором: знать, куда ведёт кнопка, полезно
+        и модератору, а переписывать её — уже другое право.
+        """
+        own = str(row.get("invite") or "")
+        chat_id = row["chat_id"]
+        if own:
+            shown = (f'<a href="{html.escape(own)}" target="_blank" '
+                     f'rel="noopener">своя ссылка</a>')
+        elif links.get(chat_id):
+            shown = '<span class="muted">найдена ботом</span>'
+        else:
+            shown = '<span class="muted">нет</span>'
+
+        if not owner:
+            return f'<td data-label="Приглашение">{shown}</td>'
+
+        return (
+            f'<td data-label="Приглашение">{shown}'
+            '<form method="post" action="/chats/invite" class="inline-form">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            f'<input type="hidden" name="chat" value="{chat_id}">'
+            '<input type="url" name="link" maxlength="300" '
+            f'value="{html.escape(own)}" placeholder="https://t.me/…">'
+            '<button class="ghost" type="submit">сохранить</button>'
+            "</form></td>"
+        )
+
     body = "".join(
         "<tr>"
         f'<td data-label="Чат">{_title(row)}<br>'
@@ -902,6 +948,7 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         f'<td data-label="Модерация">'
         f'<span class="badge {"ok" if row["enabled"] else "bad"}">'
         f'{"включена" if row["enabled"] else "выключена"}</span></td>'
+        f'{_invite_cell(row)}'
         '<td data-label="" style="text-align:right;width:1%">'
         '<form method="post" action="/chats/toggle" style="display:inline">'
         f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
@@ -913,12 +960,237 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
     )
     parts.append(
         '<div class="card"><table class="stack"><thead><tr>'
-        "<th>Чат</th><th>Модерация</th><th></th></tr></thead>"
+        "<th>Чат</th><th>Модерация</th><th>Приглашение</th><th></th>"
+        "</tr></thead>"
         f"<tbody>{body}</tbody></table>"
         '<p class="muted">Правила общие для всех чатов и задаются '
         "возможностями бота; в самой группе администраторам доступны "
         "<code>/warn</code>, <code>/mute</code>, <code>/ban</code>, "
-        "<code>/unban</code> и <code>/modstatus</code>.</p></div>"
+        "<code>/unban</code> и <code>/modstatus</code>.</p>"
+        '<p class="muted">Своя ссылка приглашения заменяет ту, что бот '
+        "находит сам, и нужна там, где автоматика не годится: закрытый "
+        "чат со вступлением по заявке, ссылка с ограничением по времени "
+        "или та, что владелец выдал отдельно. Пустое поле снимает "
+        "свою ссылку.</p></div>"
+    )
+
+    if owner and features.enabled("chat_post"):
+        parts.append(_announce_form(token, rows))
+    elif owner:
+        parts.append(
+            '<div class="card muted"><h2>Объявление в группу</h2>'
+            "<p>Возможность «Сообщения в группы от имени бота» выключена. "
+            "Включите её в разделе «Возможности», чтобы писать в группы "
+            "отсюда и из бота.</p></div>"
+        )
+    return "".join(parts)
+
+
+def _announce_form(token: str, rows: list[dict]) -> str:
+    """Объявление в группу из панели (с 4.9.9.1).
+
+    Тот же путь, что и в боте, и намеренно в два шага: сначала показ
+    того, как объявление увидят, и только потом отправка. Опубликованное
+    в чужой группе не отзывается, и «случайно нажал» здесь стоит дороже,
+    чем лишний экран.
+    """
+    options = "".join(
+        f'<option value="{row["chat_id"]}">'
+        f'{html.escape(row["title"] or str(row["chat_id"]))}</option>'
+        for row in rows
+    )
+    return (
+        '<div class="card"><h2>Объявление в группу</h2>'
+        '<form method="post" action="/chats/announce">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<label>Группа<select name="chat">{options}</select></label>'
+        '<label>Текст<textarea name="text" rows="6" required '
+        'placeholder="Уходит от имени бота"></textarea></label>'
+        '<button type="submit">Показать, как это будет выглядеть</button>'
+        "</form>"
+        '<p class="muted">Жирный, курсив и ссылки задаются тегами '
+        "<code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, "
+        "<code>&lt;a href=…&gt;</code>. Отправка — на следующем шаге, "
+        "после показа.</p></div>"
+    )
+
+
+def _announce_preview(token: str, draft, err: str = "") -> str:
+    """Экран подтверждения: так объявление увидят в группе."""
+    from .. import chatpost
+
+    # Показ идёт как есть: текст уже прошёл проверку на теги,
+    # и подменять его здесь значило бы показать не то, что уйдёт.
+    body = chatpost.preview(draft).replace(chr(10), "<br>")
+    return "".join([
+        _note("bad", err),
+        '<div class="card"><h2>Проверьте объявление</h2>'
+        f'<div class="preview">{body}</div>'
+        '<form method="post" action="/chats/send">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<input type="hidden" name="chat" value="{draft.chat_id}">'
+        '<button type="submit">Отправить в группу</button></form>'
+        '<form method="post" action="/chats/drop">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        '<button class="ghost" type="submit">Отменить</button></form>'
+        "</div>",
+    ])
+
+
+async def _cloud_body(session, ok: str = "", err: str = "") -> str:
+    """Раздел «Облако»: хранилища rclone и подключение к ним бота.
+
+    До 4.9.9.1 облако подключалось только на сервере: `rclone config`,
+    потом правка `.env`. Здесь то же делается из панели — через rc API
+    самого rclone, а не запуском команд. Терминала в панели нет и не
+    будет; список действий тут закрытый: завести запись, убрать запись,
+    спросить об объёме.
+    """
+    from .. import cloudstore, music, rclonerc
+
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    # --- состояние: включено ли и отвечает ли хранилище боту ---
+    if not features.enabled("music_cloud"):
+        parts.append(
+            '<div class="card warn">Возможность «Музыка в облаке» выключена '
+            "— треки лежат на устройстве. Хранилище можно завести и сейчас, "
+            "но использоваться оно начнёт только после включения."
+            '<form method="post" action="/features/toggle">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            '<input type="hidden" name="key" value="music_cloud">'
+            '<input type="hidden" name="back" value="/cloud">'
+            '<button type="submit">Включить</button></form></div>'
+        )
+
+    if cloudstore.configured():
+        healthy, detail = await cloudstore.check()
+        badge = "ok" if healthy else "bad"
+        state = "отвечает" if healthy else "не отвечает"
+        parts.append(
+            '<div class="card"><h2>Хранилище бота</h2>'
+            f'<p><code>{html.escape(cloudstore.base_url())}</code> — '
+            f'<span class="badge {badge}">{state}</span> '
+            f'<span class="muted">{html.escape(detail)}</span></p>'
+            f'<p class="muted">Кэш на устройстве: '
+            f'{html.escape(music.format_size(music.cache_size()))} '
+            f'из {music.CACHE_BUDGET_MB} МБ бюджета. Потерять его безопасно — '
+            f'исходники в облаке.</p></div>'
+        )
+    else:
+        parts.append(
+            '<div class="card warn"><h2>Хранилище бота</h2>'
+            "<p>Адрес не задан: бот кладёт треки на устройство. Заполните "
+            "<code>MUSIC_CLOUD_URL</code> в разделе «Ключи» — обычно это "
+            "<code>http://radar_rclone:8080</code>.</p></div>"
+        )
+
+    # --- сами хранилища ---
+    if not rclonerc.configured():
+        parts.append(
+            '<div class="card"><h2>Подключённые облака</h2>'
+            "<p>Управление облаками из панели не настроено: пуст "
+            "<code>RCLONE_RC_URL</code>. Задайте его в разделе «Ключи» "
+            "(обычно <code>http://radar_rclone:5572</code>), и облака можно "
+            "будет заводить отсюда.</p>"
+            '<p class="muted">Без него остаётся прежний путь — '
+            "<code>rclone config</code> на сервере.</p></div>"
+        )
+        return "".join(parts)
+
+    listed, payload = await rclonerc.remotes()
+    if not listed:
+        parts.append(
+            '<div class="card bad"><h2>Подключённые облака</h2>'
+            f"<p>{html.escape(str(payload))}</p></div>"
+        )
+        return "".join(parts)
+
+    names = list(payload)
+    if names:
+        rows = []
+        for name in names:
+            info = await rclonerc.describe(name)
+            kind = str(info.get("type") or "—")
+            space_ok, space = await rclonerc.about(name)
+            rows.append(
+                "<tr>"
+                f'<td data-label="Имя"><code>{html.escape(name)}</code></td>'
+                f'<td data-label="Вид">{html.escape(kind)}</td>'
+                f'<td data-label="Место"><span class="muted">'
+                f'{html.escape(space if space_ok else "не ответило")}'
+                "</span></td>"
+                '<td data-label="" style="text-align:right;width:1%">'
+                '<form method="post" action="/cloud/forget" '
+                'style="display:inline">'
+                f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+                f'<input type="hidden" name="name" value="{html.escape(name)}">'
+                '<button class="ghost" type="submit">забыть</button>'
+                "</form></td></tr>"
+            )
+        parts.append(
+            '<div class="card"><h2>Подключённые облака</h2>'
+            '<table class="stack"><thead><tr><th>Имя</th><th>Вид</th>'
+            "<th>Место</th><th></th></tr></thead>"
+            f'<tbody>{"".join(rows)}</tbody></table>'
+            '<p class="muted">«Забыть» убирает запись о доступе из конфига '
+            "rclone. Файлы в самом облаке остаются на месте.</p></div>"
+        )
+    else:
+        parts.append(
+            '<div class="card muted"><h2>Подключённые облака</h2>'
+            "<p>Пока ни одного. Заведите ниже.</p></div>"
+        )
+
+    # --- форма добавления ---
+    options = "".join(
+        f'<option value="{html.escape(item.key)}">{html.escape(item.title)}'
+        "</option>"
+        for item in rclonerc.KINDS
+    )
+    blocks = []
+    for item in rclonerc.KINDS:
+        fields = "".join(
+            f'<label>{html.escape(spec.title)}'
+            f'{"" if spec.required else " <span class=muted>(необязательно)</span>"}'
+            f'<input type="{"password" if spec.secret else "text"}" '
+            f'name="{html.escape(item.key)}__{html.escape(spec.key)}" '
+            f'placeholder="{html.escape(spec.hint)}" maxlength="300"></label>'
+            for spec in item.fields
+        )
+        blocks.append(
+            f'<div class="kind" data-kind="{html.escape(item.key)}" hidden>'
+            f'<p class="muted">{html.escape(item.note)}</p>{fields}</div>'
+        )
+
+    parts.append(
+        '<div class="card"><h2>Добавить облако</h2>'
+        '<form method="post" action="/cloud/add">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        '<label>Имя<input type="text" name="name" required maxlength="32" '
+        'pattern="[A-Za-z0-9_-]{1,32}" placeholder="music"></label>'
+        f'<label>Вид<select name="kind" id="kind">{options}</select></label>'
+        f'{"".join(blocks)}'
+        '<button type="submit">Завести</button></form>'
+        '<p class="muted">После этого впишите имя в '
+        "<code>MUSIC_CLOUD_REMOTE</code> и перезапустите профиль "
+        "<code>cloud</code> — rclone отдаёт по WebDAV одно хранилище, "
+        "выбранное при запуске.</p>"
+        '<p class="muted">Яндекс.Диск, Google Drive и Dropbox заводятся '
+        "иначе: им нужен вход через браузер, которого у панели нет. "
+        "Для Яндекса проще всего WebDAV — адрес "
+        "<code>https://webdav.yandex.ru</code> и пароль приложения.</p>'"
+        "</div>"
+    )
+    # Форма показывает поля только выбранного вида. Без скрипта страница
+    # остаётся рабочей: видны все поля разом, лишние просто не заполняются.
+    parts.append(
+        "<script>(function(){var s=document.getElementById('kind');"
+        "if(!s)return;var b=document.querySelectorAll('.kind');"
+        "function show(){for(var i=0;i<b.length;i++){"
+        "b[i].hidden=(b[i].getAttribute('data-kind')!==s.value);}}"
+        "s.addEventListener('change',show);show();})();</script>"
     )
     return "".join(parts)
 
@@ -2884,6 +3156,168 @@ async def create_app() -> Any:
             f"{chat_id}: модерация {'включена' if value else 'выключена'}"))
 
     @owner_only
+    async def cloud_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Облако",
+                await _cloud_body(session,
+                                  request.query.get("ok", ""),
+                                  request.query.get("err", "")),
+                "cloud", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def cloud_add(request):
+        from .. import rclonerc
+
+        session, data = await _guarded_form(request, "superadmin")
+        name = str(data.get("name", "")).strip()
+        kind = str(data.get("kind", ""))
+
+        # Поля формы помечены видом хранилища: на странице их несколько
+        # наборов сразу, и без разделения s3-ключ попал бы в webdav.
+        values = {
+            key.split("__", 1)[1]: str(value)
+            for key, value in data.items()
+            if key.startswith(f"{kind}__")
+        }
+
+        ok, reason = await rclonerc.create(name, kind, values)
+        if not ok:
+            audit.record(session.user_key, "облако не заведено", reason[:80])
+            raise web.HTTPFound("/cloud?err=" + quote(reason))
+
+        audit.record(session.user_key, "заведено облако", f"{name} ({kind})")
+        raise web.HTTPFound("/cloud?ok=" + quote(
+            f"Хранилище «{name}» заведено. Чтобы бот начал им пользоваться, "
+            f"впишите его имя в MUSIC_CLOUD_REMOTE и перезапустите "
+            f"профиль cloud."))
+
+    async def cloud_forget(request):
+        from .. import rclonerc
+
+        session, data = await _guarded_form(request, "superadmin")
+        name = str(data.get("name", "")).strip()
+        ok, reason = await rclonerc.forget(name)
+        if not ok:
+            raise web.HTTPFound("/cloud?err=" + quote(reason))
+        audit.record(session.user_key, "убрано облако", name)
+        raise web.HTTPFound("/cloud?ok=" + quote(
+            f"Запись о «{name}» убрана. Файлы в самом облаке остались."))
+
+    async def chats_invite(request):
+        """Своя ссылка приглашения в чат (с 4.9.9.1)."""
+        from .. import chatlink
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "superadmin")
+        try:
+            chat_id = int(str(data.get("chat", "")))
+        except ValueError:
+            raise web.HTTPFound("/chats?err=" + quote("Неизвестный чат"))
+
+        link = str(data.get("link", "")).strip()
+        if link and not chatlink.valid_invite(link):
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Это не похоже на ссылку Telegram — нужен адрес вида "
+                "https://t.me/…"))
+
+        if not await repo.chat_set_invite(chat_id, link):
+            raise web.HTTPFound("/chats?err=" + quote("Чат не найден"))
+
+        # Запомненное сбрасываем: иначе кнопка ещё сутки вела бы
+        # по прежнему адресу.
+        chatlink.forget(chat_id)
+        audit.record(session.user_key,
+                     "задана ссылка чата" if link else "снята ссылка чата",
+                     str(chat_id))
+        raise web.HTTPFound("/chats?ok=" + quote(
+            "Ссылка сохранена" if link
+            else "Своя ссылка снята — бот снова ищет её сам"))
+
+    # Подготовленные объявления ждут подтверждения. В памяти, а не в базе:
+    # живут минуты и нужны только тому, кто их набрал.
+    _panel_drafts: dict[str, Any] = {}
+
+    async def chats_announce(request):
+        """Первый шаг: проверить текст и показать, как его увидят."""
+        from .. import chatpost
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "superadmin")
+        if not features.enabled("chat_post"):
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Возможность «Сообщения в группы» выключена"))
+
+        try:
+            chat_id = int(str(data.get("chat", "")))
+        except ValueError:
+            raise web.HTTPFound("/chats?err=" + quote("Неизвестный чат"))
+
+        row = await repo.chat_get(chat_id)
+        if row is None:
+            raise web.HTTPFound("/chats?err=" + quote("Чат не найден"))
+
+        text = str(data.get("text", ""))
+        ok, reason = chatpost.validate(text)
+        if not ok:
+            raise web.HTTPFound("/chats?err=" + quote(reason))
+
+        draft = chatpost.Draft(
+            chat_id=chat_id,
+            title=row.get("title") or str(chat_id),
+            text=text.strip(),
+        )
+        _panel_drafts[session.user_key] = draft
+        return web.Response(
+            text=_layout(
+                "Объявление",
+                _announce_preview(auth.csrf_token(session), draft),
+                "chats", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def chats_drop(request):
+        session, _data = await _guarded_form(request, "superadmin")
+        _panel_drafts.pop(session.user_key, None)
+        raise web.HTTPFound("/chats?ok=" + quote("Объявление отменено"))
+
+    async def chats_send(request):
+        """Второй шаг: отправить подтверждённое объявление."""
+        session, _data = await _guarded_form(request, "superadmin")
+        if not features.enabled("chat_post"):
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Возможность «Сообщения в группы» выключена"))
+
+        draft = _panel_drafts.pop(session.user_key, None)
+        if draft is None:
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Объявление не найдено — наберите заново"))
+        if draft.expired():
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Прошло слишком много времени — наберите заново"))
+
+        from ..tg import bot
+
+        try:
+            await bot.send_message(draft.chat_id, draft.text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Объявление в %s не ушло: %s", draft.chat_id, exc)
+            audit.record(session.user_key, "объявление не ушло",
+                         f"{draft.chat_id}: {str(exc)[:60]}")
+            raise web.HTTPFound("/chats?err=" + quote(
+                f"Не отправилось: {str(exc)[:120]}. Обычные причины — "
+                f"бота выгнали, сняли права или в группе запрещены "
+                f"сообщения от ботов."))
+
+        audit.record(session.user_key, "объявление отправлено",
+                     f"{draft.chat_id} ({len(draft.text)} знаков)")
+        raise web.HTTPFound("/chats?ok=" + quote(
+            f"Отправлено в «{draft.title}»"))
+
+    @owner_only
     async def wipe_page(request, session):
         return web.Response(
             text=_layout(
@@ -2974,6 +3408,13 @@ async def create_app() -> Any:
         web.post("/wipe/start", wipe_start),
         web.get("/chats", chats_page),
         web.post("/chats/toggle", chats_toggle),
+        web.post("/chats/invite", chats_invite),
+        web.post("/chats/announce", chats_announce),
+        web.post("/chats/send", chats_send),
+        web.post("/chats/drop", chats_drop),
+        web.get("/cloud", cloud_page),
+        web.post("/cloud/add", cloud_add),
+        web.post("/cloud/forget", cloud_forget),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),

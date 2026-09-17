@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.9 — автономный установщик.
+# Система «Радар» v4.9.9.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.9"
+VERSION="4.9.9.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=123
+FILE_COUNT=124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3082,6 +3082,15 @@ services:
       # и трек начинает играть заметно позже.
       - --vfs-cache-mode=full
       - --vfs-cache-max-size=256M
+      # Управляющее API (с 4.9.9.1): через него панель заводит и убирает
+      # облака, не трогая конфиг на сервере руками. Наружу порт тоже
+      # не публикуется — доступ только из внутренней сети Compose.
+      # Логин и пароль обязательны: без них rclone пускает кого угодно,
+      # а «кто угодно» внутри сети Compose — это любой контейнер.
+      - --rc
+      - --rc-addr=:5572
+      - "--rc-user=${RCLONE_RC_USER:-radar}"
+      - "--rc-pass=${RCLONE_RC_PASS:-radar}"
     volumes:
       - ./data/rclone:/config/rclone
     deploy:
@@ -3229,6 +3238,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.9.1", [
+        "☁️ <b>Облака подключаются из панели.</b> Раздел «Облако» заводит "
+        "и убирает хранилища сам — WebDAV, S3, SFTP и FTP, всё, чему "
+        "хватает адреса и пароля. Там же видно, отвечает ли хранилище "
+        "и сколько весит кэш. Яндекс.Диску и подобным нужен вход через "
+        "браузер — для них остаётся WebDAV с паролем приложения.",
+        "✍️ <b>Объявления в группы — и из панели тоже.</b> Тот же путь, "
+        "что в боте: текст, показ того, как его увидят, подтверждение.",
+        "🔗 <b>Своя ссылка приглашения в чат.</b> Задаётся из бота "
+        "и из панели, становится кнопкой перехода и заменяет ту, что бот "
+        "находит сам. Нужна там, где автоматика не годится: закрытый чат "
+        "со вступлением по заявке или ссылка с ограничением по времени.",
+    ]),
     ("4.9.9", [
         "☁️ <b>Музыка переезжает в облако.</b> Рядом с ботом поднимается "
         "WebDAV (rclone), треки хранятся там, а на устройстве остаётся "
@@ -4853,7 +4875,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.9"
+__version__ = "4.9.9.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -9681,6 +9703,16 @@ SETTINGS: tuple[Setting, ...] = (
             "Медиа", secret=False),
     Setting("MUSIC_CLOUD_PASSWORD", "Облако: пароль",
             "Пароль к WebDAV rclone.", "Медиа"),
+    Setting("RCLONE_RC_URL", "Управление облаками",
+            "Адрес управляющего API rclone, например http://radar_rclone:5572. "
+            "С ним облака подключаются из веб-панели, без правки конфига "
+            "на сервере. Пусто — раздел «Облако» только показывает состояние.",
+            "Медиа", secret=False),
+    Setting("RCLONE_RC_USER", "Управление облаками: логин",
+            "Тот же, что задан rclone ключом --rc-user.",
+            "Медиа", secret=False),
+    Setting("RCLONE_RC_PASS", "Управление облаками: пароль",
+            "Тот же, что задан rclone ключом --rc-pass.", "Медиа"),
 
     # --- сеть ---
     Setting("EGRESS_PROXY", "Прокси для выхода в сеть",
@@ -15777,6 +15809,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 form.inline input[type=text], form.inline input[type=password],
 form.inline input[type=url] { flex:1 1 240px; }
 textarea { width:100%; min-height:70px; resize:vertical; }
+/* Поле прямо в ячейке таблицы: ссылка приглашения правится там же,
+   где показана, — отдельная страница ради одной строки была бы лишней. */
+form.inline-form { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+form.inline-form input[type=url] { flex:1 1 180px; min-width:0;
+                                   padding:6px 10px; font-size:13px; }
+/* Показ объявления: рамка нужна, чтобы отделить чужой текст от нашего —
+   иначе не видно, где кончается интерфейс и начинается сообщение. */
+.preview { border:1px solid var(--line); border-radius:10px;
+           padding:14px 16px; background:var(--surface-2);
+           margin:12px 0; line-height:1.5; overflow-wrap:anywhere; }
 
 button { padding:10px 18px; border-radius:10px; border:none; cursor:pointer;
          background:linear-gradient(135deg,var(--accent),var(--accent-2));
@@ -16270,6 +16312,9 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     if owner:
         media.append(("/files", "Файлы", "files"))
         media.append(("/media", "Плейлисты", "media"))
+        # Пункт виден всегда, как «Обновление» и RustDesk: спрятанный
+        # раздел человек не найдёт, а страница сама объясняет, что задать.
+        media.append(("/cloud", "Облако", "cloud"))
 
     agent_items: list[tuple[str, str, str]] = []
     if owner:
@@ -16467,6 +16512,8 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         if ok_link:
             links[row["chat_id"]] = value
 
+    owner = roles.is_superadmin(session.role)
+
     def _title(row: dict) -> str:
         """Название чата ссылкой, если до группы можно дойти."""
         name = html.escape(row["title"] or "—")
@@ -16476,6 +16523,37 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         return (f'<a href="{html.escape(link)}" target="_blank" '
                 f'rel="noopener">{name}</a>')
 
+    def _invite_cell(row: dict) -> str:
+        """Ссылка приглашения: своя или найденная ботом (с 4.9.9.1).
+
+        Показывается всем, кто видит раздел, а меняется только
+        суперадминистратором: знать, куда ведёт кнопка, полезно
+        и модератору, а переписывать её — уже другое право.
+        """
+        own = str(row.get("invite") or "")
+        chat_id = row["chat_id"]
+        if own:
+            shown = (f'<a href="{html.escape(own)}" target="_blank" '
+                     f'rel="noopener">своя ссылка</a>')
+        elif links.get(chat_id):
+            shown = '<span class="muted">найдена ботом</span>'
+        else:
+            shown = '<span class="muted">нет</span>'
+
+        if not owner:
+            return f'<td data-label="Приглашение">{shown}</td>'
+
+        return (
+            f'<td data-label="Приглашение">{shown}'
+            '<form method="post" action="/chats/invite" class="inline-form">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            f'<input type="hidden" name="chat" value="{chat_id}">'
+            '<input type="url" name="link" maxlength="300" '
+            f'value="{html.escape(own)}" placeholder="https://t.me/…">'
+            '<button class="ghost" type="submit">сохранить</button>'
+            "</form></td>"
+        )
+
     body = "".join(
         "<tr>"
         f'<td data-label="Чат">{_title(row)}<br>'
@@ -16483,6 +16561,7 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         f'<td data-label="Модерация">'
         f'<span class="badge {"ok" if row["enabled"] else "bad"}">'
         f'{"включена" if row["enabled"] else "выключена"}</span></td>'
+        f'{_invite_cell(row)}'
         '<td data-label="" style="text-align:right;width:1%">'
         '<form method="post" action="/chats/toggle" style="display:inline">'
         f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
@@ -16494,12 +16573,237 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
     )
     parts.append(
         '<div class="card"><table class="stack"><thead><tr>'
-        "<th>Чат</th><th>Модерация</th><th></th></tr></thead>"
+        "<th>Чат</th><th>Модерация</th><th>Приглашение</th><th></th>"
+        "</tr></thead>"
         f"<tbody>{body}</tbody></table>"
         '<p class="muted">Правила общие для всех чатов и задаются '
         "возможностями бота; в самой группе администраторам доступны "
         "<code>/warn</code>, <code>/mute</code>, <code>/ban</code>, "
-        "<code>/unban</code> и <code>/modstatus</code>.</p></div>"
+        "<code>/unban</code> и <code>/modstatus</code>.</p>"
+        '<p class="muted">Своя ссылка приглашения заменяет ту, что бот '
+        "находит сам, и нужна там, где автоматика не годится: закрытый "
+        "чат со вступлением по заявке, ссылка с ограничением по времени "
+        "или та, что владелец выдал отдельно. Пустое поле снимает "
+        "свою ссылку.</p></div>"
+    )
+
+    if owner and features.enabled("chat_post"):
+        parts.append(_announce_form(token, rows))
+    elif owner:
+        parts.append(
+            '<div class="card muted"><h2>Объявление в группу</h2>'
+            "<p>Возможность «Сообщения в группы от имени бота» выключена. "
+            "Включите её в разделе «Возможности», чтобы писать в группы "
+            "отсюда и из бота.</p></div>"
+        )
+    return "".join(parts)
+
+
+def _announce_form(token: str, rows: list[dict]) -> str:
+    """Объявление в группу из панели (с 4.9.9.1).
+
+    Тот же путь, что и в боте, и намеренно в два шага: сначала показ
+    того, как объявление увидят, и только потом отправка. Опубликованное
+    в чужой группе не отзывается, и «случайно нажал» здесь стоит дороже,
+    чем лишний экран.
+    """
+    options = "".join(
+        f'<option value="{row["chat_id"]}">'
+        f'{html.escape(row["title"] or str(row["chat_id"]))}</option>'
+        for row in rows
+    )
+    return (
+        '<div class="card"><h2>Объявление в группу</h2>'
+        '<form method="post" action="/chats/announce">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<label>Группа<select name="chat">{options}</select></label>'
+        '<label>Текст<textarea name="text" rows="6" required '
+        'placeholder="Уходит от имени бота"></textarea></label>'
+        '<button type="submit">Показать, как это будет выглядеть</button>'
+        "</form>"
+        '<p class="muted">Жирный, курсив и ссылки задаются тегами '
+        "<code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, "
+        "<code>&lt;a href=…&gt;</code>. Отправка — на следующем шаге, "
+        "после показа.</p></div>"
+    )
+
+
+def _announce_preview(token: str, draft, err: str = "") -> str:
+    """Экран подтверждения: так объявление увидят в группе."""
+    from .. import chatpost
+
+    # Показ идёт как есть: текст уже прошёл проверку на теги,
+    # и подменять его здесь значило бы показать не то, что уйдёт.
+    body = chatpost.preview(draft).replace(chr(10), "<br>")
+    return "".join([
+        _note("bad", err),
+        '<div class="card"><h2>Проверьте объявление</h2>'
+        f'<div class="preview">{body}</div>'
+        '<form method="post" action="/chats/send">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<input type="hidden" name="chat" value="{draft.chat_id}">'
+        '<button type="submit">Отправить в группу</button></form>'
+        '<form method="post" action="/chats/drop">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        '<button class="ghost" type="submit">Отменить</button></form>'
+        "</div>",
+    ])
+
+
+async def _cloud_body(session, ok: str = "", err: str = "") -> str:
+    """Раздел «Облако»: хранилища rclone и подключение к ним бота.
+
+    До 4.9.9.1 облако подключалось только на сервере: `rclone config`,
+    потом правка `.env`. Здесь то же делается из панели — через rc API
+    самого rclone, а не запуском команд. Терминала в панели нет и не
+    будет; список действий тут закрытый: завести запись, убрать запись,
+    спросить об объёме.
+    """
+    from .. import cloudstore, music, rclonerc
+
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    # --- состояние: включено ли и отвечает ли хранилище боту ---
+    if not features.enabled("music_cloud"):
+        parts.append(
+            '<div class="card warn">Возможность «Музыка в облаке» выключена '
+            "— треки лежат на устройстве. Хранилище можно завести и сейчас, "
+            "но использоваться оно начнёт только после включения."
+            '<form method="post" action="/features/toggle">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            '<input type="hidden" name="key" value="music_cloud">'
+            '<input type="hidden" name="back" value="/cloud">'
+            '<button type="submit">Включить</button></form></div>'
+        )
+
+    if cloudstore.configured():
+        healthy, detail = await cloudstore.check()
+        badge = "ok" if healthy else "bad"
+        state = "отвечает" if healthy else "не отвечает"
+        parts.append(
+            '<div class="card"><h2>Хранилище бота</h2>'
+            f'<p><code>{html.escape(cloudstore.base_url())}</code> — '
+            f'<span class="badge {badge}">{state}</span> '
+            f'<span class="muted">{html.escape(detail)}</span></p>'
+            f'<p class="muted">Кэш на устройстве: '
+            f'{html.escape(music.format_size(music.cache_size()))} '
+            f'из {music.CACHE_BUDGET_MB} МБ бюджета. Потерять его безопасно — '
+            f'исходники в облаке.</p></div>'
+        )
+    else:
+        parts.append(
+            '<div class="card warn"><h2>Хранилище бота</h2>'
+            "<p>Адрес не задан: бот кладёт треки на устройство. Заполните "
+            "<code>MUSIC_CLOUD_URL</code> в разделе «Ключи» — обычно это "
+            "<code>http://radar_rclone:8080</code>.</p></div>"
+        )
+
+    # --- сами хранилища ---
+    if not rclonerc.configured():
+        parts.append(
+            '<div class="card"><h2>Подключённые облака</h2>'
+            "<p>Управление облаками из панели не настроено: пуст "
+            "<code>RCLONE_RC_URL</code>. Задайте его в разделе «Ключи» "
+            "(обычно <code>http://radar_rclone:5572</code>), и облака можно "
+            "будет заводить отсюда.</p>"
+            '<p class="muted">Без него остаётся прежний путь — '
+            "<code>rclone config</code> на сервере.</p></div>"
+        )
+        return "".join(parts)
+
+    listed, payload = await rclonerc.remotes()
+    if not listed:
+        parts.append(
+            '<div class="card bad"><h2>Подключённые облака</h2>'
+            f"<p>{html.escape(str(payload))}</p></div>"
+        )
+        return "".join(parts)
+
+    names = list(payload)
+    if names:
+        rows = []
+        for name in names:
+            info = await rclonerc.describe(name)
+            kind = str(info.get("type") or "—")
+            space_ok, space = await rclonerc.about(name)
+            rows.append(
+                "<tr>"
+                f'<td data-label="Имя"><code>{html.escape(name)}</code></td>'
+                f'<td data-label="Вид">{html.escape(kind)}</td>'
+                f'<td data-label="Место"><span class="muted">'
+                f'{html.escape(space if space_ok else "не ответило")}'
+                "</span></td>"
+                '<td data-label="" style="text-align:right;width:1%">'
+                '<form method="post" action="/cloud/forget" '
+                'style="display:inline">'
+                f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+                f'<input type="hidden" name="name" value="{html.escape(name)}">'
+                '<button class="ghost" type="submit">забыть</button>'
+                "</form></td></tr>"
+            )
+        parts.append(
+            '<div class="card"><h2>Подключённые облака</h2>'
+            '<table class="stack"><thead><tr><th>Имя</th><th>Вид</th>'
+            "<th>Место</th><th></th></tr></thead>"
+            f'<tbody>{"".join(rows)}</tbody></table>'
+            '<p class="muted">«Забыть» убирает запись о доступе из конфига '
+            "rclone. Файлы в самом облаке остаются на месте.</p></div>"
+        )
+    else:
+        parts.append(
+            '<div class="card muted"><h2>Подключённые облака</h2>'
+            "<p>Пока ни одного. Заведите ниже.</p></div>"
+        )
+
+    # --- форма добавления ---
+    options = "".join(
+        f'<option value="{html.escape(item.key)}">{html.escape(item.title)}'
+        "</option>"
+        for item in rclonerc.KINDS
+    )
+    blocks = []
+    for item in rclonerc.KINDS:
+        fields = "".join(
+            f'<label>{html.escape(spec.title)}'
+            f'{"" if spec.required else " <span class=muted>(необязательно)</span>"}'
+            f'<input type="{"password" if spec.secret else "text"}" '
+            f'name="{html.escape(item.key)}__{html.escape(spec.key)}" '
+            f'placeholder="{html.escape(spec.hint)}" maxlength="300"></label>'
+            for spec in item.fields
+        )
+        blocks.append(
+            f'<div class="kind" data-kind="{html.escape(item.key)}" hidden>'
+            f'<p class="muted">{html.escape(item.note)}</p>{fields}</div>'
+        )
+
+    parts.append(
+        '<div class="card"><h2>Добавить облако</h2>'
+        '<form method="post" action="/cloud/add">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        '<label>Имя<input type="text" name="name" required maxlength="32" '
+        'pattern="[A-Za-z0-9_-]{1,32}" placeholder="music"></label>'
+        f'<label>Вид<select name="kind" id="kind">{options}</select></label>'
+        f'{"".join(blocks)}'
+        '<button type="submit">Завести</button></form>'
+        '<p class="muted">После этого впишите имя в '
+        "<code>MUSIC_CLOUD_REMOTE</code> и перезапустите профиль "
+        "<code>cloud</code> — rclone отдаёт по WebDAV одно хранилище, "
+        "выбранное при запуске.</p>"
+        '<p class="muted">Яндекс.Диск, Google Drive и Dropbox заводятся '
+        "иначе: им нужен вход через браузер, которого у панели нет. "
+        "Для Яндекса проще всего WebDAV — адрес "
+        "<code>https://webdav.yandex.ru</code> и пароль приложения.</p>'"
+        "</div>"
+    )
+    # Форма показывает поля только выбранного вида. Без скрипта страница
+    # остаётся рабочей: видны все поля разом, лишние просто не заполняются.
+    parts.append(
+        "<script>(function(){var s=document.getElementById('kind');"
+        "if(!s)return;var b=document.querySelectorAll('.kind');"
+        "function show(){for(var i=0;i<b.length;i++){"
+        "b[i].hidden=(b[i].getAttribute('data-kind')!==s.value);}}"
+        "s.addEventListener('change',show);show();})();</script>"
     )
     return "".join(parts)
 
@@ -18465,6 +18769,168 @@ async def create_app() -> Any:
             f"{chat_id}: модерация {'включена' if value else 'выключена'}"))
 
     @owner_only
+    async def cloud_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Облако",
+                await _cloud_body(session,
+                                  request.query.get("ok", ""),
+                                  request.query.get("err", "")),
+                "cloud", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def cloud_add(request):
+        from .. import rclonerc
+
+        session, data = await _guarded_form(request, "superadmin")
+        name = str(data.get("name", "")).strip()
+        kind = str(data.get("kind", ""))
+
+        # Поля формы помечены видом хранилища: на странице их несколько
+        # наборов сразу, и без разделения s3-ключ попал бы в webdav.
+        values = {
+            key.split("__", 1)[1]: str(value)
+            for key, value in data.items()
+            if key.startswith(f"{kind}__")
+        }
+
+        ok, reason = await rclonerc.create(name, kind, values)
+        if not ok:
+            audit.record(session.user_key, "облако не заведено", reason[:80])
+            raise web.HTTPFound("/cloud?err=" + quote(reason))
+
+        audit.record(session.user_key, "заведено облако", f"{name} ({kind})")
+        raise web.HTTPFound("/cloud?ok=" + quote(
+            f"Хранилище «{name}» заведено. Чтобы бот начал им пользоваться, "
+            f"впишите его имя в MUSIC_CLOUD_REMOTE и перезапустите "
+            f"профиль cloud."))
+
+    async def cloud_forget(request):
+        from .. import rclonerc
+
+        session, data = await _guarded_form(request, "superadmin")
+        name = str(data.get("name", "")).strip()
+        ok, reason = await rclonerc.forget(name)
+        if not ok:
+            raise web.HTTPFound("/cloud?err=" + quote(reason))
+        audit.record(session.user_key, "убрано облако", name)
+        raise web.HTTPFound("/cloud?ok=" + quote(
+            f"Запись о «{name}» убрана. Файлы в самом облаке остались."))
+
+    async def chats_invite(request):
+        """Своя ссылка приглашения в чат (с 4.9.9.1)."""
+        from .. import chatlink
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "superadmin")
+        try:
+            chat_id = int(str(data.get("chat", "")))
+        except ValueError:
+            raise web.HTTPFound("/chats?err=" + quote("Неизвестный чат"))
+
+        link = str(data.get("link", "")).strip()
+        if link and not chatlink.valid_invite(link):
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Это не похоже на ссылку Telegram — нужен адрес вида "
+                "https://t.me/…"))
+
+        if not await repo.chat_set_invite(chat_id, link):
+            raise web.HTTPFound("/chats?err=" + quote("Чат не найден"))
+
+        # Запомненное сбрасываем: иначе кнопка ещё сутки вела бы
+        # по прежнему адресу.
+        chatlink.forget(chat_id)
+        audit.record(session.user_key,
+                     "задана ссылка чата" if link else "снята ссылка чата",
+                     str(chat_id))
+        raise web.HTTPFound("/chats?ok=" + quote(
+            "Ссылка сохранена" if link
+            else "Своя ссылка снята — бот снова ищет её сам"))
+
+    # Подготовленные объявления ждут подтверждения. В памяти, а не в базе:
+    # живут минуты и нужны только тому, кто их набрал.
+    _panel_drafts: dict[str, Any] = {}
+
+    async def chats_announce(request):
+        """Первый шаг: проверить текст и показать, как его увидят."""
+        from .. import chatpost
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "superadmin")
+        if not features.enabled("chat_post"):
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Возможность «Сообщения в группы» выключена"))
+
+        try:
+            chat_id = int(str(data.get("chat", "")))
+        except ValueError:
+            raise web.HTTPFound("/chats?err=" + quote("Неизвестный чат"))
+
+        row = await repo.chat_get(chat_id)
+        if row is None:
+            raise web.HTTPFound("/chats?err=" + quote("Чат не найден"))
+
+        text = str(data.get("text", ""))
+        ok, reason = chatpost.validate(text)
+        if not ok:
+            raise web.HTTPFound("/chats?err=" + quote(reason))
+
+        draft = chatpost.Draft(
+            chat_id=chat_id,
+            title=row.get("title") or str(chat_id),
+            text=text.strip(),
+        )
+        _panel_drafts[session.user_key] = draft
+        return web.Response(
+            text=_layout(
+                "Объявление",
+                _announce_preview(auth.csrf_token(session), draft),
+                "chats", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def chats_drop(request):
+        session, _data = await _guarded_form(request, "superadmin")
+        _panel_drafts.pop(session.user_key, None)
+        raise web.HTTPFound("/chats?ok=" + quote("Объявление отменено"))
+
+    async def chats_send(request):
+        """Второй шаг: отправить подтверждённое объявление."""
+        session, _data = await _guarded_form(request, "superadmin")
+        if not features.enabled("chat_post"):
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Возможность «Сообщения в группы» выключена"))
+
+        draft = _panel_drafts.pop(session.user_key, None)
+        if draft is None:
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Объявление не найдено — наберите заново"))
+        if draft.expired():
+            raise web.HTTPFound("/chats?err=" + quote(
+                "Прошло слишком много времени — наберите заново"))
+
+        from ..tg import bot
+
+        try:
+            await bot.send_message(draft.chat_id, draft.text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Объявление в %s не ушло: %s", draft.chat_id, exc)
+            audit.record(session.user_key, "объявление не ушло",
+                         f"{draft.chat_id}: {str(exc)[:60]}")
+            raise web.HTTPFound("/chats?err=" + quote(
+                f"Не отправилось: {str(exc)[:120]}. Обычные причины — "
+                f"бота выгнали, сняли права или в группе запрещены "
+                f"сообщения от ботов."))
+
+        audit.record(session.user_key, "объявление отправлено",
+                     f"{draft.chat_id} ({len(draft.text)} знаков)")
+        raise web.HTTPFound("/chats?ok=" + quote(
+            f"Отправлено в «{draft.title}»"))
+
+    @owner_only
     async def wipe_page(request, session):
         return web.Response(
             text=_layout(
@@ -18555,6 +19021,13 @@ async def create_app() -> Any:
         web.post("/wipe/start", wipe_start),
         web.get("/chats", chats_page),
         web.post("/chats/toggle", chats_toggle),
+        web.post("/chats/invite", chats_invite),
+        web.post("/chats/announce", chats_announce),
+        web.post("/chats/send", chats_send),
+        web.post("/chats/drop", chats_drop),
+        web.get("/cloud", cloud_page),
+        web.post("/cloud/add", cloud_add),
+        web.post("/cloud/forget", cloud_forget),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),
@@ -19020,6 +19493,12 @@ class ModeratedChat(Base):
     title: Mapped[str] = mapped_column(String(128), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     settings_json: Mapped[str] = mapped_column(String(2000), default="")
+    # Ссылка приглашения, заданная руками (с 4.9.9.1). Отдельным полем,
+    # а не в settings_json: это не правило модерации, а способ попасть
+    # в чат, и он нужен там, где настройки модерации не читаются вовсе.
+    # Пусто — ссылку ищет chatlink: публичное имя, затем ссылка
+    # владельца, затем своя.
+    invite_link: Mapped[str] = mapped_column(String(300), default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
@@ -20292,6 +20771,7 @@ async def chat_list() -> list[dict[str, Any]]:
                 "title": row.title,
                 "enabled": bool(row.enabled),
                 "settings": row.settings_json or "",
+                "invite": row.invite_link or "",
             }
             for row in rows
         ]
@@ -20309,6 +20789,7 @@ async def chat_get(chat_id: int) -> dict[str, Any] | None:
             "title": row.title,
             "enabled": bool(row.enabled),
             "settings": row.settings_json or "",
+            "invite": row.invite_link or "",
         }
 
 
@@ -20330,6 +20811,22 @@ async def chat_save(chat_id: int, title: str = "", enabled: bool = True,
         if settings_json:
             row.settings_json = settings_json
         row.enabled = enabled
+
+
+async def chat_set_invite(chat_id: int, link: str) -> bool:
+    """Задаёт или снимает ссылку приглашения (с 4.9.9.1).
+
+    Пустая строка снимает: тогда ссылку снова ищет `chatlink` — сначала
+    публичное имя, потом ссылка владельца, потом своя. False — чата нет.
+    """
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            return False
+        row.invite_link = link
+        return True
 
 
 async def chat_forget(chat_id: int) -> bool:
@@ -25984,6 +26481,7 @@ class Form(StatesGroup):
     playlist_name = State()        # название нового плейлиста (музыка)
     quiet_hours = State()          # интервал тихих часов
     chat_message = State()         # объявление в группу (суперадминистратор)
+    chat_invite = State()          # ссылка приглашения в группу
 RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
 cat > "radar/middlewares.py" <<'RADAR_FILE_74'
@@ -28147,8 +28645,51 @@ def forget(chat_id: int) -> None:
     _cache.pop(chat_id, None)
 
 
+# Что считаем ссылкой на чат. Проверка нужна не от злого умысла —
+# ссылку задаёт суперадминистратор, — а от опечатки: кнопка с мусором
+# вместо адреса выглядит как поломка бота, а не как промах в поле.
+_ALLOWED_PREFIXES = ("https://t.me/", "http://t.me/", "https://telegram.me/")
+
+
+def valid_invite(link: str) -> bool:
+    """Похоже ли это на ссылку Telegram."""
+    value = (link or "").strip()
+    if len(value) > 300 or " " in value:
+        return False
+    return value.startswith(_ALLOWED_PREFIXES)
+
+
+async def manual_link(chat_id: int) -> str:
+    """Ссылка, заданная руками через бота или панель (с 4.9.9.1).
+
+    Импорт базы внутри: модуль зовут в том числе оттуда, где базы может
+    не быть под рукой, и падать из-за ненайденной ссылки он не должен.
+    """
+    try:
+        from .db import repo
+
+        row = await repo.chat_get(chat_id)
+    except Exception:  # noqa: BLE001
+        log.debug("Ссылка чата %s не прочитана из базы", chat_id)
+        return ""
+    if row is None:
+        return ""
+    link = str(row.get("invite") or "")
+    return link if valid_invite(link) else ""
+
+
 async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
-    """Ссылка на чат. Возвращает (получилось, ссылка или причина)."""
+    """Ссылка на чат. Возвращает (получилось, ссылка или причина).
+
+    Порядок: заданная руками, потом запомненная, потом добытая у Telegram.
+    Ручная идёт первой намеренно — её задают как раз тогда, когда
+    автоматическая не годится: закрытый чат, своя ссылка с ограничением
+    по времени, приглашение с заявкой на вступление.
+    """
+    manual = await manual_link(chat_id)
+    if manual:
+        return True, manual
+
     if chat_id in _cache:
         return True, _cache[chat_id]
 
@@ -28453,8 +28994,314 @@ async def check() -> tuple[bool, str]:
 
     return True, f"доступно, свободно {format_size(available)}"
 RADAR_FILE_83
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rclonerc.py"
+cat > "radar/rclonerc.py" <<'RADAR_FILE_84'
+"""Управляющее API rclone: подключение облаков без терминала (с 4.9.9.1).
+
+В 4.9.9 облако подключалось руками на сервере: `rclone config`, потом
+правка `.env`. Здесь то же самое делается из веб-панели — но не через
+запуск команд, а через **rc API** самого rclone: отдельный HTTP-интерфейс,
+который он поднимает по `--rc`. Тот же путь, которым пользуется соседний
+проект opendisk из своего GUI.
+
+Разница принципиальная и её стоит назвать прямо: панель не выполняет
+команд на сервере и не получит такой возможности — терминала в ней нет
+и не будет. Здесь вызывается чужой сервис по сети, с заранее известным
+списком действий, и всё, что он умеет, — заводить и убирать записи
+о хранилищах в своём конфиге.
+
+**Чего это не может.** Провайдеры с входом через браузер (Яндекс.Диск,
+Google Drive, Dropbox) требуют OAuth: человек нажимает «разрешить»
+на странице провайдера, и токен без этого не появится. Панель такого
+сделать не может — нужен браузер на стороне того, кто входит. Для них
+остаётся `rclone authorize` на любой машине с браузером и вставка
+готового токена сюда, полем. Хранилища, которым хватает адреса и пароля
+(WebDAV, S3, FTP, SFTP), заводятся целиком отсюда.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+log = logging.getLogger("radar.rclonerc")
+
+TIMEOUT = 30
+
+# Имя хранилища попадает в конфиг rclone и в строку `имя:путь`.
+# Двоеточие, слэш и пробел в нём ломают эту строку, поэтому набор узкий.
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+@dataclass(frozen=True)
+class Field:
+    """Поле формы для одного вида хранилища."""
+
+    key: str
+    title: str
+    hint: str = ""
+    secret: bool = False
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class Kind:
+    """Вид хранилища: что показать в форме и что послать rclone."""
+
+    key: str
+    title: str
+    note: str
+    fields: tuple[Field, ...] = field(default_factory=tuple)
+
+
+# Виды, которые заводятся без браузера. Список намеренно короткий:
+# у rclone их семь десятков, но у большинства своя обвязка, и «показать
+# все» означало бы форму, в которой нельзя не ошибиться.
+KINDS: tuple[Kind, ...] = (
+    Kind(
+        "webdav", "WebDAV",
+        "Подходит для Nextcloud, ownCloud и любого сервера WebDAV. "
+        "Для Яндекс.Диска — https://webdav.yandex.ru и пароль приложения "
+        "вместо основного.",
+        (
+            Field("url", "Адрес", "https://webdav.yandex.ru"),
+            Field("user", "Логин"),
+            Field("pass", "Пароль", "Для Яндекса — пароль приложения",
+                  secret=True),
+            Field("vendor", "Вид сервера",
+                  "other, nextcloud, owncloud — если не знаете, оставьте other",
+                  required=False),
+        ),
+    ),
+    Kind(
+        "s3", "S3",
+        "Любое объектное хранилище с S3-совместимым API: Selectel, "
+        "Timeweb, MinIO, Backblaze. Ключи выдаются в личном кабинете "
+        "провайдера.",
+        (
+            Field("provider", "Провайдер",
+                  "Other подходит почти всем; для MinIO — Minio",
+                  required=False),
+            Field("access_key_id", "Ключ доступа"),
+            Field("secret_access_key", "Секретный ключ", secret=True),
+            Field("endpoint", "Адрес", "s3.example.com", required=False),
+            Field("region", "Регион", required=False),
+        ),
+    ),
+    Kind(
+        "sftp", "SFTP",
+        "Обычный доступ по SSH к другому серверу. Пароль хранится "
+        "в конфиге rclone, поэтому лучше отдельный ограниченный "
+        "пользователь, а не тот, под которым живёт всё.",
+        (
+            Field("host", "Хост"),
+            Field("user", "Логин"),
+            Field("pass", "Пароль", secret=True),
+            Field("port", "Порт", "22", required=False),
+        ),
+    ),
+    Kind(
+        "ftp", "FTP",
+        "Старый добрый FTP. Без TLS пароль идёт открытым текстом — "
+        "годится для хранилища в своей сети, но не через интернет.",
+        (
+            Field("host", "Хост"),
+            Field("user", "Логин"),
+            Field("pass", "Пароль", secret=True),
+            Field("port", "Порт", "21", required=False),
+        ),
+    ),
+)
+
+BY_KIND: dict[str, Kind] = {item.key: item for item in KINDS}
+
+
+def base_url() -> str:
+    """Адрес rc API. Пусто — управление облаками из панели недоступно."""
+    from . import secrets
+
+    return str(secrets.get("RCLONE_RC_URL") or "").strip().rstrip("/")
+
+
+def configured() -> bool:
+    return bool(base_url())
+
+
+def valid_name(name: str) -> bool:
+    return bool(_NAME_RE.fullmatch(name or ""))
+
+
+def _auth() -> Any:
+    import aiohttp
+
+    from . import secrets
+
+    user = str(secrets.get("RCLONE_RC_USER") or "")
+    if not user:
+        return None
+    return aiohttp.BasicAuth(user, str(secrets.get("RCLONE_RC_PASS") or ""))
+
+
+async def call(method: str, payload: dict[str, Any] | None = None
+               ) -> tuple[bool, Any]:
+    """Вызов метода rc API. Возвращает (получилось, ответ или причина).
+
+    Причина пишется для человека: страницу с ней увидит администратор,
+    а не разработчик, и «ClientConnectorError» ему ничего не объясняет.
+    """
+    import aiohttp
+
+    if not configured():
+        return False, "Управление облаками не настроено: пуст RCLONE_RC_URL."
+
+    url = f"{base_url()}/{method.lstrip('/')}"
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload or {},
+                                    auth=_auth()) as response:
+                body = await response.json(content_type=None)
+                if response.status == 401:
+                    return False, "rclone не принял логин или пароль."
+                if response.status >= 400:
+                    detail = ""
+                    if isinstance(body, dict):
+                        detail = str(body.get("error") or "")
+                    return False, detail or f"rclone ответил HTTP {response.status}"
+                return True, body
+    except aiohttp.ClientError as exc:
+        log.warning("rclone rc недоступен (%s): %s", method, exc)
+        return False, "rclone не отвечает — проверьте, что он запущен с --rc."
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Сбой вызова rclone rc (%s): %s", method, exc)
+        return False, "Обращение к rclone не удалось."
+
+
+async def remotes() -> tuple[bool, Any]:
+    """Список заведённых хранилищ."""
+    ok, body = await call("config/listremotes")
+    if not ok:
+        return False, body
+    names = body.get("remotes") if isinstance(body, dict) else None
+    return True, sorted(names or [])
+
+
+async def describe(name: str) -> dict[str, Any]:
+    """Тип и настройки хранилища. Пустой словарь — не удалось."""
+    if not valid_name(name):
+        return {}
+    ok, body = await call("config/get", {"name": name})
+    return body if ok and isinstance(body, dict) else {}
+
+
+def clean_params(kind: str, values: dict[str, str]) -> tuple[dict[str, str], str]:
+    """Отбирает поля вида и проверяет обязательные.
+
+    Возвращает (параметры, причина отказа). Отбор, а не доверие форме:
+    в конфиг rclone уходит только то, что мы сами перечислили.
+    """
+    item = BY_KIND.get(kind)
+    if item is None:
+        return {}, "Неизвестный вид хранилища."
+
+    params: dict[str, str] = {}
+    for spec in item.fields:
+        value = str(values.get(spec.key) or "").strip()
+        if not value:
+            if spec.required:
+                return {}, f"Не заполнено поле «{spec.title}»."
+            continue
+        params[spec.key] = value
+    return params, ""
+
+
+async def create(name: str, kind: str, values: dict[str, str]
+                 ) -> tuple[bool, str]:
+    """Заводит хранилище. Возвращает (получилось, причина отказа)."""
+    if not valid_name(name):
+        return False, ("Имя может состоять из латиницы, цифр, дефиса "
+                       "и подчёркивания, до 32 знаков.")
+
+    params, reason = clean_params(kind, values)
+    if reason:
+        return False, reason
+
+    ok, body = await call("config/create", {
+        "name": name,
+        "type": kind,
+        "parameters": params,
+        # Без этого rclone на некоторых видах пытается спросить человека
+        # и виснет в ожидании ответа, которого из панели не придёт.
+        "opt": {"nonInteractive": True, "obscure": True},
+    })
+    if not ok:
+        return False, str(body)
+    log.info("Заведено хранилище rclone: %s (%s)", name, kind)
+    return True, ""
+
+
+async def forget(name: str) -> tuple[bool, str]:
+    """Убирает хранилище из конфига rclone.
+
+    Данные в самом облаке не трогаются: это забытая запись о доступе,
+    а не удаление файлов. Сказать об этом человеку — дело страницы.
+    """
+    if not valid_name(name):
+        return False, "Недопустимое имя."
+    ok, body = await call("config/delete", {"name": name})
+    if not ok:
+        return False, str(body)
+    log.info("Убрано хранилище rclone: %s", name)
+    return True, ""
+
+
+async def about(name: str) -> tuple[bool, str]:
+    """Сколько места в хранилище. Вторым значением — готовая строка."""
+    if not valid_name(name):
+        return False, "Недопустимое имя."
+
+    ok, body = await call("operations/about", {"fs": f"{name}:"})
+    if not ok:
+        return False, str(body)
+    if not isinstance(body, dict):
+        return False, "Непонятный ответ rclone."
+
+    from .music import format_size
+
+    total = body.get("total")
+    used = body.get("used")
+    free = body.get("free")
+    if free is None and total is None:
+        return True, "объём не сообщается"
+    parts = []
+    if used is not None and total is not None:
+        parts.append(f"занято {format_size(used)} из {format_size(total)}")
+    elif used is not None:
+        parts.append(f"занято {format_size(used)}")
+    if free is not None:
+        parts.append(f"свободно {format_size(free)}")
+    return True, ", ".join(parts) or "объём не сообщается"
+
+
+async def check() -> tuple[bool, str]:
+    """Отвечает ли rclone. Для страницы и для диагностики."""
+    if not configured():
+        return False, "RCLONE_RC_URL не задан"
+    ok, body = await call("rc/noop")
+    if not ok:
+        return False, str(body)
+    return True, "управляющее API отвечает"
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_84'
+cat > "radar/chatpost.py" <<'RADAR_FILE_85'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -28558,9 +29405,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_86'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -28983,9 +29830,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_87'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -29075,6 +29922,12 @@ def _keyboard(rows: list[dict], links: dict[int, str],
             # а отдельная строка на каждую удвоила бы его.
             line.append(InlineKeyboardButton(
                 text="✍️", callback_data=f"chat:say:{chat_id}"))
+        if roles.is_superadmin(role):
+            # Ссылка приглашения (с 4.9.9.1). Значок разный: по нему видно,
+            # задана она руками или бот нашёл её сам.
+            mark_link = "🔗" if row.get("invite") else "➕"
+            line.append(InlineKeyboardButton(
+                text=mark_link, callback_data=f"chat:link:{chat_id}"))
         buttons.append(line)
     buttons.append([InlineKeyboardButton(text="◀️ Назад",
                                          callback_data="menu:manage")])
@@ -29100,6 +29953,8 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
             lines.append(f"  <i>{esc(value)}</i>")
     lines.append("")
     lines.append("<i>Нажмите на группу, чтобы перейти в неё.</i>")
+    if roles.is_superadmin(role):
+        lines.append("<i>🔗 — своя ссылка приглашения задана, ➕ — задать.</i>")
     if can_post(role):
         lines.append("<i>✍️ рядом с группой — написать в неё от имени бота.</i>")
     return "\n".join(lines), _keyboard(rows, links, role)
@@ -29298,9 +30153,110 @@ async def send_message(call: CallbackQuery, role: str) -> None:
         "Сообщение опубликовано от имени бота.",
         back_kb_chats(),
     )
-RADAR_FILE_86
+
+
+# --------------------------------------------------------------------------
+#  Своя ссылка приглашения (с 4.9.9.1)
+# --------------------------------------------------------------------------
+#
+# Бот умеет найти ссылку сам: публичное имя, ссылка владельца, своя
+# созданная. Но есть случаи, где автоматика не годится и не может годиться:
+# закрытый чат со вступлением по заявке, ссылка с ограничением по времени
+# или числу переходов, приглашение, которое владелец выдал отдельно.
+# Тогда её задают руками — и она становится главной, а не запасной.
+
+
+@router.callback_query(F.data.startswith("chat:link:"))
+async def ask_invite(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    chat_id = int(call.data.rsplit(":", 1)[1])
+    row = await repo.chat_get(chat_id)
+    if row is None:
+        await call.answer("Группа больше не в списке.", show_alert=True)
+        return
+
+    title = row.get("title") or str(chat_id)
+    current = str(row.get("invite") or "")
+    await call.answer()
+    await state.set_state(Form.chat_invite)
+    await state.update_data(chat_id=chat_id, chat_title=title)
+
+    lines = [f"🔗 <b>Ссылка на «{esc(title)}»</b>", ""]
+    if current:
+        lines.append(f"Сейчас задана: {esc(current)}")
+        lines.append("")
+    lines.append(
+        "Пришлите ссылку приглашения — она станет кнопкой перехода "
+        "в списке чатов и заменит ту, что бот находит сам."
+    )
+    lines.append("")
+    lines.append(
+        "<i>Годится ссылка вида https://t.me/… — и публичная, "
+        "и приглашение с заявкой на вступление.</i>"
+    )
+    if current:
+        lines.append("<i>«-» уберёт свою ссылку: бот снова будет искать сам.</i>")
+    lines.append("<i>/cancel — отменить</i>")
+
+    await safe_edit(call, "\n".join(lines), back_kb_chats())
+
+
+@router.message(Form.chat_invite)
+async def take_invite(message: Message, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+
+    data = await state.get_data()
+    chat_id = int(data.get("chat_id") or 0)
+    title = str(data.get("chat_title") or chat_id)
+
+    if text == "-":
+        await state.clear()
+        await repo.chat_set_invite(chat_id, "")
+        chatlink.forget(chat_id)
+        await send_html(
+            message.chat.id,
+            f"✅ Своя ссылка на «{esc(title)}» убрана — бот снова ищет её сам.",
+            back_kb_chats(),
+        )
+        return
+
+    if not chatlink.valid_invite(text):
+        # Состояние не сбрасываем: человек исправит и пришлёт снова.
+        await send_html(
+            message.chat.id,
+            "⚠️ Это не похоже на ссылку Telegram. Нужен адрес вида "
+            "<code>https://t.me/…</code>.\n\n<i>/cancel — отменить</i>",
+        )
+        return
+
+    await state.clear()
+    if not await repo.chat_set_invite(chat_id, text):
+        await send_html(message.chat.id, "Группа больше не в списке.",
+                        back_kb_chats())
+        return
+
+    # Сбрасываем запомненное: иначе кнопка ещё сутки вела бы по старому
+    # адресу, и человек решил бы, что ссылка не сохранилась.
+    chatlink.forget(chat_id)
+    log.info("Задана ссылка приглашения для чата %s", chat_id)
+    await send_html(
+        message.chat.id,
+        f"✅ Ссылка на «{esc(title)}» сохранена — она станет кнопкой "
+        f"в списке чатов.",
+        back_kb_chats(),
+    )
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_87'
+cat > "radar/cli.py" <<'RADAR_FILE_88'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -29780,9 +30736,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_88'
+cat > "radar/__main__.py" <<'RADAR_FILE_89'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -29804,9 +30760,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_89'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_90'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -29948,9 +30904,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_90'
+cat > "tools/restore.sh" <<'RADAR_FILE_91'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -30192,9 +31148,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_91'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_92'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -30290,9 +31246,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_92'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_93'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -30485,9 +31441,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_92
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_94'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -30602,9 +31558,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_93
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_95'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -31071,9 +32027,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_94
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_96'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -31239,9 +32195,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_95
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_97'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -31746,9 +32702,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_96
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_98'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -32223,9 +33179,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_99'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -32592,9 +33548,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_100'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -32741,9 +33697,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_101'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -33031,9 +33987,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_102'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -33240,9 +34196,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_101
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_103'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -33613,9 +34569,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_102
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_104'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -34190,9 +35146,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_103
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_105'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -34293,9 +35249,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_104
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_106'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -34385,9 +35341,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_105
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_107'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -34808,9 +35764,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_106
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_108'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -35973,9 +36929,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_107
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_109'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -36706,9 +37662,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_108
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_109'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_110'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -37232,9 +38188,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_109
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_111'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -37442,9 +38398,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_110
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_112'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -37857,9 +38813,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_111
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_113'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -38122,9 +39078,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_113'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_114'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -38274,9 +39230,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_114'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_115'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -38744,9 +39700,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_114
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_115'
+cat > "radar/cookies.py" <<'RADAR_FILE_116'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -38877,9 +39833,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_115
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_116'
+cat > "radar/music.py" <<'RADAR_FILE_117'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -39597,9 +40553,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_116
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_117'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_118'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -40112,9 +41068,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_117
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_118'
+cat > "multitool/__init__.py" <<'RADAR_FILE_119'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -40140,9 +41096,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_118'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_118
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_119'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_120'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -40175,9 +41131,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_119'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_119
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_120'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_121'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -40584,9 +41540,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_120
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_121'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_122'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -41001,9 +41957,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_121
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_122'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_123'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -41197,7 +42153,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_122
+RADAR_FILE_123
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

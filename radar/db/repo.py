@@ -726,6 +726,7 @@ async def chat_list() -> list[dict[str, Any]]:
                 "title": row.title,
                 "enabled": bool(row.enabled),
                 "settings": row.settings_json or "",
+                "invite": row.invite_link or "",
             }
             for row in rows
         ]
@@ -743,6 +744,7 @@ async def chat_get(chat_id: int) -> dict[str, Any] | None:
             "title": row.title,
             "enabled": bool(row.enabled),
             "settings": row.settings_json or "",
+            "invite": row.invite_link or "",
         }
 
 
@@ -764,6 +766,22 @@ async def chat_save(chat_id: int, title: str = "", enabled: bool = True,
         if settings_json:
             row.settings_json = settings_json
         row.enabled = enabled
+
+
+async def chat_set_invite(chat_id: int, link: str) -> bool:
+    """Задаёт или снимает ссылку приглашения (с 4.9.9.1).
+
+    Пустая строка снимает: тогда ссылку снова ищет `chatlink` — сначала
+    публичное имя, потом ссылка владельца, потом своя. False — чата нет.
+    """
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            return False
+        row.invite_link = link
+        return True
 
 
 async def chat_forget(chat_id: int) -> bool:

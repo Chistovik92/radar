@@ -96,6 +96,16 @@ SETTINGS: tuple[Setting, ...] = (
             "Медиа", secret=False),
     Setting("MUSIC_CLOUD_PASSWORD", "Облако: пароль",
             "Пароль к WebDAV rclone.", "Медиа"),
+    Setting("RCLONE_RC_URL", "Управление облаками",
+            "Адрес управляющего API rclone, например http://radar_rclone:5572. "
+            "С ним облака подключаются из веб-панели, без правки конфига "
+            "на сервере. Пусто — раздел «Облако» только показывает состояние.",
+            "Медиа", secret=False),
+    Setting("RCLONE_RC_USER", "Управление облаками: логин",
+            "Тот же, что задан rclone ключом --rc-user.",
+            "Медиа", secret=False),
+    Setting("RCLONE_RC_PASS", "Управление облаками: пароль",
+            "Тот же, что задан rclone ключом --rc-pass.", "Медиа"),
 
     # --- сеть ---
     Setting("EGRESS_PROXY", "Прокси для выхода в сеть",

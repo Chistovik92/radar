@@ -110,6 +110,7 @@ MANIFEST = [
     "radar/moderation.py",
     "radar/chatlink.py",
     "radar/cloudstore.py",
+    "radar/rclonerc.py",
     "radar/chatpost.py",
     "radar/handlers/group.py",
     "radar/handlers/chats.py",

@@ -87,6 +87,12 @@ def _keyboard(rows: list[dict], links: dict[int, str],
             # а отдельная строка на каждую удвоила бы его.
             line.append(InlineKeyboardButton(
                 text="✍️", callback_data=f"chat:say:{chat_id}"))
+        if roles.is_superadmin(role):
+            # Ссылка приглашения (с 4.9.9.1). Значок разный: по нему видно,
+            # задана она руками или бот нашёл её сам.
+            mark_link = "🔗" if row.get("invite") else "➕"
+            line.append(InlineKeyboardButton(
+                text=mark_link, callback_data=f"chat:link:{chat_id}"))
         buttons.append(line)
     buttons.append([InlineKeyboardButton(text="◀️ Назад",
                                          callback_data="menu:manage")])
@@ -112,6 +118,8 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
             lines.append(f"  <i>{esc(value)}</i>")
     lines.append("")
     lines.append("<i>Нажмите на группу, чтобы перейти в неё.</i>")
+    if roles.is_superadmin(role):
+        lines.append("<i>🔗 — своя ссылка приглашения задана, ➕ — задать.</i>")
     if can_post(role):
         lines.append("<i>✍️ рядом с группой — написать в неё от имени бота.</i>")
     return "\n".join(lines), _keyboard(rows, links, role)
@@ -308,5 +316,106 @@ async def send_message(call: CallbackQuery, role: str) -> None:
         call,
         f"✅ <b>Отправлено в «{esc(draft.title)}»</b>\n\n"
         "Сообщение опубликовано от имени бота.",
+        back_kb_chats(),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Своя ссылка приглашения (с 4.9.9.1)
+# --------------------------------------------------------------------------
+#
+# Бот умеет найти ссылку сам: публичное имя, ссылка владельца, своя
+# созданная. Но есть случаи, где автоматика не годится и не может годиться:
+# закрытый чат со вступлением по заявке, ссылка с ограничением по времени
+# или числу переходов, приглашение, которое владелец выдал отдельно.
+# Тогда её задают руками — и она становится главной, а не запасной.
+
+
+@router.callback_query(F.data.startswith("chat:link:"))
+async def ask_invite(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    chat_id = int(call.data.rsplit(":", 1)[1])
+    row = await repo.chat_get(chat_id)
+    if row is None:
+        await call.answer("Группа больше не в списке.", show_alert=True)
+        return
+
+    title = row.get("title") or str(chat_id)
+    current = str(row.get("invite") or "")
+    await call.answer()
+    await state.set_state(Form.chat_invite)
+    await state.update_data(chat_id=chat_id, chat_title=title)
+
+    lines = [f"🔗 <b>Ссылка на «{esc(title)}»</b>", ""]
+    if current:
+        lines.append(f"Сейчас задана: {esc(current)}")
+        lines.append("")
+    lines.append(
+        "Пришлите ссылку приглашения — она станет кнопкой перехода "
+        "в списке чатов и заменит ту, что бот находит сам."
+    )
+    lines.append("")
+    lines.append(
+        "<i>Годится ссылка вида https://t.me/… — и публичная, "
+        "и приглашение с заявкой на вступление.</i>"
+    )
+    if current:
+        lines.append("<i>«-» уберёт свою ссылку: бот снова будет искать сам.</i>")
+    lines.append("<i>/cancel — отменить</i>")
+
+    await safe_edit(call, "\n".join(lines), back_kb_chats())
+
+
+@router.message(Form.chat_invite)
+async def take_invite(message: Message, state: FSMContext, role: str) -> None:
+    if not roles.is_superadmin(role):
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
+
+    data = await state.get_data()
+    chat_id = int(data.get("chat_id") or 0)
+    title = str(data.get("chat_title") or chat_id)
+
+    if text == "-":
+        await state.clear()
+        await repo.chat_set_invite(chat_id, "")
+        chatlink.forget(chat_id)
+        await send_html(
+            message.chat.id,
+            f"✅ Своя ссылка на «{esc(title)}» убрана — бот снова ищет её сам.",
+            back_kb_chats(),
+        )
+        return
+
+    if not chatlink.valid_invite(text):
+        # Состояние не сбрасываем: человек исправит и пришлёт снова.
+        await send_html(
+            message.chat.id,
+            "⚠️ Это не похоже на ссылку Telegram. Нужен адрес вида "
+            "<code>https://t.me/…</code>.\n\n<i>/cancel — отменить</i>",
+        )
+        return
+
+    await state.clear()
+    if not await repo.chat_set_invite(chat_id, text):
+        await send_html(message.chat.id, "Группа больше не в списке.",
+                        back_kb_chats())
+        return
+
+    # Сбрасываем запомненное: иначе кнопка ещё сутки вела бы по старому
+    # адресу, и человек решил бы, что ссылка не сохранилась.
+    chatlink.forget(chat_id)
+    log.info("Задана ссылка приглашения для чата %s", chat_id)
+    await send_html(
+        message.chat.id,
+        f"✅ Ссылка на «{esc(title)}» сохранена — она станет кнопкой "
+        f"в списке чатов.",
         back_kb_chats(),
     )

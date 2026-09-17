@@ -41,8 +41,51 @@ def forget(chat_id: int) -> None:
     _cache.pop(chat_id, None)
 
 
+# Что считаем ссылкой на чат. Проверка нужна не от злого умысла —
+# ссылку задаёт суперадминистратор, — а от опечатки: кнопка с мусором
+# вместо адреса выглядит как поломка бота, а не как промах в поле.
+_ALLOWED_PREFIXES = ("https://t.me/", "http://t.me/", "https://telegram.me/")
+
+
+def valid_invite(link: str) -> bool:
+    """Похоже ли это на ссылку Telegram."""
+    value = (link or "").strip()
+    if len(value) > 300 or " " in value:
+        return False
+    return value.startswith(_ALLOWED_PREFIXES)
+
+
+async def manual_link(chat_id: int) -> str:
+    """Ссылка, заданная руками через бота или панель (с 4.9.9.1).
+
+    Импорт базы внутри: модуль зовут в том числе оттуда, где базы может
+    не быть под рукой, и падать из-за ненайденной ссылки он не должен.
+    """
+    try:
+        from .db import repo
+
+        row = await repo.chat_get(chat_id)
+    except Exception:  # noqa: BLE001
+        log.debug("Ссылка чата %s не прочитана из базы", chat_id)
+        return ""
+    if row is None:
+        return ""
+    link = str(row.get("invite") or "")
+    return link if valid_invite(link) else ""
+
+
 async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
-    """Ссылка на чат. Возвращает (получилось, ссылка или причина)."""
+    """Ссылка на чат. Возвращает (получилось, ссылка или причина).
+
+    Порядок: заданная руками, потом запомненная, потом добытая у Telegram.
+    Ручная идёт первой намеренно — её задают как раз тогда, когда
+    автоматическая не годится: закрытый чат, своя ссылка с ограничением
+    по времени, приглашение с заявкой на вступление.
+    """
+    manual = await manual_link(chat_id)
+    if manual:
+        return True, manual
+
     if chat_id in _cache:
         return True, _cache[chat_id]
 

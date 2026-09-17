@@ -1,4 +1,4 @@
-# Radar v4.9.9
+# Radar v4.9.9.1
 
 [Русская версия](README.md)
 
@@ -206,6 +206,41 @@ rights for a process that goes to the internet for news. A hundred lines
 of our own client is cheaper.
 
 
+#### Connecting a cloud from the panel (since 4.9.9.1)
+
+The **"Cloud"** section in the panel (under "Media") adds and removes
+storages itself — `rclone config` on the server is no longer required.
+rclone is started with its remote-control API, and the panel talks to it
+over the network:
+
+```bash
+# in .env
+RCLONE_RC_URL=http://radar_rclone:5572
+RCLONE_RC_USER=radar
+RCLONE_RC_PASS=pick_your_own
+```
+
+The `cloud` profile starts rclone with the right flags already. The
+control port is not published outside either — access is only from the
+internal Compose network.
+
+**WebDAV, S3, SFTP and FTP** can be set up straight from the panel —
+everything that needs no more than an address, a login and a password.
+The same page shows whether the storage answers the bot, how much space it
+has, and how big the on-device cache is.
+
+**What the panel cannot and will not do.** Yandex.Disk, Google Drive and
+Dropbox sign in through a browser: a person clicks "allow" on the
+provider's page, and there is no token without that. The panel has no
+browser, and it has no terminal — that is a separate project rule. For
+Yandex the simplest way around it is WebDAV: the address
+`https://webdav.yandex.ru` and an **app password** instead of the main
+one. For the rest, `rclone authorize` on any machine with a browser stays
+the way.
+
+The panel runs no commands on the server: it calls another service with a
+closed list of actions — add an access record, remove one, ask about size.
+
 ## Link checking
 
 The `/check` command and the "🔍 Check a link" button in the main menu
@@ -356,6 +391,36 @@ announcement that never arrives. A draft lives ten minutes, so a forgotten
 one does not surface in the group the next day. If sending fails, the bot
 names the reason — usually the bot was removed, lost its rights, or the
 group forbids messages from bots.
+
+### An invite link for a chat (since 4.9.9.1)
+
+The bot can find a link itself: the group's public name, the owner's link,
+or one it creates. But there are cases where that does not work — a closed
+chat that admits by request, a link limited by time or by number of uses,
+an invitation the owner issued separately.
+
+Then the **superadmin** sets it, and it becomes the primary link rather
+than a fallback. Two ways, whichever suits:
+
+* **in the bot** — the "Chats" section, the ➕ button next to the group
+  (🔗 if a link is already set). Send the link as a message; `-` removes
+  it again;
+* **in the panel** — the "Chats" section, the "Invite" column: the field
+  is edited where it is shown. An empty field removes your own link.
+
+Once saved, the jump button in the chat list follows it. Any address of
+the form `https://t.me/…` will do.
+
+### Posting to a group from the panel (since 4.9.9.1)
+
+The same as the ✍️ button in the bot, and in the same two steps: pick the
+group, write the text, see how the members will read it, and only then
+send. The preview cannot be skipped: what is published in someone else's
+group cannot be taken back.
+
+Markup is written with tags — `<b>`, `<i>`, `<a href=…>`. A tag Telegram
+does not know is rejected before sending: it would mean not "an
+announcement without italics" but an announcement that never arrives.
 
 ## The web panel
 
