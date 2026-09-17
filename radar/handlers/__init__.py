@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Dispatcher, F
+from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 from . import (
     assistant,
@@ -53,7 +56,46 @@ PRIVATE_ROUTERS = (
 )
 
 
+log = logging.getLogger("radar.handlers")
+
+
+async def on_error(event: ErrorEvent) -> bool:
+    """Последний рубеж: ни одно нажатие не остаётся без ответа (с 4.9.8.14).
+
+    Обработчика ошибок у бота не было вовсе. Упавший раздел — например,
+    из-за недоступной на секунду базы — оставлял человека перед кнопкой,
+    которая просто ничего не делает: ни ответа, ни объяснения. Оставался
+    только журнал, и то у администратора.
+
+    Возвращаем True: исключение разобрано, и aiogram не должен ронять
+    из-за него опрос обновлений.
+    """
+    update = event.update
+    log.exception(
+        "Необработанная ошибка в обработчике", exc_info=event.exception
+    )
+
+    note = (
+        "⚠️ Не получилось выполнить действие. Попробуйте ещё раз — "
+        "если повторится, сообщите администратору."
+    )
+    try:
+        callback = getattr(update, "callback_query", None)
+        if isinstance(callback, CallbackQuery):
+            await callback.answer(note, show_alert=True)
+            return True
+        message = getattr(update, "message", None)
+        if isinstance(message, Message):
+            await message.answer(note)
+    except Exception:  # noqa: BLE001
+        # Извинение — не то, ради чего стоит поднимать вторую ошибку.
+        log.debug("Сообщение об ошибке не доставлено")
+    return True
+
+
 def setup(dp: Dispatcher) -> None:
+    dp.errors.register(on_error)
+
     # Модерация — первой и только для групп: её сообщения не должны
     # доходить до разделов, рассчитанных на личную переписку.
     group.router.message.filter(F.chat.type.in_({"group", "supergroup"}))

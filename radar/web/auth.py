@@ -95,6 +95,25 @@ def check_freshness(data: dict[str, Any], ttl: int = AUTH_TTL) -> bool:
     return 0 <= time.time() - issued <= ttl
 
 
+# Потолок числа адресов в памяти. Отметки о неудачах заводились на каждый
+# адрес и не убирались никогда: подбирающему пароль достаточно менять
+# источник, чтобы словарь рос без предела. Своё окно истекает у каждой
+# записи само, но чистку нужно кому-то запускать.
+ATTEMPT_CAP = 5000
+
+
+def forget_stale_attempts(now: float | None = None) -> int:
+    """Убирает адреса, у которых не осталось свежих попыток."""
+    moment = now if now is not None else time.time()
+    empty = [
+        address for address, history in _attempts.items()
+        if not any(moment - stamp < ATTEMPT_WINDOW for stamp in history)
+    ]
+    for address in empty:
+        _attempts.pop(address, None)
+    return len(empty)
+
+
 def rate_limited(address: str) -> bool:
     """Не слишком ли много неудачных попыток с этого адреса."""
     now = time.time()
@@ -104,7 +123,10 @@ def rate_limited(address: str) -> bool:
 
 
 def note_failure(address: str) -> None:
-    _attempts.setdefault(address, []).append(time.time())
+    now = time.time()
+    if len(_attempts) >= ATTEMPT_CAP:
+        forget_stale_attempts(now)
+    _attempts.setdefault(address, []).append(now)
 
 
 def clear_failures(address: str) -> None:
@@ -220,6 +242,7 @@ def cleanup() -> int:
     stale = [token for token, item in _sessions.items() if item.expired]
     for token in stale:
         _sessions.pop(token, None)
+    forget_stale_attempts()
     return len(stale)
 
 

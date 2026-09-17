@@ -1216,6 +1216,186 @@ working ones — their job is to make the state readable from across the room.
 
 ---
 
+## 4.9.9 — music in the cloud: rclone instead of a local disk
+
+An idea from September 2026, after examining the neighbouring project
+[opendisk](https://github.com/Chistovik92/opendisk). It continues item 4
+of section 4.9.5, where the music directory can already be moved to
+separate media (`MUSIC_DIR` or a mount).
+
+1. **What of opendisk fits, and what does not.** opendisk itself is a GUI
+   in Kotlin and Compose Multiplatform for Windows, Android and desktop;
+   it has no headless mode, no aarch64 Linux builds, and it does not go
+   into a container on a single-board computer. What to take is not the
+   project but what it is built on: **rclone**. A single Go binary, an
+   arm64 build exists, MIT licence, and it does exactly what is needed
+   here.
+2. **Two ways to connect it, and they are not equal:**
+   - `rclone mount` — the cloud appears as an ordinary directory, and
+     `MUSIC_DIR` from 4.9.5.4 starts working without a single change in
+     the bot. It requires FUSE in the container (`--device /dev/fuse`,
+     `--cap-add SYS_ADMIN`), which widens the container's rights
+     noticeably;
+   - `rclone serve webdav` next to the bot plus access over HTTP —
+     needs no extra rights at all, but means a client of our own instead
+     of file operations. This is the preferred option: the cost of a
+     mistake in container rights is higher than the cost of a hundred-line
+     client.
+3. **What it buys.** Capacity stops being limited by the board's memory
+   card: Yandex.Disk, Mail.ru, S3, WebDAV — everything rclone speaks. For
+   the paid capacity in the monetization table this is the missing part:
+   you cannot sell space that does not physically exist on the device.
+4. **What it costs.** A track is no longer at hand: delivery to Telegram
+   goes through someone else's network, and a download is added to the
+   response time. So a cache of recent tracks stays local, and the cloud
+   is storage rather than a working directory. Alerts never travel this
+   path: music and monitoring share neither the queue nor the channel.
+5. **The caveat from 4.9.5 still stands.** The cloud does not change the
+   rule: everyone listens to what they uploaded themselves. A shared
+   library in someone else's storage is already distribution, and the
+   question would reach the domain and the hosting faster than the bot.
+
+---
+
+## 5.0 — VPN panels and selling access
+
+An idea from September 2026. The largest block after the web panel, and
+the first where the bot takes money not for itself but for access to a
+separate service. Hence the number: this changes what the system is made
+of, not a function inside a finished block.
+
+Roadmap work is paused until the panel is finished (the 4.9.8.X releases),
+so what is written here is an intent, not a work plan.
+
+### 1. One layer over three panels
+
+**3x-ui**, **PasarGuard** and **Remnawave** are supported — not one after
+another, but through a single internal interface (`create_user`,
+`get_user`, `set_expiry`, `set_traffic`, `subscription_url`, `disable`).
+Three handlers instead of one would mean that changing the panel on the
+server rewrites the sales section.
+
+What is known about them as of September 2026:
+
+| Panel | API | Auth | What to look at |
+|---|---|---|---|
+| 3x-ui | REST, `/panel/api/inbounds/...`, `addClient` | `_xui_session` cookie after `POST /login` **or** a Bearer token from "Settings → Security" | a client is a UUID, `email`, `totalGB`, `expiryTime`, `subId` |
+| PasarGuard | REST with OpenAPI (`/docs` and `/redoc` when `DOCS=True`) | token | the Marzban line: Xray and WireGuard, admin roles, databases from SQLite to PostgreSQL |
+| Remnawave | REST on NestJS, community Python and Go SDKs exist | Bearer token from the API Tokens section | a user is a uuid, a traffic limit, an expiry date and squads |
+
+**No SDKs.** The official `remnawave-api` requires `httpx`, `pydantic`,
+`orjson`, `rapid-api-client` and `cryptography` — four new dependencies on
+a machine where the whole bot lives in 512 MB, for calls that fit into two
+hundred lines on `aiohttp`, which is already here. The same goes for the
+other two panels.
+
+### 2. What already exists in the neighbouring repositories
+
+There is no need to start from scratch — and nothing to move over whole:
+
+* **[vpn-bot-3xui](https://github.com/Chistovik92/vpn-bot-3xui)** — a
+  working 3x-ui client (`services/xui_api.py`), 1/3/6/12-month plans,
+  renewal, referrals, YooMoney polled every 30 seconds. The closest to the
+  task; take the parsing of panel replies and the renewal logic;
+* **[vpn-bot-panel](https://github.com/Chistovik92/vpn-bot-panel)** —
+  plans, balances, YooKassa and CryptoBot, subscription links. From it,
+  the payment layer and the balance model;
+* **[telegram-vpn-bot](https://github.com/Chistovik92/telegram-vpn-bot)**
+  (a fork) — built on Marzban; useful as a sample of what a fourth panel
+  looks like if one has to be added;
+* **[HydraVPN](https://github.com/Chistovik92/HydraVPN)** — an Android
+  client. Not part of the bot, but it is where a person will paste the
+  link they were given; the post-purchase instructions should point there.
+
+Both Python projects keep their state in SQLite directly and know nothing
+about Radar's roles and flags. So this is a transfer of **logic**, not of
+files: users, roles and subscriptions already exist here.
+
+### 3. Issuing to people who are already in
+
+The first step, and the only one that can be done without payments at all:
+a person already registered in the bot asks for access and gets it, by an
+administrator's decision or by role. The key is created in the panel, the
+subscription link arrives in the private chat, and the expiry date and
+remaining traffic are visible in the section. That is enough to use it
+yourself and to share it with people you know — and at this stage the
+question of money does not arise.
+
+### 4. Selling to new users by plan
+
+A plan is a period, a traffic limit and a number of devices; prices are set
+by the superadmin, as is already done for digest subscription prices.
+Payment opens a key, the end of the period disables it — but does not
+delete it: renewal must return the same key, or the person has to
+reconfigure every device from scratch.
+
+### 5. The payment question, honestly
+
+This has to be said plainly, because whether there is code to write depends
+on the answer.
+
+**Through the Bot Payments API (`sendInvoice`) it will not work without
+registering somewhere.** The provider is connected in @BotFather, but the
+token is issued by the provider rather than by Telegram — and it is issued
+after the seller is vetted. YooKassa requires a sole proprietorship, a
+company or self-employed status; Stripe does not operate in Russia; the
+rest of the two dozen providers work the same way and differ only by
+country and by the list of documents. Telegram takes no commission, but it
+does not stand in for the seller either. There is no way to obtain a
+`provider_token` anonymously — that is not a gap in the documentation, it
+is the point of the check.
+
+**What is left if @BotFather is not an option:**
+
+* **Crypto Pay API** (@CryptoBot, also known as @send) — a separate API
+  unrelated to `sendInvoice`: an invoice is created by a request, the
+  person pays inside Telegram, and the bot learns about the payment via a
+  webhook. It requires no seller registration, and the money arrives in
+  cryptocurrency into an account inside the service. The same path has
+  already been walked in vpn-bot-panel. **To verify before building:** the
+  commission, the limits and the withdrawal terms — they have changed, and
+  numbers from memory do not belong here;
+* **xRocket** and similar — the same principle, usable as a fallback;
+* **a YooMoney wallet** polled for history (as in vpn-bot-3xui) — it
+  works, but it is Russia and a named account, which is exactly what was
+  to be avoided;
+* **a foreign provider paying into a non-Russian account** — possible, but
+  it requires a presence in the provider's country: an account and the
+  person it belongs to. Technically no harder than the rest; legally, not
+  a question of code.
+
+**What code cannot decide.** Income is taxable whichever channel it arrives
+through, and the choice of whether to register is the author's decision,
+not the architecture's. The job of the code is different: the payment layer
+is made swappable (a `create_invoice` / `check_payment` / webhook
+interface, the provider behind a flag), so that the decision can change
+without touching sales. The crypto provider goes first as the only one that
+does not run into registration; YooKassa and the others are added through
+the same interface if registration appears.
+
+**Telegram Stars do not fit here** — and not only because they were ruled
+out. Stars are withdrawn through Fragment and are meant for digital goods
+inside Telegram; selling VPN access does not match that description, and
+the price of being wrong here is not a commission but the bot.
+
+### 6. Boundaries
+
+1. **Monitoring does not suffer.** Sales, panels and payments are a
+   separate subsystem behind their own flag, like music. Panels are not
+   polled inside the alerting cycle, and an unreachable panel does not
+   delay alerts.
+2. **Keys stay out of the logs.** UUIDs, subscription links and panel
+   tokens live in `.env` and in the database, but not in the logs: the rule
+   about secrets covers them too.
+3. **Alerts stay free.** What becomes paid is access to a separate service,
+   unrelated to threat alerts. Point 1 of "What is not up for discussion"
+   is untouched.
+4. **Responsibility for the nodes.** The bot issues access to servers the
+   author runs. Terms of use and the right to refuse service are part of
+   the section, not a footnote.
+
+---
+
 ## 5.5 — Discord
 
 The "other messengers" section is split per platform: they differ not in the
@@ -1339,6 +1519,8 @@ Versions run in ascending order — as does everything else in this document.
 | 4.7.3 | unlimited video download — 10 Stars a month | ✅ |
 | 4.9 | channel-effectiveness metrics | planned |
 | 4.9.5 | music storage capacity and similar-track suggestions | planned |
+| 4.9.9 | cloud music storage via rclone — what makes paid capacity possible | idea |
+| 5.0 | VPN access by plan: issued to our own users, sold to new ones | idea |
 | later | B2B export for management companies | idea |
 
 ### Video download — monetization (since 4.7.3)

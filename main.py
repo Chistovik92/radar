@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 
 from radar import config
 
@@ -29,6 +30,32 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.14", [
+        "🛡 <b>Оповещения больше не могут прекратиться молча.</b> "
+        "За фоновым циклом теперь следит сторож: если тот замолчал, "
+        "он поднимает его заново и пишет администраторам, а не оставляет "
+        "бота отвечать на команды без единой тревоги. Состояние видно "
+        "в <code>/stats</code> строкой «Последний проход».",
+        "📨 <b>Тревога не теряется из-за обрыва связи.</b> Отправка "
+        "повторяет попытку при сбое сети, а отметка «доставлено» ставится "
+        "после отправки, а не до: раньше одной неудачи хватало, чтобы "
+        "оповещение не пришло совсем и не повторилось.",
+        "🌙 <b>Придержанное тихими часами переживает перезапуск.</b> "
+        "Раньше очередь жила только в памяти и пропадала при обновлении "
+        "среди ночи. Заодно у каждого получателя свой предел: активный "
+        "больше не вытесняет чужие сообщения.",
+        "⚠️ <b>Ни одна кнопка не остаётся без ответа.</b> При сбое "
+        "в разделе бот объясняет, что не получилось, вместо молчания.",
+        "✍️ <b>Объявления в группы.</b> Суперадминистратор может написать "
+        "в администрируемую группу прямо из раздела «Чаты»: сообщение "
+        "уходит от имени бота, но сначала показывается так, как его "
+        "увидят участники, и отправляется только по подтверждению. "
+        "Возможность «Сообщения в группы от имени бота», по умолчанию "
+        "выключена.",
+        "🗺 <b>Дорожная карта до 5.0.</b> Добавлены планы: музыка "
+        "в облаке через rclone и управление VPN-панелями с выдачей "
+        "и продажей доступа. Подробности — в ROADMAP.",
+    ]),
     ("4.9.8.13", [
         "🔗 <b>Ссылки: сначала людские, системные — под спойлером.</b> "
         "Автоссылки новостных подборок заводятся сами и множатся, "
@@ -1305,6 +1332,135 @@ async def setup_commands() -> None:
         log.warning("Не удалось установить меню команд", exc_info=True)
 
 
+# --------------------------------------------------------------------------
+#  Надзор за фоновыми задачами (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# Задачи создавались через `create_task` и на этом забывались. Две беды
+# сразу: ссылку на задачу никто не держал (asyncio хранит только слабую,
+# и сборщик мусора вправе убрать задачу, ждущую ввода-вывода), а её
+# исключение никто не доставал — оно тонуло вместе с задачей.
+#
+# Для мониторинга это означало худшее: цикл умирал, бот продолжал отвечать
+# на команды, тревоги прекращались молча. Единственным следом была строка
+# в журнале, которую никто не читает, пока всё «работает».
+
+_background: set[asyncio.Task] = set()
+
+# Как часто сторож проверяет признаки жизни цикла и сколько раз поднимает
+# его заново, прежде чем признать положение безнадёжным.
+WATCHDOG_INTERVAL = 60.0
+WATCHDOG_REVIVALS = 3
+
+_monitor_task: asyncio.Task | None = None
+
+
+# Задачи, которые обязаны работать до самой остановки. Их тихое завершение
+# — уже событие: мониторинг, переставший крутиться, означает бота без
+# оповещений. Разовым задачам (разослать changelog, поднять сервер панели)
+# завершиться, наоборот, положено.
+_FOREVER = {"monitor", "watchdog", "max"}
+
+
+def _task_finished(task: asyncio.Task) -> None:
+    """Достаёт исключение завершившейся задачи и пишет о нём в журнал."""
+    _background.discard(task)
+    if task.cancelled():
+        return
+    name = task.get_name()
+    error = task.exception()
+    if error is None:
+        if name in _FOREVER:
+            log.critical("Фоновая задача «%s» завершилась сама", name)
+        else:
+            log.debug("Фоновая задача «%s» выполнена", name)
+        return
+    log.critical("Фоновая задача «%s» упала", name, exc_info=error)
+
+
+def spawn(coro, name: str) -> asyncio.Task:
+    """Фоновая задача со ссылкой и разбором исключения.
+
+    Ссылка обязательна: asyncio держит на задачу только слабую, и задача,
+    которую больше никто не помнит, может быть убрана сборщиком мусора
+    прямо посреди ожидания.
+    """
+    task = asyncio.create_task(coro, name=name)
+    _background.add(task)
+    task.add_done_callback(_task_finished)
+    return task
+
+
+async def notify_admins(text: str) -> None:
+    """Письмо администраторам. Молчит, если писать некому или некуда."""
+    for uid, user in list(storage.users().items()):
+        if not roles.is_admin(user.get("role")) or user.get("blocked"):
+            continue
+        try:
+            await send_html(uid, text)
+        except Exception:  # noqa: BLE001
+            log.warning("Сообщение сторожа не доставлено: %s", uid)
+
+
+async def watchdog() -> None:
+    """Следит, что фоновый цикл жив, и поднимает его, если нет.
+
+    Бот, который отвечает на команды, но не шлёт тревог, снаружи выглядит
+    исправным — и Docker его не перезапустит: процесс-то живой. Поэтому
+    сторож живёт внутри и, исчерпав попытки поднять цикл, останавливает
+    процесс сам: `restart: unless-stopped` поднимет контейнер заново,
+    и это честнее, чем тихо работать без оповещений.
+    """
+    global _monitor_task
+
+    revivals = 0
+    while True:
+        await asyncio.sleep(WATCHDOG_INTERVAL)
+
+        task = _monitor_task
+        ok, silent_for = monitor.alive()
+        if task is not None and not task.done() and ok:
+            revivals = 0
+            continue
+
+        reason = (
+            "задача мониторинга завершилась"
+            if task is None or task.done()
+            else f"цикл молчит {silent_for} с при пределе {monitor.silence_limit()} с"
+        )
+        revivals += 1
+        log.critical("Сторож: %s (попытка %d)", reason, revivals)
+
+        if revivals > WATCHDOG_REVIVALS:
+            log.critical(
+                "Сторож: цикл не поднимается после %d попыток — "
+                "останавливаю процесс, контейнер запустится заново",
+                WATCHDOG_REVIVALS,
+            )
+            await notify_admins(
+                "🚨 <b>Мониторинг не поднимается</b>\n\n"
+                "Фоновый цикл не удалось восстановить — перезапускаю бота. "
+                "Если сообщение повторится, смотрите журнал."
+            )
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+        await notify_admins(
+            "⚠️ <b>Мониторинг перезапущен сторожем</b>\n\n"
+            f"Причина: {reason}. Оповещения возобновятся в ближайшем цикле."
+        )
+
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+        monitor.mark_alive()
+        _monitor_task = spawn(monitor.run(), "monitor")
+
+
 async def prepare_database() -> None:
     """Готовит базу: ждёт готовности, создаёт схему, переносит старые данные."""
     await db_engine.wait_ready()
@@ -1365,15 +1521,20 @@ async def main() -> None:
 
     await setup_commands()
 
-    background = asyncio.create_task(monitor.run(), name="monitor")
+    global _monitor_task
+    _monitor_task = spawn(monitor.run(), "monitor")
+    # Сторож поднимается вместе с циклом: без него смерть задачи
+    # мониторинга остаётся незамеченной до первой ненаступившей тревоги.
+    spawn(watchdog(), "watchdog")
 
     # Веб-панель — отдельная задача: её сбой не должен касаться оповещений
-    panel_task = None
+    panel_started = False
     if features.enabled("web_panel"):
         from radar.web import run as run_panel
 
-        panel_task = asyncio.create_task(run_panel(), name="web-panel")
-    asyncio.create_task(announce(), name="announce")
+        spawn(run_panel(), "web-panel")
+        panel_started = True
+    spawn(announce(), "announce")
 
     # Адаптер MAX. Пакет radar/platforms/ существовал с 4.4 и не
     # импортировался ни одним модулем — флаг «Мессенджер MAX» значился
@@ -1387,7 +1548,7 @@ async def main() -> None:
 
         max_transport = MaxTransport()
         if max_transport.configured:
-            asyncio.create_task(max_transport.start(), name="max")
+            spawn(max_transport.start(), "max")
             log.info("Адаптер MAX запущен")
         else:
             log.warning(
@@ -1425,13 +1586,24 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        background.cancel()
-        try:
-            await background
-        except asyncio.CancelledError:
-            pass
-        if panel_task is not None:
-            panel_task.cancel()
+        # Гасим всё, что запускали, и дожидаемся отмены. Раньше панель
+        # только «отменялась»: её задача к этому моменту давно завершена
+        # (run() возвращается сразу после старта сервера), и отмена
+        # не делала ничего — порт освобождался лишь выходом процесса.
+        for task in list(_background):
+            task.cancel()
+        for task in list(_background):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                log.debug("Задача «%s» завершилась с ошибкой", task.get_name())
+
+        if panel_started:
+            from radar.web import shutdown as panel_shutdown
+
+            await panel_shutdown()
         await bot.session.close()
         await db_engine.dispose()
         log.info("Остановлено")

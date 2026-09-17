@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -25,6 +26,7 @@ from . import (
     features,
     filedrop,
     geocode,
+    health,
     i18n,
     presets,
     profiling,
@@ -48,10 +50,86 @@ from .tg import send_html
 log = logging.getLogger("radar.monitor")
 
 seen = sources.SeenStore()
-_stats = {"cycles": 0, "items": 0, "alerts": 0, "last_cycle": 0}
+_stats = {
+    "cycles": 0,
+    "items": 0,
+    "alerts": 0,
+    # Когда последний раз завершился полноценный проход по источникам.
+    "last_cycle": 0,
+    # Признак жизни самого цикла: обновляется на каждом витке, включая
+    # холостые в режиме обслуживания. По нему сторож отличает «бот занят
+    # длинным циклом» от «цикла больше нет».
+    "heartbeat": 0,
+    # Сколько раз цикл поднимался заново после сбоя.
+    "restarts": 0,
+}
 
 def stats() -> dict[str, Any]:
     return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())
+
+
+# --------------------------------------------------------------------------
+#  Признак жизни (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# Отметка `last_cycle` собиралась с 4.x и не читалась нигде: ни в /stats,
+# ни в диагностике. Смысла в ней не было — а между тем это единственное,
+# по чему видно, что оповещения ещё работают. Задача мониторинга могла
+# умереть с исключением, и бот продолжал отвечать на команды как ни в чём
+# не бывало: тревоги просто переставали приходить.
+#
+# Отметка лежит и в памяти (для /stats и сторожа внутри процесса), и файлом
+# на диске — оттуда её читает healthcheck контейнера, которому в процесс
+# не заглянуть.
+
+# Путь к отметке — один на всех: его же читает проверка HEALTHCHECK,
+# которая работает отдельным процессом и в память бота не заглядывает.
+HEARTBEAT_FILE = health.HEARTBEAT_FILE
+
+
+def _touch_heartbeat() -> None:
+    """Отмечает виток цикла. Сбой записи файла не должен ронять цикл."""
+    _stats["heartbeat"] = int(time.time())
+    try:
+        path = Path(HEARTBEAT_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(_stats["heartbeat"]), encoding="utf-8")
+    except OSError as exc:
+        log.debug("Отметка о жизни не записана: %s", exc)
+
+
+def mark_alive() -> None:
+    """Считать цикл живым прямо сейчас.
+
+    Нужно сторожу: заново поднятый цикл сначала делает прогревочный
+    проход по всем источникам, и без этой отметки он был бы признан
+    мёртвым ещё до первого витка.
+    """
+    _touch_heartbeat()
+
+
+def silence_limit() -> int:
+    """Сколько секунд молчания цикла считать поломкой.
+
+    Три интервала опроса: один цикл может затянуться на медленных
+    источниках, два подряд — уже не случайность. Нижняя граница
+    в пять минут защищает от ложных срабатываний при малом интервале.
+    """
+    return max(300, config.POLL_INTERVAL * 3)
+
+
+def alive(now: float | None = None) -> tuple[bool, int]:
+    """Жив ли фоновый цикл и сколько секунд назад подавал признаки.
+
+    До первого витка возвращает «жив»: бот только поднялся, и поднимать
+    тревогу из-за незавершённого первого прохода незачем.
+    """
+    moment = now if now is not None else time.time()
+    beat = int(_stats["heartbeat"])
+    if not beat:
+        return True, 0
+    quiet_for = int(moment - beat)
+    return quiet_for <= silence_limit(), quiet_for
 
 
 # --------------------------------------------------------------------------
@@ -147,14 +225,17 @@ async def dispatch_user(
     outgoing: list[str] = []
     for _kind, text in messages:
         # Повтор того же события по той же локации не отправляем
-        if features.enabled("antispam"):
-            if quiet.deliveries.already(uid, "all", text):
-                continue
-            quiet.deliveries.remember(uid, "all", text)
+        if features.enabled("antispam") and quiet.deliveries.already(uid, "all", text):
+            continue
 
         # Тихие часы придерживают несрочное; военные и МЧС проходят всегда
         if features.enabled("quiet_hours") and quiet.should_hold(categories, user, moment):
             quiet.hold(uid, text)
+            # Придержанное считается доставленным сразу: оно уже в очереди,
+            # и второй экземпляр той же тревоги следующим циклом лёг бы
+            # рядом с первым.
+            if features.enabled("antispam"):
+                quiet.deliveries.remember(uid, "all", text)
             continue
 
         outgoing.append(text)
@@ -162,6 +243,16 @@ async def dispatch_user(
     for text in outgoing:
         if await send_html(uid, text):
             sent += 1
+            # Отметка о доставке ставится ПОСЛЕ отправки. До 4.9.8.14 она
+            # шла раньше, и одной сетевой икоты хватало, чтобы тревога
+            # пропала: отправка не удалась, а повтор был уже запрещён
+            # на двенадцать часов вперёд.
+            if features.enabled("antispam"):
+                quiet.deliveries.remember(uid, "all", text)
+        else:
+            log.warning(
+                "Тревога для %s не ушла — повторю в следующем цикле", uid
+            )
         await asyncio.sleep(0.3)
 
     # Доставку отмечаем только когда что-то действительно ушло: журнал
@@ -389,15 +480,59 @@ async def _shorten_pool_links() -> None:
         entry.link = shortener.short_url(code)
 
 
+HELD_META_KEY = "quiet_held"
+
+
+async def load_held() -> int:
+    """Поднимает придержанное тихими часами из базы (с 4.9.8.14)."""
+    if not features.enabled("quiet_hours"):
+        return 0
+    from .db import repo
+
+    try:
+        rows = await repo.get_meta(HELD_META_KEY, [])
+    except Exception:  # noqa: BLE001
+        log.warning("Придержанные оповещения не прочитаны из базы")
+        return 0
+    restored = quiet.restore(rows)
+    if restored:
+        log.info("Восстановлено придержанных оповещений: %d", restored)
+    return restored
+
+
+async def save_held() -> None:
+    """Пишет очередь в базу, если она менялась.
+
+    Раз за цикл, а не на каждое придержанное сообщение: очередь нужна
+    для того, чтобы пережить перезапуск, и лишняя запись в базу на слабом
+    железе дороже, чем потеря нескольких минут в редком случае падения.
+    """
+    if not quiet.dirty():
+        return
+    from .db import repo
+
+    try:
+        await repo.set_meta(HELD_META_KEY, quiet.snapshot())
+    except Exception:  # noqa: BLE001
+        log.warning("Придержанные оповещения не сохранены")
+        return
+    quiet.mark_saved()
+
+
 async def release_held(now: datetime) -> None:
     """Отдаёт то, что придержали тихие часы."""
     if not features.enabled("quiet_hours") or not quiet.held_count():
         return
     for uid, user in list(storage.users().items()):
-        held = list(quiet.release(uid, user, timezones.local_now(user, now)))
-        for text in held:
-            await send_html(uid, text)
+        for item in quiet.release_items(uid, user, timezones.local_now(user, now)):
+            if not await send_html(uid, item.text):
+                # Не ушло — возвращаем в очередь: у придержанного нет
+                # второго источника, событие давно вымылось из `seen`.
+                # Счётчик попыток не даёт этому длиться вечно.
+                quiet.hold(uid, item.text, created=item.created,
+                           attempts=item.attempts + 1)
             await asyncio.sleep(0.2)
+    await save_held()
 
 
 async def repeat_sos() -> None:
@@ -588,7 +723,38 @@ async def _notify_admins(text: str) -> None:
             log.warning("Ночной отчёт не доставлен: %s", uid)
 
 
+# Сколько сбоев цикла подряд считать поломкой самой HTTP-сессии.
+# Единичные ошибки — обычное дело: источник ответил мусором, база моргнула.
+# Три подряд означают, что сломалось общее — например, коннектор сессии,
+# который прежде жил до конца процесса и не восстанавливался никогда.
+FAILURES_BEFORE_RESET = 3
+
+
 async def run() -> None:
+    """Фоновый цикл. Сам поднимается после сбоя и сам об этом сообщает.
+
+    До 4.9.8.14 вся работа шла внутри одного `async with ClientSession`,
+    а прогревочные проходы стояли ВНЕ `try`. Любое исключение оттуда
+    завершало задачу навсегда: бот продолжал отвечать на команды, тревоги
+    молча прекращались, и в журнале оставалась одна строка.
+    """
+    while True:
+        try:
+            await _run_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            _stats["restarts"] += 1
+            log.exception(
+                "Фоновый цикл остановлен (перезапуск %d), поднимаю заново",
+                _stats["restarts"],
+            )
+            await asyncio.sleep(30.0)
+
+
+async def _run_once() -> None:
+    """Один заход: своя HTTP-сессия и цикл поверх неё."""
+    _touch_heartbeat()
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {"User-Agent": config.USER_AGENT, "Accept-Language": "ru,en;q=0.8"}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -597,11 +763,25 @@ async def run() -> None:
         except Exception:  # noqa: BLE001
             log.exception("Дозаполнение адресов не удалось")
 
-        await cycle(session, warmup=True)
+        try:
+            await load_held()
+        except Exception:  # noqa: BLE001
+            log.exception("Придержанные оповещения не восстановлены")
+
+        try:
+            await cycle(session, warmup=True)
+        except Exception:  # noqa: BLE001
+            # Прогрев не смертелен: без него первый рабочий проход просто
+            # увидит ленту непрочитанной. Ронять из-за этого весь
+            # мониторинг нельзя.
+            log.exception("Прогревочный проход не удался")
+        _touch_heartbeat()
 
         paused = False
+        failures = 0
         while True:
             started = time.monotonic()
+            _touch_heartbeat()
 
             # Режим обслуживания: опрос источников и рассылки остановлены,
             # но цикл продолжает крутиться вхолостую — чтобы выход из режима
@@ -619,7 +799,10 @@ async def run() -> None:
                 # Первый проход после паузы — прогревочный: за время работ
                 # источники накопили сообщения, и рассылать их скопом уже
                 # поздно, событие в прошлом тревогой не является.
-                await cycle(session, warmup=True)
+                try:
+                    await cycle(session, warmup=True)
+                except Exception:  # noqa: BLE001
+                    log.exception("Прогревочный проход после работ не удался")
 
             try:
                 now_moment = datetime.now()
@@ -698,9 +881,20 @@ async def run() -> None:
                 await send_recap(now_moment)
                 await send_digests(now_moment)
                 await cycle(session)
+                # Придержанное этим проходом закрепляем сразу: очередь
+                # нужна ровно для того, чтобы пережить перезапуск.
+                await save_held()
+                failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
-                log.exception("Сбой цикла мониторинга")
+                failures += 1
+                log.exception("Сбой цикла мониторинга (подряд: %d)", failures)
+                if failures >= FAILURES_BEFORE_RESET:
+                    # Выходим наружу: внешний круг пересоздаст HTTP-сессию.
+                    log.error(
+                        "Сбоев подряд %d — пересоздаю сетевую сессию", failures
+                    )
+                    return
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))

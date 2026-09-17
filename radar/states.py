@@ -30,3 +30,4 @@ class Form(StatesGroup):
     short_link = State()           # сокращение ссылки (администратор)
     playlist_name = State()        # название нового плейлиста (музыка)
     quiet_hours = State()          # интервал тихих часов
+    chat_message = State()         # объявление в группу (суперадминистратор)

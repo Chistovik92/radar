@@ -2986,8 +2986,31 @@ async def create_app() -> Any:
     return application
 
 
+# Запущенный сервер. Задача `run()` возвращается сразу после старта —
+# сам сервер живёт на слушающем сокете, а не в ней, — поэтому отменять
+# её при остановке бессмысленно: убирать нужно вот это.
+_runner: Any = None
+
+
+async def shutdown() -> None:
+    """Освобождает порт панели. Вызывается при остановке бота."""
+    global _runner
+
+    if _runner is None:
+        return
+    try:
+        await _runner.cleanup()
+        log.info("Веб-панель остановлена")
+    except Exception:  # noqa: BLE001
+        log.warning("Веб-панель остановлена с ошибкой", exc_info=True)
+    finally:
+        _runner = None
+
+
 async def run() -> None:
     """Запускает панель. Любая ошибка здесь не должна касаться бота."""
+    global _runner
+
     if not features.enabled("web_panel"):
         log.info("Веб-панель выключена флагом web_panel")
         return
@@ -3000,6 +3023,7 @@ async def run() -> None:
         await runner.setup()
         site = web.TCPSite(runner, config.WEB_HOST, config.WEB_PORT)
         await site.start()
+        _runner = runner
         log.info(
             "Веб-панель слушает %s:%d (HTTPS %s)",
             config.WEB_HOST, config.WEB_PORT,

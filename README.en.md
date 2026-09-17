@@ -1,4 +1,4 @@
-# Radar v4.9.8.13
+# Radar v4.9.8.14
 
 [Русская версия](README.md)
 
@@ -84,6 +84,27 @@ measurement on the production server showed 51 seconds per cycle against a
 the network while using two percent of the CPU. The cap matters as much as
 the parallelism: dozens of simultaneous requests to `t.me` from one address
 look like scraping, and it is the alerting system that would pay for it.
+
+### What happens when something breaks (since 4.9.8.14)
+
+Alerts matter more than anything else here, so their path is guarded separately.
+
+* **The background loop is supervised.** If the monitoring task dies, the bot
+  will not keep answering commands as if nothing happened: a watchdog revives
+  the loop and notifies the administrators. After three failed revivals the bot
+  stops itself, and a container with `restart: unless-stopped` comes back up.
+  It will not keep running silently without alerts.
+* **Visible from outside.** Every turn of the loop is stamped into
+  `data/heartbeat`. The container `HEALTHCHECK` reads that stamp (`docker ps`
+  shows `unhealthy`), and `/stats` has a "last pass" line.
+* **Retries on network failure.** A dropped connection or a "retry after" reply
+  from Telegram no longer means a lost alert: sending is retried, and the
+  "delivered" mark is set only after success — otherwise the alert goes out on
+  the next cycle.
+* **Held alerts are not lost.** Messages postponed by quiet hours are stored in
+  the database and survive a restart; the queue limit is per recipient.
+* **Section failures are explained.** A handler that crashes tells the person
+  what went wrong instead of leaving a dead button.
 
 ## Time zone
 
@@ -265,6 +286,24 @@ one opens it. The link is chosen in this order: the public `@name`, then
 the **existing** owner's invite link, and only if neither exists does the
 bot create its own. It never revokes the previous link — that would break
 it for everyone it was handed to.
+
+### Posting to a group as the bot (since 4.9.8.14)
+
+Flag `chat_post`, off by default. In the "Chats" section every group gets
+a ✍️ button — **for the superadmin only**: the message goes out as the bot,
+and to the members that is the voice of the system, not private mail.
+
+The order is: button → text (bold, italics and links are kept as typed) →
+a preview of exactly what the group will see → confirmation → sending.
+The preview step cannot be skipped: what is published in someone else's
+group cannot be taken back.
+
+Length (3500 characters) and markup are checked beforehand: a tag Telegram
+does not know would mean not "an announcement without italics" but an
+announcement that never arrives. A draft lives ten minutes, so a forgotten
+one does not surface in the group the next day. If sending fails, the bot
+names the reason — usually the bot was removed, lost its rights, or the
+group forbids messages from bots.
 
 ## The web panel
 

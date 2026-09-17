@@ -24,6 +24,36 @@ def _is_language_choice(event: TelegramObject) -> bool:
     return isinstance(event, CallbackQuery) and str(event.data or "").startswith("lng:")
 
 
+# Сколько помнить, что человеку уже отвечали. Значения совпадают
+# с интервалами повторного ответа ниже: запись, пережившая свой интервал,
+# ни на что не влияет и только занимает память.
+NOTIFY_EVERY = 600.0
+MAINTENANCE_EVERY = 300.0
+LANGUAGE_EVERY = 3600.0
+
+# Потолок на случай наплыва: чистка идёт по времени, но если писать боту
+# будут быстрее, чем стареют записи, словарь не должен расти без предела.
+MEMORY_CAP = 2000
+
+
+def _prune(store: dict[int, float], ttl: float, now: float) -> None:
+    """Выбрасывает отметки, которые уже ничего не держат.
+
+    До 4.9.8.14 эти словари не чистились никогда: запись заводил КАЖДЫЙ
+    посторонний, написавший боту, — то есть кто угодно. Рост медленный,
+    но ничем не ограниченный и снаружи, а бот живёт на одноплатнике.
+    """
+    stale = [key for key, stamp in store.items() if now - stamp > ttl]
+    for key in stale:
+        store.pop(key, None)
+    if len(store) > MEMORY_CAP:
+        # Наплыв: оставляем самых свежих, остальные всё равно получат
+        # ответ заново — это вежливость, а не состояние системы.
+        keep = sorted(store.items(), key=lambda pair: pair[1])[-MEMORY_CAP:]
+        store.clear()
+        store.update(keep)
+
+
 class AccessMiddleware(BaseMiddleware):
     """Пропускает только зарегистрированных; по /start join регистрирует нового."""
 
@@ -83,7 +113,8 @@ class AccessMiddleware(BaseMiddleware):
         record = storage.get_user(uid)
         if record is None:
             now = time.monotonic()
-            if now - self._notified.get(user.id, 0) > 600:
+            _prune(self._notified, NOTIFY_EVERY, now)
+            if now - self._notified.get(user.id, 0) > NOTIFY_EVERY:
                 self._notified[user.id] = now
                 try:
                     if isinstance(event, Message):
@@ -106,7 +137,8 @@ class AccessMiddleware(BaseMiddleware):
         # выключить режим из самого бота и останется без единственного пульта.
         if features.enabled("maintenance") and not roles.is_superadmin(role):
             now = time.monotonic()
-            if now - self._maintenance_notified.get(user.id, 0) > 300:
+            _prune(self._maintenance_notified, MAINTENANCE_EVERY, now)
+            if now - self._maintenance_notified.get(user.id, 0) > MAINTENANCE_EVERY:
                 self._maintenance_notified[user.id] = now
                 try:
                     if isinstance(event, Message):
@@ -139,7 +171,8 @@ class AccessMiddleware(BaseMiddleware):
     async def _ask_language(self, event: TelegramObject) -> None:
         now = time.monotonic()
         key = getattr(getattr(event, "from_user", None), "id", 0)
-        if now - self._language_asked.get(key, 0) < 3600:
+        _prune(self._language_asked, LANGUAGE_EVERY, now)
+        if now - self._language_asked.get(key, 0) < LANGUAGE_EVERY:
             return
         self._language_asked[key] = now
 

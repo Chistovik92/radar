@@ -9,6 +9,6 @@
 from __future__ import annotations
 
 from . import audit, auth
-from .panel import create_app, run
+from .panel import create_app, run, shutdown
 
-__all__ = ["audit", "auth", "create_app", "run"]
+__all__ = ["audit", "auth", "create_app", "run", "shutdown"]

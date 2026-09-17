@@ -235,6 +235,11 @@ async def collect(
 
     fresh: list[Item] = []
     for batch in batches:
+        if isinstance(batch, asyncio.CancelledError):
+            # Остановка бота — не «сбой источника». Без этого отмена
+            # тонула здесь вместе с остальными исключениями, и цикл
+            # продолжал разбирать сообщения на выходе из процесса.
+            raise batch
         if isinstance(batch, BaseException):
             log.debug("Источник не опрошен: %s", batch)
             continue

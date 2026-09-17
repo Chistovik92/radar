@@ -174,19 +174,72 @@ class Held:
     user_key: str
     text: str
     created: float = field(default_factory=time.time)
+    # Сколько раз пытались отдать и не смогли. Придержанное отличается
+    # от обычной тревоги тем, что второго источника у неё нет: событие
+    # давно вымылось из `seen`, и не отданное здесь потеряно навсегда.
+    # Поэтому промах возвращает запись в очередь — но не бесконечно:
+    # у заблокировавшего бота отправка не удастся никогда.
+    attempts: int = 0
 
+
+# Пределы очереди. Раньше был один общий на 200 записей, и при обрезке
+# страдал не тот, кто её переполнил: активный получатель вытеснял чужие
+# придержанные тревоги. Теперь предел свой у каждого, а общий остаётся
+# только защитой от разрастания памяти на одноплатнике.
+PER_USER = 30
+TOTAL = 300
+
+# Сколько держать невостребованное. Тихие часы длятся ночь; запись,
+# пролежавшая сутки, относится к человеку, который у бота больше
+# не появляется, — отдавать её через неделю бессмысленно.
+HOLD_TTL_HOURS = 24
 
 _held: list[Held] = []
+# Очередь изменилась и не сохранена. Хранение вынесено наружу: этот
+# модуль обязан оставаться без зависимостей от базы, иначе офлайн-тесты
+# тянут за собой половину бота.
+_dirty = False
 
 
-def hold(user_key: str, text: str) -> None:
-    _held.append(Held(user_key=user_key, text=text))
-    # Не копим бесконечно: если тихие часы заданы криво, всё равно не завалим
-    del _held[:-200]
+def _trim(user_key: str) -> None:
+    """Держит очередь в пределах: сначала свой, потом общий."""
+    mine = [item for item in _held if item.user_key == user_key]
+    if len(mine) > PER_USER:
+        drop = {id(item) for item in mine[:-PER_USER]}
+        _held[:] = [item for item in _held if id(item) not in drop]
+    del _held[:-TOTAL]
 
 
-def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
-    """Забирает придержанные сообщения, если тихие часы закончились."""
+# Сколько раз пробовать отдать придержанное, прежде чем признать
+# получателя недостижимым.
+MAX_ATTEMPTS = 3
+
+
+def hold(user_key: str, text: str, created: float | None = None,
+         attempts: int = 0) -> bool:
+    """Ставит оповещение в очередь. False — запись отброшена."""
+    global _dirty
+
+    if attempts >= MAX_ATTEMPTS:
+        log.warning("Придержанное для %s отброшено: получатель недостижим",
+                    user_key)
+        return False
+    _held.append(Held(
+        user_key=user_key,
+        text=text,
+        created=created if created is not None else time.time(),
+        attempts=attempts,
+    ))
+    _trim(user_key)
+    _dirty = True
+    return True
+
+
+def release_items(user_key: str, user: dict[str, Any],
+                  now: datetime) -> list[Held]:
+    """Забирает придержанные записи целиком, со счётчиком попыток."""
+    global _dirty
+
     if in_quiet_hours(user, now):
         return []
 
@@ -194,8 +247,88 @@ def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
     if not mine:
         return []
     _held[:] = [item for item in _held if item.user_key != user_key]
-    return [item.text for item in mine]
+    _dirty = True
+    return mine
+
+
+def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
+    """Забирает придержанные сообщения, если тихие часы закончились."""
+    return [item.text for item in release_items(user_key, user, now)]
 
 
 def held_count() -> int:
+    return len(_held)
+
+
+# --------------------------------------------------------------------------
+#  Сохранение очереди между перезапусками (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# До 4.9.8.14 очередь жила только в памяти процесса: перезапуск среди ночи
+# — и всё придержанное исчезало молча. Для системы оповещения это потеря
+# тревог, пусть и несрочных, поэтому очередь переживает рестарт. Сам модуль
+# базы не знает: он отдаёт и принимает обычные списки словарей, а пишет
+# их тот, у кого база уже под рукой.
+
+def dirty() -> bool:
+    """Есть ли несохранённые изменения."""
+    return _dirty
+
+
+def mark_saved() -> None:
+    global _dirty
+    _dirty = False
+
+
+def snapshot() -> list[dict[str, Any]]:
+    """Очередь в виде, пригодном для записи в базу."""
+    return [
+        {
+            "user": item.user_key,
+            "text": item.text,
+            "created": item.created,
+            "attempts": item.attempts,
+        }
+        for item in _held
+    ]
+
+
+def restore(rows: Any, now: float | None = None) -> int:
+    """Поднимает очередь из снимка. Возвращает число восстановленных.
+
+    Данные приходят из базы и могли быть записаны прежней версией,
+    поэтому каждая строка проверяется: битый снимок не должен мешать
+    боту подняться.
+    """
+    global _dirty
+    moment = now if now is not None else time.time()
+    edge = moment - HOLD_TTL_HOURS * 3600
+
+    restored: list[Held] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        user_key = str(row.get("user") or "")
+        text = str(row.get("text") or "")
+        if not user_key or not text:
+            continue
+        try:
+            created = float(row.get("created") or 0.0)
+        except (TypeError, ValueError):
+            created = moment
+        if created < edge:
+            continue
+        try:
+            attempts = int(row.get("attempts") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= MAX_ATTEMPTS:
+            continue
+        restored.append(Held(user_key=user_key, text=text, created=created,
+                             attempts=attempts))
+
+    _held[:] = restored
+    for user_key in {item.user_key for item in restored}:
+        _trim(user_key)
+    _dirty = False
     return len(_held)

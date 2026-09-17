@@ -207,6 +207,25 @@ def parse_progress(line: str, duration_s: int) -> float | None:
     return min(1.0, microseconds / 1_000_000 / duration_s)
 
 
+# Сколько памяти должно оставаться свободным, чтобы браться за сжатие.
+# ffmpeg живёт в том же контейнере и делит с ботом лимит RADAR_MEM_LIMIT:
+# при нехватке ядро убивает не «того, кто виноват», а кого выберет само —
+# то есть вполне может убить бота посреди рассылки.
+MIN_FREE_MB = 220
+
+
+def free_memory_mb() -> int:
+    """Сколько памяти доступно. -1 — узнать не удалось (не Linux)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return -1
+    return -1
+
+
 async def run(source: str, target: str, plan_: Plan, *,
               timeout_s: int, on_progress=None) -> tuple[bool, str]:
     """Запускает ffmpeg. Возвращает (получилось, объяснение отказа).
@@ -218,6 +237,16 @@ async def run(source: str, target: str, plan_: Plan, *,
     import asyncio
     import os
     import shutil
+
+    free = free_memory_mb()
+    if 0 <= free < MIN_FREE_MB:
+        # Отказ с объяснением лучше, чем убитый нехваткой памяти бот:
+        # ролик подождёт, оповещения — нет.
+        log.warning("Сжатие отклонено: свободно %d МБ", free)
+        return False, (
+            f"Сейчас свободно {free} МБ памяти — для сжатия нужно "
+            f"хотя бы {MIN_FREE_MB} МБ. Попробуйте позже."
+        )
 
     command = ffmpeg_args(source, target, plan_, nice=bool(shutil.which("nice")))
 
@@ -244,29 +273,45 @@ async def run(source: str, target: str, plan_: Plan, *,
             if share is not None and on_progress is not None:
                 on_progress(share)
 
+    # Жалобы ffmpeg вычитываются ПАРАЛЛЕЛЬНО, а не после завершения.
+    # Труба имеет дно: на битом исходнике декодер сыплет строками, буфер
+    # заполняется, и ffmpeg встаёт на записи в stderr навсегда. Снаружи
+    # это выглядит как зависшее сжатие, которое убивает таймаут, — причём
+    # причину узнать неоткуда, ведь stderr так и остался непрочитанным.
+    errors: list[bytes] = []
+
+    async def drain() -> None:
+        assert process.stderr is not None
+        while True:
+            raw = await process.stderr.readline()
+            if not raw:
+                return
+            # Держим только начало: строк может быть тысячи, а в журнал
+            # уходят первые четыреста символов.
+            if len(errors) < 40:
+                errors.append(raw)
+
     reader = asyncio.create_task(pump())
+    complaints = asyncio.create_task(drain())
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout_s)
     except asyncio.TimeoutError:
         process.kill()
         await process.wait()
-        reader.cancel()
         return False, (
             f"Сжатие не уложилось в {human_time(timeout_s)} и остановлено. "
             f"Выберите качество ниже."
         )
     finally:
-        reader.cancel()
+        for task in (reader, complaints):
+            task.cancel()
+        # Ждём отмену и забираем исключение: иначе asyncio ругается
+        # на «exception was never retrieved» уже после ответа человеку.
+        await asyncio.gather(reader, complaints, return_exceptions=True)
 
     if process.returncode != 0:
-        stderr = b""
-        if process.stderr is not None:
-            try:
-                stderr = await process.stderr.read()
-            except Exception:  # noqa: BLE001
-                pass
         log.warning("ffmpeg вернул %s: %s", process.returncode,
-                    stderr.decode("utf-8", "replace")[:400])
+                    b"".join(errors).decode("utf-8", "replace")[:400])
         return False, "Сжатие не удалось — подробности в журнале."
 
     if not os.path.exists(target) or os.path.getsize(target) == 0:

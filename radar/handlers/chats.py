@@ -16,8 +16,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -25,10 +28,13 @@ from aiogram.types import (
     Message,
 )
 
-from .. import chatlink, features, roles
+from .. import chatlink, chatpost, features, roles
 from ..db import repo
+from ..states import Form
 from ..textutils import esc
-from ..tg import safe_edit, send_html
+from ..tg import bot, safe_edit, send_html
+
+log = logging.getLogger("radar.chats")
 
 router = Router(name="chats")
 
@@ -52,19 +58,36 @@ ADD_HINT = (
 )
 
 
-def _keyboard(rows: list[dict], links: dict[int, str]) -> InlineKeyboardMarkup:
+def can_post(role: str) -> bool:
+    """Кому доступны объявления в группы.
+
+    Только суперадминистратору: сообщение уходит от имени бота, и для
+    участников группы это голос системы. Такое право не раздаётся вместе
+    с обычными администраторскими — и без флага не появляется вовсе.
+    """
+    return roles.is_superadmin(role) and features.enabled("chat_post")
+
+
+def _keyboard(rows: list[dict], links: dict[int, str],
+              role: str = "") -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
+    posting = can_post(role)
     for row in rows:
         chat_id = row["chat_id"]
         title = row["title"] or str(chat_id)
         mark = "🟢" if row["enabled"] else "⚪️"
         link = links.get(chat_id, "")
         if link:
-            buttons.append([InlineKeyboardButton(
-                text=f"{mark} {title}", url=link)])
+            line = [InlineKeyboardButton(text=f"{mark} {title}", url=link)]
         else:
-            buttons.append([InlineKeyboardButton(
-                text=f"{mark} {title}", callback_data=f"chat:why:{chat_id}")])
+            line = [InlineKeyboardButton(
+                text=f"{mark} {title}", callback_data=f"chat:why:{chat_id}")]
+        if posting:
+            # Вторая кнопка в той же строке: список групп и так длинный,
+            # а отдельная строка на каждую удвоила бы его.
+            line.append(InlineKeyboardButton(
+                text="✍️", callback_data=f"chat:say:{chat_id}"))
+        buttons.append(line)
     buttons.append([InlineKeyboardButton(text="◀️ Назад",
                                          callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -89,7 +112,9 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
             lines.append(f"  <i>{esc(value)}</i>")
     lines.append("")
     lines.append("<i>Нажмите на группу, чтобы перейти в неё.</i>")
-    return "\n".join(lines), _keyboard(rows, links)
+    if can_post(role):
+        lines.append("<i>✍️ рядом с группой — написать в неё от имени бота.</i>")
+    return "\n".join(lines), _keyboard(rows, links, role)
 
 
 @router.message(Command("chats"))
@@ -124,3 +149,164 @@ async def explain(call: CallbackQuery, role: str) -> None:
     chat_id = int(call.data.rsplit(":", 1)[1])
     _ok, reason = await chatlink.link_for(chat_id)
     await call.answer(reason, show_alert=True)
+
+
+# --------------------------------------------------------------------------
+#  Объявления в группу от имени бота (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# Право суперадминистратора и только его: участники группы видят сообщение
+# как голос системы, а не как частное письмо. Отправка идёт в два шага —
+# сначала текст показывается так, как его увидят, и лишь потом уходит:
+# объявление в чужую группу не отзывается.
+
+_drafts: dict[int, chatpost.Draft] = {}
+
+
+def _forget_stale(now: float | None = None) -> None:
+    """Убирает черновики, которые уже никто не подтвердит."""
+    stale = [key for key, draft in _drafts.items() if draft.expired(now)]
+    for key in stale:
+        _drafts.pop(key, None)
+
+
+def back_kb_chats() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ К списку чатов", callback_data="menu:chats")
+    ]])
+
+
+def _confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📨 Отправить", callback_data="chat:send")],
+        [InlineKeyboardButton(text="🗑 Отменить", callback_data="chat:drop")],
+    ])
+
+
+@router.callback_query(F.data.startswith("chat:say:"))
+async def ask_message(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    """Спрашивает текст объявления."""
+    if not can_post(role):
+        await call.answer(
+            "Писать в группы может только суперадминистратор, "
+            "и при включённой возможности «Сообщения в группы».",
+            show_alert=True,
+        )
+        return
+
+    chat_id = int(call.data.rsplit(":", 1)[1])
+    row = await repo.chat_get(chat_id)
+    if row is None:
+        await call.answer("Группа больше не в списке.", show_alert=True)
+        return
+
+    title = row.get("title") or str(chat_id)
+    await call.answer()
+    await state.set_state(Form.chat_message)
+    await state.update_data(chat_id=chat_id, chat_title=title)
+    await safe_edit(
+        call,
+        f"✍️ <b>Сообщение в «{esc(title)}»</b>\n\n"
+        "Пришлите текст — он уйдёт в группу <b>от имени бота</b>. "
+        "Жирный, курсив и ссылки сохраняются.\n\n"
+        "Перед отправкой покажу, как это будет выглядеть.\n\n"
+        "<i>/cancel — отменить</i>",
+        back_kb_chats(),
+    )
+
+
+@router.message(Form.chat_message)
+async def take_message(message: Message, state: FSMContext, role: str) -> None:
+    """Принимает текст, проверяет его и показывает, как это будет выглядеть."""
+    if not can_post(role):
+        await state.clear()
+        return
+
+    # Разметку берём в виде HTML: человек форматирует сообщение привычными
+    # средствами Telegram, и объявление должно выйти таким, каким он его
+    # набрал. `html_text` есть не у всякого сообщения — например, у фото.
+    text = getattr(message, "html_text", None) or message.text or ""
+    if text.strip().startswith("/"):
+        # Команды не объявления: /cancel и прочее разбирает свой обработчик.
+        return
+    if not text.strip():
+        await send_html(
+            message.chat.id,
+            "Пока умею отправлять только текст. Пришлите сообщение текстом.",
+            back_kb_chats(),
+        )
+        return
+
+    ok, reason = chatpost.validate(text)
+    if not ok:
+        # Состояние не сбрасываем: человек правит текст и присылает снова.
+        await send_html(message.chat.id, f"⚠️ {reason}\n\n<i>/cancel — отменить</i>")
+        return
+
+    data = await state.get_data()
+    chat_id = int(data.get("chat_id") or 0)
+    title = str(data.get("chat_title") or chat_id)
+    await state.clear()
+
+    _forget_stale()
+    draft = chatpost.Draft(chat_id=chat_id, title=title, text=text.strip())
+    _drafts[message.from_user.id] = draft
+    await send_html(message.chat.id, chatpost.preview(draft), _confirm_kb())
+
+
+@router.callback_query(F.data == "chat:drop")
+async def drop_message(call: CallbackQuery, role: str) -> None:
+    if not can_post(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    _drafts.pop(call.from_user.id, None)
+    await call.answer("Объявление отменено.")
+    text, keyboard = await _render(role)
+    await safe_edit(call, text, keyboard)
+
+
+@router.callback_query(F.data == "chat:send")
+async def send_message(call: CallbackQuery, role: str) -> None:
+    """Отправляет подтверждённое объявление."""
+    if not can_post(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    draft = _drafts.pop(call.from_user.id, None)
+    if draft is None:
+        await call.answer("Объявление не найдено — наберите заново.",
+                          show_alert=True)
+        return
+    if draft.expired():
+        await call.answer(
+            "Прошло слишком много времени — наберите объявление заново.",
+            show_alert=True,
+        )
+        return
+
+    await call.answer()
+    try:
+        await bot.send_message(draft.chat_id, draft.text)
+    except Exception as exc:  # noqa: BLE001
+        # Причина нужна человеку, а не только журналу: «не отправилось»
+        # без объяснения означает, что он попробует ещё три раза.
+        log.warning("Объявление в %s не ушло: %s", draft.chat_id, exc)
+        await safe_edit(
+            call,
+            f"❌ <b>Не отправилось в «{esc(draft.title)}»</b>\n\n"
+            f"<code>{esc(str(exc)[:200])}</code>\n\n"
+            "Обычные причины: бота выгнали из группы, сняли права "
+            "или в ней запрещены сообщения от ботов. Текст не потерян — "
+            "наберите заново после того, как поправите права.",
+            back_kb_chats(),
+        )
+        return
+
+    log.info("Суперадминистратор %s написал в чат %s (%d символов)",
+             call.from_user.id, draft.chat_id, len(draft.text))
+    await safe_edit(
+        call,
+        f"✅ <b>Отправлено в «{esc(draft.title)}»</b>\n\n"
+        "Сообщение опубликовано от имени бота.",
+        back_kb_chats(),
+    )

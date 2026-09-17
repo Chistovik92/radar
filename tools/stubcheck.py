@@ -160,7 +160,9 @@ def install() -> None:
         "aiogram.exceptions",
         TelegramBadRequest=type("TelegramBadRequest", (Exception,), {}),
         TelegramForbiddenError=type("TelegramForbiddenError", (Exception,), {}),
+        TelegramNetworkError=type("TelegramNetworkError", (Exception,), {}),
         TelegramRetryAfter=type("TelegramRetryAfter", (Exception,), {}),
+        TelegramServerError=type("TelegramServerError", (Exception,), {}),
     )
     module("aiogram.filters", Command=Any, CommandStart=Any, StateFilter=Any)
     module("aiogram.fsm.context", FSMContext=Any)
@@ -176,7 +178,7 @@ def install() -> None:
         KeyboardButton=Any, ReplyKeyboardMarkup=Any, BufferedInputFile=Any,
         KeyboardButtonRequestUsers=Any, ReplyKeyboardRemove=Any,
         LinkPreviewOptions=Any, LabeledPrice=Any, PreCheckoutQuery=Any,
-        Message=Any, TelegramObject=Any,
+        Message=Any, TelegramObject=Any, ErrorEvent=Any,
     )
     aiogram.types = sys.modules["aiogram.types"]
 

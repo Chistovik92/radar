@@ -300,6 +300,29 @@ def _quota_line() -> str:
     )
 
 
+def _cycle_health_line() -> str:
+    """Строка о самочувствии фонового цикла (с 4.9.8.14).
+
+    Отметка о последнем проходе собиралась давно и не показывалась нигде:
+    администратор видел число циклов и не мог отличить работающий бот
+    от бота, у которого мониторинг умер час назад.
+    """
+    data = monitor.stats()
+    healthy, silent_for = monitor.alive()
+    last = int(data.get("last_cycle") or 0)
+    when = (
+        datetime.fromtimestamp(last).strftime("%H:%M:%S") if last else "ещё не было"
+    )
+    mark = "✅" if healthy else "🚨"
+    line = f"{mark} Последний проход: <b>{when}</b>"
+    if not healthy:
+        line += f" — цикл молчит {silent_for} с, сторож поднимет его заново"
+    restarts = int(data.get("restarts") or 0)
+    if restarts:
+        line += f" | перезапусков цикла: <b>{restarts}</b>"
+    return line
+
+
 def _stats_text() -> str:
     counters: dict[str, int] = {}
     locations = 0
@@ -318,6 +341,7 @@ def _stats_text() -> str:
         + (f" | разбор: <b>{esc(ai.current_model(ai.ANALYSIS))}</b>" if ai.ENABLED else ""),
         f"Циклов: <b>{data['cycles']}</b>, сообщений: <b>{data['items']}</b>, "
         f"оповещений: <b>{data['alerts']}</b>",
+        _cycle_health_line(),
         f"Кэш анализов: <b>{data['cache']}</b>, помечено прочитанным: <b>{data['seen']}</b>",
         f"Разбор: ИИ <b>{data['ai']}</b>, из кэша <b>{data['cached']}</b>, "
         f"отсеяно фильтром <b>{data['prefiltered']}</b>, эвристикой <b>{data['heuristic']}</b>",

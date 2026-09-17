@@ -17,7 +17,9 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramNetworkError,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
@@ -59,21 +61,45 @@ def back_kb(target: str = "menu:main", title: str = "🏠 В главное ме
     )
 
 
+# Сколько раз пытаться отправить один кусок и сколько ждать между
+# попытками. До 4.9.8.14 попыток было две, и обе тратились на паузу
+# по требованию Telegram: два ответа «retry after» подряд — и кусок
+# молча пропадал, а функция возвращала True, то есть «доставлено».
+# Для системы оповещения это худший из возможных исходов: тревога
+# потеряна, и никто об этом не знает.
+SEND_ATTEMPTS = 3
+# Потолок паузы. Telegram при сильном ограничении просит подождать
+# минуты; держать на этом всю рассылку нельзя — остальные получатели
+# ждут своей тревоги.
+RETRY_CAP = 30.0
+
+
 async def send_html(
     chat_id: int | str,
     text: str,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> bool:
-    """Отправляет длинный HTML-текст частями, переживая ошибки разметки и лимиты."""
+    """Отправляет длинный HTML-текст частями, переживая ошибки разметки и лимиты.
+
+    Возвращает True, только если ушло всё. False означает «не доставлено»,
+    и вызывающая сторона вправе повторить в следующем цикле. Ценой этого
+    может стать повтор первого куска у длинного сообщения, разбитого
+    на части: дубль лучше потерянной тревоги.
+    """
     chunks = split_text(text)
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == len(chunks) - 1 else None
-        for attempt in range(2):
+        delivered = False
+        for attempt in range(SEND_ATTEMPTS):
+            last = attempt == SEND_ATTEMPTS - 1
             try:
                 await bot.send_message(int(chat_id), chunk, reply_markup=markup)
+                delivered = True
                 break
             except TelegramRetryAfter as exc:
-                await asyncio.sleep(exc.retry_after + 1)
+                if last:
+                    break
+                await asyncio.sleep(min(exc.retry_after + 1, RETRY_CAP))
             except TelegramForbiddenError:
                 log.info("Пользователь %s недоступен (бот заблокирован)", chat_id)
                 return False
@@ -83,12 +109,28 @@ async def send_html(
                     await bot.send_message(
                         int(chat_id), strip_tags(chunk), parse_mode=None, reply_markup=markup
                     )
+                    delivered = True
                 except Exception:  # noqa: BLE001
                     log.exception("Не удалось отправить сообщение %s", chat_id)
                 break
+            except (TelegramNetworkError, TelegramServerError) as exc:
+                # Обрыв связи и сбой на стороне Telegram — состояния
+                # преходящие. Раньше они попадали в общий except ниже
+                # и означали отказ без единого повтора: одна икота сети
+                # стоила человеку оповещения.
+                if last:
+                    log.warning("Связь с Telegram не восстановилась: %s", exc)
+                    break
+                await asyncio.sleep(1.5 * (attempt + 1))
             except Exception:  # noqa: BLE001
                 log.exception("Сбой отправки сообщения %s", chat_id)
                 return False
+        if not delivered:
+            log.error(
+                "Сообщение для %s не доставлено за %d попытки — будет повторено",
+                chat_id, SEND_ATTEMPTS,
+            )
+            return False
         await asyncio.sleep(0.05)
     return True
 

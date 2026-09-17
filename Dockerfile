@@ -32,4 +32,11 @@ COPY migrations ./migrations
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app
 USER radar
 
+# Живой процесс и работающий мониторинг — разные вещи: бот может исправно
+# отвечать на команды, когда тревоги уже не приходят. Проверка смотрит
+# на отметку, которую фоновый цикл переписывает на каждом витке.
+# Перезапуском занимается сторож внутри процесса; это — чтобы состояние
+# было видно снаружи, в `docker ps` и в панели.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=180s --retries=3 CMD ["python", "-m", "radar.health"]
+
 CMD ["python", "-u", "main.py"]

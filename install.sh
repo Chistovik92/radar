@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.13 — автономный установщик.
+# Система «Радар» v4.9.8.14 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.13"
+VERSION="4.9.8.14"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=120
+FILE_COUNT=122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2857,6 +2857,13 @@ COPY migrations ./migrations
 
 RUN useradd -m -u 1000 radar && mkdir -p /app/data && chown -R radar:radar /app
 USER radar
+
+# Живой процесс и работающий мониторинг — разные вещи: бот может исправно
+# отвечать на команды, когда тревоги уже не приходят. Проверка смотрит
+# на отметку, которую фоновый цикл переписывает на каждом витке.
+# Перезапуском занимается сторож внутри процесса; это — чтобы состояние
+# было видно снаружи, в `docker ps` и в панели.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=180s --retries=3 CMD ["python", "-m", "radar.health"]
 
 CMD ["python", "-u", "main.py"]
 RADAR_FILE_01
@@ -2928,6 +2935,12 @@ services:
       resources:
         limits:
           memory: ${RADAR_MEM_LIMIT:-512M}
+          # Лимит общий на весь контейнер, и ffmpeg при сжатии роликов
+          # делит его с ботом. При нехватке ядро выбирает жертву само —
+          # то есть может убить бота посреди рассылки. Поэтому сжатие
+          # с 4.9.8.14 отказывается стартовать, когда памяти в обрез,
+          # а при включённом профиле media стоит поднять RADAR_MEM_LIMIT
+          # до 768M и выше.
     logging:
       driver: json-file
       options:
@@ -3160,6 +3173,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 
 from radar import config
 
@@ -3178,6 +3192,32 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.14", [
+        "🛡 <b>Оповещения больше не могут прекратиться молча.</b> "
+        "За фоновым циклом теперь следит сторож: если тот замолчал, "
+        "он поднимает его заново и пишет администраторам, а не оставляет "
+        "бота отвечать на команды без единой тревоги. Состояние видно "
+        "в <code>/stats</code> строкой «Последний проход».",
+        "📨 <b>Тревога не теряется из-за обрыва связи.</b> Отправка "
+        "повторяет попытку при сбое сети, а отметка «доставлено» ставится "
+        "после отправки, а не до: раньше одной неудачи хватало, чтобы "
+        "оповещение не пришло совсем и не повторилось.",
+        "🌙 <b>Придержанное тихими часами переживает перезапуск.</b> "
+        "Раньше очередь жила только в памяти и пропадала при обновлении "
+        "среди ночи. Заодно у каждого получателя свой предел: активный "
+        "больше не вытесняет чужие сообщения.",
+        "⚠️ <b>Ни одна кнопка не остаётся без ответа.</b> При сбое "
+        "в разделе бот объясняет, что не получилось, вместо молчания.",
+        "✍️ <b>Объявления в группы.</b> Суперадминистратор может написать "
+        "в администрируемую группу прямо из раздела «Чаты»: сообщение "
+        "уходит от имени бота, но сначала показывается так, как его "
+        "увидят участники, и отправляется только по подтверждению. "
+        "Возможность «Сообщения в группы от имени бота», по умолчанию "
+        "выключена.",
+        "🗺 <b>Дорожная карта до 5.0.</b> Добавлены планы: музыка "
+        "в облаке через rclone и управление VPN-панелями с выдачей "
+        "и продажей доступа. Подробности — в ROADMAP.",
+    ]),
     ("4.9.8.13", [
         "🔗 <b>Ссылки: сначала людские, системные — под спойлером.</b> "
         "Автоссылки новостных подборок заводятся сами и множатся, "
@@ -4454,6 +4494,135 @@ async def setup_commands() -> None:
         log.warning("Не удалось установить меню команд", exc_info=True)
 
 
+# --------------------------------------------------------------------------
+#  Надзор за фоновыми задачами (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# Задачи создавались через `create_task` и на этом забывались. Две беды
+# сразу: ссылку на задачу никто не держал (asyncio хранит только слабую,
+# и сборщик мусора вправе убрать задачу, ждущую ввода-вывода), а её
+# исключение никто не доставал — оно тонуло вместе с задачей.
+#
+# Для мониторинга это означало худшее: цикл умирал, бот продолжал отвечать
+# на команды, тревоги прекращались молча. Единственным следом была строка
+# в журнале, которую никто не читает, пока всё «работает».
+
+_background: set[asyncio.Task] = set()
+
+# Как часто сторож проверяет признаки жизни цикла и сколько раз поднимает
+# его заново, прежде чем признать положение безнадёжным.
+WATCHDOG_INTERVAL = 60.0
+WATCHDOG_REVIVALS = 3
+
+_monitor_task: asyncio.Task | None = None
+
+
+# Задачи, которые обязаны работать до самой остановки. Их тихое завершение
+# — уже событие: мониторинг, переставший крутиться, означает бота без
+# оповещений. Разовым задачам (разослать changelog, поднять сервер панели)
+# завершиться, наоборот, положено.
+_FOREVER = {"monitor", "watchdog", "max"}
+
+
+def _task_finished(task: asyncio.Task) -> None:
+    """Достаёт исключение завершившейся задачи и пишет о нём в журнал."""
+    _background.discard(task)
+    if task.cancelled():
+        return
+    name = task.get_name()
+    error = task.exception()
+    if error is None:
+        if name in _FOREVER:
+            log.critical("Фоновая задача «%s» завершилась сама", name)
+        else:
+            log.debug("Фоновая задача «%s» выполнена", name)
+        return
+    log.critical("Фоновая задача «%s» упала", name, exc_info=error)
+
+
+def spawn(coro, name: str) -> asyncio.Task:
+    """Фоновая задача со ссылкой и разбором исключения.
+
+    Ссылка обязательна: asyncio держит на задачу только слабую, и задача,
+    которую больше никто не помнит, может быть убрана сборщиком мусора
+    прямо посреди ожидания.
+    """
+    task = asyncio.create_task(coro, name=name)
+    _background.add(task)
+    task.add_done_callback(_task_finished)
+    return task
+
+
+async def notify_admins(text: str) -> None:
+    """Письмо администраторам. Молчит, если писать некому или некуда."""
+    for uid, user in list(storage.users().items()):
+        if not roles.is_admin(user.get("role")) or user.get("blocked"):
+            continue
+        try:
+            await send_html(uid, text)
+        except Exception:  # noqa: BLE001
+            log.warning("Сообщение сторожа не доставлено: %s", uid)
+
+
+async def watchdog() -> None:
+    """Следит, что фоновый цикл жив, и поднимает его, если нет.
+
+    Бот, который отвечает на команды, но не шлёт тревог, снаружи выглядит
+    исправным — и Docker его не перезапустит: процесс-то живой. Поэтому
+    сторож живёт внутри и, исчерпав попытки поднять цикл, останавливает
+    процесс сам: `restart: unless-stopped` поднимет контейнер заново,
+    и это честнее, чем тихо работать без оповещений.
+    """
+    global _monitor_task
+
+    revivals = 0
+    while True:
+        await asyncio.sleep(WATCHDOG_INTERVAL)
+
+        task = _monitor_task
+        ok, silent_for = monitor.alive()
+        if task is not None and not task.done() and ok:
+            revivals = 0
+            continue
+
+        reason = (
+            "задача мониторинга завершилась"
+            if task is None or task.done()
+            else f"цикл молчит {silent_for} с при пределе {monitor.silence_limit()} с"
+        )
+        revivals += 1
+        log.critical("Сторож: %s (попытка %d)", reason, revivals)
+
+        if revivals > WATCHDOG_REVIVALS:
+            log.critical(
+                "Сторож: цикл не поднимается после %d попыток — "
+                "останавливаю процесс, контейнер запустится заново",
+                WATCHDOG_REVIVALS,
+            )
+            await notify_admins(
+                "🚨 <b>Мониторинг не поднимается</b>\n\n"
+                "Фоновый цикл не удалось восстановить — перезапускаю бота. "
+                "Если сообщение повторится, смотрите журнал."
+            )
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+        await notify_admins(
+            "⚠️ <b>Мониторинг перезапущен сторожем</b>\n\n"
+            f"Причина: {reason}. Оповещения возобновятся в ближайшем цикле."
+        )
+
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+        monitor.mark_alive()
+        _monitor_task = spawn(monitor.run(), "monitor")
+
+
 async def prepare_database() -> None:
     """Готовит базу: ждёт готовности, создаёт схему, переносит старые данные."""
     await db_engine.wait_ready()
@@ -4514,15 +4683,20 @@ async def main() -> None:
 
     await setup_commands()
 
-    background = asyncio.create_task(monitor.run(), name="monitor")
+    global _monitor_task
+    _monitor_task = spawn(monitor.run(), "monitor")
+    # Сторож поднимается вместе с циклом: без него смерть задачи
+    # мониторинга остаётся незамеченной до первой ненаступившей тревоги.
+    spawn(watchdog(), "watchdog")
 
     # Веб-панель — отдельная задача: её сбой не должен касаться оповещений
-    panel_task = None
+    panel_started = False
     if features.enabled("web_panel"):
         from radar.web import run as run_panel
 
-        panel_task = asyncio.create_task(run_panel(), name="web-panel")
-    asyncio.create_task(announce(), name="announce")
+        spawn(run_panel(), "web-panel")
+        panel_started = True
+    spawn(announce(), "announce")
 
     # Адаптер MAX. Пакет radar/platforms/ существовал с 4.4 и не
     # импортировался ни одним модулем — флаг «Мессенджер MAX» значился
@@ -4536,7 +4710,7 @@ async def main() -> None:
 
         max_transport = MaxTransport()
         if max_transport.configured:
-            asyncio.create_task(max_transport.start(), name="max")
+            spawn(max_transport.start(), "max")
             log.info("Адаптер MAX запущен")
         else:
             log.warning(
@@ -4574,13 +4748,24 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        background.cancel()
-        try:
-            await background
-        except asyncio.CancelledError:
-            pass
-        if panel_task is not None:
-            panel_task.cancel()
+        # Гасим всё, что запускали, и дожидаемся отмены. Раньше панель
+        # только «отменялась»: её задача к этому моменту давно завершена
+        # (run() возвращается сразу после старта сервера), и отмена
+        # не делала ничего — порт освобождался лишь выходом процесса.
+        for task in list(_background):
+            task.cancel()
+        for task in list(_background):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                log.debug("Задача «%s» завершилась с ошибкой", task.get_name())
+
+        if panel_started:
+            from radar.web import shutdown as panel_shutdown
+
+            await panel_shutdown()
         await bot.session.close()
         await db_engine.dispose()
         log.info("Остановлено")
@@ -4618,7 +4803,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.13"
+__version__ = "4.9.8.14"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6538,6 +6723,14 @@ FLAGS: tuple[Flag, ...] = (
          "По умолчанию выключено: ошибка в правилах стоит забаненного "
          "живого человека.",
          group="Модерация", since="4.9.8.11", default=False),
+    Flag("chat_post", "Сообщения в группы от имени бота",
+         "Суперадминистратор пишет в администрируемые группы прямо "
+         "из раздела «Чаты»: объявление уходит от имени бота, с показом "
+         "текста и подтверждением перед отправкой. Работает только там, "
+         "где включена модерация и где бот состоит. По умолчанию "
+         "выключено: право писать в чужие группы от имени бота — "
+         "не то, что должно появляться само.",
+         group="Модерация", since="4.9.8.14", default=False),
     Flag("panel_wipe", "Удаление из панели",
          "Страница «Удаление»: стирает установку целиком — контейнеры, "
          "образ, базу, .env, копии и журналы. Нужна для покинутого "
@@ -8771,6 +8964,25 @@ def parse_progress(line: str, duration_s: int) -> float | None:
     return min(1.0, microseconds / 1_000_000 / duration_s)
 
 
+# Сколько памяти должно оставаться свободным, чтобы браться за сжатие.
+# ffmpeg живёт в том же контейнере и делит с ботом лимит RADAR_MEM_LIMIT:
+# при нехватке ядро убивает не «того, кто виноват», а кого выберет само —
+# то есть вполне может убить бота посреди рассылки.
+MIN_FREE_MB = 220
+
+
+def free_memory_mb() -> int:
+    """Сколько памяти доступно. -1 — узнать не удалось (не Linux)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return -1
+    return -1
+
+
 async def run(source: str, target: str, plan_: Plan, *,
               timeout_s: int, on_progress=None) -> tuple[bool, str]:
     """Запускает ffmpeg. Возвращает (получилось, объяснение отказа).
@@ -8782,6 +8994,16 @@ async def run(source: str, target: str, plan_: Plan, *,
     import asyncio
     import os
     import shutil
+
+    free = free_memory_mb()
+    if 0 <= free < MIN_FREE_MB:
+        # Отказ с объяснением лучше, чем убитый нехваткой памяти бот:
+        # ролик подождёт, оповещения — нет.
+        log.warning("Сжатие отклонено: свободно %d МБ", free)
+        return False, (
+            f"Сейчас свободно {free} МБ памяти — для сжатия нужно "
+            f"хотя бы {MIN_FREE_MB} МБ. Попробуйте позже."
+        )
 
     command = ffmpeg_args(source, target, plan_, nice=bool(shutil.which("nice")))
 
@@ -8808,29 +9030,45 @@ async def run(source: str, target: str, plan_: Plan, *,
             if share is not None and on_progress is not None:
                 on_progress(share)
 
+    # Жалобы ffmpeg вычитываются ПАРАЛЛЕЛЬНО, а не после завершения.
+    # Труба имеет дно: на битом исходнике декодер сыплет строками, буфер
+    # заполняется, и ffmpeg встаёт на записи в stderr навсегда. Снаружи
+    # это выглядит как зависшее сжатие, которое убивает таймаут, — причём
+    # причину узнать неоткуда, ведь stderr так и остался непрочитанным.
+    errors: list[bytes] = []
+
+    async def drain() -> None:
+        assert process.stderr is not None
+        while True:
+            raw = await process.stderr.readline()
+            if not raw:
+                return
+            # Держим только начало: строк может быть тысячи, а в журнал
+            # уходят первые четыреста символов.
+            if len(errors) < 40:
+                errors.append(raw)
+
     reader = asyncio.create_task(pump())
+    complaints = asyncio.create_task(drain())
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout_s)
     except asyncio.TimeoutError:
         process.kill()
         await process.wait()
-        reader.cancel()
         return False, (
             f"Сжатие не уложилось в {human_time(timeout_s)} и остановлено. "
             f"Выберите качество ниже."
         )
     finally:
-        reader.cancel()
+        for task in (reader, complaints):
+            task.cancel()
+        # Ждём отмену и забираем исключение: иначе asyncio ругается
+        # на «exception was never retrieved» уже после ответа человеку.
+        await asyncio.gather(reader, complaints, return_exceptions=True)
 
     if process.returncode != 0:
-        stderr = b""
-        if process.stderr is not None:
-            try:
-                stderr = await process.stderr.read()
-            except Exception:  # noqa: BLE001
-                pass
         log.warning("ffmpeg вернул %s: %s", process.returncode,
-                    stderr.decode("utf-8", "replace")[:400])
+                    b"".join(errors).decode("utf-8", "replace")[:400])
         return False, "Сжатие не удалось — подробности в журнале."
 
     if not os.path.exists(target) or os.path.getsize(target) == 0:
@@ -11609,19 +11847,72 @@ class Held:
     user_key: str
     text: str
     created: float = field(default_factory=time.time)
+    # Сколько раз пытались отдать и не смогли. Придержанное отличается
+    # от обычной тревоги тем, что второго источника у неё нет: событие
+    # давно вымылось из `seen`, и не отданное здесь потеряно навсегда.
+    # Поэтому промах возвращает запись в очередь — но не бесконечно:
+    # у заблокировавшего бота отправка не удастся никогда.
+    attempts: int = 0
 
+
+# Пределы очереди. Раньше был один общий на 200 записей, и при обрезке
+# страдал не тот, кто её переполнил: активный получатель вытеснял чужие
+# придержанные тревоги. Теперь предел свой у каждого, а общий остаётся
+# только защитой от разрастания памяти на одноплатнике.
+PER_USER = 30
+TOTAL = 300
+
+# Сколько держать невостребованное. Тихие часы длятся ночь; запись,
+# пролежавшая сутки, относится к человеку, который у бота больше
+# не появляется, — отдавать её через неделю бессмысленно.
+HOLD_TTL_HOURS = 24
 
 _held: list[Held] = []
+# Очередь изменилась и не сохранена. Хранение вынесено наружу: этот
+# модуль обязан оставаться без зависимостей от базы, иначе офлайн-тесты
+# тянут за собой половину бота.
+_dirty = False
 
 
-def hold(user_key: str, text: str) -> None:
-    _held.append(Held(user_key=user_key, text=text))
-    # Не копим бесконечно: если тихие часы заданы криво, всё равно не завалим
-    del _held[:-200]
+def _trim(user_key: str) -> None:
+    """Держит очередь в пределах: сначала свой, потом общий."""
+    mine = [item for item in _held if item.user_key == user_key]
+    if len(mine) > PER_USER:
+        drop = {id(item) for item in mine[:-PER_USER]}
+        _held[:] = [item for item in _held if id(item) not in drop]
+    del _held[:-TOTAL]
 
 
-def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
-    """Забирает придержанные сообщения, если тихие часы закончились."""
+# Сколько раз пробовать отдать придержанное, прежде чем признать
+# получателя недостижимым.
+MAX_ATTEMPTS = 3
+
+
+def hold(user_key: str, text: str, created: float | None = None,
+         attempts: int = 0) -> bool:
+    """Ставит оповещение в очередь. False — запись отброшена."""
+    global _dirty
+
+    if attempts >= MAX_ATTEMPTS:
+        log.warning("Придержанное для %s отброшено: получатель недостижим",
+                    user_key)
+        return False
+    _held.append(Held(
+        user_key=user_key,
+        text=text,
+        created=created if created is not None else time.time(),
+        attempts=attempts,
+    ))
+    _trim(user_key)
+    _dirty = True
+    return True
+
+
+def release_items(user_key: str, user: dict[str, Any],
+                  now: datetime) -> list[Held]:
+    """Забирает придержанные записи целиком, со счётчиком попыток."""
+    global _dirty
+
     if in_quiet_hours(user, now):
         return []
 
@@ -11629,10 +11920,90 @@ def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
     if not mine:
         return []
     _held[:] = [item for item in _held if item.user_key != user_key]
-    return [item.text for item in mine]
+    _dirty = True
+    return mine
+
+
+def release(user_key: str, user: dict[str, Any], now: datetime) -> list[str]:
+    """Забирает придержанные сообщения, если тихие часы закончились."""
+    return [item.text for item in release_items(user_key, user, now)]
 
 
 def held_count() -> int:
+    return len(_held)
+
+
+# --------------------------------------------------------------------------
+#  Сохранение очереди между перезапусками (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# До 4.9.8.14 очередь жила только в памяти процесса: перезапуск среди ночи
+# — и всё придержанное исчезало молча. Для системы оповещения это потеря
+# тревог, пусть и несрочных, поэтому очередь переживает рестарт. Сам модуль
+# базы не знает: он отдаёт и принимает обычные списки словарей, а пишет
+# их тот, у кого база уже под рукой.
+
+def dirty() -> bool:
+    """Есть ли несохранённые изменения."""
+    return _dirty
+
+
+def mark_saved() -> None:
+    global _dirty
+    _dirty = False
+
+
+def snapshot() -> list[dict[str, Any]]:
+    """Очередь в виде, пригодном для записи в базу."""
+    return [
+        {
+            "user": item.user_key,
+            "text": item.text,
+            "created": item.created,
+            "attempts": item.attempts,
+        }
+        for item in _held
+    ]
+
+
+def restore(rows: Any, now: float | None = None) -> int:
+    """Поднимает очередь из снимка. Возвращает число восстановленных.
+
+    Данные приходят из базы и могли быть записаны прежней версией,
+    поэтому каждая строка проверяется: битый снимок не должен мешать
+    боту подняться.
+    """
+    global _dirty
+    moment = now if now is not None else time.time()
+    edge = moment - HOLD_TTL_HOURS * 3600
+
+    restored: list[Held] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        user_key = str(row.get("user") or "")
+        text = str(row.get("text") or "")
+        if not user_key or not text:
+            continue
+        try:
+            created = float(row.get("created") or 0.0)
+        except (TypeError, ValueError):
+            created = moment
+        if created < edge:
+            continue
+        try:
+            attempts = int(row.get("attempts") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts >= MAX_ATTEMPTS:
+            continue
+        restored.append(Held(user_key=user_key, text=text, created=created,
+                             attempts=attempts))
+
+    _held[:] = restored
+    for user_key in {item.user_key for item in restored}:
+        _trim(user_key)
+    _dirty = False
     return len(_held)
 RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/profiling.py"
@@ -14775,9 +15146,9 @@ cat > "radar/web/__init__.py" <<'RADAR_FILE_40'
 from __future__ import annotations
 
 from . import audit, auth
-from .panel import create_app, run
+from .panel import create_app, run, shutdown
 
-__all__ = ["audit", "auth", "create_app", "run"]
+__all__ = ["audit", "auth", "create_app", "run", "shutdown"]
 RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
 cat > "radar/web/auth.py" <<'RADAR_FILE_41'
@@ -14878,6 +15249,25 @@ def check_freshness(data: dict[str, Any], ttl: int = AUTH_TTL) -> bool:
     return 0 <= time.time() - issued <= ttl
 
 
+# Потолок числа адресов в памяти. Отметки о неудачах заводились на каждый
+# адрес и не убирались никогда: подбирающему пароль достаточно менять
+# источник, чтобы словарь рос без предела. Своё окно истекает у каждой
+# записи само, но чистку нужно кому-то запускать.
+ATTEMPT_CAP = 5000
+
+
+def forget_stale_attempts(now: float | None = None) -> int:
+    """Убирает адреса, у которых не осталось свежих попыток."""
+    moment = now if now is not None else time.time()
+    empty = [
+        address for address, history in _attempts.items()
+        if not any(moment - stamp < ATTEMPT_WINDOW for stamp in history)
+    ]
+    for address in empty:
+        _attempts.pop(address, None)
+    return len(empty)
+
+
 def rate_limited(address: str) -> bool:
     """Не слишком ли много неудачных попыток с этого адреса."""
     now = time.time()
@@ -14887,7 +15277,10 @@ def rate_limited(address: str) -> bool:
 
 
 def note_failure(address: str) -> None:
-    _attempts.setdefault(address, []).append(time.time())
+    now = time.time()
+    if len(_attempts) >= ATTEMPT_CAP:
+        forget_stale_attempts(now)
+    _attempts.setdefault(address, []).append(now)
 
 
 def clear_failures(address: str) -> None:
@@ -15003,6 +15396,7 @@ def cleanup() -> int:
     stale = [token for token, item in _sessions.items() if item.expired]
     for token in stale:
         _sessions.pop(token, None)
+    forget_stale_attempts()
     return len(stale)
 
 
@@ -18104,8 +18498,31 @@ async def create_app() -> Any:
     return application
 
 
+# Запущенный сервер. Задача `run()` возвращается сразу после старта —
+# сам сервер живёт на слушающем сокете, а не в ней, — поэтому отменять
+# её при остановке бессмысленно: убирать нужно вот это.
+_runner: Any = None
+
+
+async def shutdown() -> None:
+    """Освобождает порт панели. Вызывается при остановке бота."""
+    global _runner
+
+    if _runner is None:
+        return
+    try:
+        await _runner.cleanup()
+        log.info("Веб-панель остановлена")
+    except Exception:  # noqa: BLE001
+        log.warning("Веб-панель остановлена с ошибкой", exc_info=True)
+    finally:
+        _runner = None
+
+
 async def run() -> None:
     """Запускает панель. Любая ошибка здесь не должна касаться бота."""
+    global _runner
+
     if not features.enabled("web_panel"):
         log.info("Веб-панель выключена флагом web_panel")
         return
@@ -18118,6 +18535,7 @@ async def run() -> None:
         await runner.setup()
         site = web.TCPSite(runner, config.WEB_HOST, config.WEB_PORT)
         await site.start()
+        _runner = runner
         log.info(
             "Веб-панель слушает %s:%d (HTTPS %s)",
             config.WEB_HOST, config.WEB_PORT,
@@ -23553,6 +23971,11 @@ async def collect(
 
     fresh: list[Item] = []
     for batch in batches:
+        if isinstance(batch, asyncio.CancelledError):
+            # Остановка бота — не «сбой источника». Без этого отмена
+            # тонула здесь вместе с остальными исключениями, и цикл
+            # продолжал разбирать сообщения на выходе из процесса.
+            raise batch
         if isinstance(batch, BaseException):
             log.debug("Источник не опрошен: %s", batch)
             continue
@@ -24552,7 +24975,9 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramNetworkError,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
@@ -24594,21 +25019,45 @@ def back_kb(target: str = "menu:main", title: str = "🏠 В главное ме
     )
 
 
+# Сколько раз пытаться отправить один кусок и сколько ждать между
+# попытками. До 4.9.8.14 попыток было две, и обе тратились на паузу
+# по требованию Telegram: два ответа «retry after» подряд — и кусок
+# молча пропадал, а функция возвращала True, то есть «доставлено».
+# Для системы оповещения это худший из возможных исходов: тревога
+# потеряна, и никто об этом не знает.
+SEND_ATTEMPTS = 3
+# Потолок паузы. Telegram при сильном ограничении просит подождать
+# минуты; держать на этом всю рассылку нельзя — остальные получатели
+# ждут своей тревоги.
+RETRY_CAP = 30.0
+
+
 async def send_html(
     chat_id: int | str,
     text: str,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> bool:
-    """Отправляет длинный HTML-текст частями, переживая ошибки разметки и лимиты."""
+    """Отправляет длинный HTML-текст частями, переживая ошибки разметки и лимиты.
+
+    Возвращает True, только если ушло всё. False означает «не доставлено»,
+    и вызывающая сторона вправе повторить в следующем цикле. Ценой этого
+    может стать повтор первого куска у длинного сообщения, разбитого
+    на части: дубль лучше потерянной тревоги.
+    """
     chunks = split_text(text)
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == len(chunks) - 1 else None
-        for attempt in range(2):
+        delivered = False
+        for attempt in range(SEND_ATTEMPTS):
+            last = attempt == SEND_ATTEMPTS - 1
             try:
                 await bot.send_message(int(chat_id), chunk, reply_markup=markup)
+                delivered = True
                 break
             except TelegramRetryAfter as exc:
-                await asyncio.sleep(exc.retry_after + 1)
+                if last:
+                    break
+                await asyncio.sleep(min(exc.retry_after + 1, RETRY_CAP))
             except TelegramForbiddenError:
                 log.info("Пользователь %s недоступен (бот заблокирован)", chat_id)
                 return False
@@ -24618,12 +25067,28 @@ async def send_html(
                     await bot.send_message(
                         int(chat_id), strip_tags(chunk), parse_mode=None, reply_markup=markup
                     )
+                    delivered = True
                 except Exception:  # noqa: BLE001
                     log.exception("Не удалось отправить сообщение %s", chat_id)
                 break
+            except (TelegramNetworkError, TelegramServerError) as exc:
+                # Обрыв связи и сбой на стороне Telegram — состояния
+                # преходящие. Раньше они попадали в общий except ниже
+                # и означали отказ без единого повтора: одна икота сети
+                # стоила человеку оповещения.
+                if last:
+                    log.warning("Связь с Telegram не восстановилась: %s", exc)
+                    break
+                await asyncio.sleep(1.5 * (attempt + 1))
             except Exception:  # noqa: BLE001
                 log.exception("Сбой отправки сообщения %s", chat_id)
                 return False
+        if not delivered:
+            log.error(
+                "Сообщение для %s не доставлено за %d попытки — будет повторено",
+                chat_id, SEND_ATTEMPTS,
+            )
+            return False
         await asyncio.sleep(0.05)
     return True
 
@@ -25420,6 +25885,7 @@ class Form(StatesGroup):
     short_link = State()           # сокращение ссылки (администратор)
     playlist_name = State()        # название нового плейлиста (музыка)
     quiet_hours = State()          # интервал тихих часов
+    chat_message = State()         # объявление в группу (суперадминистратор)
 RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
 cat > "radar/middlewares.py" <<'RADAR_FILE_74'
@@ -25447,6 +25913,36 @@ log = logging.getLogger("radar.access")
 
 def _is_language_choice(event: TelegramObject) -> bool:
     return isinstance(event, CallbackQuery) and str(event.data or "").startswith("lng:")
+
+
+# Сколько помнить, что человеку уже отвечали. Значения совпадают
+# с интервалами повторного ответа ниже: запись, пережившая свой интервал,
+# ни на что не влияет и только занимает память.
+NOTIFY_EVERY = 600.0
+MAINTENANCE_EVERY = 300.0
+LANGUAGE_EVERY = 3600.0
+
+# Потолок на случай наплыва: чистка идёт по времени, но если писать боту
+# будут быстрее, чем стареют записи, словарь не должен расти без предела.
+MEMORY_CAP = 2000
+
+
+def _prune(store: dict[int, float], ttl: float, now: float) -> None:
+    """Выбрасывает отметки, которые уже ничего не держат.
+
+    До 4.9.8.14 эти словари не чистились никогда: запись заводил КАЖДЫЙ
+    посторонний, написавший боту, — то есть кто угодно. Рост медленный,
+    но ничем не ограниченный и снаружи, а бот живёт на одноплатнике.
+    """
+    stale = [key for key, stamp in store.items() if now - stamp > ttl]
+    for key in stale:
+        store.pop(key, None)
+    if len(store) > MEMORY_CAP:
+        # Наплыв: оставляем самых свежих, остальные всё равно получат
+        # ответ заново — это вежливость, а не состояние системы.
+        keep = sorted(store.items(), key=lambda pair: pair[1])[-MEMORY_CAP:]
+        store.clear()
+        store.update(keep)
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -25508,7 +26004,8 @@ class AccessMiddleware(BaseMiddleware):
         record = storage.get_user(uid)
         if record is None:
             now = time.monotonic()
-            if now - self._notified.get(user.id, 0) > 600:
+            _prune(self._notified, NOTIFY_EVERY, now)
+            if now - self._notified.get(user.id, 0) > NOTIFY_EVERY:
                 self._notified[user.id] = now
                 try:
                     if isinstance(event, Message):
@@ -25531,7 +26028,8 @@ class AccessMiddleware(BaseMiddleware):
         # выключить режим из самого бота и останется без единственного пульта.
         if features.enabled("maintenance") and not roles.is_superadmin(role):
             now = time.monotonic()
-            if now - self._maintenance_notified.get(user.id, 0) > 300:
+            _prune(self._maintenance_notified, MAINTENANCE_EVERY, now)
+            if now - self._maintenance_notified.get(user.id, 0) > MAINTENANCE_EVERY:
                 self._maintenance_notified[user.id] = now
                 try:
                     if isinstance(event, Message):
@@ -25564,7 +26062,8 @@ class AccessMiddleware(BaseMiddleware):
     async def _ask_language(self, event: TelegramObject) -> None:
         now = time.monotonic()
         key = getattr(getattr(event, "from_user", None), "id", 0)
-        if now - self._language_asked.get(key, 0) < 3600:
+        _prune(self._language_asked, LANGUAGE_EVERY, now)
+        if now - self._language_asked.get(key, 0) < LANGUAGE_EVERY:
             return
         self._language_asked[key] = now
 
@@ -25596,6 +26095,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -25609,6 +26109,7 @@ from . import (
     features,
     filedrop,
     geocode,
+    health,
     i18n,
     presets,
     profiling,
@@ -25632,10 +26133,86 @@ from .tg import send_html
 log = logging.getLogger("radar.monitor")
 
 seen = sources.SeenStore()
-_stats = {"cycles": 0, "items": 0, "alerts": 0, "last_cycle": 0}
+_stats = {
+    "cycles": 0,
+    "items": 0,
+    "alerts": 0,
+    # Когда последний раз завершился полноценный проход по источникам.
+    "last_cycle": 0,
+    # Признак жизни самого цикла: обновляется на каждом витке, включая
+    # холостые в режиме обслуживания. По нему сторож отличает «бот занят
+    # длинным циклом» от «цикла больше нет».
+    "heartbeat": 0,
+    # Сколько раз цикл поднимался заново после сбоя.
+    "restarts": 0,
+}
 
 def stats() -> dict[str, Any]:
     return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())
+
+
+# --------------------------------------------------------------------------
+#  Признак жизни (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# Отметка `last_cycle` собиралась с 4.x и не читалась нигде: ни в /stats,
+# ни в диагностике. Смысла в ней не было — а между тем это единственное,
+# по чему видно, что оповещения ещё работают. Задача мониторинга могла
+# умереть с исключением, и бот продолжал отвечать на команды как ни в чём
+# не бывало: тревоги просто переставали приходить.
+#
+# Отметка лежит и в памяти (для /stats и сторожа внутри процесса), и файлом
+# на диске — оттуда её читает healthcheck контейнера, которому в процесс
+# не заглянуть.
+
+# Путь к отметке — один на всех: его же читает проверка HEALTHCHECK,
+# которая работает отдельным процессом и в память бота не заглядывает.
+HEARTBEAT_FILE = health.HEARTBEAT_FILE
+
+
+def _touch_heartbeat() -> None:
+    """Отмечает виток цикла. Сбой записи файла не должен ронять цикл."""
+    _stats["heartbeat"] = int(time.time())
+    try:
+        path = Path(HEARTBEAT_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(_stats["heartbeat"]), encoding="utf-8")
+    except OSError as exc:
+        log.debug("Отметка о жизни не записана: %s", exc)
+
+
+def mark_alive() -> None:
+    """Считать цикл живым прямо сейчас.
+
+    Нужно сторожу: заново поднятый цикл сначала делает прогревочный
+    проход по всем источникам, и без этой отметки он был бы признан
+    мёртвым ещё до первого витка.
+    """
+    _touch_heartbeat()
+
+
+def silence_limit() -> int:
+    """Сколько секунд молчания цикла считать поломкой.
+
+    Три интервала опроса: один цикл может затянуться на медленных
+    источниках, два подряд — уже не случайность. Нижняя граница
+    в пять минут защищает от ложных срабатываний при малом интервале.
+    """
+    return max(300, config.POLL_INTERVAL * 3)
+
+
+def alive(now: float | None = None) -> tuple[bool, int]:
+    """Жив ли фоновый цикл и сколько секунд назад подавал признаки.
+
+    До первого витка возвращает «жив»: бот только поднялся, и поднимать
+    тревогу из-за незавершённого первого прохода незачем.
+    """
+    moment = now if now is not None else time.time()
+    beat = int(_stats["heartbeat"])
+    if not beat:
+        return True, 0
+    quiet_for = int(moment - beat)
+    return quiet_for <= silence_limit(), quiet_for
 
 
 # --------------------------------------------------------------------------
@@ -25731,14 +26308,17 @@ async def dispatch_user(
     outgoing: list[str] = []
     for _kind, text in messages:
         # Повтор того же события по той же локации не отправляем
-        if features.enabled("antispam"):
-            if quiet.deliveries.already(uid, "all", text):
-                continue
-            quiet.deliveries.remember(uid, "all", text)
+        if features.enabled("antispam") and quiet.deliveries.already(uid, "all", text):
+            continue
 
         # Тихие часы придерживают несрочное; военные и МЧС проходят всегда
         if features.enabled("quiet_hours") and quiet.should_hold(categories, user, moment):
             quiet.hold(uid, text)
+            # Придержанное считается доставленным сразу: оно уже в очереди,
+            # и второй экземпляр той же тревоги следующим циклом лёг бы
+            # рядом с первым.
+            if features.enabled("antispam"):
+                quiet.deliveries.remember(uid, "all", text)
             continue
 
         outgoing.append(text)
@@ -25746,6 +26326,16 @@ async def dispatch_user(
     for text in outgoing:
         if await send_html(uid, text):
             sent += 1
+            # Отметка о доставке ставится ПОСЛЕ отправки. До 4.9.8.14 она
+            # шла раньше, и одной сетевой икоты хватало, чтобы тревога
+            # пропала: отправка не удалась, а повтор был уже запрещён
+            # на двенадцать часов вперёд.
+            if features.enabled("antispam"):
+                quiet.deliveries.remember(uid, "all", text)
+        else:
+            log.warning(
+                "Тревога для %s не ушла — повторю в следующем цикле", uid
+            )
         await asyncio.sleep(0.3)
 
     # Доставку отмечаем только когда что-то действительно ушло: журнал
@@ -25973,15 +26563,59 @@ async def _shorten_pool_links() -> None:
         entry.link = shortener.short_url(code)
 
 
+HELD_META_KEY = "quiet_held"
+
+
+async def load_held() -> int:
+    """Поднимает придержанное тихими часами из базы (с 4.9.8.14)."""
+    if not features.enabled("quiet_hours"):
+        return 0
+    from .db import repo
+
+    try:
+        rows = await repo.get_meta(HELD_META_KEY, [])
+    except Exception:  # noqa: BLE001
+        log.warning("Придержанные оповещения не прочитаны из базы")
+        return 0
+    restored = quiet.restore(rows)
+    if restored:
+        log.info("Восстановлено придержанных оповещений: %d", restored)
+    return restored
+
+
+async def save_held() -> None:
+    """Пишет очередь в базу, если она менялась.
+
+    Раз за цикл, а не на каждое придержанное сообщение: очередь нужна
+    для того, чтобы пережить перезапуск, и лишняя запись в базу на слабом
+    железе дороже, чем потеря нескольких минут в редком случае падения.
+    """
+    if not quiet.dirty():
+        return
+    from .db import repo
+
+    try:
+        await repo.set_meta(HELD_META_KEY, quiet.snapshot())
+    except Exception:  # noqa: BLE001
+        log.warning("Придержанные оповещения не сохранены")
+        return
+    quiet.mark_saved()
+
+
 async def release_held(now: datetime) -> None:
     """Отдаёт то, что придержали тихие часы."""
     if not features.enabled("quiet_hours") or not quiet.held_count():
         return
     for uid, user in list(storage.users().items()):
-        held = list(quiet.release(uid, user, timezones.local_now(user, now)))
-        for text in held:
-            await send_html(uid, text)
+        for item in quiet.release_items(uid, user, timezones.local_now(user, now)):
+            if not await send_html(uid, item.text):
+                # Не ушло — возвращаем в очередь: у придержанного нет
+                # второго источника, событие давно вымылось из `seen`.
+                # Счётчик попыток не даёт этому длиться вечно.
+                quiet.hold(uid, item.text, created=item.created,
+                           attempts=item.attempts + 1)
             await asyncio.sleep(0.2)
+    await save_held()
 
 
 async def repeat_sos() -> None:
@@ -26172,7 +26806,38 @@ async def _notify_admins(text: str) -> None:
             log.warning("Ночной отчёт не доставлен: %s", uid)
 
 
+# Сколько сбоев цикла подряд считать поломкой самой HTTP-сессии.
+# Единичные ошибки — обычное дело: источник ответил мусором, база моргнула.
+# Три подряд означают, что сломалось общее — например, коннектор сессии,
+# который прежде жил до конца процесса и не восстанавливался никогда.
+FAILURES_BEFORE_RESET = 3
+
+
 async def run() -> None:
+    """Фоновый цикл. Сам поднимается после сбоя и сам об этом сообщает.
+
+    До 4.9.8.14 вся работа шла внутри одного `async with ClientSession`,
+    а прогревочные проходы стояли ВНЕ `try`. Любое исключение оттуда
+    завершало задачу навсегда: бот продолжал отвечать на команды, тревоги
+    молча прекращались, и в журнале оставалась одна строка.
+    """
+    while True:
+        try:
+            await _run_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            _stats["restarts"] += 1
+            log.exception(
+                "Фоновый цикл остановлен (перезапуск %d), поднимаю заново",
+                _stats["restarts"],
+            )
+            await asyncio.sleep(30.0)
+
+
+async def _run_once() -> None:
+    """Один заход: своя HTTP-сессия и цикл поверх неё."""
+    _touch_heartbeat()
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {"User-Agent": config.USER_AGENT, "Accept-Language": "ru,en;q=0.8"}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -26181,11 +26846,25 @@ async def run() -> None:
         except Exception:  # noqa: BLE001
             log.exception("Дозаполнение адресов не удалось")
 
-        await cycle(session, warmup=True)
+        try:
+            await load_held()
+        except Exception:  # noqa: BLE001
+            log.exception("Придержанные оповещения не восстановлены")
+
+        try:
+            await cycle(session, warmup=True)
+        except Exception:  # noqa: BLE001
+            # Прогрев не смертелен: без него первый рабочий проход просто
+            # увидит ленту непрочитанной. Ронять из-за этого весь
+            # мониторинг нельзя.
+            log.exception("Прогревочный проход не удался")
+        _touch_heartbeat()
 
         paused = False
+        failures = 0
         while True:
             started = time.monotonic()
+            _touch_heartbeat()
 
             # Режим обслуживания: опрос источников и рассылки остановлены,
             # но цикл продолжает крутиться вхолостую — чтобы выход из режима
@@ -26203,7 +26882,10 @@ async def run() -> None:
                 # Первый проход после паузы — прогревочный: за время работ
                 # источники накопили сообщения, и рассылать их скопом уже
                 # поздно, событие в прошлом тревогой не является.
-                await cycle(session, warmup=True)
+                try:
+                    await cycle(session, warmup=True)
+                except Exception:  # noqa: BLE001
+                    log.exception("Прогревочный проход после работ не удался")
 
             try:
                 now_moment = datetime.now()
@@ -26282,15 +26964,93 @@ async def run() -> None:
                 await send_recap(now_moment)
                 await send_digests(now_moment)
                 await cycle(session)
+                # Придержанное этим проходом закрепляем сразу: очередь
+                # нужна ровно для того, чтобы пережить перезапуск.
+                await save_held()
+                failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
-                log.exception("Сбой цикла мониторинга")
+                failures += 1
+                log.exception("Сбой цикла мониторинга (подряд: %d)", failures)
+                if failures >= FAILURES_BEFORE_RESET:
+                    # Выходим наружу: внешний круг пересоздаст HTTP-сессию.
+                    log.error(
+                        "Сбоев подряд %d — пересоздаю сетевую сессию", failures
+                    )
+                    return
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
 RADAR_FILE_75
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/health.py"
+cat > "radar/health.py" <<'RADAR_FILE_76'
+"""Проверка жизни бота для HEALTHCHECK контейнера.
+
+Запускается снаружи процесса — `python -m radar.health` — и потому смотрит
+не в память, а на файл отметки, который фоновый цикл переписывает на каждом
+витке. Смысл в том, что живой процесс и работающий мониторинг — разные вещи:
+бот может исправно отвечать на команды, когда тревоги уже не приходят,
+и никакая проверка «процесс запущен» этого не покажет.
+
+Нездоровый контейнер сам по себе не перезапускается — за это отвечает сторож
+внутри процесса. Проверка нужна, чтобы состояние было видно снаружи:
+в `docker ps`, в панели и в чужом мониторинге.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+from . import config
+
+HEARTBEAT_FILE = "data/heartbeat"
+
+# Запас поверх предела молчания: проверка не должна срабатывать раньше
+# сторожа, иначе контейнер будет числиться больным ровно в тот момент,
+# когда цикл уже поднимается заново.
+GRACE = 120
+
+
+def limit() -> int:
+    return max(300, config.POLL_INTERVAL * 3) + GRACE
+
+
+def check(now: float | None = None) -> tuple[bool, str]:
+    """Жив ли фоновый цикл. Возвращает (здоров, объяснение)."""
+    moment = now if now is not None else time.time()
+    path = Path(HEARTBEAT_FILE)
+    try:
+        beat = int(path.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        # Файла нет — бот только поднимается. Считать это поломкой нельзя:
+        # первый проход по источникам занимает до минуты.
+        return True, "отметки ещё нет, бот запускается"
+
+    silent = int(moment - beat)
+    if silent > limit():
+        return False, f"цикл молчит {silent} с при пределе {limit()} с"
+    return True, f"цикл отвечал {silent} с назад"
+
+
+def main() -> int:
+    healthy, reason = check()
+    print(reason)
+    return 0 if healthy else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netguard.py"
-cat > "radar/netguard.py" <<'RADAR_FILE_76'
+cat > "radar/netguard.py" <<'RADAR_FILE_77'
 """Куда боту можно ходить по ссылке, присланной человеком.
 
 Ссылку в бот присылает кто угодно, а запрос по ней делает бот — изнутри
@@ -26428,9 +27188,9 @@ async def allowed(url: str) -> bool:
     # Достаточно одного внутреннего адреса, чтобы отказать: имя с двумя
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dockerapi.py"
-cat > "radar/dockerapi.py" <<'RADAR_FILE_77'
+cat > "radar/dockerapi.py" <<'RADAR_FILE_78'
 """Общий клиент Docker Engine API поверх Unix-сокета.
 
 Вынесено из `radar/updater.py` в 4.9.8.4: `radar/rustdesk.py` управляет
@@ -26557,9 +27317,9 @@ async def container_action(session_, name: str, action: str) -> tuple[bool, str]
     except Exception as exc:  # noqa: BLE001
         log.exception("Действие %s над контейнером %s не выполнено", action, name)
         return False, str(exc)
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
-cat > "radar/updater.py" <<'RADAR_FILE_78'
+cat > "radar/updater.py" <<'RADAR_FILE_79'
 """Обновление системы из веб-панели.
 
 Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
@@ -26880,9 +27640,9 @@ def progress(lines: int = 40) -> tuple[str, str]:
         return "", ""
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
-cat > "radar/wipe.py" <<'RADAR_FILE_79'
+cat > "radar/wipe.py" <<'RADAR_FILE_80'
 """Полное удаление системы с сервера, запускаемое из панели.
 
 Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
@@ -27050,9 +27810,9 @@ async def start(actor: str) -> tuple[bool, str]:
 
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
-cat > "radar/moderation.py" <<'RADAR_FILE_80'
+cat > "radar/moderation.py" <<'RADAR_FILE_81'
 """Правила модерации групп: решение отдельно от Telegram.
 
 Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
@@ -27243,9 +28003,9 @@ def describe(decision: Decision, settings: Settings) -> str:
     if decision.delete_message:
         return f"🧹 Удалено: {decision.reason}"
     return ""
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
-cat > "radar/chatlink.py" <<'RADAR_FILE_81'
+cat > "radar/chatlink.py" <<'RADAR_FILE_82'
 """Ссылка на группу, где бот работает модератором.
 
 Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
@@ -27329,9 +28089,115 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
         return False, "Telegram не вернул ссылку."
     _cache[chat_id] = link
     return True, link
-RADAR_FILE_81
+RADAR_FILE_82
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
+cat > "radar/chatpost.py" <<'RADAR_FILE_83'
+"""Объявления в группы от имени бота: правила отдельно от отправки.
+
+Суперадминистратор пишет в администрируемую группу прямо из раздела
+«Чаты». Сообщение уходит **от имени бота** — для участников это голос
+системы, а не частное письмо, и цена ошибки соответствующая: опечатку
+уже не отозвать, а прочитают её все.
+
+Поэтому здесь, без сети и aiogram, живёт всё, что можно проверить
+до отправки: длина, пустота, разметка и итоговый вид объявления. Сама
+отправка и разбор отказов Telegram — в `radar/handlers/chats.py`.
+
+Что намеренно НЕ делается:
+
+* объявление не уходит без подтверждения — сначала показывается так,
+  как его увидят в группе;
+* текст не переписывается за автора: правится только то, что иначе
+  не дойдёт (пустая строка, перебор длины, сломанная разметка).
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass, field
+
+# Предел Telegram на текст сообщения — 4096 символов. Берём с запасом:
+# к тексту добавляется подпись, а разметка считается вместе с тегами.
+MAX_LENGTH = 3500
+
+# Сколько ждать подтверждения. Забытый черновик не должен уйти в группу
+# через сутки, когда автор уже не помнит, что писал.
+DRAFT_TTL = 600
+
+# Теги, которые Telegram понимает в HTML. Остальное экранируется:
+# неизвестный тег — это не разметка, а «Bad Request» на отправке,
+# то есть объявление, не ушедшее никуда.
+ALLOWED_TAGS = frozenset({
+    "b", "strong", "i", "em", "u", "s", "strike", "del",
+    "a", "code", "pre", "blockquote", "span", "tg-spoiler",
+})
+
+_TAG_RE = re.compile(r"</?([a-zA-Z0-9-]+)(?:\s[^>]*)?/?>")
+
+
+@dataclass
+class Draft:
+    """Подготовленное объявление, ждущее подтверждения."""
+
+    chat_id: int
+    title: str
+    text: str
+    created: float = field(default_factory=time.time)
+
+    def expired(self, now: float | None = None) -> bool:
+        moment = now if now is not None else time.time()
+        return moment - self.created > DRAFT_TTL
+
+
+def unsupported_tags(text: str) -> list[str]:
+    """Теги, которых Telegram не знает. Пустой список — разметка годная."""
+    found = {
+        match.group(1).lower() for match in _TAG_RE.finditer(text or "")
+    }
+    return sorted(found - ALLOWED_TAGS)
+
+
+def validate(text: str) -> tuple[bool, str]:
+    """Годится ли текст к отправке. Возвращает (годится, объяснение)."""
+    body = (text or "").strip()
+    if not body:
+        return False, "Пустое сообщение отправлять некуда."
+    if len(body) > MAX_LENGTH:
+        return False, (
+            f"Слишком длинно: {len(body)} символов при пределе {MAX_LENGTH}. "
+            f"Разбейте на два объявления."
+        )
+    extra = unsupported_tags(body)
+    if extra:
+        listed = ", ".join(f"&lt;{tag}&gt;" for tag in extra[:5])
+        return False, (
+            f"Telegram не поймёт разметку: {listed}. Уберите её — иначе "
+            f"сообщение не уйдёт совсем."
+        )
+    return True, ""
+
+
+def preview(draft: Draft) -> str:
+    """Как объявление покажут перед отправкой."""
+    return (
+        "✍️ <b>Объявление в группу</b>\n"
+        f"Получатель: <b>{draft.title}</b>\n\n"
+        "Так его увидят участники:\n\n"
+        "———\n"
+        f"{draft.text}\n"
+        "———\n\n"
+        "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
+    )
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_84'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -27754,9 +28620,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_82
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_85'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -27775,8 +28641,11 @@ cat > "radar/handlers/chats.py" <<'RADAR_FILE_83'
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -27784,10 +28653,13 @@ from aiogram.types import (
     Message,
 )
 
-from .. import chatlink, features, roles
+from .. import chatlink, chatpost, features, roles
 from ..db import repo
+from ..states import Form
 from ..textutils import esc
-from ..tg import safe_edit, send_html
+from ..tg import bot, safe_edit, send_html
+
+log = logging.getLogger("radar.chats")
 
 router = Router(name="chats")
 
@@ -27811,19 +28683,36 @@ ADD_HINT = (
 )
 
 
-def _keyboard(rows: list[dict], links: dict[int, str]) -> InlineKeyboardMarkup:
+def can_post(role: str) -> bool:
+    """Кому доступны объявления в группы.
+
+    Только суперадминистратору: сообщение уходит от имени бота, и для
+    участников группы это голос системы. Такое право не раздаётся вместе
+    с обычными администраторскими — и без флага не появляется вовсе.
+    """
+    return roles.is_superadmin(role) and features.enabled("chat_post")
+
+
+def _keyboard(rows: list[dict], links: dict[int, str],
+              role: str = "") -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
+    posting = can_post(role)
     for row in rows:
         chat_id = row["chat_id"]
         title = row["title"] or str(chat_id)
         mark = "🟢" if row["enabled"] else "⚪️"
         link = links.get(chat_id, "")
         if link:
-            buttons.append([InlineKeyboardButton(
-                text=f"{mark} {title}", url=link)])
+            line = [InlineKeyboardButton(text=f"{mark} {title}", url=link)]
         else:
-            buttons.append([InlineKeyboardButton(
-                text=f"{mark} {title}", callback_data=f"chat:why:{chat_id}")])
+            line = [InlineKeyboardButton(
+                text=f"{mark} {title}", callback_data=f"chat:why:{chat_id}")]
+        if posting:
+            # Вторая кнопка в той же строке: список групп и так длинный,
+            # а отдельная строка на каждую удвоила бы его.
+            line.append(InlineKeyboardButton(
+                text="✍️", callback_data=f"chat:say:{chat_id}"))
+        buttons.append(line)
     buttons.append([InlineKeyboardButton(text="◀️ Назад",
                                          callback_data="menu:manage")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -27848,7 +28737,9 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
             lines.append(f"  <i>{esc(value)}</i>")
     lines.append("")
     lines.append("<i>Нажмите на группу, чтобы перейти в неё.</i>")
-    return "\n".join(lines), _keyboard(rows, links)
+    if can_post(role):
+        lines.append("<i>✍️ рядом с группой — написать в неё от имени бота.</i>")
+    return "\n".join(lines), _keyboard(rows, links, role)
 
 
 @router.message(Command("chats"))
@@ -27883,9 +28774,170 @@ async def explain(call: CallbackQuery, role: str) -> None:
     chat_id = int(call.data.rsplit(":", 1)[1])
     _ok, reason = await chatlink.link_for(chat_id)
     await call.answer(reason, show_alert=True)
-RADAR_FILE_83
+
+
+# --------------------------------------------------------------------------
+#  Объявления в группу от имени бота (с 4.9.8.14)
+# --------------------------------------------------------------------------
+#
+# Право суперадминистратора и только его: участники группы видят сообщение
+# как голос системы, а не как частное письмо. Отправка идёт в два шага —
+# сначала текст показывается так, как его увидят, и лишь потом уходит:
+# объявление в чужую группу не отзывается.
+
+_drafts: dict[int, chatpost.Draft] = {}
+
+
+def _forget_stale(now: float | None = None) -> None:
+    """Убирает черновики, которые уже никто не подтвердит."""
+    stale = [key for key, draft in _drafts.items() if draft.expired(now)]
+    for key in stale:
+        _drafts.pop(key, None)
+
+
+def back_kb_chats() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ К списку чатов", callback_data="menu:chats")
+    ]])
+
+
+def _confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📨 Отправить", callback_data="chat:send")],
+        [InlineKeyboardButton(text="🗑 Отменить", callback_data="chat:drop")],
+    ])
+
+
+@router.callback_query(F.data.startswith("chat:say:"))
+async def ask_message(call: CallbackQuery, state: FSMContext, role: str) -> None:
+    """Спрашивает текст объявления."""
+    if not can_post(role):
+        await call.answer(
+            "Писать в группы может только суперадминистратор, "
+            "и при включённой возможности «Сообщения в группы».",
+            show_alert=True,
+        )
+        return
+
+    chat_id = int(call.data.rsplit(":", 1)[1])
+    row = await repo.chat_get(chat_id)
+    if row is None:
+        await call.answer("Группа больше не в списке.", show_alert=True)
+        return
+
+    title = row.get("title") or str(chat_id)
+    await call.answer()
+    await state.set_state(Form.chat_message)
+    await state.update_data(chat_id=chat_id, chat_title=title)
+    await safe_edit(
+        call,
+        f"✍️ <b>Сообщение в «{esc(title)}»</b>\n\n"
+        "Пришлите текст — он уйдёт в группу <b>от имени бота</b>. "
+        "Жирный, курсив и ссылки сохраняются.\n\n"
+        "Перед отправкой покажу, как это будет выглядеть.\n\n"
+        "<i>/cancel — отменить</i>",
+        back_kb_chats(),
+    )
+
+
+@router.message(Form.chat_message)
+async def take_message(message: Message, state: FSMContext, role: str) -> None:
+    """Принимает текст, проверяет его и показывает, как это будет выглядеть."""
+    if not can_post(role):
+        await state.clear()
+        return
+
+    # Разметку берём в виде HTML: человек форматирует сообщение привычными
+    # средствами Telegram, и объявление должно выйти таким, каким он его
+    # набрал. `html_text` есть не у всякого сообщения — например, у фото.
+    text = getattr(message, "html_text", None) or message.text or ""
+    if text.strip().startswith("/"):
+        # Команды не объявления: /cancel и прочее разбирает свой обработчик.
+        return
+    if not text.strip():
+        await send_html(
+            message.chat.id,
+            "Пока умею отправлять только текст. Пришлите сообщение текстом.",
+            back_kb_chats(),
+        )
+        return
+
+    ok, reason = chatpost.validate(text)
+    if not ok:
+        # Состояние не сбрасываем: человек правит текст и присылает снова.
+        await send_html(message.chat.id, f"⚠️ {reason}\n\n<i>/cancel — отменить</i>")
+        return
+
+    data = await state.get_data()
+    chat_id = int(data.get("chat_id") or 0)
+    title = str(data.get("chat_title") or chat_id)
+    await state.clear()
+
+    _forget_stale()
+    draft = chatpost.Draft(chat_id=chat_id, title=title, text=text.strip())
+    _drafts[message.from_user.id] = draft
+    await send_html(message.chat.id, chatpost.preview(draft), _confirm_kb())
+
+
+@router.callback_query(F.data == "chat:drop")
+async def drop_message(call: CallbackQuery, role: str) -> None:
+    if not can_post(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+    _drafts.pop(call.from_user.id, None)
+    await call.answer("Объявление отменено.")
+    text, keyboard = await _render(role)
+    await safe_edit(call, text, keyboard)
+
+
+@router.callback_query(F.data == "chat:send")
+async def send_message(call: CallbackQuery, role: str) -> None:
+    """Отправляет подтверждённое объявление."""
+    if not can_post(role):
+        await call.answer("Только для суперадминистратора.", show_alert=True)
+        return
+
+    draft = _drafts.pop(call.from_user.id, None)
+    if draft is None:
+        await call.answer("Объявление не найдено — наберите заново.",
+                          show_alert=True)
+        return
+    if draft.expired():
+        await call.answer(
+            "Прошло слишком много времени — наберите объявление заново.",
+            show_alert=True,
+        )
+        return
+
+    await call.answer()
+    try:
+        await bot.send_message(draft.chat_id, draft.text)
+    except Exception as exc:  # noqa: BLE001
+        # Причина нужна человеку, а не только журналу: «не отправилось»
+        # без объяснения означает, что он попробует ещё три раза.
+        log.warning("Объявление в %s не ушло: %s", draft.chat_id, exc)
+        await safe_edit(
+            call,
+            f"❌ <b>Не отправилось в «{esc(draft.title)}»</b>\n\n"
+            f"<code>{esc(str(exc)[:200])}</code>\n\n"
+            "Обычные причины: бота выгнали из группы, сняли права "
+            "или в ней запрещены сообщения от ботов. Текст не потерян — "
+            "наберите заново после того, как поправите права.",
+            back_kb_chats(),
+        )
+        return
+
+    log.info("Суперадминистратор %s написал в чат %s (%d символов)",
+             call.from_user.id, draft.chat_id, len(draft.text))
+    await safe_edit(
+        call,
+        f"✅ <b>Отправлено в «{esc(draft.title)}»</b>\n\n"
+        "Сообщение опубликовано от имени бота.",
+        back_kb_chats(),
+    )
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_84'
+cat > "radar/cli.py" <<'RADAR_FILE_86'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -28365,9 +29417,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_84
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_85'
+cat > "radar/__main__.py" <<'RADAR_FILE_87'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -28389,9 +29441,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_85
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_86'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_88'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -28532,9 +29584,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_86
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_87'
+cat > "tools/restore.sh" <<'RADAR_FILE_89'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -28776,9 +29828,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_87
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_88'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_90'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -28874,9 +29926,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_88
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_89'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_91'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -29069,9 +30121,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_89
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_92'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -29082,7 +30134,10 @@ cat > "radar/handlers/__init__.py" <<'RADAR_FILE_90'
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Dispatcher, F
+from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 from . import (
     assistant,
@@ -29127,7 +30182,46 @@ PRIVATE_ROUTERS = (
 )
 
 
+log = logging.getLogger("radar.handlers")
+
+
+async def on_error(event: ErrorEvent) -> bool:
+    """Последний рубеж: ни одно нажатие не остаётся без ответа (с 4.9.8.14).
+
+    Обработчика ошибок у бота не было вовсе. Упавший раздел — например,
+    из-за недоступной на секунду базы — оставлял человека перед кнопкой,
+    которая просто ничего не делает: ни ответа, ни объяснения. Оставался
+    только журнал, и то у администратора.
+
+    Возвращаем True: исключение разобрано, и aiogram не должен ронять
+    из-за него опрос обновлений.
+    """
+    update = event.update
+    log.exception(
+        "Необработанная ошибка в обработчике", exc_info=event.exception
+    )
+
+    note = (
+        "⚠️ Не получилось выполнить действие. Попробуйте ещё раз — "
+        "если повторится, сообщите администратору."
+    )
+    try:
+        callback = getattr(update, "callback_query", None)
+        if isinstance(callback, CallbackQuery):
+            await callback.answer(note, show_alert=True)
+            return True
+        message = getattr(update, "message", None)
+        if isinstance(message, Message):
+            await message.answer(note)
+    except Exception:  # noqa: BLE001
+        # Извинение — не то, ради чего стоит поднимать вторую ошибку.
+        log.debug("Сообщение об ошибке не доставлено")
+    return True
+
+
 def setup(dp: Dispatcher) -> None:
+    dp.errors.register(on_error)
+
     # Модерация — первой и только для групп: её сообщения не должны
     # доходить до разделов, рассчитанных на личную переписку.
     group.router.message.filter(F.chat.type.in_({"group", "supergroup"}))
@@ -29144,9 +30238,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_90
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_93'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -29449,6 +30543,29 @@ def _quota_line() -> str:
     )
 
 
+def _cycle_health_line() -> str:
+    """Строка о самочувствии фонового цикла (с 4.9.8.14).
+
+    Отметка о последнем проходе собиралась давно и не показывалась нигде:
+    администратор видел число циклов и не мог отличить работающий бот
+    от бота, у которого мониторинг умер час назад.
+    """
+    data = monitor.stats()
+    healthy, silent_for = monitor.alive()
+    last = int(data.get("last_cycle") or 0)
+    when = (
+        datetime.fromtimestamp(last).strftime("%H:%M:%S") if last else "ещё не было"
+    )
+    mark = "✅" if healthy else "🚨"
+    line = f"{mark} Последний проход: <b>{when}</b>"
+    if not healthy:
+        line += f" — цикл молчит {silent_for} с, сторож поднимет его заново"
+    restarts = int(data.get("restarts") or 0)
+    if restarts:
+        line += f" | перезапусков цикла: <b>{restarts}</b>"
+    return line
+
+
 def _stats_text() -> str:
     counters: dict[str, int] = {}
     locations = 0
@@ -29467,6 +30584,7 @@ def _stats_text() -> str:
         + (f" | разбор: <b>{esc(ai.current_model(ai.ANALYSIS))}</b>" if ai.ENABLED else ""),
         f"Циклов: <b>{data['cycles']}</b>, сообщений: <b>{data['items']}</b>, "
         f"оповещений: <b>{data['alerts']}</b>",
+        _cycle_health_line(),
         f"Кэш анализов: <b>{data['cache']}</b>, помечено прочитанным: <b>{data['seen']}</b>",
         f"Разбор: ИИ <b>{data['ai']}</b>, из кэша <b>{data['cached']}</b>, "
         f"отсеяно фильтром <b>{data['prefiltered']}</b>, эвристикой <b>{data['heuristic']}</b>",
@@ -29589,9 +30707,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_91
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_94'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -29757,9 +30875,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_92
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_95'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -30264,9 +31382,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_93
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_96'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -30741,9 +31859,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_94
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_97'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -31110,9 +32228,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_95
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_98'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -31259,9 +32377,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_96
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_99'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -31549,9 +32667,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_97
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_100'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -31758,9 +32876,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_98
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_101'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -32131,9 +33249,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_99
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_102'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -32708,9 +33826,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_100
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_103'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -32811,9 +33929,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_101
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_104'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -32903,9 +34021,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_102
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_105'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -33326,9 +34444,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_103
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_106'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -34491,9 +35609,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_104
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_107'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -35224,9 +36342,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_105
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_108'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -35750,9 +36868,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_106
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_109'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -35960,9 +37078,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_107
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_110'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -36375,9 +37493,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_108
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_109'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_111'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -36640,9 +37758,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_109
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_112'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -36792,9 +37910,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_110
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_113'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -37262,9 +38380,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_111
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_112'
+cat > "radar/cookies.py" <<'RADAR_FILE_114'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -37395,9 +38513,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_112
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_113'
+cat > "radar/music.py" <<'RADAR_FILE_115'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -37905,9 +39023,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_113
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_114'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_116'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -38412,9 +39530,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_114
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_115'
+cat > "multitool/__init__.py" <<'RADAR_FILE_117'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -38440,9 +39558,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_115'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_115
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_116'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_118'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -38475,9 +39593,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_116'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_116
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_117'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_119'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -38884,9 +40002,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_117
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_118'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_120'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -39301,9 +40419,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_118
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_119'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_121'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -39497,7 +40615,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_119
+RADAR_FILE_121
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
