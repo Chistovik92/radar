@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.9 — автономный установщик.
+# Система «Радар» v4.9.8.10 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.9"
+VERSION="4.9.8.10"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2795,8 +2795,8 @@ fi
 # но не всему миру: в data лежат база, копии с .env внутри и журналы.
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
-mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web"
-FILE_COUNT=110
+mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
+FILE_COUNT=116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3178,6 +3178,22 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.10", [
+        "🧹 <b>Удаление установки — из панели и из консоли.</b> Страница "
+        "«Удаление» в разделе «Обслуживание» стирает установку целиком: "
+        "контейнеры, образ, базу, ключи, копии. Подтверждается словом, "
+        "а не кнопкой, и по умолчанию выключена. Нужна для покинутого "
+        "сервера после переезда.",
+        "⌨️ <b>Командная строка.</b> Всё, что умеет панель, теперь "
+        "работает и из консоли: источники, пользователи, возможности, "
+        "ключи, копии, база, ссылки, файлы, RustDesk, диагностика. "
+        "Есть <code>--json</code> и отдельный код возврата, когда "
+        "действие не подтвердили — годится для cron.",
+        "🔧 <b>Скрипт удаления был неполон.</b> Он не трогал контейнеры "
+        "RustDesk, сертификата и обновления: они переживали «полное "
+        "удаление» вместе со своими данными. Список дополнен, а тест "
+        "сверяет его с docker-compose.yml, чтобы не разъехался снова.",
+    ]),
     ("4.9.8.9", [
         "🔧 <b>Обновление из панели действительно обновляет.</b> Кнопка "
         "запускала установщик, уже лежавший на сервере, а он ставит ровно "
@@ -4567,7 +4583,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.9"
+__version__ = "4.9.8.10"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6478,6 +6494,14 @@ FLAGS: tuple[Flag, ...] = (
          "из панели» — тот же уровень риска (эквивалент root на хосте), "
          "поэтому по умолчанию выключено.",
          group="Инфраструктура", since="4.9.8.4", default=False),
+    Flag("panel_wipe", "Удаление из панели",
+         "Страница «Удаление»: стирает установку целиком — контейнеры, "
+         "образ, базу, .env, копии и журналы. Нужна для покинутого "
+         "сервера после переезда. Требует сокет Docker, как и обновление, "
+         "и подтверждается словом, а не кнопкой. По умолчанию выключено: "
+         "включённая возможность означает, что доступ к панели равен "
+         "праву стереть сервер.",
+         group="Инфраструктура", since="4.9.8.10", default=False),
     Flag("restart_notice", "Ответ написавшим во время работ",
          "После перезапуска бот пишет тем, кто обращался, пока он был "
          "выключен: их сообщения Telegram не сохраняет, и без этого "
@@ -15303,7 +15327,12 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
             scrollbar-width:none; }
   .subnav::-webkit-scrollbar { display:none; }
   th, td { padding:9px 10px; }
-  .who { font-size:13px; }
+  /* Роль и «выйти» уходят ПОСЛЕ разделов. Иначе они переносились первыми
+     («Суперадминистратор · выйти» шире, чем остаток строки), и разделы
+     оказывались третьей строкой — на телефоне это половина экрана
+     до начала самой страницы. */
+  .who { order:4; flex:1 0 100%; text-align:right; font-size:12px;
+         margin-top:-2px; }
 
   /* Размер под палец. Кнопка «удалить» в строке таблицы была 28px —
      в неё попадали через раз. */
@@ -15343,12 +15372,27 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
                    background:var(--surface-2); margin-bottom:10px;
                    padding:4px 0; }
   table.stack tr:last-child { margin-bottom:0; }
-  table.stack td { border:none; padding:7px 13px; }
-  table.stack td::before { content:attr(data-label); display:block;
-                           color:var(--muted); font-size:11.5px;
-                           text-transform:uppercase; letter-spacing:.05em; }
+  /* Подпись и значение в одну строку, а не одно над другим: в столбик
+     каждое поле занимало почти сто точек, и один пользователь выходил
+     длиннее экрана — а их дюжина. */
+  table.stack td { border:none; padding:6px 13px; display:flex;
+                   flex-wrap:wrap; justify-content:space-between;
+                   align-items:baseline; gap:10px; }
+  table.stack td::before { content:attr(data-label); display:inline;
+                           flex:0 0 auto; color:var(--muted);
+                           font-size:11.5px; text-transform:uppercase;
+                           letter-spacing:.05em; }
+  /* Форма (пояс, время, кнопка) — на свою строку внутри ячейки. */
+  table.stack td > form.inline { flex:1 0 100%; margin-top:6px; }
   table.stack td:empty { display:none; }
-  .grid { grid-template-columns:1fr; }
+
+  /* Плитки сводки: в одну колонку три карточки занимали весь экран. */
+  .grid { grid-template-columns:repeat(2, 1fr); gap:10px; }
+  .metric b { font-size:22px; }
+  .card { padding:14px 15px; }
+  /* Подменю перестаёт липнуть: шапка на телефоне высокая, и второй
+     липкий ряд с тем же top:0 просто уезжал под неё при прокрутке. */
+  .subnav { position:static; }
   h1 { font-size:19px; }
 }
 
@@ -15736,6 +15780,10 @@ _PARENT_PAGE: dict[str, tuple[str, str, str]] = {
     "features": ("maintenance", "/maintenance", "Обслуживание"),
     "audit": ("maintenance", "/maintenance", "Обслуживание"),
     "partners": ("maintenance", "/maintenance", "Обслуживание"),
+    # Удаление живёт там же, где остальное редкое и опасное, а не
+    # в общем ряду разделов: в меню верхнего уровня кнопка «стереть
+    # сервер» соседствовала бы с «Источниками».
+    "wipe": ("maintenance", "/maintenance", "Обслуживание"),
 }
 
 
@@ -15952,6 +16000,69 @@ async def _rustdesk_body(session, ok: str = "", err: str = "") -> str:
     return "".join(parts)
 
 
+def _wipe_body(session, ok: str = "", err: str = "") -> str:
+    """Страница полного удаления.
+
+    Единственное место панели, где подтверждение — слово, а не кнопка.
+    Причина простая: отменить нечего. Копии, база и .env уходят вместе
+    с каталогом, и «случайно нажал» здесь стоит дороже, чем неудобство
+    набрать семь букв.
+    """
+    from .. import wipe
+
+    allowed, reason = wipe.ready()
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    parts.append(
+        '<div class="card warn">'
+        "<p><b>Это удаление всей установки, а не очистка данных.</b></p>"
+        "<p class=\"muted\">Будут удалены контейнеры и образ, каталог "
+        "установки целиком — база, <code>.env</code> с ключами, резервные "
+        "копии и журналы. Панель перестанет отвечать в процессе: она живёт "
+        "в том же контейнере. Отменить нельзя.</p>"
+        "<p class=\"muted\">Задумано для покинутого сервера после переезда. "
+        "Если сервер рабочий — вам сюда не нужно.</p></div>"
+    )
+
+    if not allowed:
+        parts.append(f'<div class="card warn">{html.escape(reason)}</div>')
+        if not features.enabled("panel_wipe"):
+            parts.append(
+                '<div class="card">'
+                '<form method="post" action="/features/toggle">'
+                f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+                '<input type="hidden" name="key" value="panel_wipe">'
+                '<input type="hidden" name="back" value="/wipe">'
+                '<button type="submit">Включить удаление из панели</button>'
+                "</form>"
+                '<p class="muted">Включённая возможность означает, что доступ '
+                "к панели равен праву стереть сервер. Выключить можно там же "
+                "или в «Возможностях».</p></div>"
+            )
+        return "".join(parts)
+
+    parts.append(
+        '<div class="card">'
+        '<p class="muted">Сначала — копия. После удаления скачивать будет '
+        'неоткуда.</p>'
+        '<a class="back" href="/backup">Резервные копии</a></div>'
+    )
+
+    parts.append(
+        '<div class="card">'
+        '<form method="post" action="/wipe/start">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<p>Введите <b>{html.escape(wipe.CONFIRM_WORD)}</b>, чтобы стереть '
+        "установку:</p>"
+        '<input type="text" name="word" autocomplete="off" '
+        'placeholder="слово подтверждения" required> '
+        '<button type="submit" class="danger">Стереть установку</button>'
+        "</form></div>"
+    )
+    return "".join(parts)
+
+
 def _maintenance_body() -> str:
     """Обслуживание: то, к чему обращаются редко и по делу.
 
@@ -15984,6 +16095,12 @@ def _maintenance_body() -> str:
     ]
     if features.enabled("partners"):
         items.append(("/partners", "Партнёры", "Проекты и промокоды.", ""))
+    # Последним и с прямой формулировкой: это не «очистка», а снос
+    # установки. Пункт виден всегда — страница сама объясняет цену
+    # и требует слова подтверждения.
+    items.append(("/wipe", "Удаление",
+                  "Стереть установку целиком: контейнеры, база, ключи, копии.",
+                  ""))
 
     cards = "".join(
         f'<div class="card"><h3><a href="{href}">{html.escape(name)}</a></h3>'
@@ -17677,6 +17794,37 @@ async def create_app() -> Any:
         audit.record(session.user_key, f"rustdesk {action}", "")
         raise web.HTTPFound("/rustdesk?ok=" + quote(f"{action}: готово"))
 
+    @owner_only
+    async def wipe_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Удаление",
+                _wipe_body(session,
+                           request.query.get("ok", ""),
+                           request.query.get("err", "")),
+                "wipe", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def wipe_start(request):
+        from .. import wipe
+
+        session, data = await _guarded_form(request, "superadmin")
+        if not wipe.confirmed(str(data.get("word", ""))):
+            audit.record(session.user_key, "удаление не подтверждено", "")
+            raise web.HTTPFound("/wipe?err=" + quote(
+                f"Нужно ввести слово {wipe.CONFIRM_WORD} — ничего не удалено"))
+
+        started, reason = await wipe.start(f"панель:{session.user_key}")
+        if not started:
+            audit.record(session.user_key, "удаление не запущено", reason)
+            raise web.HTTPFound("/wipe?err=" + quote(reason))
+        audit.record(session.user_key, "ЗАПУЩЕНО УДАЛЕНИЕ СИСТЕМЫ",
+                     config.VERSION)
+        raise web.HTTPFound("/wipe?ok=" + quote(
+            "Удаление запущено — панель вот-вот перестанет отвечать"))
+
     async def health(_request):
         # Версию отсюда убрали: маршрут открыт без входа, а точная версия
         # снаружи — это готовый ответ на вопрос «что здесь уязвимо».
@@ -17733,6 +17881,8 @@ async def create_app() -> Any:
         web.post("/update/start", update_start),
         web.get("/rustdesk", rustdesk_page),
         web.post("/rustdesk/action", rustdesk_action),
+        web.get("/wipe", wipe_page),
+        web.post("/wipe/start", wipe_start),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),
@@ -26358,8 +26508,1129 @@ def progress(lines: int = 40) -> tuple[str, str]:
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
 RADAR_FILE_78
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
+cat > "radar/wipe.py" <<'RADAR_FILE_79'
+"""Полное удаление системы с сервера, запускаемое из панели.
+
+Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
+похожи только способом запуска. Всё остальное разное — у удаления нет
+ни шагов, ни журнала установки, зато есть требование, которого нет
+больше нигде: подтверждение словом, а не нажатием.
+
+Почему одноразовый контейнер. Панель живёт внутри `radar_container`,
+а он входит в удаляемое. Стереть себя изнутри нельзя: процесс умрёт
+на половине работы и оставит машину в состоянии, которое хуже обоих
+исходов. Поэтому удаление выполняет отдельный контейнер `radar_wiper`,
+который в список удаляемых не входит и переживает снос всего остального.
+
+Скрипт берётся с GitHub, а не с сервера: тот, что лежит рядом
+с установкой, может быть старше набора контейнеров и оставить часть
+из них живыми — ровно это и было в `tools/uninstall.sh` до 4.9.8.10.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+
+from . import dockerapi, features, updater
+
+log = logging.getLogger("radar.wipe")
+
+SOCKET = dockerapi.SOCKET
+API = dockerapi.API
+# Имя нарочно не из семейства radar_*, которое стирает сам скрипт:
+# исполнитель не должен попасть под собственную команду.
+CONTAINER = "radar_wiper"
+IMAGE = "docker:cli"
+
+# Слово подтверждения. Кнопки мало: действие необратимо, а промах
+# по экрану телефона стоит дешевле, чем всё остальное в этом модуле.
+CONFIRM_WORD = "УДАЛИТЬ"
+
+SCRIPT = r"""
+set -e
+cd "$RADAR_HOST_DIR"
+apk add --no-cache bash curl >/dev/null 2>&1 || true
+for tool in bash curl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "ОШИБКА: в исполнителе нет $tool (нет сети?)" >&2
+        exit 1
+    fi
+done
+tag="$(curl -fsSL --max-time 20 "$RADAR_RELEASES_LATEST" \
+      | sed -n 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/p' | head -n 1)" || tag=""
+if [ -z "$tag" ]; then
+    echo "ОШИБКА: не удалось узнать последний выпуск" >&2
+    exit 1
+fi
+if ! curl -fsSL --max-time 60 -o /tmp/uninstall.sh \
+        "$RADAR_RAW_BASE/$tag/tools/uninstall.sh"; then
+    echo "ОШИБКА: не удалось скачать скрипт удаления $tag" >&2
+    exit 1
+fi
+if ! bash -n /tmp/uninstall.sh; then
+    echo "ОШИБКА: скачанный скрипт удаления повреждён" >&2
+    exit 1
+fi
+echo "Скрипт удаления $tag получен, стираю установку"
+RADAR_HOME="$RADAR_HOST_DIR" bash /tmp/uninstall.sh --yes
+"""
+
+
+def ready() -> tuple[bool, str]:
+    """Можно ли стирать отсюда. Второе — причина отказа."""
+    if not features.enabled("panel_wipe"):
+        return False, "Возможность «Удаление из панели» выключена."
+    if not os.path.exists(SOCKET):
+        return False, ("Сокет Docker не проброшен в контейнер: удалять "
+                       "нечем. Нужен свежий docker-compose.yml "
+                       "и пересоздание контейнера.")
+    if not os.access(SOCKET, os.W_OK):
+        return False, ("Сокет Docker виден, но контейнеру не хватает прав "
+                       "на него: нужен номер группы docker — DOCKER_GID.")
+    if not updater.host_dir():
+        return False, ("Не передан путь установки на хосте (RADAR_HOST_DIR). "
+                       "Обновите docker-compose.yml и пересоздайте контейнер.")
+    return True, ""
+
+
+def confirmed(word: str) -> bool:
+    """Введено ли слово подтверждения. Регистр и пробелы прощаем,
+    опечатку — нет: это последний рубеж перед необратимым."""
+    return (word or "").strip().upper() == CONFIRM_WORD
+
+
+async def start(actor: str) -> tuple[bool, str]:
+    """Запускает удаление. Возвращает (получилось, причина отказа)."""
+    allowed, reason = ready()
+    if not allowed:
+        return False, reason
+
+    directory = updater.host_dir()
+    payload = {
+        "Image": IMAGE,
+        "Cmd": ["sh", "-c", SCRIPT],
+        "Env": [
+            f"RADAR_HOST_DIR={directory}",
+            f"RADAR_RELEASES_LATEST={updater.RELEASES_LATEST}",
+            f"RADAR_RAW_BASE={updater.RAW_BASE}",
+            "HOME=/root",
+        ],
+        "WorkingDir": directory,
+        "HostConfig": {
+            "Binds": [
+                f"{SOCKET}:{SOCKET}",
+                f"{directory}:{directory}",
+            ],
+            "AutoRemove": False,
+            "NetworkMode": "bridge",
+        },
+    }
+
+    try:
+        session = await dockerapi.session()
+    except Exception as exc:  # noqa: BLE001
+        log.error("Сокет Docker недоступен: %s", exc)
+        return False, "Сокет Docker недоступен."
+
+    async with session:
+        # Образ тот же, что у обновления, и тянется тем же кодом:
+        # заводить вторую такую функцию значило бы чинить потом обе.
+        ok, why = await updater._ensure_image(session)
+        if not ok:
+            return False, f"Образ {IMAGE} не скачан: {why}"
+
+        try:
+            async with session.delete(f"{API}/containers/{CONTAINER}",
+                                      params={"force": "1"}) as response:
+                await response.read()
+        except Exception:  # noqa: BLE001
+            log.debug("Прошлый исполнитель не удалён", exc_info=True)
+
+        try:
+            async with session.post(f"{API}/containers/create",
+                                    params={"name": CONTAINER},
+                                    json=payload) as response:
+                body = await response.json()
+                if response.status not in (200, 201):
+                    message = str(body.get("message") or body)
+                    log.error("Исполнитель удаления не создан: %s", message)
+                    return False, f"Исполнитель не создан: {message}"
+                container_id = body.get("Id") or CONTAINER
+
+            async with session.post(
+                    f"{API}/containers/{container_id}/start") as response:
+                if response.status not in (204, 304):
+                    message = (await response.text())[:200]
+                    log.error("Исполнитель удаления не запущен: %s", message)
+                    return False, f"Исполнитель не запущен: {message}"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Удаление не запущено")
+            return False, f"Удаление не запущено: {exc}"
+
+    log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
+    return True, ""
+RADAR_FILE_79
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
+cat > "radar/cli.py" <<'RADAR_FILE_80'
+"""Командная строка: то же, что умеет веб-панель, только из консоли.
+
+Зачем. Панель требует браузера, входа через Telegram и живого домена.
+Когда нужно посмотреть источники по ssh, включить возможность из скрипта
+или снять копию по расписанию, всё это лишнее — а половина действий
+панели к интерфейсу отношения не имеет.
+
+Правило одно: подкоманды зовут ТЕ ЖЕ функции, что и обработчики панели.
+Никакой второй реализации — иначе два места начнут расходиться, и хуже
+всего это проявится там, где расхождение незаметно: в правах и в записи
+на диск.
+
+Запуск внутри контейнера бота:
+    python -m radar.cli sources list
+    python -m radar.cli features on digest
+    python -m radar.cli backup create --yes
+
+Снаружи, с хоста, — через обёртку: bash radarctl.sh …
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from typing import Any, Callable
+
+# Коды возврата: годится для cron и для скриптов.
+OK = 0
+FAILED = 1
+NEEDS_YES = 2   # разрушающее действие без --yes
+
+
+def _out(payload: Any, as_json: bool, plain: Callable[[Any], None]) -> None:
+    """Вывод в двух видах. JSON — для скриптов, обычный — для человека."""
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        plain(payload)
+
+
+async def _with_storage(action: Callable[[], Any]) -> Any:
+    """Поднимает базу ровно настолько, насколько нужно для чтения.
+
+    Схему не трогаем: её приводит в порядок бот при старте, и менять
+    её из командной строки — способ получить расхождение между тем,
+    что думает бот, и тем, что лежит на диске.
+    """
+    from . import storage
+    from .db import engine as db_engine
+
+    await db_engine.wait_ready()
+    await storage.load()
+    try:
+        result = action()
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
+    finally:
+        await db_engine.dispose()
+
+
+# --------------------------------------------------------------------------
+#  Источники
+# --------------------------------------------------------------------------
+
+def cmd_sources(args) -> int:
+    from . import sourceedit as se
+
+    kinds = (se.TELEGRAM, se.RSS, se.VK)
+
+    async def run():
+        if args.action == "list":
+            data = {kind: se.listing(kind) for kind in kinds}
+            _out(data, args.json, lambda d: [
+                print(f"{kind}: {', '.join(items) or 'пусто'}")
+                for kind, items in d.items()
+            ])
+            return OK
+
+        if args.action == "add":
+            added, skipped = se.add(args.kind, args.value)
+            _out({"added": added, "skipped": skipped}, args.json, lambda d: print(
+                f"добавлено: {', '.join(d['added']) or '—'}; "
+                f"пропущено: {', '.join(d['skipped']) or '—'}"))
+            return OK if added else FAILED
+
+        removed = se.remove(args.kind, args.value)
+        _out({"removed": removed}, args.json,
+             lambda d: print("удалено" if d["removed"] else "не найдено"))
+        return OK if removed else FAILED
+
+    return asyncio.run(_with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  Пользователи
+# --------------------------------------------------------------------------
+
+def cmd_users(args) -> int:
+    from . import roles, storage
+
+    async def run():
+        people = storage.users()
+        rows = [
+            {
+                "key": key,
+                "role": item.get("role", "user"),
+                "locations": len(item.get("locations") or []),
+            }
+            for key, item in people.items()
+        ]
+        _out(rows, args.json, lambda data: [
+            print(f"{row['key']:>12}  {roles.title(row['role']):<22} "
+                  f"локаций: {row['locations']}")
+            for row in data
+        ])
+        return OK
+
+    return asyncio.run(_with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  Возможности
+# --------------------------------------------------------------------------
+
+def cmd_features(args) -> int:
+    from . import features
+    from .db import repo
+
+    async def run():
+        if args.action == "list":
+            data = features.snapshot()
+            _out(data, args.json, lambda d: [
+                print(f"{'вкл ' if value else 'выкл'}  {key}")
+                for key, value in sorted(d.items())
+            ])
+            return OK
+
+        flag = features.resolve(args.key)
+        if flag is None:
+            print(f"Неизвестная возможность: {args.key}", file=sys.stderr)
+            return FAILED
+        if flag.locked:
+            print(f"{flag.title} — ядро системы, выключить нельзя",
+                  file=sys.stderr)
+            return FAILED
+
+        value = args.action == "on"
+        # Ровно та же пара действий, что в обработчике панели: память
+        # и база. Одной записи мало — переживёт только до перезапуска.
+        features.set_local(flag.key, value)
+        await repo.set_feature(flag.key, value, "командная строка")
+        print(f"{flag.title}: {'включено' if value else 'выключено'}")
+        return OK
+
+    return asyncio.run(_with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  Ключи
+# --------------------------------------------------------------------------
+
+def cmd_keys(args) -> int:
+    from . import secrets
+
+    if args.action == "list":
+        data = {
+            group: [
+                {"name": item.name, "value": secrets.display(item)}
+                for item in items
+            ]
+            for group, items in secrets.by_group().items()
+        }
+        _out(data, args.json, lambda d: [
+            print(f"[{group}] {item['name']}: {item['value']}")
+            for group, items in d.items() for item in items
+        ])
+        return OK
+
+    if not secrets.writable():
+        print("Файл .env недоступен на запись", file=sys.stderr)
+        return FAILED
+    if not secrets.write(args.name, args.value):
+        print(f"Не удалось записать {args.name}", file=sys.stderr)
+        return FAILED
+    print(f"{args.name}: записано ({secrets.mask(args.value)})")
+    return OK
+
+
+# --------------------------------------------------------------------------
+#  Копии и база
+# --------------------------------------------------------------------------
+
+def cmd_backup(args) -> int:
+    from . import backup
+
+    if args.action == "list":
+        rows = [{"name": item.name, "when": item.when, "size": item.size_human}
+                for item in backup.listing()]
+        _out(rows, args.json, lambda data: [
+            print(f"{row['when']}  {row['name']}  {row['size']}")
+            for row in data
+        ] or print("копий нет"))
+        return OK
+
+    path, error = backup.create_sync("командная строка")
+    if error or path is None:
+        print(f"Копия не создана: {error}", file=sys.stderr)
+        return FAILED
+    print(f"Копия создана: {path}")
+    return OK
+
+
+def cmd_db(args) -> int:
+    from . import config, dbcare
+
+    if args.action == "size":
+        # Тот же источник пути, что у самого dbcare.vacuum_sqlite.
+        size = dbcare.measure_sqlite(config.DB_FILE)
+        payload = {"bytes": size, "human": dbcare.format_size(size)}
+        _out(payload, args.json, lambda d: print(f"база: {d['human']}"))
+        return OK
+
+    if not args.yes:
+        print("Уплотнение базы останавливает запись. Повторите с --yes.",
+              file=sys.stderr)
+        return NEEDS_YES
+
+    before, after, note = asyncio.run(dbcare.vacuum_sqlite())
+    payload = {"before": before, "after": after, "note": note}
+    _out(payload, args.json, lambda d: print(
+        f"{dbcare.format_size(d['before'])} → {dbcare.format_size(d['after'])}"
+        f"  {d['note']}"))
+    return OK
+
+
+# --------------------------------------------------------------------------
+#  Ссылки и файлы
+# --------------------------------------------------------------------------
+
+def cmd_links(args) -> int:
+    from .db import repo
+
+    # Отказ по подтверждению — до всякой базы. Иначе на машине без
+    # поднятой базы «забыл --yes» выглядело бы как поломка: код 1
+    # вместо 2, и cron не отличил бы одно от другого.
+    if args.action == "clear" and not args.yes:
+        print("Будут удалены ВСЕ короткие ссылки. Повторите с --yes.",
+              file=sys.stderr)
+        return NEEDS_YES
+
+    async def run():
+        if args.action == "list":
+            rows = await repo.short_link_list()
+            _out(rows, args.json, lambda data: [
+                print(f"{row.get('code')}  →  {row.get('url')}") for row in data
+            ] or print("ссылок нет"))
+            return OK
+
+        if args.action == "remove":
+            done = await repo.remove_short_link(args.code)
+            print("удалено" if done else "не найдено")
+            return OK if done else FAILED
+
+        count = await repo.clear_short_links()
+        print(f"удалено ссылок: {count}")
+        return OK
+
+    return asyncio.run(_with_storage(run))
+
+
+def cmd_files(args) -> int:
+    from . import filedrop
+
+    rows = [{"token": drop.token, "name": drop.name} for drop in filedrop.listing()]
+    _out(rows, args.json, lambda data: [
+        print(f"{row['token']}  {row['name']}") for row in data
+    ] or print("раздач нет"))
+    return OK
+
+
+# --------------------------------------------------------------------------
+#  RustDesk
+# --------------------------------------------------------------------------
+
+def cmd_rustdesk(args) -> int:
+    from . import rustdesk
+
+    allowed, reason = rustdesk.ready()
+    if not allowed:
+        print(reason, file=sys.stderr)
+        return FAILED
+
+    if args.action == "info":
+        ok, payload = rustdesk.client_info()
+        if not ok:
+            print(payload, file=sys.stderr)
+            return FAILED
+        _out(payload, args.json, lambda d: print(
+            f"ID Server:    {d['host']}:{d['id_port']}\n"
+            f"Relay Server: {d['host']}:{d['relay_port']}\n"
+            f"Key:          {d['key']}"))
+        return OK
+
+    if args.action == "connections":
+        ok, payload = asyncio.run(rustdesk.connection_counts())
+        if not ok:
+            print(payload, file=sys.stderr)
+            return FAILED
+        _out(payload, args.json, lambda d: print(
+            f"hbbs: {d['hbbs']} онлайн, hbbr: {d['hbbr']} активных сессий"))
+        return OK
+
+    if args.action in ("stop", "restart") and not args.yes:
+        print(f"Действие «{args.action}» прервёт подключения. "
+              "Повторите с --yes.", file=sys.stderr)
+        return NEEDS_YES
+
+    ok, reason = asyncio.run(rustdesk.control(args.action))
+    print(reason or "готово", file=sys.stderr if not ok else sys.stdout)
+    return OK if ok else FAILED
+
+
+def cmd_doctor(args) -> int:
+    from . import doctor
+
+    sys.argv = ["radar.doctor"] + (["--quick"] if args.quick else []) \
+        + (["--json"] if args.json else [])
+    return doctor.main()
+
+
+def cmd_version(args) -> int:
+    from . import __version__
+
+    _out({"version": __version__}, args.json, lambda d: print(d["version"]))
+    return OK
+
+
+# --------------------------------------------------------------------------
+#  Разбор аргументов
+# --------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="radar", description="Управление «Радаром» из командной строки")
+    parser.add_argument("--json", action="store_true",
+                        help="машиночитаемый вывод")
+
+    # --json принимается и до подкоманды, и после неё: писать
+    # «radar --json version» помнит не каждый, а «radar version --json»
+    # набирается само. SUPPRESS обязателен — без него флаг подкоманды
+    # со своим значением по умолчанию затирал бы корневой.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="машиночитаемый вывод")
+
+    subparsers = parser.add_subparsers(dest="command", required=True,
+                                       parser_class=argparse.ArgumentParser)
+
+    sources = subparsers.add_parser("sources", help="источники", parents=[common])
+    sources.add_argument("action", choices=["list", "add", "remove"])
+    sources.add_argument("kind", nargs="?", default="",
+                         help="telegram | rss | vk")
+    sources.add_argument("value", nargs="?", default="")
+    sources.set_defaults(func=cmd_sources)
+
+    users = subparsers.add_parser("users", help="пользователи", parents=[common])
+    users.add_argument("action", nargs="?", choices=["list"], default="list")
+    users.set_defaults(func=cmd_users)
+
+    feats = subparsers.add_parser("features", help="возможности", parents=[common])
+    feats.add_argument("action", choices=["list", "on", "off"])
+    feats.add_argument("key", nargs="?", default="")
+    feats.set_defaults(func=cmd_features)
+
+    keys = subparsers.add_parser("keys", help="ключи и токены", parents=[common])
+    keys.add_argument("action", choices=["list", "set"])
+    keys.add_argument("name", nargs="?", default="")
+    keys.add_argument("value", nargs="?", default="")
+    keys.set_defaults(func=cmd_keys)
+
+    backup_cmd = subparsers.add_parser("backup", help="резервные копии", parents=[common])
+    backup_cmd.add_argument("action", choices=["list", "create"])
+    backup_cmd.set_defaults(func=cmd_backup)
+
+    db_cmd = subparsers.add_parser("db", help="обслуживание базы", parents=[common])
+    db_cmd.add_argument("action", choices=["size", "vacuum"])
+    db_cmd.add_argument("--yes", action="store_true")
+    db_cmd.set_defaults(func=cmd_db)
+
+    links = subparsers.add_parser("links", help="короткие ссылки", parents=[common])
+    links.add_argument("action", choices=["list", "remove", "clear"])
+    links.add_argument("code", nargs="?", default="")
+    links.add_argument("--yes", action="store_true")
+    links.set_defaults(func=cmd_links)
+
+    files = subparsers.add_parser("files", help="раздача файлов", parents=[common])
+    files.add_argument("action", nargs="?", choices=["list"], default="list")
+    files.set_defaults(func=cmd_files)
+
+    rd = subparsers.add_parser("rustdesk", help="сервер удалённого доступа", parents=[common])
+    rd.add_argument("action",
+                    choices=["info", "connections", "start", "stop", "restart"])
+    rd.add_argument("--yes", action="store_true")
+    rd.set_defaults(func=cmd_rustdesk)
+
+    doc = subparsers.add_parser("doctor", help="диагностика", parents=[common])
+    doc.add_argument("--quick", action="store_true")
+    doc.set_defaults(func=cmd_doctor)
+
+    ver = subparsers.add_parser("version", help="версия", parents=[common])
+    ver.set_defaults(func=cmd_version)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return int(args.func(args))
+    except KeyboardInterrupt:
+        return FAILED
+    except Exception as exc:  # noqa: BLE001
+        print(f"Ошибка: {exc}", file=sys.stderr)
+        return FAILED
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+RADAR_FILE_80
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
+cat > "radar/__main__.py" <<'RADAR_FILE_81'
+"""Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
+
+Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
+кто зайдёт в контейнер руками: угадывать имя модуля в такой момент
+не должно требоваться.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import sys
+
+from .cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())
+RADAR_FILE_81
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
+cat > "tools/uninstall.sh" <<'RADAR_FILE_82'
+#!/usr/bin/env bash
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+#
+# Полное удаление «Радара»: контейнеры, образ и каталог установки
+# целиком — база, .env, копии, журналы. В отличие от флага установщика
+# --uninstall, который данные сохраняет, этот скрипт не оставляет ничего.
+#
+# Отдельный скрипт, а не флаг: удаление нужно и тогда, когда установка
+# сломана и установщик не запускается. Скрипт самодостаточен, без сети
+# и без репозитория:
+#
+#   curl -fsSLo uninstall.sh https://raw.githubusercontent.com/Chistovik92/radar/main/tools/uninstall.sh
+#   bash uninstall.sh
+#
+# Использование:
+#   bash tools/uninstall.sh            с подтверждением
+#   bash tools/uninstall.sh --yes      без вопросов (автоматизация)
+#   RADAR_HOME=/путь bash tools/uninstall.sh   нестандартный каталог
+#
+set -Eeuo pipefail
+
+APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
+
+C_RESET=""; C_BOLD=""; C_DIM=""; C_GREEN=""; C_RED=""; C_YELLOW=""
+if [ -t 1 ]; then
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    C_GREEN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YELLOW=$'\033[1;33m'
+fi
+
+ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; }
+warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+die()  { printf "\n  %s✗ %s%s\n\n" "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
+
+ASSUME_YES=false
+case "${1:-}" in
+    --yes|-y) ASSUME_YES=true ;;
+    "") : ;;
+    -h|--help)
+        awk 'NR > 1 && /^# ?/ { sub(/^# ?/, ""); print }' "$0" | head -n 30
+        exit 0
+        ;;
+    *) die "Неизвестный аргумент: $1 (поддерживается только --yes)" ;;
+esac
+
+printf "\n  %sПолное удаление «Радара»%s\n" "$C_BOLD" "$C_RESET"
+printf "  Будет удалено безвозвратно:\n"
+printf "    контейнеры  radar_container, radar_db, radar_bot_api, radar_singbox\n"
+printf "    образ       radar_image\n"
+printf "    каталог     %s — база, .env, копии, журналы\n\n" "$APP_DIR"
+
+# Подтверждение сильнее обычного [д/Н]: удаляется всё, включая копии,
+# и отменить это нельзя. Требуется явное «да».
+if [ "$ASSUME_YES" != true ] && { [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null; }; then
+    printf "  %sВведите «да», чтобы удалить всё:%s " "$C_YELLOW" "$C_RESET"
+    answer=""
+    read -r answer < /dev/tty || answer=""
+    printf "\n"
+    case "$answer" in
+        да|Да|ДА|yes|YES) : ;;
+        *) die "Отменено" ;;
+    esac
+fi
+
+# Последняя копия — по желанию, перед удалением. Кэш Bot API Server
+# (может весить гигабайты видео) и журналы в неё не входят.
+final_backup=""
+if [ "$ASSUME_YES" != true ] && [ -d "$APP_DIR" ] \
+    && { [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null; }; then
+    printf "  %sСохранить последнюю копию перед удалением? [д/Н]:%s " \
+        "$C_YELLOW" "$C_RESET"
+    answer=""
+    read -r answer < /dev/tty || answer=""
+    printf "\n"
+    case "$answer" in
+        д|Д|y|Y|да|Да|ДА|yes|YES)
+            stamp="$(date +%Y%m%d-%H%M%S)"
+            final_backup="$HOME/radar-before-uninstall-$stamp.tar.gz"
+            if tar -czf "$final_backup" \
+                    --exclude="$APP_DIR/data/bot-api" \
+                    --exclude="$APP_DIR/data/logs" \
+                    -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")" 2>/dev/null; then
+                ok "Копия сохранена: $final_backup ($(du -h "$final_backup" | cut -f1))"
+            else
+                rm -f "$final_backup" 2>/dev/null || true
+                die "Копию снять не удалось — удаление остановлено, данные не тронуты"
+            fi
+            ;;
+        *) : ;;
+    esac
+fi
+
+# Останавливаем раздачу переезда, если она жива: процесс держит файлы
+# в каталоге установки и пережил бы rm -rf.
+if command -v pkill >/dev/null 2>&1; then
+    pkill -f "$APP_DIR/.migrate-serve.py" 2>/dev/null || true
+fi
+
+if command -v docker >/dev/null 2>&1; then
+    if [ -f "$APP_DIR/docker-compose.yml" ]; then
+        (cd "$APP_DIR" && docker compose down --remove-orphans 2>/dev/null) \
+            || (cd "$APP_DIR" && docker-compose down --remove-orphans 2>/dev/null) \
+            || true
+    fi
+    # Список полный намеренно: смысл скрипта — не оставить на покинутой
+    # машине ни данных, ни ключей. До 4.9.8.10 здесь были только первые
+    # четыре, и контейнеры, появившиеся позже (RustDesk, сертификат,
+    # исполнитель обновления), переживали «полное удаление».
+    docker rm -f radar_container radar_db radar_bot_api radar_singbox \
+        radar_tls radar_hbbs radar_hbbr radar_updater 2>/dev/null || true
+    docker rmi -f radar_image 2>/dev/null || true
+    # Том Caddy держит выданный сертификат и ключ к нему.
+    docker volume ls --format '{{.Name}}' 2>/dev/null \
+        | grep -i 'caddy' \
+        | xargs -r docker volume rm -f 2>/dev/null || true
+    ok "Контейнеры, образ и тома удалены"
+else
+    warn "Docker не найден — контейнеры и образ, если они есть, останутся"
+    warn "Удалите их вручную: docker rm -f radar_container radar_db; docker rmi radar_image"
+fi
+
+if [ -d "$APP_DIR" ]; then
+    rm -rf "$APP_DIR"
+    ok "Каталог удалён: $APP_DIR"
+else
+    warn "Каталог не найден: $APP_DIR — нечего удалять"
+fi
+
+printf "\n"
+ok "«Радар» полностью удалён"
+if [ -n "$final_backup" ]; then
+    printf "\n  Осталась одна копия: %s\n" "$final_backup"
+    printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
+fi
+printf "\n"
+RADAR_FILE_82
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
+cat > "tools/restore.sh" <<'RADAR_FILE_83'
+#!/usr/bin/env bash
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+#
+# Отдельный скрипт, а не флаг установщика. Причина в том, ради чего он
+# существует: восстановление нужно тогда, когда установка сломана —
+# а установщик в этот момент может не запускаться вовсе. Скрипт нарочно
+# простой, без сборки образов и обращений к сети: распаковать, положить
+# на место, поднять.
+#
+# Использование:
+#   bash tools/restore.sh                     последняя копия
+#   bash tools/restore.sh ФАЙЛ.tar.gz         конкретная
+#   bash tools/restore.sh --list              что вообще есть
+#
+# Без аргумента скрипт сначала ищет копию рядом с собой (с 4.8.3.1 —
+# ручной переезд: положил архив в каталог, запустил скрипт), затем —
+# в backups работающей установки.
+#
+# На сервере репозитория нет — установщик разворачивает только код бота.
+# Скрипт самодостаточен и скачивается одной командой:
+#   curl -fsSLo restore.sh https://raw.githubusercontent.com/Chistovik92/radar/main/tools/restore.sh
+#   bash restore.sh radar-backup-….tar.gz
+#
+set -Eeuo pipefail
+
+APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
+BACKUPS="$APP_DIR/backups"
+
+C_RESET=""; C_BOLD=""; C_DIM=""; C_GREEN=""; C_RED=""; C_YELLOW=""
+if [ -t 1 ]; then
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    C_GREEN=$'\033[1;32m'; C_RED=$'\033[1;31m'; C_YELLOW=$'\033[1;33m'
+fi
+
+ok()   { printf "  %s✓%s %s\n" "$C_GREEN" "$C_RESET" "$*"; }
+warn() { printf "  %s!%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+die()  { printf "\n  %s✗ %s%s\n\n" "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
+
+listing() {
+    find "$BACKUPS" -maxdepth 1 -name 'radar-backup-*.tar.gz' 2>/dev/null \
+        | sort -r || true
+}
+
+if [ "${1:-}" = "--list" ]; then
+    printf "\n  %sДоступные копии%s\n\n" "$C_BOLD" "$C_RESET"
+    found=false
+    while read -r item; do
+        [ -n "$item" ] || continue
+        found=true
+        printf "    %s  %s%s%s\n" "$(basename "$item")" \
+            "$C_DIM" "$(du -h "$item" | cut -f1)" "$C_RESET"
+    done <<< "$(listing)"
+    [ "$found" = true ] || printf "    копий нет\n"
+    printf "\n"
+    exit 0
+fi
+
+ARCHIVE="${1:-}"
+if [ -z "$ARCHIVE" ]; then
+    # Сначала — рядом со скриптом (ручной переезд: архив положили
+    # в каталог и запустили), затем — в backups работающей установки.
+    ARCHIVE="$(find . -maxdepth 1 -name 'radar-backup-*.tar.gz' 2>/dev/null \
+        | sort -r | head -1 || true)"
+    [ -n "$ARCHIVE" ] || ARCHIVE="$(listing | head -1)"
+    [ -n "$ARCHIVE" ] || die "Копий не найдено: ни рядом со скриптом, ни в $BACKUPS"
+    printf "  Беру последнюю: %s\n" "$(basename "$ARCHIVE")"
+fi
+case "$ARCHIVE" in
+    /*) : ;;
+    *) [ -f "$ARCHIVE" ] || ARCHIVE="$BACKUPS/$ARCHIVE" ;;
+esac
+[ -f "$ARCHIVE" ] || die "Файл не найден: $ARCHIVE"
+
+printf "\n  %sВосстановление «Радара»%s\n" "$C_BOLD" "$C_RESET"
+printf "  Копия:    %s\n" "$(basename "$ARCHIVE")"
+printf "  Каталог:  %s\n\n" "$APP_DIR"
+
+# Подтверждение обязательно: восстановление затирает текущие данные,
+# и человек, запустивший скрипт наугад, должен успеть остановиться.
+if [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null; then
+    printf "  %sТекущие данные будут заменены. Продолжить? [д/Н]:%s " \
+        "$C_YELLOW" "$C_RESET"
+    answer=""
+    read -r answer < /dev/tty || answer="n"
+    case "$answer" in
+        y|Y|д|Д|yes|да) : ;;
+        *) die "Отменено" ;;
+    esac
+fi
+
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
+
+tar -xzf "$ARCHIVE" -C "$STAGING" || die "Не удалось распаковать копию"
+ok "Копия распакована"
+
+if [ -f "$STAGING/manifest.txt" ]; then
+    printf "\n  %sСодержимое копии%s\n" "$C_BOLD" "$C_RESET"
+    sed 's/^/    /' "$STAGING/manifest.txt"
+    printf "\n"
+else
+    warn "Манифеста нет — возможно, это не копия «Радара»"
+fi
+
+mkdir -p "$APP_DIR/data"
+
+if [ -d "$APP_DIR" ] && command -v docker >/dev/null 2>&1; then
+    (cd "$APP_DIR" && docker compose down 2>/dev/null) || true
+    ok "Контейнеры остановлены"
+fi
+
+if [ -f "$STAGING/env.backup" ]; then
+    cp "$STAGING/env.backup" "$APP_DIR/.env"
+    chmod 600 "$APP_DIR/.env" 2>/dev/null || true
+    ok "Настройки восстановлены"
+else
+    warn "В копии нет .env — параметры придётся ввести заново"
+fi
+
+if [ -d "$STAGING/data" ]; then
+    cp -r "$STAGING/data/." "$APP_DIR/data/" 2>/dev/null || true
+    ok "Файлы данных восстановлены"
+fi
+
+# Копии, снятые самим ботом (radar/backup.py — ночные и из панели),
+# кладут файлы базы россыпью в корень архива, без каталога data/.
+# До 4.8.2.2 restore.sh, как и установщик, молча их выбрасывал.
+found_db=false
+for dbfile in radar.db radar.db-wal radar.db-shm db.json; do
+    if [ -f "$STAGING/$dbfile" ]; then
+        cp "$STAGING/$dbfile" "$APP_DIR/data/"
+        found_db=true
+    fi
+done
+if [ "$found_db" = true ]; then
+    ok "База из копии бота восстановлена"
+fi
+
+if [ -f "$STAGING/database.sql" ]; then
+    cp "$STAGING/database.sql" "$APP_DIR/data/restore-database.sql"
+fi
+
+# Пустую копию не пропускаем молча: бот поднялся бы с чистой базой,
+# и заметно это стало бы только по пропавшим пользователям.
+if [ "$found_db" != true ] && [ ! -d "$STAGING/data" ] \
+    && [ ! -f "$STAGING/database.sql" ]; then
+    warn "В копии нет ни дампа базы, ни файлов данных — бот поднимется с пустой базой"
+fi
+
+printf "\n"
+ok "Восстановление завершено"
+
+# Подъём. До 4.8.2.3 скрипт останавливался на печати подсказки, хотя
+# обещал «поднять»: человеку, восстанавливающемуся после поломки,
+# доставалась ещё одна команда руками. Профили собираются из .env
+# той же логикой, что в установщике.
+if [ ! -f "$APP_DIR/docker-compose.yml" ] || ! command -v docker >/dev/null 2>&1; then
+    printf "\n  Дальше:\n"
+    printf "    cd %s && docker compose up -d\n" "$APP_DIR"
+    printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
+    exit 0
+fi
+
+env_value() {   # env_value <переменная> — из .env после восстановления
+    grep -E "^$1=" "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true
+}
+
+COMPOSE="docker compose"
+docker compose version >/dev/null 2>&1 || COMPOSE="docker-compose"
+
+BACKEND="$(env_value DB_BACKEND)"; : "${BACKEND:=sqlite}"
+COMPOSE_ARGS=""
+if [ "$BACKEND" = "postgres" ]; then
+    COMPOSE_ARGS="--profile postgres"
+fi
+if [ "$(env_value MEDIA_ENABLED)" = "1" ] \
+    && [ -n "$(env_value TELEGRAM_API_ID)" ] \
+    && [ -n "$(env_value TELEGRAM_API_HASH)" ]; then
+    COMPOSE_ARGS="$COMPOSE_ARGS --profile media"
+fi
+
+# Несовпадение носителя данных и выбранной базы — вслух, а не молча:
+# бот поднялся бы живым, но с пустой базой, и заметно это стало бы не сразу.
+if [ "$BACKEND" = "postgres" ] && [ "$found_db" = true ]; then
+    warn "В .env выбран PostgreSQL, а из копии пришли файлы SQLite — бот их не увидит"
+    warn "Если копия сделана на SQLite, поправьте DB_BACKEND=sqlite в .env и перезапустите"
+fi
+if [ "$BACKEND" = "sqlite" ] && [ -f "$APP_DIR/data/restore-database.sql" ]; then
+    warn "В копии дамп PostgreSQL, а выбрана SQLite — залить нельзя: это разные диалекты SQL"
+fi
+
+# Дамп PostgreSQL заливается ДО старта бота: иначе бот создаст пустую
+# схему, и дамп ляжет поверх наполовину — часть таблиц из копии,
+# часть новых. Та же логика, что в установщике при переезде.
+if [ "$BACKEND" = "postgres" ] && [ -f "$APP_DIR/data/restore-database.sql" ]; then
+    (cd "$APP_DIR" && $COMPOSE $COMPOSE_ARGS up -d postgres) || true
+    DB_USER="$(env_value DB_USER)"; : "${DB_USER:=radar}"
+    DB_NAME="$(env_value DB_NAME)"; : "${DB_NAME:=radar}"
+    ready=false
+    for _ in $(seq 1 45); do
+        if docker exec radar_db pg_isready -U "$DB_USER" >/dev/null 2>&1; then
+            ready=true
+            break
+        fi
+        sleep 2
+    done
+    if [ "$ready" = true ] \
+        && docker exec -i radar_db psql -U "$DB_USER" -d "$DB_NAME" \
+               < "$APP_DIR/data/restore-database.sql" >/dev/null 2>&1; then
+        ok "Дамп базы залит"
+        # Переименован, чтобы повторный запуск не заливал дамп поверх базы.
+        mv "$APP_DIR/data/restore-database.sql" \
+           "$APP_DIR/data/restore-database.sql.applied" 2>/dev/null || true
+    else
+        warn "Дамп не залился — сделайте это руками и перезапустите бота:"
+        printf "    docker exec -i radar_db psql -U %s %s < %s\n" \
+            "$DB_USER" "$DB_NAME" "$APP_DIR/data/restore-database.sql"
+        printf "    cd %s && docker compose restart radar\n" "$APP_DIR"
+    fi
+fi
+
+if (cd "$APP_DIR" && $COMPOSE $COMPOSE_ARGS up -d); then
+    sleep 5
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^radar_container$'; then
+        ok "Бот запущен"
+    else
+        warn "Контейнер не поднялся — смотрите журнал:"
+        printf "    docker logs -f radar_container\n"
+    fi
+else
+    warn "Не удалось запустить — поднимите вручную:"
+    printf "    cd %s && docker compose up -d\n" "$APP_DIR"
+fi
+
+printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
+RADAR_FILE_83
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
+cat > "tools/radarctl.sh" <<'RADAR_FILE_84'
+#!/usr/bin/env bash
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+#
+# Командная строка «Радара»: то же, что умеет веб-панель, только из консоли
+# и пригодно для cron.
+#
+# Команды делятся на две группы, и это не прихоть. Одни работают с данными
+# бота — их выполняет сам бот внутри своего контейнера, потому что там
+# база, .env и весь код. Другие управляют самой установкой — их выполнять
+# внутри контейнера бессмысленно: обновление пересоздаёт этот контейнер,
+# а удаление его стирает.
+#
+# Внутри контейнера:
+#   bash radarctl.sh sources list
+#   bash radarctl.sh features on digest
+#   bash radarctl.sh backup create
+#   bash radarctl.sh db size --json
+#   bash radarctl.sh rustdesk connections
+#   bash radarctl.sh doctor --quick
+#
+# На хосте:
+#   bash radarctl.sh update            обновиться до последнего выпуска
+#   bash radarctl.sh wipe --yes        стереть установку целиком
+#   bash radarctl.sh restore ФАЙЛ      восстановить из копии
+#
+# Общее:
+#   RADAR_HOME=/путь bash radarctl.sh …   нестандартный каталог установки
+#   bash radarctl.sh --help               этот текст
+#
+set -Eeuo pipefail
+
+APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
+CONTAINER="${RADAR_CONTAINER:-radar_container}"
+INSTALLER_URL="https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh"
+UNINSTALL_URL="https://raw.githubusercontent.com/Chistovik92/radar/main/tools/uninstall.sh"
+
+die() { printf "\n  ✗ %s\n\n" "$*" >&2; exit 1; }
+
+usage() {
+    awk 'NR > 1 && /^# ?/ { sub(/^# ?/, ""); print }' "$0" | head -n 40
+}
+
+# Справка обязана работать там, где Docker не установлен вовсе:
+# её читают и до установки, и на своей машине.
+case "${1:-}" in
+    ""|-h|--help|help) usage; exit 0 ;;
+esac
+
+command -v docker >/dev/null 2>&1 || die "Docker не найден — управлять нечем"
+
+case "$1" in
+    update)
+        shift
+        # Тот же путь, что у кнопки в панели: установщик берётся свежий,
+        # потому что лежащий рядом несёт код своей версии внутри себя.
+        cd "$APP_DIR" 2>/dev/null || die "Каталог установки не найден: $APP_DIR"
+        curl -fsSLo install.sh.new "$INSTALLER_URL" \
+            || die "Не удалось скачать установщик"
+        bash -n install.sh.new || { rm -f install.sh.new; die "Установщик повреждён"; }
+        mv -f install.sh.new install.sh
+        exec env RADAR_HOME="$APP_DIR" bash install.sh --skip-updates "$@"
+        ;;
+
+    wipe)
+        shift
+        if [ -f "$APP_DIR/tools/uninstall.sh" ]; then
+            exec env RADAR_HOME="$APP_DIR" bash "$APP_DIR/tools/uninstall.sh" "$@"
+        fi
+        # Установка могла быть сломана до того, как скрипт лёг на место.
+        curl -fsSLo /tmp/radar-uninstall.sh "$UNINSTALL_URL" \
+            || die "Не удалось скачать скрипт удаления"
+        bash -n /tmp/radar-uninstall.sh || die "Скрипт удаления повреждён"
+        exec env RADAR_HOME="$APP_DIR" bash /tmp/radar-uninstall.sh "$@"
+        ;;
+
+    restore)
+        shift
+        [ -f "$APP_DIR/tools/restore.sh" ] \
+            || die "Рядом с установкой нет tools/restore.sh"
+        exec env RADAR_HOME="$APP_DIR" bash "$APP_DIR/tools/restore.sh" "$@"
+        ;;
+
+    *)
+        # Всё остальное — внутрь контейнера, к коду и базе бота.
+        docker inspect "$CONTAINER" >/dev/null 2>&1 \
+            || die "Контейнер $CONTAINER не найден — бот не установлен или остановлен"
+        exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
+        ;;
+esac
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_79'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_85'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -26552,9 +27823,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_79
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_80'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_86'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -26622,9 +27893,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_80
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_87'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -27067,9 +28338,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_81
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_82'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_88'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -27235,9 +28506,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_82
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_83'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_89'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -27742,9 +29013,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_83
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_90'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -28219,9 +29490,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_84
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_91'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -28588,9 +29859,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_85
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_92'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -28737,9 +30008,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_86
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_93'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -29027,9 +30298,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_87
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_94'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -29236,9 +30507,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_88
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_95'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -29609,9 +30880,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_89
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_96'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -30186,9 +31457,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_90
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_97'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -30289,9 +31560,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_91
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_98'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -30381,9 +31652,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_92
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_99'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -30804,9 +32075,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_93
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_100'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -31969,9 +33240,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_94
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_101'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -32702,9 +33973,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_95
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_102'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -33228,9 +34499,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_96
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_103'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -33438,9 +34709,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_97
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_104'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -33853,9 +35124,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_98
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_105'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -34118,9 +35389,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_99
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_106'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -34270,9 +35541,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_100
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_107'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -34740,9 +36011,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_101
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_102'
+cat > "radar/cookies.py" <<'RADAR_FILE_108'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -34873,9 +36144,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_102
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_103'
+cat > "radar/music.py" <<'RADAR_FILE_109'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -35383,9 +36654,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_103
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_110'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -35890,9 +37161,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_104
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_105'
+cat > "multitool/__init__.py" <<'RADAR_FILE_111'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -35918,9 +37189,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_105'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_105
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_106'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_112'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -35953,9 +37224,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_106'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_106
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_107'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_113'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -36362,9 +37633,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_107
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_108'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_114'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -36779,9 +38050,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_108
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_109'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_115'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -36975,7 +38246,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_109
+RADAR_FILE_115
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

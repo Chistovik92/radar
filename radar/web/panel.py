@@ -254,7 +254,12 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
             scrollbar-width:none; }
   .subnav::-webkit-scrollbar { display:none; }
   th, td { padding:9px 10px; }
-  .who { font-size:13px; }
+  /* Роль и «выйти» уходят ПОСЛЕ разделов. Иначе они переносились первыми
+     («Суперадминистратор · выйти» шире, чем остаток строки), и разделы
+     оказывались третьей строкой — на телефоне это половина экрана
+     до начала самой страницы. */
+  .who { order:4; flex:1 0 100%; text-align:right; font-size:12px;
+         margin-top:-2px; }
 
   /* Размер под палец. Кнопка «удалить» в строке таблицы была 28px —
      в неё попадали через раз. */
@@ -294,12 +299,27 @@ code { background:var(--surface-2); padding:1px 6px; border-radius:6px;
                    background:var(--surface-2); margin-bottom:10px;
                    padding:4px 0; }
   table.stack tr:last-child { margin-bottom:0; }
-  table.stack td { border:none; padding:7px 13px; }
-  table.stack td::before { content:attr(data-label); display:block;
-                           color:var(--muted); font-size:11.5px;
-                           text-transform:uppercase; letter-spacing:.05em; }
+  /* Подпись и значение в одну строку, а не одно над другим: в столбик
+     каждое поле занимало почти сто точек, и один пользователь выходил
+     длиннее экрана — а их дюжина. */
+  table.stack td { border:none; padding:6px 13px; display:flex;
+                   flex-wrap:wrap; justify-content:space-between;
+                   align-items:baseline; gap:10px; }
+  table.stack td::before { content:attr(data-label); display:inline;
+                           flex:0 0 auto; color:var(--muted);
+                           font-size:11.5px; text-transform:uppercase;
+                           letter-spacing:.05em; }
+  /* Форма (пояс, время, кнопка) — на свою строку внутри ячейки. */
+  table.stack td > form.inline { flex:1 0 100%; margin-top:6px; }
   table.stack td:empty { display:none; }
-  .grid { grid-template-columns:1fr; }
+
+  /* Плитки сводки: в одну колонку три карточки занимали весь экран. */
+  .grid { grid-template-columns:repeat(2, 1fr); gap:10px; }
+  .metric b { font-size:22px; }
+  .card { padding:14px 15px; }
+  /* Подменю перестаёт липнуть: шапка на телефоне высокая, и второй
+     липкий ряд с тем же top:0 просто уезжал под неё при прокрутке. */
+  .subnav { position:static; }
   h1 { font-size:19px; }
 }
 
@@ -687,6 +707,10 @@ _PARENT_PAGE: dict[str, tuple[str, str, str]] = {
     "features": ("maintenance", "/maintenance", "Обслуживание"),
     "audit": ("maintenance", "/maintenance", "Обслуживание"),
     "partners": ("maintenance", "/maintenance", "Обслуживание"),
+    # Удаление живёт там же, где остальное редкое и опасное, а не
+    # в общем ряду разделов: в меню верхнего уровня кнопка «стереть
+    # сервер» соседствовала бы с «Источниками».
+    "wipe": ("maintenance", "/maintenance", "Обслуживание"),
 }
 
 
@@ -903,6 +927,69 @@ async def _rustdesk_body(session, ok: str = "", err: str = "") -> str:
     return "".join(parts)
 
 
+def _wipe_body(session, ok: str = "", err: str = "") -> str:
+    """Страница полного удаления.
+
+    Единственное место панели, где подтверждение — слово, а не кнопка.
+    Причина простая: отменить нечего. Копии, база и .env уходят вместе
+    с каталогом, и «случайно нажал» здесь стоит дороже, чем неудобство
+    набрать семь букв.
+    """
+    from .. import wipe
+
+    allowed, reason = wipe.ready()
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    parts.append(
+        '<div class="card warn">'
+        "<p><b>Это удаление всей установки, а не очистка данных.</b></p>"
+        "<p class=\"muted\">Будут удалены контейнеры и образ, каталог "
+        "установки целиком — база, <code>.env</code> с ключами, резервные "
+        "копии и журналы. Панель перестанет отвечать в процессе: она живёт "
+        "в том же контейнере. Отменить нельзя.</p>"
+        "<p class=\"muted\">Задумано для покинутого сервера после переезда. "
+        "Если сервер рабочий — вам сюда не нужно.</p></div>"
+    )
+
+    if not allowed:
+        parts.append(f'<div class="card warn">{html.escape(reason)}</div>')
+        if not features.enabled("panel_wipe"):
+            parts.append(
+                '<div class="card">'
+                '<form method="post" action="/features/toggle">'
+                f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+                '<input type="hidden" name="key" value="panel_wipe">'
+                '<input type="hidden" name="back" value="/wipe">'
+                '<button type="submit">Включить удаление из панели</button>'
+                "</form>"
+                '<p class="muted">Включённая возможность означает, что доступ '
+                "к панели равен праву стереть сервер. Выключить можно там же "
+                "или в «Возможностях».</p></div>"
+            )
+        return "".join(parts)
+
+    parts.append(
+        '<div class="card">'
+        '<p class="muted">Сначала — копия. После удаления скачивать будет '
+        'неоткуда.</p>'
+        '<a class="back" href="/backup">Резервные копии</a></div>'
+    )
+
+    parts.append(
+        '<div class="card">'
+        '<form method="post" action="/wipe/start">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<p>Введите <b>{html.escape(wipe.CONFIRM_WORD)}</b>, чтобы стереть '
+        "установку:</p>"
+        '<input type="text" name="word" autocomplete="off" '
+        'placeholder="слово подтверждения" required> '
+        '<button type="submit" class="danger">Стереть установку</button>'
+        "</form></div>"
+    )
+    return "".join(parts)
+
+
 def _maintenance_body() -> str:
     """Обслуживание: то, к чему обращаются редко и по делу.
 
@@ -935,6 +1022,12 @@ def _maintenance_body() -> str:
     ]
     if features.enabled("partners"):
         items.append(("/partners", "Партнёры", "Проекты и промокоды.", ""))
+    # Последним и с прямой формулировкой: это не «очистка», а снос
+    # установки. Пункт виден всегда — страница сама объясняет цену
+    # и требует слова подтверждения.
+    items.append(("/wipe", "Удаление",
+                  "Стереть установку целиком: контейнеры, база, ключи, копии.",
+                  ""))
 
     cards = "".join(
         f'<div class="card"><h3><a href="{href}">{html.escape(name)}</a></h3>'
@@ -2628,6 +2721,37 @@ async def create_app() -> Any:
         audit.record(session.user_key, f"rustdesk {action}", "")
         raise web.HTTPFound("/rustdesk?ok=" + quote(f"{action}: готово"))
 
+    @owner_only
+    async def wipe_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Удаление",
+                _wipe_body(session,
+                           request.query.get("ok", ""),
+                           request.query.get("err", "")),
+                "wipe", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def wipe_start(request):
+        from .. import wipe
+
+        session, data = await _guarded_form(request, "superadmin")
+        if not wipe.confirmed(str(data.get("word", ""))):
+            audit.record(session.user_key, "удаление не подтверждено", "")
+            raise web.HTTPFound("/wipe?err=" + quote(
+                f"Нужно ввести слово {wipe.CONFIRM_WORD} — ничего не удалено"))
+
+        started, reason = await wipe.start(f"панель:{session.user_key}")
+        if not started:
+            audit.record(session.user_key, "удаление не запущено", reason)
+            raise web.HTTPFound("/wipe?err=" + quote(reason))
+        audit.record(session.user_key, "ЗАПУЩЕНО УДАЛЕНИЕ СИСТЕМЫ",
+                     config.VERSION)
+        raise web.HTTPFound("/wipe?ok=" + quote(
+            "Удаление запущено — панель вот-вот перестанет отвечать"))
+
     async def health(_request):
         # Версию отсюда убрали: маршрут открыт без входа, а точная версия
         # снаружи — это готовый ответ на вопрос «что здесь уязвимо».
@@ -2684,6 +2808,8 @@ async def create_app() -> Any:
         web.post("/update/start", update_start),
         web.get("/rustdesk", rustdesk_page),
         web.post("/rustdesk/action", rustdesk_action),
+        web.get("/wipe", wipe_page),
+        web.post("/wipe/start", wipe_start),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),

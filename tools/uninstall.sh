@@ -107,10 +107,18 @@ if command -v docker >/dev/null 2>&1; then
             || (cd "$APP_DIR" && docker-compose down --remove-orphans 2>/dev/null) \
             || true
     fi
+    # Список полный намеренно: смысл скрипта — не оставить на покинутой
+    # машине ни данных, ни ключей. До 4.9.8.10 здесь были только первые
+    # четыре, и контейнеры, появившиеся позже (RustDesk, сертификат,
+    # исполнитель обновления), переживали «полное удаление».
     docker rm -f radar_container radar_db radar_bot_api radar_singbox \
-        2>/dev/null || true
+        radar_tls radar_hbbs radar_hbbr radar_updater 2>/dev/null || true
     docker rmi -f radar_image 2>/dev/null || true
-    ok "Контейнеры и образ удалены"
+    # Том Caddy держит выданный сертификат и ключ к нему.
+    docker volume ls --format '{{.Name}}' 2>/dev/null \
+        | grep -i 'caddy' \
+        | xargs -r docker volume rm -f 2>/dev/null || true
+    ok "Контейнеры, образ и тома удалены"
 else
     warn "Docker не найден — контейнеры и образ, если они есть, останутся"
     warn "Удалите их вручную: docker rm -f radar_container radar_db; docker rmi radar_image"

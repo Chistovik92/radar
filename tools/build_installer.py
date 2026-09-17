@@ -105,6 +105,15 @@ MANIFEST = [
     "radar/netguard.py",
     "radar/dockerapi.py",
     "radar/updater.py",
+    "radar/wipe.py",
+    "radar/cli.py",
+    "radar/__main__.py",
+    # Скрипты обслуживания теперь едут на сервер вместе с кодом.
+    # До 4.9.8.10 установщик только печатал команду curl, и «запустить
+    # из командной строки» начиналось со скачивания.
+    "tools/uninstall.sh",
+    "tools/restore.sh",
+    "tools/radarctl.sh",
     "radar/rustdesk.py",
     "radar/handlers/__init__.py",
     "radar/handlers/common.py",

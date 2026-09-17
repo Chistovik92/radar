@@ -1,4 +1,4 @@
-# Radar v4.9.8.9
+# Radar v4.9.8.10
 
 [Русская версия](README.md)
 
@@ -256,7 +256,48 @@ curl -fsSLo install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/
 bash install.sh
 ```
 
-After that the panel button works on its own. The steps are
+After that the panel button works on its own.
+
+### Command line
+
+Everything the panel can do also works from a console — the wrapper sits
+next to the installation:
+
+```bash
+bash tools/radarctl.sh --help
+bash tools/radarctl.sh sources list
+bash tools/radarctl.sh features on digest
+bash tools/radarctl.sh backup create
+bash tools/radarctl.sh rustdesk connections --json
+bash tools/radarctl.sh doctor --quick
+```
+
+Bot commands run inside the container (that is where the database and
+`.env` live); installation commands run on the host: `update`, `restore`,
+`wipe`. Reading commands accept `--json`; destructive ones do nothing
+without `--yes` and return code `2`, distinct from the error code — so
+that `cron` never confuses "not confirmed" with "broken".
+
+### Removing the installation
+
+For a server left behind after a migration: it removes the containers,
+the image and the whole directory, along with the database, keys, backups
+and logs:
+
+```bash
+bash tools/radarctl.sh wipe          # asks for confirmation
+bash tools/radarctl.sh wipe --yes    # no questions
+```
+
+The same is available in the panel — Maintenance → Removal, behind the
+`panel_wipe` feature (off by default) and confirmed by typing a word
+rather than clicking a button. The panel stops answering while it runs:
+it lives in the very container being removed.
+
+**What removal does not do:** it does not revoke issued tokens. If the
+server leaves your hands, change the bot token at @BotFather and the AI
+keys — they were in `.env`. And note that deleting a file on a flash card
+does not erase the data physically: a board is safer reflashed. The steps are
 visible in the panel itself — the installer writes a step-by-step log into
 `data/logs`, and the page reads the latest one, refreshing itself while the
 work is in progress. During the image rebuild the panel is briefly
