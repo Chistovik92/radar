@@ -219,6 +219,16 @@ button.ghost.danger { background:var(--surface-2); color:var(--bad);
 .note.good { background:var(--ok-soft); color:var(--ok); border-color:var(--ok); }
 .note.bad { background:var(--bad-soft); color:var(--bad); border-color:var(--bad); }
 
+/* Спойлер: им свёрнуто то, что множится само и мешает читать главное
+   (системные ссылки подборок). Оформлен карточкой, чтобы не выпадать
+   из вида страницы ни в одной теме. */
+details.card > summary { cursor:pointer; font-weight:600; list-style:none; }
+details.card > summary::-webkit-details-marker { display:none; }
+details.card > summary::before { content:"▸ "; color:var(--muted); }
+details.card[open] > summary::before { content:"▾ "; }
+details.card > summary:hover { color:var(--link); }
+details.card > table, details.card > p { margin-top:12px; }
+
 .keyrow { display:grid; grid-template-columns:1fr; gap:6px; padding:13px 0;
           border-bottom:1px solid var(--line); }
 .keyrow:last-child { border-bottom:none; }
@@ -1624,6 +1634,20 @@ def _files_body(session, message: str = "", failed: str = "") -> str:
     return _note("ok", message) + _note("bad", failed) + head + table
 
 
+def _split_links(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Делит ссылки на людские и системные.
+
+    Системные заводит рассылка подборок (`radar/monitor.py`) — она зовёт
+    `save_short_link` без автора, и в записи остаётся `created_by = 0`.
+    Их бывает во много раз больше, чем сокращённых людьми, и вперемешку
+    они прячут единственное, ради чего на страницу заходят: что сокращали
+    сами пользователи.
+    """
+    people = [item for item in items if int(item.get("created_by") or 0)]
+    system = [item for item in items if not int(item.get("created_by") or 0)]
+    return people, system
+
+
 async def _links_body(session, message: str = "", failed: str = "") -> str:
     """Сокращённые ссылки: кто завёл, куда ведёт, живы ли переходы.
 
@@ -1644,8 +1668,7 @@ async def _links_body(session, message: str = "", failed: str = "") -> str:
         return (_note("ok", message) + _note("bad", failed)
                 + '<div class="card muted">Сокращённых ссылок нет.</div>')
 
-    rows = []
-    for item in items:
+    def row(item: dict) -> str:
         creator = item.get("created_by") or 0
         owner = storage.get_user(creator) if creator else None
         if owner is not None:
@@ -1659,15 +1682,17 @@ async def _links_body(session, message: str = "", failed: str = "") -> str:
         hits_line = (f'<span class="ok">переходов: {hits}</span>' if hits
                      else '<span class="muted">переходов нет</span>')
         short = html.escape(shortener.short_url(str(item["code"])))
-        rows.append(
+        return (
             "<tr>"
-            f'<td><a href="{short}"><code>{html.escape(str(item["code"]))}</code></a></td>'
-            f'<td style="max-width:22em;overflow:hidden;text-overflow:ellipsis;'
-            f'white-space:nowrap"><span title="{html.escape(str(item["url"])[:300])}">'
+            f'<td data-label="Код"><a href="{short}">'
+            f'<code>{html.escape(str(item["code"]))}</code></a></td>'
+            f'<td data-label="Куда ведёт" style="max-width:22em;overflow:hidden;'
+            f'text-overflow:ellipsis;white-space:nowrap">'
+            f'<span title="{html.escape(str(item["url"])[:300])}">'
             f'{html.escape(str(item["url"])[:90])}</span></td>'
-            f"<td>{who}</td>"
-            f"<td>{hits_line}</td>"
-            '<td style="text-align:right;width:1%">'
+            f'<td data-label="Кем создана">{who}</td>'
+            f'<td data-label="Переходы">{hits_line}</td>'
+            '<td data-label="" style="text-align:right;width:1%">'
             '<form method="post" action="/links/remove">'
             f'<input type="hidden" name="csrf" value="{token}">'
             f'<input type="hidden" name="code" value="{html.escape(str(item["code"]))}">'
@@ -1675,12 +1700,34 @@ async def _links_body(session, message: str = "", failed: str = "") -> str:
             "</form></td></tr>"
         )
 
-    table = (
-        '<div class="card"><table><tr>'
-        "<th>Код</th><th>Куда ведёт</th><th>Кем создана</th>"
-        "<th>Переходы</th><th></th></tr>"
-        + "".join(rows) + "</table></div>"
-    )
+    def table_of(rows: list[dict]) -> str:
+        return (
+            '<table class="stack"><thead><tr>'
+            "<th>Код</th><th>Куда ведёт</th><th>Кем создана</th>"
+            "<th>Переходы</th><th></th></tr></thead><tbody>"
+            + "".join(row(item) for item in rows) + "</tbody></table>"
+        )
+
+    people, system = _split_links(items)
+
+    if people:
+        table = f'<div class="card">{table_of(people)}</div>'
+    else:
+        table = ('<div class="card muted">Пользователи бота пока ничего '
+                 "не сокращали.</div>")
+
+    # Системные — под спойлером и ниже: их создаёт рассылка подборок,
+    # они множатся сами и вперемешку прячут людские ссылки, ради которых
+    # на страницу и заходят.
+    if system:
+        table += (
+            '<details class="card"><summary>Системные ссылки подборок — '
+            f"{len(system)}</summary>"
+            '<p class="muted">Создаются автоматически при рассылке '
+            "новостных подборок. Удалять их по одной обычно незачем: "
+            "при следующем выпуске появятся снова.</p>"
+            f"{table_of(system)}</details>"
+        )
 
     clear_all = (
         '<div class="card"><b>Удалить все ссылки.</b> '
