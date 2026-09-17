@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.10 — автономный установщик.
+# Система «Радар» v4.9.8.11 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.10"
+VERSION="4.9.8.11"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=116
+FILE_COUNT=118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3178,6 +3178,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.11", [
+        "🛡 <b>Модерация групп.</b> Бот работает администратором в чате: "
+        "удаляет спам и ссылки от новичков, ведёт лестницу "
+        "«предупреждение → мут → бан», встречает новичков кнопкой "
+        "«я не бот», держит антифлуд и стоп-слова. Администраторам чата "
+        "доступны <code>/warn</code>, <code>/mute</code>, <code>/ban</code>, "
+        "<code>/unban</code>, <code>/modstatus</code>. По умолчанию "
+        "выключено, нужны права администратора в самой группе.",
+        "🔒 <b>Бот перестал мешать в группах.</b> Раньше добавление "
+        "в группу означало «Доступ к системе закрыт» каждому участнику "
+        "раз в десять минут, запись людей в пользователи бота и ответы "
+        "ИИ-ассистента на любой разговор. Теперь разделы, рассчитанные "
+        "на личную переписку, в группах молчат.",
+    ]),
     ("4.9.8.10", [
         "🧹 <b>Удаление установки — из панели и из консоли.</b> Страница "
         "«Удаление» в разделе «Обслуживание» стирает установку целиком: "
@@ -4583,7 +4597,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.10"
+__version__ = "4.9.8.11"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6494,6 +6508,15 @@ FLAGS: tuple[Flag, ...] = (
          "из панели» — тот же уровень риска (эквивалент root на хосте), "
          "поэтому по умолчанию выключено.",
          group="Инфраструктура", since="4.9.8.4", default=False),
+    Flag("moderation", "Модерация групп",
+         "Бот работает администратором в группе: удаляет спам и чужие "
+         "ссылки, ведёт лестницу «предупреждение → мут → бан», встречает "
+         "новичков с проверкой на бота, держит антифлуд и стоп-слова. "
+         "Нужны права администратора в самой группе — без них бот "
+         "сообщит об этом один раз и ничего делать не сможет. "
+         "По умолчанию выключено: ошибка в правилах стоит забаненного "
+         "живого человека.",
+         group="Модерация", since="4.9.8.11", default=False),
     Flag("panel_wipe", "Удаление из панели",
          "Страница «Удаление»: стирает установку целиком — контейнеры, "
          "образ, базу, .env, копии и журналы. Нужна для покинутого "
@@ -15734,6 +15757,7 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     overview = [("/", "Сводка", "home")]
     if admin:
         overview.append(("/events", "События", "events"))
+        overview.append(("/chats", "Чаты", "chats"))
     if owner:
         overview.append(("/maintenance", "Обслуживание", "maintenance"))
         # Раздел виден всегда, даже когда возможность выключена: спрятанный
@@ -15901,6 +15925,70 @@ def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
     else:
         parts.append('<div class="card muted">Журналов установки пока нет.</div>')
 
+    return "".join(parts)
+
+
+async def _chats_body(session, ok: str = "", err: str = "") -> str:
+    """Чаты под модерацией: список и тумблеры.
+
+    Чат появляется здесь сам, когда бота добавляют в группу, — просить
+    человека переписать сюда идентификатор вида -1001234567890 значило бы
+    предложить ошибиться.
+    """
+    from ..db import repo
+
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    if not features.enabled("moderation"):
+        parts.append(
+            '<div class="card warn">Модерация выключена — бот в группах '
+            "ничего не делает.</div>"
+            '<div class="card">'
+            '<form method="post" action="/features/toggle">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            '<input type="hidden" name="key" value="moderation">'
+            '<input type="hidden" name="back" value="/chats">'
+            '<button type="submit">Включить модерацию</button></form>'
+            '<p class="muted">Боту нужны права администратора в самой '
+            "группе: удаление сообщений и блокировка участников. Без них "
+            "он сообщит об этом один раз и работать не будет.</p></div>"
+        )
+
+    rows = await repo.chat_list()
+    if not rows:
+        parts.append(
+            '<div class="card muted">Пока ни одной группы. Добавьте бота '
+            "в чат и дайте права администратора — чат появится здесь сам."
+            "</div>"
+        )
+        return "".join(parts)
+
+    body = "".join(
+        "<tr>"
+        f'<td data-label="Чат">{html.escape(row["title"] or "—")}<br>'
+        f'<code>{row["chat_id"]}</code></td>'
+        f'<td data-label="Модерация">'
+        f'<span class="badge {"ok" if row["enabled"] else "bad"}">'
+        f'{"включена" if row["enabled"] else "выключена"}</span></td>'
+        '<td data-label="" style="text-align:right;width:1%">'
+        '<form method="post" action="/chats/toggle" style="display:inline">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<input type="hidden" name="chat" value="{row["chat_id"]}">'
+        f'<button class="ghost" type="submit">'
+        f'{"выключить" if row["enabled"] else "включить"}</button></form></td>'
+        "</tr>"
+        for row in rows
+    )
+    parts.append(
+        '<div class="card"><table class="stack"><thead><tr>'
+        "<th>Чат</th><th>Модерация</th><th></th></tr></thead>"
+        f"<tbody>{body}</tbody></table>"
+        '<p class="muted">Правила общие для всех чатов и задаются '
+        "возможностями бота; в самой группе администраторам доступны "
+        "<code>/warn</code>, <code>/mute</code>, <code>/ban</code>, "
+        "<code>/unban</code> и <code>/modstatus</code>.</p></div>"
+    )
     return "".join(parts)
 
 
@@ -17794,6 +17882,39 @@ async def create_app() -> Any:
         audit.record(session.user_key, f"rustdesk {action}", "")
         raise web.HTTPFound("/rustdesk?ok=" + quote(f"{action}: готово"))
 
+    @admin_only
+    async def chats_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Чаты",
+                await _chats_body(session,
+                                  request.query.get("ok", ""),
+                                  request.query.get("err", "")),
+                "chats", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def chats_toggle(request):
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "admin")
+        try:
+            chat_id = int(str(data.get("chat", "")))
+        except ValueError:
+            raise web.HTTPFound("/chats?err=" + quote("Неизвестный чат"))
+
+        row = await repo.chat_get(chat_id)
+        if row is None:
+            raise web.HTTPFound("/chats?err=" + quote("Чат не найден"))
+        value = not row["enabled"]
+        await repo.chat_save(chat_id, enabled=value)
+        audit.record(session.user_key,
+                     "модерация включена" if value else "модерация выключена",
+                     str(chat_id))
+        raise web.HTTPFound("/chats?ok=" + quote(
+            f"{chat_id}: модерация {'включена' if value else 'выключена'}"))
+
     @owner_only
     async def wipe_page(request, session):
         return web.Response(
@@ -17883,6 +18004,8 @@ async def create_app() -> Any:
         web.post("/rustdesk/action", rustdesk_action),
         web.get("/wipe", wipe_page),
         web.post("/wipe/start", wipe_start),
+        web.get("/chats", chats_page),
+        web.post("/chats/toggle", chats_toggle),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),
@@ -18306,6 +18429,47 @@ class PromoCode(Base):
     code: Mapped[str] = mapped_column(String(64), index=True)
     shared: Mapped[bool] = mapped_column(Boolean, default=False)
     issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class ModeratedChat(Base):
+    """Группа, где бот модерирует (с 4.9.8.11).
+
+    Настройки лежат строкой JSON, а не колонками: их десяток, они
+    меняются от выпуска к выпуску, и каждая новая галочка иначе
+    означала бы ALTER TABLE на живой базе.
+    """
+
+    __tablename__ = "moderated_chats"
+
+    chat_id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    title: Mapped[str] = mapped_column(String(128), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    settings_json: Mapped[str] = mapped_column(String(2000), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class ChatWarning(Base):
+    """Счётчик предупреждений: чат плюс человек (с 4.9.8.11).
+
+    Пара уникальна схемой, а не кодом: два сообщения подряд из одного
+    чата разбираются параллельно, и без ограничения в базе завелись бы
+    две строки с разными счётчиками.
+    """
+
+    __tablename__ = "chat_warnings"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "user_id", name="uq_warn_chat_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigIntType, index=True)
+    user_id: Mapped[int] = mapped_column(BigIntType, index=True)
+    count: Mapped[int] = mapped_column(BigIntType, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
 RADAR_FILE_46
@@ -19537,6 +19701,113 @@ async def count_sources() -> int:
     async with session() as active:
         result = await active.execute(select(func.count()).select_from(Source))
         return int(result.scalar_one() or 0)
+
+
+# --------------------------------------------------------------------------
+#  Модерация групп (с 4.9.8.11)
+# --------------------------------------------------------------------------
+
+async def chat_list() -> list[dict[str, Any]]:
+    """Все чаты под модерацией — для панели и командной строки."""
+    from .models import ModeratedChat
+
+    async with session() as active:
+        rows = (await active.scalars(select(ModeratedChat))).all()
+        return [
+            {
+                "chat_id": row.chat_id,
+                "title": row.title,
+                "enabled": bool(row.enabled),
+                "settings": row.settings_json or "",
+            }
+            for row in rows
+        ]
+
+
+async def chat_get(chat_id: int) -> dict[str, Any] | None:
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            return None
+        return {
+            "chat_id": row.chat_id,
+            "title": row.title,
+            "enabled": bool(row.enabled),
+            "settings": row.settings_json or "",
+        }
+
+
+async def chat_save(chat_id: int, title: str = "", enabled: bool = True,
+                    settings_json: str = "") -> None:
+    """Заводит чат или обновляет его. Пустые title и settings_json
+    не затирают сохранённое: бота добавляют в чат раньше, чем настраивают."""
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            active.add(ModeratedChat(chat_id=chat_id, title=title,
+                                     enabled=enabled,
+                                     settings_json=settings_json))
+            return
+        if title:
+            row.title = title
+        if settings_json:
+            row.settings_json = settings_json
+        row.enabled = enabled
+
+
+async def chat_forget(chat_id: int) -> bool:
+    """Бота выгнали из чата — держать его настройки незачем."""
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            return False
+        await active.delete(row)
+        return True
+
+
+async def warn_count(chat_id: int, user_id: int) -> int:
+    from .models import ChatWarning
+
+    async with session() as active:
+        row = (await active.scalars(
+            select(ChatWarning).where(ChatWarning.chat_id == chat_id,
+                                      ChatWarning.user_id == user_id)
+        )).first()
+        return int(row.count) if row is not None else 0
+
+
+async def warn_add(chat_id: int, user_id: int) -> int:
+    """Плюс одно предупреждение. Возвращает новое значение."""
+    from .models import ChatWarning
+
+    async with session() as active:
+        row = (await active.scalars(
+            select(ChatWarning).where(ChatWarning.chat_id == chat_id,
+                                      ChatWarning.user_id == user_id)
+        )).first()
+        if row is None:
+            active.add(ChatWarning(chat_id=chat_id, user_id=user_id, count=1))
+            return 1
+        row.count = int(row.count) + 1
+        return int(row.count)
+
+
+async def warn_reset(chat_id: int, user_id: int) -> None:
+    from .models import ChatWarning
+
+    async with session() as active:
+        row = (await active.scalars(
+            select(ChatWarning).where(ChatWarning.chat_id == chat_id,
+                                      ChatWarning.user_id == user_id)
+        )).first()
+        if row is not None:
+            row.count = 0
 RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
 cat > "radar/db/importer.py" <<'RADAR_FILE_49'
@@ -25105,6 +25376,17 @@ class AccessMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
+        # Групповые чаты проходят мимо всего этого. Иначе бот, добавленный
+        # в группу, здоровается с каждым участником «Доступ закрыт» раз
+        # в десять минут, регистрирует знакомых как своих пользователей
+        # и спрашивает у них язык прямо в чате. Модерацией занимается
+        # отдельный роутер, и ему ни запись пользователя, ни роль
+        # «Радара» не нужны: права он спрашивает у самого Telegram.
+        chat = getattr(event, "chat", None) or getattr(
+            getattr(event, "message", None), "chat", None)
+        if chat is not None and getattr(chat, "type", "private") != "private":
+            return await handler(event, data)
+
         uid = str(user.id)
         text = (getattr(event, "text", "") or "").strip()
 
@@ -26678,8 +26960,526 @@ async def start(actor: str) -> tuple[bool, str]:
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
 RADAR_FILE_79
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
+cat > "radar/moderation.py" <<'RADAR_FILE_80'
+"""Правила модерации групп: решение отдельно от Telegram.
+
+Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
+плюс настройки чата» → решение. Так правила можно прогнать таблицей
+случаев в офлайн-тестах, а ошибка в них обнаруживается на тесте,
+а не на живом человеке, которого забанили ни за что.
+
+Почему решение возвращается, а не исполняется: удаление, мут и бан —
+разные права в Telegram, и у бота их может не быть. Исполнитель
+(`radar/handlers/group.py`) разбирается с правами и отказами, правила
+об этом не знают вовсе.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass, field
+
+# Действия по возрастанию строгости.
+NONE = "none"
+DELETE = "delete"
+WARN = "warn"
+MUTE = "mute"
+BAN = "ban"
+
+# Ссылка считается спамом начиная с этого уровня проверки ссылок
+# (multitool/linkcheck). «attention» не трогаем: там слишком много
+# обычных ссылок, и удалять их значило бы мешать разговору.
+SPAM_LEVELS = ("suspect", "danger")
+
+_URL_RE = re.compile(r"https?://\S+|\bt\.me/\S+|\b[\w-]+\.(?:ru|com|net|org|io)\b",
+                     re.I)
+
+
+@dataclass
+class Settings:
+    """Настройки одного чата. Значения по умолчанию — осознанно мягкие:
+    свежеподключённый бот не должен начать с раздачи банов."""
+
+    delete_spam_links: bool = True
+    links_from_newcomers: bool = True   # новичкам ссылки нельзя вовсе
+    stopwords: list[str] = field(default_factory=list)
+    antiflood: bool = True
+    flood_messages: int = 6             # столько сообщений
+    flood_seconds: int = 10             # за столько секунд — флуд
+    warns_before_mute: int = 3
+    mute_minutes: int = 60
+    warns_before_ban: int = 5
+    newcomer_hours: int = 24            # сколько человек считается новичком
+
+
+@dataclass
+class Author:
+    """Что известно об авторе сообщения на момент решения."""
+
+    user_id: int
+    joined_ago_hours: float = 999.0     # давно в чате — не новичок
+    warns: int = 0
+    is_admin: bool = False
+
+    @property
+    def newcomer(self) -> bool:
+        return self.joined_ago_hours < 24.0
+
+
+@dataclass
+class Decision:
+    """Что сделать и почему. Причина уходит в журнал и в сообщение чату:
+    молчаливое удаление выглядит как поломка чата, а не как модерация."""
+
+    action: str = NONE
+    reason: str = ""
+    delete_message: bool = False
+
+    @property
+    def acts(self) -> bool:
+        return self.action != NONE or self.delete_message
+
+
+def extract_urls(text: str) -> list[str]:
+    """Ссылки из текста — включая t.me и голые домены: спам чаще всего
+    приходит именно так, без схемы."""
+    return _URL_RE.findall(text or "")
+
+
+def _link_level(url: str) -> str:
+    """Уровень ссылки по общей проверке проекта. Вторую реализацию
+    заводить нечего — она уже написана и покрыта тестами."""
+    try:
+        from multitool.linkcheck.analyze import analyze
+
+        return analyze(url).level
+    except Exception:  # noqa: BLE001
+        # Разбор ссылки не должен ронять модерацию: не смогли — не судим.
+        return "ok"
+
+
+class FloodTracker:
+    """Счётчик частоты сообщений. В памяти намеренно: переживать
+    перезапуск ему незачем, а таблица ради десяти секунд — это запись
+    на диск на каждое сообщение чата."""
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple[int, int], list[float]] = {}
+
+    def hit(self, chat_id: int, user_id: int, window: int,
+            now: float | None = None) -> int:
+        moment = time.monotonic() if now is None else now
+        key = (chat_id, user_id)
+        recent = [stamp for stamp in self._seen.get(key, [])
+                  if moment - stamp < window]
+        recent.append(moment)
+        self._seen[key] = recent
+        return len(recent)
+
+    def forget(self, chat_id: int, user_id: int) -> None:
+        self._seen.pop((chat_id, user_id), None)
+
+
+def decide(text: str, author: Author, settings: Settings,
+           flood_count: int = 0) -> Decision:
+    """Одно решение по одному сообщению.
+
+    Порядок проверок — от дешёвых к дорогим и от мягких к строгим.
+    Администраторы чата не модерируются вовсе: бот не должен спорить
+    с теми, кто его назначил.
+    """
+    if author.is_admin:
+        return Decision()
+
+    lowered = (text or "").lower()
+
+    # Стоп-слова — самое дешёвое и самое однозначное.
+    for word in settings.stopwords:
+        needle = word.strip().lower()
+        if needle and needle in lowered:
+            return _escalate(author, settings,
+                             f"стоп-слово «{word.strip()}»", delete=True)
+
+    # Ссылки.
+    urls = extract_urls(text)
+    if urls:
+        if settings.links_from_newcomers and author.newcomer:
+            return _escalate(author, settings,
+                             "ссылка от новичка", delete=True)
+        if settings.delete_spam_links:
+            for url in urls:
+                if _link_level(url) in SPAM_LEVELS:
+                    return _escalate(author, settings,
+                                     "подозрительная ссылка", delete=True)
+
+    # Флуд — считается снаружи, здесь только порог.
+    if settings.antiflood and flood_count > settings.flood_messages:
+        return _escalate(author, settings, "флуд", delete=False)
+
+    return Decision()
+
+
+def _escalate(author: Author, settings: Settings, reason: str,
+              delete: bool) -> Decision:
+    """Лестница наказаний. Считаем по УЖЕ накопленным предупреждениям
+    плюс текущее: иначе первое нарушение выглядело бы как нулевое."""
+    warns = author.warns + 1
+
+    if warns >= settings.warns_before_ban:
+        return Decision(BAN, f"{reason}; предупреждений: {warns}", delete)
+    if warns >= settings.warns_before_mute:
+        return Decision(MUTE, f"{reason}; предупреждений: {warns}", delete)
+    return Decision(WARN, f"{reason}; предупреждение {warns}", delete)
+
+
+def describe(decision: Decision, settings: Settings) -> str:
+    """Человеческая формулировка для сообщения в чат."""
+    if decision.action == WARN:
+        return f"⚠️ Предупреждение: {decision.reason}"
+    if decision.action == MUTE:
+        return (f"🔇 Ограничение на {settings.mute_minutes} мин: "
+                f"{decision.reason}")
+    if decision.action == BAN:
+        return f"⛔️ Блокировка: {decision.reason}"
+    if decision.delete_message:
+        return f"🧹 Удалено: {decision.reason}"
+    return ""
+RADAR_FILE_80
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
+cat > "radar/handlers/group.py" <<'RADAR_FILE_81'
+"""Модерация групп: исполнение решений и команды администраторов.
+
+Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
+и офлайн-проверяемый; здесь только Telegram — права, удаление, мут, бан
+и разговор с людьми.
+
+Два правила, которые легко нарушить и дорого исправлять:
+
+* администратор чата не модерируется. Бот не спорит с тем, кто его
+  назначил, и права проверяет у Telegram, а не по ролям «Радара»:
+  админ группы и админ бота — разные списки;
+* об отсутствии прав бот сообщает ОДИН раз на чат. Иначе каждое
+  нарушение превращается в жалобу в тот же чат, и получается тот самый
+  спам, ради борьбы с которым бота и позвали.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import (
+    CallbackQuery,
+    ChatPermissions,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import features, moderation
+from ..db import repo
+
+log = logging.getLogger("radar.group")
+
+router = Router(name="group")
+
+_flood = moderation.FloodTracker()
+# Когда человек вошёл в чат: нужно, чтобы отличать новичка. В памяти —
+# по той же причине, что и антифлуд: переживать перезапуск незачем,
+# а после перезапуска все просто перестают считаться новичками.
+_joined: dict[tuple[int, int], float] = {}
+# Чаты, где уже пожаловались на нехватку прав.
+_complained: set[int] = set()
+# Кому выдана капча: до нажатия человек ограничен.
+_pending: dict[tuple[int, int], float] = {}
+
+MUTED = ChatPermissions(can_send_messages=False)
+UNMUTED = ChatPermissions(
+    can_send_messages=True, can_send_audios=True, can_send_documents=True,
+    can_send_photos=True, can_send_videos=True, can_send_other_messages=True,
+    can_add_web_page_previews=True,
+)
+
+
+async def _settings(chat_id: int) -> tuple[bool, moderation.Settings]:
+    """Настройки чата: включён ли он и по каким правилам живёт."""
+    row = await repo.chat_get(chat_id)
+    if row is None:
+        return False, moderation.Settings()
+    stored = {}
+    if row.get("settings"):
+        try:
+            stored = json.loads(row["settings"])
+        except ValueError:
+            log.warning("Настройки чата %s не разобраны", chat_id)
+    known = {field: stored[field] for field in moderation.Settings().__dict__
+             if field in stored}
+    return bool(row.get("enabled")), moderation.Settings(**known)
+
+
+async def _is_admin(message: Message, user_id: int) -> bool:
+    try:
+        member = await message.bot.get_chat_member(message.chat.id, user_id)
+    except Exception:  # noqa: BLE001
+        return False
+    return member.status in ("creator", "administrator")
+
+
+async def _complain_once(message: Message, what: str) -> None:
+    if message.chat.id in _complained:
+        return
+    _complained.add(message.chat.id)
+    try:
+        await message.answer(
+            f"⚠️ Не могу {what}: не хватает прав администратора.\n"
+            "Дайте боту права на удаление сообщений и блокировку участников — "
+            "иначе модерация работать не будет."
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("Жалоба о правах не отправлена", exc_info=True)
+
+
+async def _apply(message: Message, decision: moderation.Decision,
+                 settings: moderation.Settings) -> None:
+    """Исполняет решение. Каждое действие — отдельное право, и отсутствие
+    одного не должно отменять остальные."""
+    user = message.from_user
+
+    if decision.delete_message:
+        try:
+            await message.delete()
+        except Exception:  # noqa: BLE001
+            await _complain_once(message, "удалять сообщения")
+
+    if decision.action == moderation.WARN:
+        await repo.warn_add(message.chat.id, user.id)
+    elif decision.action == moderation.MUTE:
+        await repo.warn_add(message.chat.id, user.id)
+        until = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.mute_minutes)
+        try:
+            await message.bot.restrict_chat_member(
+                message.chat.id, user.id, permissions=MUTED, until_date=until)
+        except Exception:  # noqa: BLE001
+            await _complain_once(message, "ограничивать участников")
+    elif decision.action == moderation.BAN:
+        try:
+            await message.bot.ban_chat_member(message.chat.id, user.id)
+        except Exception:  # noqa: BLE001
+            await _complain_once(message, "блокировать участников")
+        else:
+            await repo.warn_reset(message.chat.id, user.id)
+
+    text = moderation.describe(decision, settings)
+    if text:
+        try:
+            await message.answer(text)
+        except Exception:  # noqa: BLE001
+            log.debug("Сообщение о модерации не отправлено", exc_info=True)
+
+
+@router.message(F.new_chat_members)
+async def greet_newcomers(message: Message) -> None:
+    """Встреча новичков: приветствие и кнопка-подтверждение."""
+    if not features.enabled("moderation"):
+        return
+    enabled, _settings_of = await _settings(message.chat.id)
+    if not enabled:
+        return
+
+    for member in message.new_chat_members or []:
+        if member.is_bot:
+            continue
+        _joined[(message.chat.id, member.id)] = time.time()
+        _pending[(message.chat.id, member.id)] = time.time()
+        try:
+            await message.bot.restrict_chat_member(
+                message.chat.id, member.id, permissions=MUTED)
+        except Exception:  # noqa: BLE001
+            await _complain_once(message, "ограничивать участников")
+            continue
+        await message.answer(
+            f"👋 {member.full_name}, добро пожаловать. "
+            "Нажмите кнопку — так видно, что вы не бот.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="Я не бот",
+                                     callback_data=f"grp:ok:{member.id}")
+            ]]),
+        )
+
+    # Служебное сообщение о входе убираем: оно засоряет чат.
+    try:
+        await message.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@router.callback_query(F.data.startswith("grp:ok:"))
+async def confirm_human(call: CallbackQuery) -> None:
+    """Капча: кнопку должен нажать тот, кому она выдана."""
+    target = int(call.data.rsplit(":", 1)[1])
+    if call.from_user.id != target:
+        await call.answer("Эта кнопка не для вас.", show_alert=True)
+        return
+
+    chat_id = call.message.chat.id
+    _pending.pop((chat_id, target), None)
+    try:
+        await call.bot.restrict_chat_member(chat_id, target,
+                                            permissions=UNMUTED)
+    except Exception:  # noqa: BLE001
+        log.warning("Не удалось снять ограничение с %s", target)
+    await call.answer("Спасибо!")
+    try:
+        await call.message.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@router.message(F.left_chat_member)
+async def clean_leave(message: Message) -> None:
+    """Сообщение «вышел из группы» — такой же мусор, как и «вошёл»."""
+    if not features.enabled("moderation"):
+        return
+    enabled, _ = await _settings(message.chat.id)
+    if enabled:
+        try:
+            await message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@router.message(Command("modstatus"))
+async def status(message: Message) -> None:
+    enabled, settings = await _settings(message.chat.id)
+    if not await _is_admin(message, message.from_user.id):
+        return
+    await message.answer(
+        f"Модерация: {'включена' if enabled else 'выключена'}\n"
+        f"Предупреждений до мута: {settings.warns_before_mute}, "
+        f"до бана: {settings.warns_before_ban}\n"
+        f"Мут: {settings.mute_minutes} мин · "
+        f"антифлуд: {'да' if settings.antiflood else 'нет'} "
+        f"({settings.flood_messages} за {settings.flood_seconds} с)\n"
+        f"Стоп-слов: {len(settings.stopwords)}\n"
+        f"Идентификатор чата: <code>{message.chat.id}</code>"
+    )
+
+
+@router.message(Command("warn", "mute", "ban", "unban"))
+async def manual_action(message: Message) -> None:
+    """Ручные команды. Только для администраторов чата и только ответом
+    на сообщение: иначе непонятно, к кому применять."""
+    if not await _is_admin(message, message.from_user.id):
+        return
+    if message.reply_to_message is None:
+        await message.answer("Команда работает ответом на сообщение.")
+        return
+
+    target = message.reply_to_message.from_user
+    command = (message.text or "").split()[0].lstrip("/").split("@")[0]
+    _enabled, settings = await _settings(message.chat.id)
+
+    if command == "warn":
+        count = await repo.warn_add(message.chat.id, target.id)
+        await message.answer(f"⚠️ {target.full_name}: предупреждение {count}")
+        return
+
+    if command == "mute":
+        until = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.mute_minutes)
+        try:
+            await message.bot.restrict_chat_member(
+                message.chat.id, target.id, permissions=MUTED,
+                until_date=until)
+        except Exception:  # noqa: BLE001
+            await _complain_once(message, "ограничивать участников")
+            return
+        await message.answer(
+            f"🔇 {target.full_name} — тишина на {settings.mute_minutes} мин")
+        return
+
+    if command == "ban":
+        try:
+            await message.bot.ban_chat_member(message.chat.id, target.id)
+        except Exception:  # noqa: BLE001
+            await _complain_once(message, "блокировать участников")
+            return
+        await repo.warn_reset(message.chat.id, target.id)
+        await message.answer(f"⛔️ {target.full_name} заблокирован")
+        return
+
+    try:
+        await message.bot.unban_chat_member(message.chat.id, target.id,
+                                            only_if_banned=True)
+    except Exception:  # noqa: BLE001
+        await _complain_once(message, "снимать блокировку")
+        return
+    await repo.warn_reset(message.chat.id, target.id)
+    await message.answer(f"✅ {target.full_name} разблокирован")
+
+
+@router.message(F.text)
+async def moderate(message: Message) -> None:
+    """Главный путь: каждое текстовое сообщение группы."""
+    if not features.enabled("moderation"):
+        return
+
+    enabled, settings = await _settings(message.chat.id)
+    if not enabled:
+        return
+
+    user = message.from_user
+    if user is None or user.is_bot:
+        return
+
+    # Пока капча не пройдена, любое сообщение удаляется: ограничение
+    # Telegram могло не примениться, если у бота не хватило прав.
+    if (message.chat.id, user.id) in _pending:
+        try:
+            await message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    joined = _joined.get((message.chat.id, user.id))
+    author = moderation.Author(
+        user_id=user.id,
+        joined_ago_hours=((time.time() - joined) / 3600.0
+                          if joined else 999.0),
+        warns=await repo.warn_count(message.chat.id, user.id),
+        is_admin=await _is_admin(message, user.id),
+    )
+
+    flood = _flood.hit(message.chat.id, user.id, settings.flood_seconds)
+    decision = moderation.decide(message.text or "", author, settings, flood)
+    if not decision.acts:
+        return
+
+    log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
+             decision.reason)
+    await _apply(message, decision, settings)
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_80'
+cat > "radar/cli.py" <<'RADAR_FILE_82'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -26959,6 +27759,40 @@ def cmd_links(args) -> int:
     return asyncio.run(_with_storage(run))
 
 
+def cmd_chats(args) -> int:
+    """Чаты под модерацией. Те же данные, что показывает панель."""
+    from .db import repo
+
+    async def run():
+        if args.action == "list":
+            rows = await repo.chat_list()
+            _out(rows, args.json, lambda data: [
+                print(f"{row['chat_id']:>15}  "
+                      f"{'вкл ' if row['enabled'] else 'выкл'}  "
+                      f"{row['title'] or '—'}")
+                for row in data
+            ] or print("чатов нет"))
+            return OK
+
+        if not args.chat_id:
+            print("Нужен идентификатор чата: radar chats on -100…",
+                  file=sys.stderr)
+            return FAILED
+
+        chat_id = int(args.chat_id)
+        if args.action == "forget":
+            done = await repo.chat_forget(chat_id)
+            print("забыт" if done else "такого чата нет")
+            return OK if done else FAILED
+
+        await repo.chat_save(chat_id, enabled=args.action == "on")
+        print(f"{chat_id}: модерация "
+              f"{'включена' if args.action == 'on' else 'выключена'}")
+        return OK
+
+    return asyncio.run(_with_storage(run))
+
+
 def cmd_files(args) -> int:
     from . import filedrop
 
@@ -27085,6 +27919,12 @@ def build_parser() -> argparse.ArgumentParser:
     links.add_argument("--yes", action="store_true")
     links.set_defaults(func=cmd_links)
 
+    chats = subparsers.add_parser("chats", help="чаты под модерацией",
+                                  parents=[common])
+    chats.add_argument("action", choices=["list", "on", "off", "forget"])
+    chats.add_argument("chat_id", nargs="?", default="")
+    chats.set_defaults(func=cmd_chats)
+
     files = subparsers.add_parser("files", help="раздача файлов", parents=[common])
     files.add_argument("action", nargs="?", choices=["list"], default="list")
     files.set_defaults(func=cmd_files)
@@ -27119,9 +27959,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_80
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_81'
+cat > "radar/__main__.py" <<'RADAR_FILE_83'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -27143,9 +27983,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_81
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_82'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_84'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -27286,9 +28126,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_82
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_83'
+cat > "tools/restore.sh" <<'RADAR_FILE_85'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -27530,9 +28370,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_83
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_84'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_86'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -27628,9 +28468,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_84
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_85'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_87'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -27823,9 +28663,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_85
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_88'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -27836,13 +28676,14 @@ cat > "radar/handlers/__init__.py" <<'RADAR_FILE_86'
 
 from __future__ import annotations
 
-from aiogram import Dispatcher
+from aiogram import Dispatcher, F
 
 from . import (
     assistant,
     common,
     digest,
     features,
+    group,
     history,
     language,
     linkcheck,
@@ -27863,39 +28704,42 @@ from . import (
     users,
 )
 
-def setup(dp: Dispatcher) -> None:
-    dp.include_router(common.router)
-    dp.include_router(locations.router)
-    dp.include_router(settings.router)
-    dp.include_router(sources.router)
-    dp.include_router(users.router)
-    dp.include_router(features.router)
-    dp.include_router(settings_admin.router)
-    dp.include_router(network.router)
-    dp.include_router(rustdesk.router)
-    dp.include_router(logs.router)
-    dp.include_router(language.router)
-    dp.include_router(history.router)
-    dp.include_router(partners.router)
-    dp.include_router(perf.router)
-    dp.include_router(shortlink.router)
-    dp.include_router(linkcheck.router)
-    dp.include_router(music.router)
-    dp.include_router(digest.router)
-    dp.include_router(sos.router)
+# Порядок прежний и важный: ассистент перехватывает любой оставшийся
+# текст, поэтому он последний, а ссылки — прямо перед ним.
+PRIVATE_ROUTERS = (
+    common, locations, settings, sources, users, features, settings_admin,
+    network, rustdesk, logs, language, history, partners, perf, shortlink,
+    linkcheck, music, digest, sos,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
-    dp.include_router(subscription.router)
+    subscription,
     # Ссылки перехватываем до свободного диалога с моделью
-    dp.include_router(media.router)
-    # Ассистент перехватывает любой оставшийся текст — только в самом конце.
-    dp.include_router(assistant.router)
+    media,
+    # Ассистент перехватывает любой оставшийся текст — только в конце.
+    assistant,
+)
+
+
+def setup(dp: Dispatcher) -> None:
+    # Модерация — первой и только для групп: её сообщения не должны
+    # доходить до разделов, рассчитанных на личную переписку.
+    group.router.message.filter(F.chat.type.in_({"group", "supergroup"}))
+    dp.include_router(group.router)
+
+    # Всё остальное — только личный чат. Фильтр вешается здесь, одним
+    # местом, а не двадцатью декораторами: иначе новый раздел рано или
+    # поздно окажется без него и начнёт отвечать в группе. Ассистент
+    # ловит ЛЮБОЙ текст, и цена такой утечки — ответы ИИ на чужой
+    # разговор и сожжённая квота.
+    for module in PRIVATE_ROUTERS:
+        module.router.message.filter(F.chat.type == "private")
+        dp.include_router(module.router)
 
 
 __all__ = ["setup"]
-RADAR_FILE_86
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_89'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -28338,9 +29182,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_87
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_90'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -28506,9 +29350,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_88
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_91'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -29013,9 +29857,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_89
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_92'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -29490,9 +30334,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_90
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_93'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -29859,9 +30703,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_91
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_94'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -30008,9 +30852,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_92
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_95'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -30298,9 +31142,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_93
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_96'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -30507,9 +31351,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_94
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_97'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -30880,9 +31724,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_95
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_98'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -31457,9 +32301,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_96
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_99'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -31560,9 +32404,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_97
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_100'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -31652,9 +32496,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_98
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_101'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -32075,9 +32919,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_99
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_102'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -33240,9 +34084,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_100
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_103'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -33973,9 +34817,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_101
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_104'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -34499,9 +35343,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_102
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_105'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -34709,9 +35553,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_103
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_106'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -35124,9 +35968,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_104
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_107'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -35389,9 +36233,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_105
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_108'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -35541,9 +36385,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_106
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_109'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -36011,9 +36855,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_107
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_108'
+cat > "radar/cookies.py" <<'RADAR_FILE_110'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -36144,9 +36988,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_108
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_109'
+cat > "radar/music.py" <<'RADAR_FILE_111'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -36654,9 +37498,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_109
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_112'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -37161,9 +38005,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_110
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_111'
+cat > "multitool/__init__.py" <<'RADAR_FILE_113'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -37189,9 +38033,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_111'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_111
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_112'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_114'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -37224,9 +38068,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_112'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_112
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_113'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_115'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -37633,9 +38477,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_113
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_114'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_116'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -38050,9 +38894,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_114
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_115'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_117'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -38246,7 +39090,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_115
+RADAR_FILE_117
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

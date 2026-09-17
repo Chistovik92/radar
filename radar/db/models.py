@@ -298,3 +298,45 @@ class PromoCode(Base):
     issued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
+
+
+class ModeratedChat(Base):
+    """Группа, где бот модерирует (с 4.9.8.11).
+
+    Настройки лежат строкой JSON, а не колонками: их десяток, они
+    меняются от выпуска к выпуску, и каждая новая галочка иначе
+    означала бы ALTER TABLE на живой базе.
+    """
+
+    __tablename__ = "moderated_chats"
+
+    chat_id: Mapped[int] = mapped_column(BigIntType, primary_key=True)
+    title: Mapped[str] = mapped_column(String(128), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    settings_json: Mapped[str] = mapped_column(String(2000), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class ChatWarning(Base):
+    """Счётчик предупреждений: чат плюс человек (с 4.9.8.11).
+
+    Пара уникальна схемой, а не кодом: два сообщения подряд из одного
+    чата разбираются параллельно, и без ограничения в базе завелись бы
+    две строки с разными счётчиками.
+    """
+
+    __tablename__ = "chat_warnings"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "user_id", name="uq_warn_chat_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntType, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigIntType, index=True)
+    user_id: Mapped[int] = mapped_column(BigIntType, index=True)
+    count: Mapped[int] = mapped_column(BigIntType, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+

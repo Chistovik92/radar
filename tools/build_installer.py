@@ -106,6 +106,8 @@ MANIFEST = [
     "radar/dockerapi.py",
     "radar/updater.py",
     "radar/wipe.py",
+    "radar/moderation.py",
+    "radar/handlers/group.py",
     "radar/cli.py",
     "radar/__main__.py",
     # Скрипты обслуживания теперь едут на сервер вместе с кодом.

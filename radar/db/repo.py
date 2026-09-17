@@ -708,3 +708,111 @@ async def count_sources() -> int:
     async with session() as active:
         result = await active.execute(select(func.count()).select_from(Source))
         return int(result.scalar_one() or 0)
+
+
+# --------------------------------------------------------------------------
+#  Модерация групп (с 4.9.8.11)
+# --------------------------------------------------------------------------
+
+async def chat_list() -> list[dict[str, Any]]:
+    """Все чаты под модерацией — для панели и командной строки."""
+    from .models import ModeratedChat
+
+    async with session() as active:
+        rows = (await active.scalars(select(ModeratedChat))).all()
+        return [
+            {
+                "chat_id": row.chat_id,
+                "title": row.title,
+                "enabled": bool(row.enabled),
+                "settings": row.settings_json or "",
+            }
+            for row in rows
+        ]
+
+
+async def chat_get(chat_id: int) -> dict[str, Any] | None:
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            return None
+        return {
+            "chat_id": row.chat_id,
+            "title": row.title,
+            "enabled": bool(row.enabled),
+            "settings": row.settings_json or "",
+        }
+
+
+async def chat_save(chat_id: int, title: str = "", enabled: bool = True,
+                    settings_json: str = "") -> None:
+    """Заводит чат или обновляет его. Пустые title и settings_json
+    не затирают сохранённое: бота добавляют в чат раньше, чем настраивают."""
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            active.add(ModeratedChat(chat_id=chat_id, title=title,
+                                     enabled=enabled,
+                                     settings_json=settings_json))
+            return
+        if title:
+            row.title = title
+        if settings_json:
+            row.settings_json = settings_json
+        row.enabled = enabled
+
+
+async def chat_forget(chat_id: int) -> bool:
+    """Бота выгнали из чата — держать его настройки незачем."""
+    from .models import ModeratedChat
+
+    async with session() as active:
+        row = await active.get(ModeratedChat, chat_id)
+        if row is None:
+            return False
+        await active.delete(row)
+        return True
+
+
+async def warn_count(chat_id: int, user_id: int) -> int:
+    from .models import ChatWarning
+
+    async with session() as active:
+        row = (await active.scalars(
+            select(ChatWarning).where(ChatWarning.chat_id == chat_id,
+                                      ChatWarning.user_id == user_id)
+        )).first()
+        return int(row.count) if row is not None else 0
+
+
+async def warn_add(chat_id: int, user_id: int) -> int:
+    """Плюс одно предупреждение. Возвращает новое значение."""
+    from .models import ChatWarning
+
+    async with session() as active:
+        row = (await active.scalars(
+            select(ChatWarning).where(ChatWarning.chat_id == chat_id,
+                                      ChatWarning.user_id == user_id)
+        )).first()
+        if row is None:
+            active.add(ChatWarning(chat_id=chat_id, user_id=user_id, count=1))
+            return 1
+        row.count = int(row.count) + 1
+        return int(row.count)
+
+
+async def warn_reset(chat_id: int, user_id: int) -> None:
+    from .models import ChatWarning
+
+    async with session() as active:
+        row = (await active.scalars(
+            select(ChatWarning).where(ChatWarning.chat_id == chat_id,
+                                      ChatWarning.user_id == user_id)
+        )).first()
+        if row is not None:
+            row.count = 0
+

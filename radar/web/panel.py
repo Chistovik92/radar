@@ -661,6 +661,7 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     overview = [("/", "Сводка", "home")]
     if admin:
         overview.append(("/events", "События", "events"))
+        overview.append(("/chats", "Чаты", "chats"))
     if owner:
         overview.append(("/maintenance", "Обслуживание", "maintenance"))
         # Раздел виден всегда, даже когда возможность выключена: спрятанный
@@ -828,6 +829,70 @@ def _update_body(session, running: bool, ok: str = "", err: str = "") -> str:
     else:
         parts.append('<div class="card muted">Журналов установки пока нет.</div>')
 
+    return "".join(parts)
+
+
+async def _chats_body(session, ok: str = "", err: str = "") -> str:
+    """Чаты под модерацией: список и тумблеры.
+
+    Чат появляется здесь сам, когда бота добавляют в группу, — просить
+    человека переписать сюда идентификатор вида -1001234567890 значило бы
+    предложить ошибиться.
+    """
+    from ..db import repo
+
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", ok), _note("bad", err)]
+
+    if not features.enabled("moderation"):
+        parts.append(
+            '<div class="card warn">Модерация выключена — бот в группах '
+            "ничего не делает.</div>"
+            '<div class="card">'
+            '<form method="post" action="/features/toggle">'
+            f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+            '<input type="hidden" name="key" value="moderation">'
+            '<input type="hidden" name="back" value="/chats">'
+            '<button type="submit">Включить модерацию</button></form>'
+            '<p class="muted">Боту нужны права администратора в самой '
+            "группе: удаление сообщений и блокировка участников. Без них "
+            "он сообщит об этом один раз и работать не будет.</p></div>"
+        )
+
+    rows = await repo.chat_list()
+    if not rows:
+        parts.append(
+            '<div class="card muted">Пока ни одной группы. Добавьте бота '
+            "в чат и дайте права администратора — чат появится здесь сам."
+            "</div>"
+        )
+        return "".join(parts)
+
+    body = "".join(
+        "<tr>"
+        f'<td data-label="Чат">{html.escape(row["title"] or "—")}<br>'
+        f'<code>{row["chat_id"]}</code></td>'
+        f'<td data-label="Модерация">'
+        f'<span class="badge {"ok" if row["enabled"] else "bad"}">'
+        f'{"включена" if row["enabled"] else "выключена"}</span></td>'
+        '<td data-label="" style="text-align:right;width:1%">'
+        '<form method="post" action="/chats/toggle" style="display:inline">'
+        f'<input type="hidden" name="csrf" value="{html.escape(token)}">'
+        f'<input type="hidden" name="chat" value="{row["chat_id"]}">'
+        f'<button class="ghost" type="submit">'
+        f'{"выключить" if row["enabled"] else "включить"}</button></form></td>'
+        "</tr>"
+        for row in rows
+    )
+    parts.append(
+        '<div class="card"><table class="stack"><thead><tr>'
+        "<th>Чат</th><th>Модерация</th><th></th></tr></thead>"
+        f"<tbody>{body}</tbody></table>"
+        '<p class="muted">Правила общие для всех чатов и задаются '
+        "возможностями бота; в самой группе администраторам доступны "
+        "<code>/warn</code>, <code>/mute</code>, <code>/ban</code>, "
+        "<code>/unban</code> и <code>/modstatus</code>.</p></div>"
+    )
     return "".join(parts)
 
 
@@ -2721,6 +2786,39 @@ async def create_app() -> Any:
         audit.record(session.user_key, f"rustdesk {action}", "")
         raise web.HTTPFound("/rustdesk?ok=" + quote(f"{action}: готово"))
 
+    @admin_only
+    async def chats_page(request, session):
+        return web.Response(
+            text=_layout(
+                "Чаты",
+                await _chats_body(session,
+                                  request.query.get("ok", ""),
+                                  request.query.get("err", "")),
+                "chats", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def chats_toggle(request):
+        from ..db import repo
+
+        session, data = await _guarded_form(request, "admin")
+        try:
+            chat_id = int(str(data.get("chat", "")))
+        except ValueError:
+            raise web.HTTPFound("/chats?err=" + quote("Неизвестный чат"))
+
+        row = await repo.chat_get(chat_id)
+        if row is None:
+            raise web.HTTPFound("/chats?err=" + quote("Чат не найден"))
+        value = not row["enabled"]
+        await repo.chat_save(chat_id, enabled=value)
+        audit.record(session.user_key,
+                     "модерация включена" if value else "модерация выключена",
+                     str(chat_id))
+        raise web.HTTPFound("/chats?ok=" + quote(
+            f"{chat_id}: модерация {'включена' if value else 'выключена'}"))
+
     @owner_only
     async def wipe_page(request, session):
         return web.Response(
@@ -2810,6 +2908,8 @@ async def create_app() -> Any:
         web.post("/rustdesk/action", rustdesk_action),
         web.get("/wipe", wipe_page),
         web.post("/wipe/start", wipe_start),
+        web.get("/chats", chats_page),
+        web.post("/chats/toggle", chats_toggle),
         web.get("/health", health),
         web.get("/s/{code}", follow),
         web.get("/d/{token}", download_drop),

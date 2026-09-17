@@ -240,6 +240,36 @@ def smoke_checks() -> list[str]:
     return problems
 
 
+def discover() -> list[str]:
+    """Все модули проекта, найденные на диске.
+
+    Раньше список был записан руками, и это тихо не работало: в нём
+    не оказалось ни `radar.updater`, ни `radar.wipe`, ни `radar.cli` —
+    то есть проверка импорта их не касалась вовсе. Проверка, которая
+    заведена против «локально зелено, на сервере не поднимается»,
+    не должна зависеть от того, вспомнил ли автор дописать строку.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    found: list[str] = []
+    for package in ("radar", "multitool"):
+        base = root / package
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            relative = path.relative_to(root).with_suffix("")
+            parts = list(relative.parts)
+            if parts[-1] == "__init__":
+                parts.pop()
+            if not parts:
+                continue
+            found.append(".".join(parts))
+    return found
+
+
 def main() -> int:
     install()
     modules = [
@@ -256,6 +286,13 @@ def main() -> int:
         "multitool.linkcheck.netcheck", "multitool.linkcheck.report",
         "main",
     ]
+    # Список выше оставлен ради порядка: в нём модули идут снизу вверх
+    # по зависимостям, и при поломке первым падает виновник, а не то,
+    # что его импортирует. Найденное на диске дописывается следом.
+    for name in discover():
+        if name not in modules:
+            modules.append(name)
+
     failures = 0
     for name in modules:
         try:

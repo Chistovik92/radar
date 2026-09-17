@@ -277,6 +277,40 @@ def cmd_links(args) -> int:
     return asyncio.run(_with_storage(run))
 
 
+def cmd_chats(args) -> int:
+    """Чаты под модерацией. Те же данные, что показывает панель."""
+    from .db import repo
+
+    async def run():
+        if args.action == "list":
+            rows = await repo.chat_list()
+            _out(rows, args.json, lambda data: [
+                print(f"{row['chat_id']:>15}  "
+                      f"{'вкл ' if row['enabled'] else 'выкл'}  "
+                      f"{row['title'] or '—'}")
+                for row in data
+            ] or print("чатов нет"))
+            return OK
+
+        if not args.chat_id:
+            print("Нужен идентификатор чата: radar chats on -100…",
+                  file=sys.stderr)
+            return FAILED
+
+        chat_id = int(args.chat_id)
+        if args.action == "forget":
+            done = await repo.chat_forget(chat_id)
+            print("забыт" if done else "такого чата нет")
+            return OK if done else FAILED
+
+        await repo.chat_save(chat_id, enabled=args.action == "on")
+        print(f"{chat_id}: модерация "
+              f"{'включена' if args.action == 'on' else 'выключена'}")
+        return OK
+
+    return asyncio.run(_with_storage(run))
+
+
 def cmd_files(args) -> int:
     from . import filedrop
 
@@ -402,6 +436,12 @@ def build_parser() -> argparse.ArgumentParser:
     links.add_argument("code", nargs="?", default="")
     links.add_argument("--yes", action="store_true")
     links.set_defaults(func=cmd_links)
+
+    chats = subparsers.add_parser("chats", help="чаты под модерацией",
+                                  parents=[common])
+    chats.add_argument("action", choices=["list", "on", "off", "forget"])
+    chats.add_argument("chat_id", nargs="?", default="")
+    chats.set_defaults(func=cmd_chats)
 
     files = subparsers.add_parser("files", help="раздача файлов", parents=[common])
     files.add_argument("action", nargs="?", choices=["list"], default="list")

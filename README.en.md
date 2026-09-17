@@ -1,4 +1,4 @@
-# Radar v4.9.8.10
+# Radar v4.9.8.11
 
 [Русская версия](README.md)
 
@@ -201,6 +201,39 @@ identity, so anyone holding the link can fetch the file. The name is
 therefore unguessable, the link lives for a day, and the whole drop is
 capped by a disk budget — a full disk would stop alerts, and alerts
 outrank downloads.
+
+## Group moderation
+
+The `moderation` flag, off by default. The bot is added to a group and
+given administrator rights — **deleting messages** and **banning
+members**; without them it says so once in the chat and does nothing.
+There is no need to change privacy mode at @BotFather: an administrator
+receives every message anyway.
+
+What it does: removes spam and suspicious links (the same check `/check`
+uses), forbids links from newcomers for the first day, runs the
+warning → mute → ban ladder, greets newcomers with an "I am not a bot"
+button (silence until it is pressed), keeps anti-flood and a stopword
+list, and clears join/leave service messages.
+
+For chat administrators, inside the group: `/warn`, `/mute`, `/ban`,
+`/unban` as a reply to a message, and `/modstatus` for current settings.
+Rights are checked with Telegram rather than against Radar's own roles —
+a group admin and a bot admin are different lists. Chat administrators
+themselves are never moderated.
+
+The chat list and toggles live in the panel under "Chats", and in the
+command line:
+
+```bash
+bash tools/radarctl.sh chats list
+bash tools/radarctl.sh chats off -1001234567890
+```
+
+**Sections meant for private chat stay silent in groups.** That is a
+separate fix in the same release: before it, a bot added to a group
+answered every member with "access denied", registered them as its own
+users, and replied with AI to any text.
 
 ## The web panel
 

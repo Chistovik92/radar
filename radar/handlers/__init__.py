@@ -8,13 +8,14 @@
 
 from __future__ import annotations
 
-from aiogram import Dispatcher
+from aiogram import Dispatcher, F
 
 from . import (
     assistant,
     common,
     digest,
     features,
+    group,
     history,
     language,
     linkcheck,
@@ -35,33 +36,36 @@ from . import (
     users,
 )
 
-def setup(dp: Dispatcher) -> None:
-    dp.include_router(common.router)
-    dp.include_router(locations.router)
-    dp.include_router(settings.router)
-    dp.include_router(sources.router)
-    dp.include_router(users.router)
-    dp.include_router(features.router)
-    dp.include_router(settings_admin.router)
-    dp.include_router(network.router)
-    dp.include_router(rustdesk.router)
-    dp.include_router(logs.router)
-    dp.include_router(language.router)
-    dp.include_router(history.router)
-    dp.include_router(partners.router)
-    dp.include_router(perf.router)
-    dp.include_router(shortlink.router)
-    dp.include_router(linkcheck.router)
-    dp.include_router(music.router)
-    dp.include_router(digest.router)
-    dp.include_router(sos.router)
+# Порядок прежний и важный: ассистент перехватывает любой оставшийся
+# текст, поэтому он последний, а ссылки — прямо перед ним.
+PRIVATE_ROUTERS = (
+    common, locations, settings, sources, users, features, settings_admin,
+    network, rustdesk, logs, language, history, partners, perf, shortlink,
+    linkcheck, music, digest, sos,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
-    dp.include_router(subscription.router)
+    subscription,
     # Ссылки перехватываем до свободного диалога с моделью
-    dp.include_router(media.router)
-    # Ассистент перехватывает любой оставшийся текст — только в самом конце.
-    dp.include_router(assistant.router)
+    media,
+    # Ассистент перехватывает любой оставшийся текст — только в конце.
+    assistant,
+)
+
+
+def setup(dp: Dispatcher) -> None:
+    # Модерация — первой и только для групп: её сообщения не должны
+    # доходить до разделов, рассчитанных на личную переписку.
+    group.router.message.filter(F.chat.type.in_({"group", "supergroup"}))
+    dp.include_router(group.router)
+
+    # Всё остальное — только личный чат. Фильтр вешается здесь, одним
+    # местом, а не двадцатью декораторами: иначе новый раздел рано или
+    # поздно окажется без него и начнёт отвечать в группе. Ассистент
+    # ловит ЛЮБОЙ текст, и цена такой утечки — ответы ИИ на чужой
+    # разговор и сожжённая квота.
+    for module in PRIVATE_ROUTERS:
+        module.router.message.filter(F.chat.type == "private")
+        dp.include_router(module.router)
 
 
 __all__ = ["setup"]

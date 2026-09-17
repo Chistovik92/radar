@@ -42,6 +42,17 @@ class AccessMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
+        # Групповые чаты проходят мимо всего этого. Иначе бот, добавленный
+        # в группу, здоровается с каждым участником «Доступ закрыт» раз
+        # в десять минут, регистрирует знакомых как своих пользователей
+        # и спрашивает у них язык прямо в чате. Модерацией занимается
+        # отдельный роутер, и ему ни запись пользователя, ни роль
+        # «Радара» не нужны: права он спрашивает у самого Telegram.
+        chat = getattr(event, "chat", None) or getattr(
+            getattr(event, "message", None), "chat", None)
+        if chat is not None and getattr(chat, "type", "private") != "private":
+            return await handler(event, data)
+
         uid = str(user.id)
         text = (getattr(event, "text", "") or "").strip()
 
