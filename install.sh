@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.14 — автономный установщик.
+# Система «Радар» v4.9.9 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.14"
+VERSION="4.9.9"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=122
+FILE_COUNT=123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3057,6 +3057,43 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  # Облачное хранилище музыки (с 4.9.9). Поднимается профилем, когда
+  # включена возможность «Музыка в облаке»:
+  #   docker compose --profile cloud up -d
+  # Настройка облака делается один раз на хосте командой
+  #   rclone config
+  # и кладётся в ./data/rclone/rclone.conf. Имя удалённого хранилища
+  # подставляется в команду ниже вместо remote.
+  #
+  # Порт наружу НЕ публикуется намеренно: WebDAV здесь без шифрования,
+  # и слушать он должен только внутреннюю сеть Compose. Бот обращается
+  # к нему по имени сервиса — MUSIC_CLOUD_URL=http://radar_rclone:8080.
+  rclone:
+    profiles: ["cloud"]
+    image: rclone/rclone:latest
+    container_name: radar_rclone
+    restart: unless-stopped
+    command:
+      - serve
+      - webdav
+      - "${MUSIC_CLOUD_REMOTE:-remote:}"
+      - --addr=:8080
+      # Кэш страниц: без него каждое чтение идёт в облако целиком,
+      # и трек начинает играть заметно позже.
+      - --vfs-cache-mode=full
+      - --vfs-cache-max-size=256M
+    volumes:
+      - ./data/rclone:/config/rclone
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   postgres:
     profiles: ["postgres"]
     image: postgres:16-alpine
@@ -3192,6 +3229,19 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.9", [
+        "☁️ <b>Музыка переезжает в облако.</b> Рядом с ботом поднимается "
+        "WebDAV (rclone), треки хранятся там, а на устройстве остаётся "
+        "кэш последних. Ёмкость перестаёт упираться в карту памяти "
+        "одноплатника. Возможность «Музыка в облаке», по умолчанию "
+        "выключена: без адреса хранилища она ничего не меняет.",
+        "💾 <b>Отказ облака не теряет трек.</b> Не ушёл — остался "
+        "на устройстве, и бот об этом говорит, а не молчит. Пережатие "
+        "заменяет файл и в хранилище тоже: иначе место освобождалось бы "
+        "только на диске.",
+        "🩺 <b>Хранилище проверяется диагностикой.</b> В <code>/doctor</code> "
+        "видно, отвечает ли оно и сколько там места.",
+    ]),
     ("4.9.8.14", [
         "🛡 <b>Оповещения больше не могут прекратиться молча.</b> "
         "За фоновым циклом теперь следит сторож: если тот замолчал, "
@@ -4803,7 +4853,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.14"
+__version__ = "4.9.9"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6666,6 +6716,14 @@ FLAGS: tuple[Flag, ...] = (
          "раскладываются по плейлистам. Каждый слушает только своё. "
          "Подбор похожего — следующий шаг.",
          group="Медиа", since="4.9.5.2", default=False),
+    Flag("music_cloud", "Музыка в облаке",
+         "Треки хранятся не на устройстве, а в облаке по WebDAV: рядом "
+         "с ботом поднимается rclone serve webdav, и ёмкость перестаёт "
+         "упираться в карту памяти. На диске остаётся кэш последних "
+         "треков. Нужен MUSIC_CLOUD_URL; без него флаг ничего не меняет. "
+         "По умолчанию выключено: отдача трека начинает зависеть "
+         "от чужой сети.",
+         group="Медиа", since="4.9.9", default=False),
     Flag("disk_watch", "Наблюдение за дисками",
          "Ночью бот проверяет заполненность дисков (включая внешний "
          "носитель музыки) и письмом предупреждает администрацию, "
@@ -9612,6 +9670,17 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("TELEGRAM_API_SERVER", "Адрес Bot API Server",
             "Например http://telegram-bot-api:8081. Снимает предел 50 МБ.",
             "Медиа", restart=True, secret=False),
+
+    Setting("MUSIC_CLOUD_URL", "Облако для музыки",
+            "Адрес WebDAV, например http://rclone:8080. Поднимается "
+            "командой rclone serve webdav. Пусто — музыка лежит "
+            "на устройстве.",
+            "Медиа", secret=False),
+    Setting("MUSIC_CLOUD_USER", "Облако: логин",
+            "Пусто, если rclone слушает без проверки на localhost.",
+            "Медиа", secret=False),
+    Setting("MUSIC_CLOUD_PASSWORD", "Облако: пароль",
+            "Пароль к WebDAV rclone.", "Медиа"),
 
     # --- сеть ---
     Setting("EGRESS_PROXY", "Прокси для выхода в сеть",
@@ -20834,6 +20903,34 @@ async def check_telegram() -> None:
                    "Проверьте BOT_TOKEN в .env — возможно, он отозван")
 
 
+async def check_music_cloud() -> None:
+    """Отвечает ли облачное хранилище музыки (с 4.9.9).
+
+    Проверяется только когда включено: выключенная возможность
+    не должна давать ни предупреждений, ни строки в отчёте.
+    """
+    from radar import cloudstore, features
+
+    if not features.enabled("music_cloud"):
+        return
+
+    announce("music_cloud")
+    if not cloudstore.configured():
+        report.add("Музыка в облаке", WARN,
+                   "возможность включена, но MUSIC_CLOUD_URL пуст",
+                   "Задайте адрес WebDAV или выключите возможность — "
+                   "иначе треки продолжат занимать место на устройстве")
+        return
+
+    ok, detail = await cloudstore.check()
+    if ok:
+        report.add("Музыка в облаке", OK, detail)
+    else:
+        report.add("Музыка в облаке", ERROR, detail,
+                   "Проверьте, что rclone serve webdav запущен и доступен "
+                   "из контейнера по этому адресу")
+
+
 def check_panel() -> None:
     """Доступна ли веб-панель снаружи контейнера.
 
@@ -20909,6 +21006,7 @@ async def run(quick: bool) -> None:
     check_panel()
     if not quick:
         await check_telegram()
+        await check_music_cloud()
 
     from radar.db import engine as db_engine
 
@@ -28090,8 +28188,273 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
     _cache[chat_id] = link
     return True, link
 RADAR_FILE_82
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cloudstore.py"
+cat > "radar/cloudstore.py" <<'RADAR_FILE_83'
+"""Облачное хранилище музыки по WebDAV (с 4.9.9).
+
+Продолжение внешнего носителя из 4.9.5.4: там каталог музыки выносился
+на флешку или диск, здесь — в облако. Ёмкость перестаёт упираться
+в карту памяти одноплатника, а платная ёмкость из таблицы монетизации
+становится возможной: продавать место, которого физически нет
+на устройстве, нельзя.
+
+**Почему WebDAV, а не FUSE.** Разбор соседнего проекта
+[opendisk](https://github.com/Chistovik92/opendisk) показал, что брать
+надо не его самого — он GUI на Kotlin без headless-режима и без сборок
+под aarch64, — а то, поверх чего он сделан: rclone. У rclone два способа
+отдать облако боту:
+
+* `rclone mount` — облако видно каталогом, и `MUSIC_DIR` заработал бы
+  без единой правки. Но это FUSE внутри контейнера: `--device /dev/fuse`
+  и `--cap-add SYS_ADMIN`, то есть заметно более широкие права
+  у процесса, который ходит в интернет за новостями;
+* `rclone serve webdav` рядом — прав не требует вовсе, ценой своего
+  клиента. Он перед вами, и он умещается в один файл.
+
+Второй путь выбран сознательно: цена ошибки в правах контейнера выше,
+чем стоимость сотни строк HTTP.
+
+**Что здесь намеренно не делается.** Ни кэша, ни решений «качать или
+нет» — это дело `radar/music.py`. Здесь только четыре действия над
+удалённым файлом и вопрос о свободном месте. Модуль не знает ни про
+пользователей, ни про треки, и проверяется без сети.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+from urllib.parse import quote
+
+log = logging.getLogger("radar.cloudstore")
+
+# Таймауты. Отдача трека идёт через чужую сеть, и она может быть
+# медленной, но не бесконечной: раздел музыки не должен висеть.
+CONNECT_TIMEOUT = 15
+TRANSFER_TIMEOUT = 180
+
+# Имя файла в хранилище: идентификатор трека плюс расширение. Всё,
+# что не похоже на это, до сети не доходит — путь в WebDAV строится
+# склейкой, и постороннему символу там взяться неоткуда.
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}(?:\.[A-Za-z0-9]{1,8})?$")
+
+# Свойства, которыми WebDAV отвечает на вопрос о месте. Их поддерживают
+# не все серверы: rclone отдаёт, если их отдаёт нижележащее облако.
+_USED_RE = re.compile(r"<[^>]*quota-used-bytes[^>]*>(\d+)<", re.I)
+_AVAIL_RE = re.compile(r"<[^>]*quota-available-bytes[^>]*>(-?\d+)<", re.I)
+
+_QUOTA_BODY = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<d:propfind xmlns:d="DAV:"><d:prop>'
+    "<d:quota-available-bytes/><d:quota-used-bytes/>"
+    "</d:prop></d:propfind>"
+)
+
+
+def base_url() -> str:
+    """Адрес хранилища без завершающего слэша. Пусто — не настроено."""
+    from . import secrets
+
+    return str(secrets.get("MUSIC_CLOUD_URL") or "").strip().rstrip("/")
+
+
+def credentials() -> tuple[str, str]:
+    from . import secrets
+
+    return (
+        str(secrets.get("MUSIC_CLOUD_USER") or ""),
+        str(secrets.get("MUSIC_CLOUD_PASSWORD") or ""),
+    )
+
+
+def configured() -> bool:
+    """Задан ли адрес. Логин и пароль необязательны: rclone умеет
+    отдавать WebDAV без проверки, когда слушает только localhost."""
+    return bool(base_url())
+
+
+def enabled() -> bool:
+    """Включено ли облако: флаг плюс настройка."""
+    from . import features
+
+    return features.enabled("music_cloud") and configured()
+
+
+def valid_name(name: str) -> bool:
+    return bool(_NAME_RE.fullmatch(name or ""))
+
+
+def url_for(name: str) -> str:
+    """Полный адрес файла. Пусто — имя не годится или адрес не задан."""
+    if not configured() or not valid_name(name):
+        return ""
+    return f"{base_url()}/{quote(name)}"
+
+
+def _auth() -> Any:
+    """Проверка подлинности для aiohttp или None, если её не задали."""
+    import aiohttp
+
+    user, password = credentials()
+    if not user:
+        return None
+    return aiohttp.BasicAuth(user, password)
+
+
+def _timeout(total: int) -> Any:
+    import aiohttp
+
+    return aiohttp.ClientTimeout(total=total, connect=CONNECT_TIMEOUT)
+
+
+async def _request(method: str, name: str, *, data: bytes | None = None,
+                   total: int = TRANSFER_TIMEOUT,
+                   url: str = "") -> tuple[int, bytes, str]:
+    """Один запрос к хранилищу. Возвращает (код, тело, причина отказа).
+
+    Код 0 означает, что до сервера не дошли вовсе: сеть, адрес, таймаут.
+    Причина при этом заполнена и написана для человека, а не для журнала.
+    """
+    import aiohttp
+
+    target = url or url_for(name)
+    if not target:
+        return 0, b"", "Облачное хранилище не настроено."
+
+    try:
+        async with aiohttp.ClientSession(timeout=_timeout(total)) as session:
+            async with session.request(
+                method, target, data=data, auth=_auth(),
+                headers={"User-Agent": "radar-cloudstore"},
+            ) as response:
+                body = await response.read()
+                return response.status, body, ""
+    except aiohttp.ClientError as exc:
+        log.warning("Хранилище недоступно (%s %s): %s", method, name, exc)
+        return 0, b"", "Хранилище не отвечает."
+    except Exception as exc:  # noqa: BLE001
+        # В том числе TimeoutError: он приходит из asyncio, а не из aiohttp.
+        log.warning("Сбой обращения к хранилищу (%s %s): %s", method, name, exc)
+        return 0, b"", "Обращение к хранилищу не удалось."
+
+
+def _ok(status: int) -> bool:
+    return 200 <= status < 300
+
+
+async def put(name: str, payload: bytes) -> tuple[bool, str]:
+    """Кладёт файл в хранилище. Возвращает (получилось, причина отказа)."""
+    if not valid_name(name):
+        return False, "Недопустимое имя файла."
+
+    status, _body, reason = await _request("PUT", name, data=payload)
+    if reason:
+        return False, reason
+    if not _ok(status):
+        log.warning("Загрузка %s отклонена: HTTP %s", name, status)
+        return False, f"Хранилище отказало (HTTP {status})."
+    return True, ""
+
+
+async def fetch(name: str) -> tuple[bool, bytes | str]:
+    """Забирает файл. При неудаче вторым значением идёт причина."""
+    if not valid_name(name):
+        return False, "Недопустимое имя файла."
+
+    status, body, reason = await _request("GET", name)
+    if reason:
+        return False, reason
+    if status == 404:
+        return False, "Файла нет в хранилище."
+    if not _ok(status):
+        return False, f"Хранилище отказало (HTTP {status})."
+    return True, body
+
+
+async def delete(name: str) -> bool:
+    """Убирает файл. 404 считается успехом: его и так нет."""
+    if not valid_name(name):
+        return False
+
+    status, _body, reason = await _request("DELETE", name, total=CONNECT_TIMEOUT * 2)
+    if reason:
+        return False
+    return _ok(status) or status == 404
+
+
+async def exists(name: str) -> bool:
+    if not valid_name(name):
+        return False
+    status, _body, reason = await _request("HEAD", name, total=CONNECT_TIMEOUT * 2)
+    return not reason and _ok(status)
+
+
+def parse_quota(body: bytes) -> tuple[int, int]:
+    """Разбирает ответ PROPFIND. Возвращает (занято, доступно) в байтах.
+
+    -1 в любом из значений означает «сервер не сказал»: часть облаков
+    не сообщает объём вовсе, и делать вид, что место известно, нельзя.
+    """
+    text = body.decode("utf-8", "replace")
+    used_match = _USED_RE.search(text)
+    avail_match = _AVAIL_RE.search(text)
+
+    used = int(used_match.group(1)) if used_match else -1
+    available = int(avail_match.group(1)) if avail_match else -1
+    # По стандарту отрицательные значения — это «не ограничено»
+    # и «неизвестно». Для отчёта и то и другое означает одно: не показывать.
+    if available < 0:
+        available = -1
+    return used, available
+
+
+async def space() -> tuple[int, int]:
+    """Сколько занято и сколько доступно. (-1, -1) — узнать не удалось."""
+    if not configured():
+        return -1, -1
+
+    status, body, reason = await _request(
+        "PROPFIND", "", data=_QUOTA_BODY.encode("utf-8"),
+        total=CONNECT_TIMEOUT * 2, url=base_url() + "/",
+    )
+    if reason or not _ok(status):
+        return -1, -1
+    return parse_quota(body)
+
+
+async def check() -> tuple[bool, str]:
+    """Проверка для диагностики: доступно ли хранилище и что в нём с местом."""
+    if not configured():
+        return False, "MUSIC_CLOUD_URL не задан"
+
+    status, body, reason = await _request(
+        "PROPFIND", "", data=_QUOTA_BODY.encode("utf-8"),
+        total=CONNECT_TIMEOUT * 2, url=base_url() + "/",
+    )
+    if reason:
+        return False, reason
+    if status in (401, 403):
+        return False, "хранилище не приняло логин или пароль"
+    if not _ok(status):
+        return False, f"хранилище ответило HTTP {status}"
+
+    used, available = parse_quota(body)
+    if available < 0:
+        return True, "доступно, объём не сообщается"
+
+    from .music import format_size
+
+    return True, f"доступно, свободно {format_size(available)}"
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_83'
+cat > "radar/chatpost.py" <<'RADAR_FILE_84'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -28195,9 +28558,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_84'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_85'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -28620,9 +28983,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_85'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_86'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -28935,9 +29298,9 @@ async def send_message(call: CallbackQuery, role: str) -> None:
         "Сообщение опубликовано от имени бота.",
         back_kb_chats(),
     )
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_86'
+cat > "radar/cli.py" <<'RADAR_FILE_87'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -29417,9 +29780,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_87'
+cat > "radar/__main__.py" <<'RADAR_FILE_88'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -29441,9 +29804,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_88'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_89'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -29496,7 +29859,8 @@ esac
 
 printf "\n  %sПолное удаление «Радара»%s\n" "$C_BOLD" "$C_RESET"
 printf "  Будет удалено безвозвратно:\n"
-printf "    контейнеры  radar_container, radar_db, radar_bot_api, radar_singbox\n"
+printf "    контейнеры  radar_container, radar_db, radar_bot_api,\n"
+printf "                radar_singbox, radar_rclone и прочие профили\n"
 printf "    образ       radar_image\n"
 printf "    каталог     %s — база, .env, копии, журналы\n\n" "$APP_DIR"
 
@@ -29558,7 +29922,7 @@ if command -v docker >/dev/null 2>&1; then
     # четыре, и контейнеры, появившиеся позже (RustDesk, сертификат,
     # исполнитель обновления), переживали «полное удаление».
     docker rm -f radar_container radar_db radar_bot_api radar_singbox \
-        radar_tls radar_hbbs radar_hbbr radar_updater 2>/dev/null || true
+        radar_tls radar_hbbs radar_hbbr radar_updater radar_rclone         2>/dev/null || true
     docker rmi -f radar_image 2>/dev/null || true
     # Том Caddy держит выданный сертификат и ключ к нему.
     docker volume ls --format '{{.Name}}' 2>/dev/null \
@@ -29584,9 +29948,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_89'
+cat > "tools/restore.sh" <<'RADAR_FILE_90'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -29828,9 +30192,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_90'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_91'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -29926,9 +30290,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_91'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_92'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -30121,9 +30485,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_93'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -30238,9 +30602,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_92
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_94'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -30707,9 +31071,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_93
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_95'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -30875,9 +31239,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_94
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_96'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -31382,9 +31746,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_95
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_97'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -31859,9 +32223,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_96
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_98'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -32228,9 +32592,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_99'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -32377,9 +32741,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_100'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -32667,9 +33031,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_101'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -32876,9 +33240,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_102'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -33249,9 +33613,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_101
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_103'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -33826,9 +34190,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_102
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_104'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -33929,9 +34293,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_103
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_105'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -34021,9 +34385,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_104
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_106'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -34444,9 +34808,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_105
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_107'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -35609,9 +35973,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_106
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_108'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -36342,9 +36706,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_107
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_109'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -36868,9 +37232,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_108
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_109'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_110'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -37078,9 +37442,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_109
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_111'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -37493,9 +37857,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_110
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_112'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -37758,9 +38122,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_111
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_113'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -37910,9 +38274,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_113'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_114'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -38380,9 +38744,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_114'
+cat > "radar/cookies.py" <<'RADAR_FILE_115'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -38513,9 +38877,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_114
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_115'
+cat > "radar/music.py" <<'RADAR_FILE_116'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -38691,6 +39055,14 @@ def add_track(user: dict, track_id: str, *, name: str, ext: str,
     return True
 
 
+def find_track(user: dict, track_id: str) -> dict | None:
+    """Запись трека по идентификатору. None — нет такого."""
+    for item in tracks_of(user):
+        if item.get("id") == track_id:
+            return item
+    return None
+
+
 def remove_track(user: dict, track_id: str) -> bool:
     """Убирает трек из записи и с диска. False — не было такого."""
     data = dict(_slot(user))
@@ -38711,11 +39083,13 @@ def remove_track(user: dict, track_id: str) -> bool:
     data["playlists"] = playlists
     user[SLOT] = data
 
-    # Расширение берём из убранного трека — путь должен совпасть.
+    # Расширение берём из убранного трека — имя должно совпасть.
+    # Облако и кэш чистит forget_remote: удаление там асинхронное,
+    # а эта функция синхронная и вызывается в том числе из тестов.
     path = ""
     for t in tracks:
         if t.get("id") == track_id:
-            path = os.path.join(DIRECTORY, f"{track_id}{t.get('ext') or ''}")
+            path = local_path(track_id, str(t.get("ext") or ""))
     try:
         if path and os.path.isfile(path):
             os.remove(path)
@@ -38921,10 +39295,12 @@ async def compress_track(track: dict) -> tuple[bool, str, int]:
     import asyncio
     import subprocess
 
-    source = os.path.join(DIRECTORY,
-                          f"{track.get('id')}{track.get('ext') or ''}")
-    if not os.path.isfile(source):
-        return False, "файл трека не найден", 0
+    # Файл может лежать в облаке (с 4.9.9) — тогда его сначала приносят
+    # в кэш. Пережимаем всегда локальную копию: гонять ffmpeg по сети
+    # незачем, а результат всё равно придётся отправлять обратно.
+    source, reason = await ensure_local(track)
+    if not source:
+        return False, reason or "файл трека не найден", 0
     if not worth_compress(os.path.getsize(source)):
         return False, (f"файл меньше {COMPRESS_MIN_MB} МБ — пережатие "
                        "не окупится"), 0
@@ -38968,6 +39344,28 @@ async def compress_track(track: dict) -> tuple[bool, str, int]:
 
     os.replace(target, source)
     log.info("Трек пережат: %d → %d байт", old_size, new_size)
+
+    # В облаке лежит прежний, тяжёлый файл. Не заменить его означало бы,
+    # что выигрыш от пережатия виден только на этом устройстве, а место
+    # в хранилище — то самое, ради которого всё затевалось, — не освободится.
+    from . import cloudstore
+
+    if cloudstore.enabled():
+        name = track_name(str(track.get("id") or ""), str(track.get("ext") or ""))
+        try:
+            with open(source, "rb") as handle:
+                payload = handle.read()
+        except OSError:
+            payload = b""
+        if payload:
+            ok, put_reason = await cloudstore.put(name, payload)
+            if not ok:
+                # Локально трек уже лёгкий, в облаке — прежний. Рассинхрон
+                # безопасен (кэш новее и используется первым), но о нём
+                # надо сказать: следующая выгрузка вернёт старый вес.
+                log.warning("Пережатый трек не ушёл в облако: %s", put_reason)
+                return True, f"в облаке остался прежний файл: {put_reason}", new_size
+
     return True, "", new_size
 
 
@@ -38977,6 +39375,174 @@ def _safe_unlink(path: str) -> None:
             os.remove(path)
     except OSError:
         pass
+
+
+# --------------------------------------------------------------------------
+#  Облако: где лежит трек и как до него дойти (с 4.9.9)
+# --------------------------------------------------------------------------
+#
+# Пока облако выключено, всё как прежде: файл лежит в DIRECTORY и берётся
+# оттуда. Когда включено — хранилищем становится облако, а на диске
+# остаётся кэш последних треков. Разница видна только здесь: обработчики
+# спрашивают `ensure_local` и получают путь, откуда бы файл ни пришёл.
+#
+# Почему кэш, а не чтение напрямую в Telegram: отдача идёт через чужую
+# сеть, и у одного и того же трека, поставленного дважды подряд, не должно
+# быть двух скачиваний. Оповещения этим путём не ходят вовсе — музыка
+# и мониторинг не делят ни очередь, ни канал.
+
+CACHE_DIRECTORY = os.path.join(DIRECTORY, "cache")
+
+# Сколько места отдаём кэшу. Не настройка: смысл облака в том, что
+# на устройстве места мало, и кэш не должен съедать выигрыш.
+CACHE_BUDGET_MB = 256
+
+
+def track_name(track_id: str, ext: str) -> str:
+    """Имя файла трека — одно и то же на диске и в облаке."""
+    return f"{track_id}{ext or ''}"
+
+
+def local_path(track_id: str, ext: str) -> str:
+    return os.path.join(DIRECTORY, track_name(track_id, ext))
+
+
+def cache_path(track_id: str, ext: str) -> str:
+    return os.path.join(CACHE_DIRECTORY, track_name(track_id, ext))
+
+
+def cache_size() -> int:
+    """Сколько занимает кэш в байтах."""
+    total = 0
+    try:
+        for entry in os.scandir(CACHE_DIRECTORY):
+            if entry.is_file():
+                total += entry.stat().st_size
+    except OSError:
+        return 0
+    return total
+
+
+def trim_cache(budget_mb: int = CACHE_BUDGET_MB) -> int:
+    """Убирает из кэша самое давнее, пока не уложится в бюджет.
+
+    Возвращает число убранных файлов. Кэш можно потерять целиком без
+    последствий: исходники лежат в облаке, а потерянный кэш означает
+    лишь повторное скачивание.
+    """
+    budget = budget_mb * 1024 * 1024
+    try:
+        files = [
+            (entry.stat().st_atime, entry.stat().st_size, entry.path)
+            for entry in os.scandir(CACHE_DIRECTORY) if entry.is_file()
+        ]
+    except OSError:
+        return 0
+
+    total = sum(size for _atime, size, _path in files)
+    if total <= budget:
+        return 0
+
+    removed = 0
+    for _atime, size, path in sorted(files):
+        if total <= budget:
+            break
+        _safe_unlink(path)
+        total -= size
+        removed += 1
+    if removed:
+        log.info("Кэш музыки почищен: убрано файлов %d", removed)
+    return removed
+
+
+async def store(track_id: str, ext: str, payload: bytes) -> tuple[str, str]:
+    """Сохраняет трек. Возвращает (где лежит, причина отказа).
+
+    «Где лежит» — это `cloud` или `local`. Отказ облака не означает
+    отказ приёма: трек остаётся на диске, и человек его не теряет —
+    просто место тратится своё. Молчать об этом нельзя, поэтому причина
+    возвращается и показывается.
+    """
+    from . import cloudstore
+
+    os.makedirs(DIRECTORY, exist_ok=True)
+    path = local_path(track_id, ext)
+    with open(path, "wb") as handle:
+        handle.write(payload)
+
+    if not cloudstore.enabled():
+        return "local", ""
+
+    ok, reason = await cloudstore.put(track_name(track_id, ext), payload)
+    if not ok:
+        return "local", reason
+
+    # Ушло в облако — на диске держим тот же файл, но уже как кэш:
+    # только что загруженный трек чаще всего сразу и слушают.
+    os.makedirs(CACHE_DIRECTORY, exist_ok=True)
+    try:
+        os.replace(path, cache_path(track_id, ext))
+    except OSError:
+        _safe_unlink(path)
+    trim_cache()
+    return "cloud", ""
+
+
+async def ensure_local(track: dict) -> tuple[str, str]:
+    """Путь к файлу трека. Возвращает (путь, причина отказа).
+
+    Порядок поиска: свой каталог, кэш, облако. Первые два — без единого
+    запроса в сеть.
+    """
+    from . import cloudstore
+
+    track_id = str(track.get("id") or "")
+    ext = str(track.get("ext") or "")
+    if not track_id:
+        return "", "Трек не найден."
+
+    path = local_path(track_id, ext)
+    if os.path.isfile(path):
+        return path, ""
+
+    cached = cache_path(track_id, ext)
+    if os.path.isfile(cached):
+        # Трогаем время доступа: по нему кэш решает, что убирать первым.
+        try:
+            os.utime(cached, None)
+        except OSError:
+            pass
+        return cached, ""
+
+    if not cloudstore.enabled():
+        return "", "Файл трека потерян — загрузите заново."
+
+    ok, result = await cloudstore.fetch(track_name(track_id, ext))
+    if not ok:
+        return "", str(result)
+
+    os.makedirs(CACHE_DIRECTORY, exist_ok=True)
+    try:
+        with open(cached, "wb") as handle:
+            handle.write(result if isinstance(result, bytes) else b"")
+    except OSError as exc:
+        log.warning("Кэш не записан: %s", exc)
+        return "", "Не удалось сохранить трек на диск."
+    trim_cache()
+    return cached, ""
+
+
+async def forget_remote(track_id: str, ext: str) -> None:
+    """Убирает трек из облака и из кэша. Ошибку облака переживаем молча:
+    запись у человека уже удалена, и возвращать её из-за чужой сети
+    было бы хуже, чем оставить файл-сироту."""
+    from . import cloudstore
+
+    _safe_unlink(cache_path(track_id, ext))
+    if not cloudstore.enabled():
+        return
+    if not await cloudstore.delete(track_name(track_id, ext)):
+        log.info("Трек %s остался в облаке — удалить не удалось", track_id)
 
 
 # --------------------------------------------------------------------------
@@ -39020,12 +39586,20 @@ def disk_report(paths: list[str]) -> str:
     if not lines:
         return ""
     head = "💾 <b>Диски</b>"
+    # Строка про кэш: при включённом облаке место на диске тратит он,
+    # и знать его вес полезнее, чем гадать, куда делись гигабайты.
+    cached = cache_size()
+    if cached:
+        lines.append(
+            f"• кэш музыки: {format_size(cached)} "
+            f"из {CACHE_BUDGET_MB} МБ бюджета"
+        )
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_115
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_116'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_117'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -39056,6 +39630,7 @@ from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarku
 
 from .. import music, roles, storage, subscription
 from ..states import Form
+from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
 log = logging.getLogger("radar.handlers.music")
@@ -39192,10 +39767,7 @@ async def take_track(message: Message, user: dict, role: str) -> None:
     tags = music.read_tags(payload)
     track_id = secrets_module.token_hex(8)
 
-    os.makedirs(music.DIRECTORY, exist_ok=True)
-    path = os.path.join(music.DIRECTORY, f"{track_id}{ext}")
-    with open(path, "wb") as handle:
-        handle.write(payload)
+    where, cloud_note = await music.store(track_id, ext, payload)
 
     name = (audio.file_name or "Без названия").rsplit(".", 1)[0]
     music.add_track(user, track_id, name=name, ext=ext,
@@ -39215,9 +39787,17 @@ async def take_track(message: Message, user: dict, role: str) -> None:
         or _same_tag(tags.get("genre"), t.get("genre"))
         for t in music.tracks_of(user) if t.get("id") != track_id
     )
+    lines = [f"✅ Трек добавлен: <b>{label[:80]}</b>"]
+    if where == "cloud":
+        lines.append("<i>Хранится в облаке.</i>")
+    elif cloud_note:
+        # Облако включено, но не приняло. Трек не потерян — он лежит
+        # на устройстве, и человек должен знать, что место тратится своё.
+        lines.append(f"<i>⚠️ В облако не ушёл ({esc(cloud_note)}) — "
+                     f"хранится на устройстве.</i>")
+    lines.append(music.describe(user, role))
     await message.answer(
-        f"✅ Трек добавлен: <b>{label[:80]}</b>\n"
-        f"{music.describe(user, role)}",
+        "\n".join(lines),
         reply_markup=_track_kb(track_id, music.playlists_of(user),
                                has_similar=similar_now),
     )
@@ -39241,10 +39821,9 @@ async def play(call) -> None:
     if track is None:
         await call.message.answer("Трек не найден.")
         return
-    path = os.path.join(music.DIRECTORY,
-                        f"{track_id}{track.get('ext') or ''}")
-    if not os.path.isfile(path):
-        await call.message.answer("Файл трека потерян — загрузите заново.")
+    path, reason = await music.ensure_local(track)
+    if not path:
+        await call.message.answer(reason or "Файл трека потерян — загрузите заново.")
         return
     caption = track.get("name") or "Трек"
     artist = track.get("artist") or ""
@@ -39263,7 +39842,10 @@ async def remove(call) -> None:
     track_id = call.data.split(":")[2]
     await call.answer()
     user = _user_of(call)
+    doomed = music.find_track(user, track_id)
     if music.remove_track(user, track_id):
+        if doomed is not None:
+            await music.forget_remote(track_id, str(doomed.get("ext") or ""))
         await storage.save(call.from_user.id)
         await safe_edit(call, "🗑 Трек удалён.", _menu(user, _role_of(call)))
     else:
@@ -39530,9 +40112,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_116
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_117'
+cat > "multitool/__init__.py" <<'RADAR_FILE_118'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -39558,9 +40140,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_117'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_117
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_118'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_119'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -39593,9 +40175,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_118'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_118
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_119'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_120'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -40002,9 +40584,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_119
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_120'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_121'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -40419,9 +41001,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_120
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_121'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_122'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -40615,7 +41197,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_121
+RADAR_FILE_122
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

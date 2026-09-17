@@ -50,7 +50,8 @@ esac
 
 printf "\n  %sПолное удаление «Радара»%s\n" "$C_BOLD" "$C_RESET"
 printf "  Будет удалено безвозвратно:\n"
-printf "    контейнеры  radar_container, radar_db, radar_bot_api, radar_singbox\n"
+printf "    контейнеры  radar_container, radar_db, radar_bot_api,\n"
+printf "                radar_singbox, radar_rclone и прочие профили\n"
 printf "    образ       radar_image\n"
 printf "    каталог     %s — база, .env, копии, журналы\n\n" "$APP_DIR"
 
@@ -112,7 +113,7 @@ if command -v docker >/dev/null 2>&1; then
     # четыре, и контейнеры, появившиеся позже (RustDesk, сертификат,
     # исполнитель обновления), переживали «полное удаление».
     docker rm -f radar_container radar_db radar_bot_api radar_singbox \
-        radar_tls radar_hbbs radar_hbbr radar_updater 2>/dev/null || true
+        radar_tls radar_hbbs radar_hbbr radar_updater radar_rclone         2>/dev/null || true
     docker rmi -f radar_image 2>/dev/null || true
     # Том Caddy держит выданный сертификат и ключ к нему.
     docker volume ls --format '{{.Name}}' 2>/dev/null \

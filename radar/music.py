@@ -173,6 +173,14 @@ def add_track(user: dict, track_id: str, *, name: str, ext: str,
     return True
 
 
+def find_track(user: dict, track_id: str) -> dict | None:
+    """Запись трека по идентификатору. None — нет такого."""
+    for item in tracks_of(user):
+        if item.get("id") == track_id:
+            return item
+    return None
+
+
 def remove_track(user: dict, track_id: str) -> bool:
     """Убирает трек из записи и с диска. False — не было такого."""
     data = dict(_slot(user))
@@ -193,11 +201,13 @@ def remove_track(user: dict, track_id: str) -> bool:
     data["playlists"] = playlists
     user[SLOT] = data
 
-    # Расширение берём из убранного трека — путь должен совпасть.
+    # Расширение берём из убранного трека — имя должно совпасть.
+    # Облако и кэш чистит forget_remote: удаление там асинхронное,
+    # а эта функция синхронная и вызывается в том числе из тестов.
     path = ""
     for t in tracks:
         if t.get("id") == track_id:
-            path = os.path.join(DIRECTORY, f"{track_id}{t.get('ext') or ''}")
+            path = local_path(track_id, str(t.get("ext") or ""))
     try:
         if path and os.path.isfile(path):
             os.remove(path)
@@ -403,10 +413,12 @@ async def compress_track(track: dict) -> tuple[bool, str, int]:
     import asyncio
     import subprocess
 
-    source = os.path.join(DIRECTORY,
-                          f"{track.get('id')}{track.get('ext') or ''}")
-    if not os.path.isfile(source):
-        return False, "файл трека не найден", 0
+    # Файл может лежать в облаке (с 4.9.9) — тогда его сначала приносят
+    # в кэш. Пережимаем всегда локальную копию: гонять ffmpeg по сети
+    # незачем, а результат всё равно придётся отправлять обратно.
+    source, reason = await ensure_local(track)
+    if not source:
+        return False, reason or "файл трека не найден", 0
     if not worth_compress(os.path.getsize(source)):
         return False, (f"файл меньше {COMPRESS_MIN_MB} МБ — пережатие "
                        "не окупится"), 0
@@ -450,6 +462,28 @@ async def compress_track(track: dict) -> tuple[bool, str, int]:
 
     os.replace(target, source)
     log.info("Трек пережат: %d → %d байт", old_size, new_size)
+
+    # В облаке лежит прежний, тяжёлый файл. Не заменить его означало бы,
+    # что выигрыш от пережатия виден только на этом устройстве, а место
+    # в хранилище — то самое, ради которого всё затевалось, — не освободится.
+    from . import cloudstore
+
+    if cloudstore.enabled():
+        name = track_name(str(track.get("id") or ""), str(track.get("ext") or ""))
+        try:
+            with open(source, "rb") as handle:
+                payload = handle.read()
+        except OSError:
+            payload = b""
+        if payload:
+            ok, put_reason = await cloudstore.put(name, payload)
+            if not ok:
+                # Локально трек уже лёгкий, в облаке — прежний. Рассинхрон
+                # безопасен (кэш новее и используется первым), но о нём
+                # надо сказать: следующая выгрузка вернёт старый вес.
+                log.warning("Пережатый трек не ушёл в облако: %s", put_reason)
+                return True, f"в облаке остался прежний файл: {put_reason}", new_size
+
     return True, "", new_size
 
 
@@ -459,6 +493,174 @@ def _safe_unlink(path: str) -> None:
             os.remove(path)
     except OSError:
         pass
+
+
+# --------------------------------------------------------------------------
+#  Облако: где лежит трек и как до него дойти (с 4.9.9)
+# --------------------------------------------------------------------------
+#
+# Пока облако выключено, всё как прежде: файл лежит в DIRECTORY и берётся
+# оттуда. Когда включено — хранилищем становится облако, а на диске
+# остаётся кэш последних треков. Разница видна только здесь: обработчики
+# спрашивают `ensure_local` и получают путь, откуда бы файл ни пришёл.
+#
+# Почему кэш, а не чтение напрямую в Telegram: отдача идёт через чужую
+# сеть, и у одного и того же трека, поставленного дважды подряд, не должно
+# быть двух скачиваний. Оповещения этим путём не ходят вовсе — музыка
+# и мониторинг не делят ни очередь, ни канал.
+
+CACHE_DIRECTORY = os.path.join(DIRECTORY, "cache")
+
+# Сколько места отдаём кэшу. Не настройка: смысл облака в том, что
+# на устройстве места мало, и кэш не должен съедать выигрыш.
+CACHE_BUDGET_MB = 256
+
+
+def track_name(track_id: str, ext: str) -> str:
+    """Имя файла трека — одно и то же на диске и в облаке."""
+    return f"{track_id}{ext or ''}"
+
+
+def local_path(track_id: str, ext: str) -> str:
+    return os.path.join(DIRECTORY, track_name(track_id, ext))
+
+
+def cache_path(track_id: str, ext: str) -> str:
+    return os.path.join(CACHE_DIRECTORY, track_name(track_id, ext))
+
+
+def cache_size() -> int:
+    """Сколько занимает кэш в байтах."""
+    total = 0
+    try:
+        for entry in os.scandir(CACHE_DIRECTORY):
+            if entry.is_file():
+                total += entry.stat().st_size
+    except OSError:
+        return 0
+    return total
+
+
+def trim_cache(budget_mb: int = CACHE_BUDGET_MB) -> int:
+    """Убирает из кэша самое давнее, пока не уложится в бюджет.
+
+    Возвращает число убранных файлов. Кэш можно потерять целиком без
+    последствий: исходники лежат в облаке, а потерянный кэш означает
+    лишь повторное скачивание.
+    """
+    budget = budget_mb * 1024 * 1024
+    try:
+        files = [
+            (entry.stat().st_atime, entry.stat().st_size, entry.path)
+            for entry in os.scandir(CACHE_DIRECTORY) if entry.is_file()
+        ]
+    except OSError:
+        return 0
+
+    total = sum(size for _atime, size, _path in files)
+    if total <= budget:
+        return 0
+
+    removed = 0
+    for _atime, size, path in sorted(files):
+        if total <= budget:
+            break
+        _safe_unlink(path)
+        total -= size
+        removed += 1
+    if removed:
+        log.info("Кэш музыки почищен: убрано файлов %d", removed)
+    return removed
+
+
+async def store(track_id: str, ext: str, payload: bytes) -> tuple[str, str]:
+    """Сохраняет трек. Возвращает (где лежит, причина отказа).
+
+    «Где лежит» — это `cloud` или `local`. Отказ облака не означает
+    отказ приёма: трек остаётся на диске, и человек его не теряет —
+    просто место тратится своё. Молчать об этом нельзя, поэтому причина
+    возвращается и показывается.
+    """
+    from . import cloudstore
+
+    os.makedirs(DIRECTORY, exist_ok=True)
+    path = local_path(track_id, ext)
+    with open(path, "wb") as handle:
+        handle.write(payload)
+
+    if not cloudstore.enabled():
+        return "local", ""
+
+    ok, reason = await cloudstore.put(track_name(track_id, ext), payload)
+    if not ok:
+        return "local", reason
+
+    # Ушло в облако — на диске держим тот же файл, но уже как кэш:
+    # только что загруженный трек чаще всего сразу и слушают.
+    os.makedirs(CACHE_DIRECTORY, exist_ok=True)
+    try:
+        os.replace(path, cache_path(track_id, ext))
+    except OSError:
+        _safe_unlink(path)
+    trim_cache()
+    return "cloud", ""
+
+
+async def ensure_local(track: dict) -> tuple[str, str]:
+    """Путь к файлу трека. Возвращает (путь, причина отказа).
+
+    Порядок поиска: свой каталог, кэш, облако. Первые два — без единого
+    запроса в сеть.
+    """
+    from . import cloudstore
+
+    track_id = str(track.get("id") or "")
+    ext = str(track.get("ext") or "")
+    if not track_id:
+        return "", "Трек не найден."
+
+    path = local_path(track_id, ext)
+    if os.path.isfile(path):
+        return path, ""
+
+    cached = cache_path(track_id, ext)
+    if os.path.isfile(cached):
+        # Трогаем время доступа: по нему кэш решает, что убирать первым.
+        try:
+            os.utime(cached, None)
+        except OSError:
+            pass
+        return cached, ""
+
+    if not cloudstore.enabled():
+        return "", "Файл трека потерян — загрузите заново."
+
+    ok, result = await cloudstore.fetch(track_name(track_id, ext))
+    if not ok:
+        return "", str(result)
+
+    os.makedirs(CACHE_DIRECTORY, exist_ok=True)
+    try:
+        with open(cached, "wb") as handle:
+            handle.write(result if isinstance(result, bytes) else b"")
+    except OSError as exc:
+        log.warning("Кэш не записан: %s", exc)
+        return "", "Не удалось сохранить трек на диск."
+    trim_cache()
+    return cached, ""
+
+
+async def forget_remote(track_id: str, ext: str) -> None:
+    """Убирает трек из облака и из кэша. Ошибку облака переживаем молча:
+    запись у человека уже удалена, и возвращать её из-за чужой сети
+    было бы хуже, чем оставить файл-сироту."""
+    from . import cloudstore
+
+    _safe_unlink(cache_path(track_id, ext))
+    if not cloudstore.enabled():
+        return
+    if not await cloudstore.delete(track_name(track_id, ext)):
+        log.info("Трек %s остался в облаке — удалить не удалось", track_id)
 
 
 # --------------------------------------------------------------------------
@@ -502,6 +704,14 @@ def disk_report(paths: list[str]) -> str:
     if not lines:
         return ""
     head = "💾 <b>Диски</b>"
+    # Строка про кэш: при включённом облаке место на диске тратит он,
+    # и знать его вес полезнее, чем гадать, куда делись гигабайты.
+    cached = cache_size()
+    if cached:
+        lines.append(
+            f"• кэш музыки: {format_size(cached)} "
+            f"из {CACHE_BUDGET_MB} МБ бюджета"
+        )
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)

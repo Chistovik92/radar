@@ -366,6 +366,34 @@ async def check_telegram() -> None:
                    "Проверьте BOT_TOKEN в .env — возможно, он отозван")
 
 
+async def check_music_cloud() -> None:
+    """Отвечает ли облачное хранилище музыки (с 4.9.9).
+
+    Проверяется только когда включено: выключенная возможность
+    не должна давать ни предупреждений, ни строки в отчёте.
+    """
+    from radar import cloudstore, features
+
+    if not features.enabled("music_cloud"):
+        return
+
+    announce("music_cloud")
+    if not cloudstore.configured():
+        report.add("Музыка в облаке", WARN,
+                   "возможность включена, но MUSIC_CLOUD_URL пуст",
+                   "Задайте адрес WebDAV или выключите возможность — "
+                   "иначе треки продолжат занимать место на устройстве")
+        return
+
+    ok, detail = await cloudstore.check()
+    if ok:
+        report.add("Музыка в облаке", OK, detail)
+    else:
+        report.add("Музыка в облаке", ERROR, detail,
+                   "Проверьте, что rclone serve webdav запущен и доступен "
+                   "из контейнера по этому адресу")
+
+
 def check_panel() -> None:
     """Доступна ли веб-панель снаружи контейнера.
 
@@ -441,6 +469,7 @@ async def run(quick: bool) -> None:
     check_panel()
     if not quick:
         await check_telegram()
+        await check_music_cloud()
 
     from radar.db import engine as db_engine
 

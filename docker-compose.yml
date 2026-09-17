@@ -186,6 +186,43 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  # Облачное хранилище музыки (с 4.9.9). Поднимается профилем, когда
+  # включена возможность «Музыка в облаке»:
+  #   docker compose --profile cloud up -d
+  # Настройка облака делается один раз на хосте командой
+  #   rclone config
+  # и кладётся в ./data/rclone/rclone.conf. Имя удалённого хранилища
+  # подставляется в команду ниже вместо remote.
+  #
+  # Порт наружу НЕ публикуется намеренно: WebDAV здесь без шифрования,
+  # и слушать он должен только внутреннюю сеть Compose. Бот обращается
+  # к нему по имени сервиса — MUSIC_CLOUD_URL=http://radar_rclone:8080.
+  rclone:
+    profiles: ["cloud"]
+    image: rclone/rclone:latest
+    container_name: radar_rclone
+    restart: unless-stopped
+    command:
+      - serve
+      - webdav
+      - "${MUSIC_CLOUD_REMOTE:-remote:}"
+      - --addr=:8080
+      # Кэш страниц: без него каждое чтение идёт в облако целиком,
+      # и трек начинает играть заметно позже.
+      - --vfs-cache-mode=full
+      - --vfs-cache-max-size=256M
+    volumes:
+      - ./data/rclone:/config/rclone
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   postgres:
     profiles: ["postgres"]
     image: postgres:16-alpine

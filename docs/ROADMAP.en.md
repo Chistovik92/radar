@@ -1216,7 +1216,7 @@ working ones — their job is to make the state readable from across the room.
 
 ---
 
-## 4.9.9 — music in the cloud: rclone instead of a local disk
+## 4.9.9 — music in the cloud: rclone instead of a local disk ⚠️ code written
 
 An idea from September 2026, after examining the neighbouring project
 [opendisk](https://github.com/Chistovik92/opendisk). It continues item 4
@@ -1230,7 +1230,7 @@ separate media (`MUSIC_DIR` or a mount).
    project but what it is built on: **rclone**. A single Go binary, an
    arm64 build exists, MIT licence, and it does exactly what is needed
    here.
-2. **Two ways to connect it, and they are not equal:**
+2. **Two ways to connect it, and they are not equal** — the second was chosen:
    - `rclone mount` — the cloud appears as an ordinary directory, and
      `MUSIC_DIR` from 4.9.5.4 starts working without a single change in
      the bot. It requires FUSE in the container (`--device /dev/fuse`,
@@ -1240,7 +1240,10 @@ separate media (`MUSIC_DIR` or a mount).
      needs no extra rights at all, but means a client of our own instead
      of file operations. This is the preferred option: the cost of a
      mistake in container rights is higher than the cost of a hundred-line
-     client.
+     client. ⚠️ Done in 4.9.9: `radar/cloudstore.py` (WebDAV on `aiohttp`),
+     a cache of recent tracks with a 256 MB budget and eviction by last
+     access, a storage check in `/doctor`, and an `rclone` service in
+     `docker-compose.yml` behind a profile. Not verified on a live server.
 3. **What it buys.** Capacity stops being limited by the board's memory
    card: Yandex.Disk, Mail.ru, S3, WebDAV — everything rclone speaks. For
    the paid capacity in the monetization table this is the missing part:

@@ -28,6 +28,7 @@ from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarku
 
 from .. import music, roles, storage, subscription
 from ..states import Form
+from ..textutils import esc
 from ..tg import back_kb, safe_edit
 
 log = logging.getLogger("radar.handlers.music")
@@ -164,10 +165,7 @@ async def take_track(message: Message, user: dict, role: str) -> None:
     tags = music.read_tags(payload)
     track_id = secrets_module.token_hex(8)
 
-    os.makedirs(music.DIRECTORY, exist_ok=True)
-    path = os.path.join(music.DIRECTORY, f"{track_id}{ext}")
-    with open(path, "wb") as handle:
-        handle.write(payload)
+    where, cloud_note = await music.store(track_id, ext, payload)
 
     name = (audio.file_name or "Без названия").rsplit(".", 1)[0]
     music.add_track(user, track_id, name=name, ext=ext,
@@ -187,9 +185,17 @@ async def take_track(message: Message, user: dict, role: str) -> None:
         or _same_tag(tags.get("genre"), t.get("genre"))
         for t in music.tracks_of(user) if t.get("id") != track_id
     )
+    lines = [f"✅ Трек добавлен: <b>{label[:80]}</b>"]
+    if where == "cloud":
+        lines.append("<i>Хранится в облаке.</i>")
+    elif cloud_note:
+        # Облако включено, но не приняло. Трек не потерян — он лежит
+        # на устройстве, и человек должен знать, что место тратится своё.
+        lines.append(f"<i>⚠️ В облако не ушёл ({esc(cloud_note)}) — "
+                     f"хранится на устройстве.</i>")
+    lines.append(music.describe(user, role))
     await message.answer(
-        f"✅ Трек добавлен: <b>{label[:80]}</b>\n"
-        f"{music.describe(user, role)}",
+        "\n".join(lines),
         reply_markup=_track_kb(track_id, music.playlists_of(user),
                                has_similar=similar_now),
     )
@@ -213,10 +219,9 @@ async def play(call) -> None:
     if track is None:
         await call.message.answer("Трек не найден.")
         return
-    path = os.path.join(music.DIRECTORY,
-                        f"{track_id}{track.get('ext') or ''}")
-    if not os.path.isfile(path):
-        await call.message.answer("Файл трека потерян — загрузите заново.")
+    path, reason = await music.ensure_local(track)
+    if not path:
+        await call.message.answer(reason or "Файл трека потерян — загрузите заново.")
         return
     caption = track.get("name") or "Трек"
     artist = track.get("artist") or ""
@@ -235,7 +240,10 @@ async def remove(call) -> None:
     track_id = call.data.split(":")[2]
     await call.answer()
     user = _user_of(call)
+    doomed = music.find_track(user, track_id)
     if music.remove_track(user, track_id):
+        if doomed is not None:
+            await music.forget_remote(track_id, str(doomed.get("ext") or ""))
         await storage.save(call.from_user.id)
         await safe_edit(call, "🗑 Трек удалён.", _menu(user, _role_of(call)))
     else:

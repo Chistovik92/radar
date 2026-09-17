@@ -86,6 +86,17 @@ SETTINGS: tuple[Setting, ...] = (
             "Например http://telegram-bot-api:8081. Снимает предел 50 МБ.",
             "Медиа", restart=True, secret=False),
 
+    Setting("MUSIC_CLOUD_URL", "Облако для музыки",
+            "Адрес WebDAV, например http://rclone:8080. Поднимается "
+            "командой rclone serve webdav. Пусто — музыка лежит "
+            "на устройстве.",
+            "Медиа", secret=False),
+    Setting("MUSIC_CLOUD_USER", "Облако: логин",
+            "Пусто, если rclone слушает без проверки на localhost.",
+            "Медиа", secret=False),
+    Setting("MUSIC_CLOUD_PASSWORD", "Облако: пароль",
+            "Пароль к WebDAV rclone.", "Медиа"),
+
     # --- сеть ---
     Setting("EGRESS_PROXY", "Прокси для выхода в сеть",
             "Например socks5://singbox:1080.", "Сеть", restart=True, secret=False),

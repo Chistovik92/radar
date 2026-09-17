@@ -1,4 +1,4 @@
-# Radar v4.9.8.14
+# Radar v4.9.9
 
 [Русская версия](README.md)
 
@@ -153,6 +153,58 @@ nightly report — the "Disk watching" toggle in `/features`; the letter
 arrives when space is running out. The "🗜 Compress" button on a track
 re-encodes it to opus at the source bitrate — the size drops several
 times with no audible difference.
+
+### Music in the cloud (since 4.9.9)
+
+External media still runs into the same server. The **"Music in the
+cloud"** capability (`music_cloud`, off by default) moves tracks into a
+cloud: `rclone serve webdav` runs next to the bot, the bot puts and takes
+files over HTTP, and a cache of recent tracks stays on the device.
+
+The cloud is configured on the server once:
+
+```bash
+# pick a provider and sign in (Yandex.Disk, Mail.ru, S3, WebDAV — 70+ options)
+docker run --rm -it -v ~/radar_bot/data/rclone:/config/rclone rclone/rclone config
+```
+
+Then a profile in `docker-compose.yml` and three lines in `.env`:
+
+```bash
+MUSIC_CLOUD_REMOTE=name_from_rclone_config:music
+MUSIC_CLOUD_URL=http://radar_rclone:8080
+# user and password are only needed if rclone is started with --user/--pass
+```
+
+```bash
+docker compose --profile cloud up -d
+```
+
+Then turn on "Music in the cloud" in `/features`. To check that the
+storage answers and how much space it has, run `/doctor`.
+
+What matters here:
+
+- **the WebDAV port is not published** and must not be: there is no
+  encryption there, and it must listen only on the internal Compose
+  network;
+- **a cloud failure does not lose the track** — it stays on the device,
+  and the bot says so plainly. Local space is spent in that case;
+- **the cache takes up to 256 MB** and evicts whatever has gone
+  untouched longest; losing it has no consequences, the originals are in
+  the cloud;
+- **delivering a track goes through someone else's network**, so it is
+  slower than from disk. Alerts never travel this path: music and
+  monitoring share neither the queue nor the channel;
+- **compression ("🗜 Compress") replaces the file in the cloud too**,
+  otherwise space would be freed only on the disk.
+
+Why WebDAV rather than mounting the cloud as a directory: `rclone mount`
+would have worked without a single change in the bot, but it requires
+FUSE inside the container (`--cap-add SYS_ADMIN`) — noticeably wider
+rights for a process that goes to the internet for news. A hundred lines
+of our own client is cheaper.
+
 
 ## Link checking
 
