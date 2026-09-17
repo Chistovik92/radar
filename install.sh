@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.8.11 — автономный установщик.
+# Система «Радар» v4.9.8.12 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.8.11"
+VERSION="4.9.8.12"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=118
+FILE_COUNT=120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3178,6 +3178,20 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.8.12", [
+        "🛡 <b>Раздел «Чаты» в боте.</b> Видно, где бот модерирует, "
+        "и из списка можно перейти в саму группу. Ссылка берётся "
+        "существующая — публичное имя или та, что уже завёл владелец; "
+        "своя создаётся, только если ни одной нет, и прежнюю она "
+        "не отзывает.",
+        "➕ <b>Группы заводятся сами.</b> Бота добавили или повысили — "
+        "чат появился в списке; выгнали — забылся. Для групп, где бот "
+        "сидит давно, есть команды <code>/modon</code> и "
+        "<code>/modoff</code>: Telegram сообщает боту только "
+        "об изменениях, и старые чаты иначе о себе не заявят.",
+        "🤫 <b>Тем, кто уже в группе, бот ничего не пишет.</b> "
+        "Приветствие и проверка «я не бот» — только для входящих дальше.",
+    ]),
     ("4.9.8.11", [
         "🛡 <b>Модерация групп.</b> Бот работает администратором в чате: "
         "удаляет спам и ссылки от новичков, ведёт лестницу "
@@ -4597,7 +4611,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.8.11"
+__version__ = "4.9.8.12"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -12705,6 +12719,7 @@ EN_STRINGS: dict[str, str] = {
                                 "server, unlimited video downloads, and all "
                                 "digest topics. Danger alerts stay free "
                                 "always.",
+    "manage.chats": "🛡 Chats",
     "rustdesk.setup_steps": "<b>How to add a device:</b>\n"
                             "1. Install RustDesk (button below).\n"
                             "2. Tap ⚙️ → \"Network\" → \"ID/Relay Server\".\n"
@@ -15964,9 +15979,26 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         )
         return "".join(parts)
 
+    from .. import chatlink
+
+    links: dict[int, str] = {}
+    for row in rows:
+        ok_link, value = await chatlink.link_for(row["chat_id"])
+        if ok_link:
+            links[row["chat_id"]] = value
+
+    def _title(row: dict) -> str:
+        """Название чата ссылкой, если до группы можно дойти."""
+        name = html.escape(row["title"] or "—")
+        link = links.get(row["chat_id"], "")
+        if not link:
+            return name
+        return (f'<a href="{html.escape(link)}" target="_blank" '
+                f'rel="noopener">{name}</a>')
+
     body = "".join(
         "<tr>"
-        f'<td data-label="Чат">{html.escape(row["title"] or "—")}<br>'
+        f'<td data-label="Чат">{_title(row)}<br>'
         f'<code>{row["chat_id"]}</code></td>'
         f'<td data-label="Модерация">'
         f'<span class="badge {"ok" if row["enabled"] else "bad"}">'
@@ -24845,6 +24877,11 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
             InlineKeyboardButton(text=label("manage.links", "🔗 Ссылки"),
                                  callback_data="short:menu"),
         ])
+        if features.enabled("moderation"):
+            rows.append([
+                InlineKeyboardButton(text=label("manage.chats", "🛡 Чаты"),
+                                     callback_data="menu:chats")
+            ])
 
     if roles.is_superadmin(role):
         rows.append([
@@ -27153,8 +27190,94 @@ def describe(decision: Decision, settings: Settings) -> str:
         return f"🧹 Удалено: {decision.reason}"
     return ""
 RADAR_FILE_80
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
+cat > "radar/chatlink.py" <<'RADAR_FILE_81'
+"""Ссылка на группу, где бот работает модератором.
+
+Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
+получения у неё нетривиальное и ошибиться в нём дорого.
+
+Порядок намеренно такой:
+
+1. **Публичное имя** (`@name`) — лучшая ссылка: не отзывается, понятна
+   на вид, работает для всех.
+2. **Существующая постоянная ссылка** чата — если она уже есть, берём
+   её. Именно этого просил автор: ссылка владельца уже разослана людям,
+   и подменять её нельзя.
+3. **Своя дополнительная ссылка** — только если первых двух нет.
+   Создаётся `createChatInviteLink`, а НЕ `exportChatInviteLink`:
+   второй отзывает прежнюю постоянную ссылку, и все, кому её раздали
+   раньше, остаются с нерабочей. Разница в одном вызове, цена ошибки —
+   сломанные приглашения у живых людей.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("radar.chatlink")
+
+# Имя своей ссылки: по нему владелец в списке приглашений группы
+# понимает, откуда она взялась.
+LINK_TITLE = "Радар"
+
+_cache: dict[int, str] = {}
+
+
+def forget(chat_id: int) -> None:
+    """Сбросить запомненную ссылку — например, когда бота выгнали."""
+    _cache.pop(chat_id, None)
+
+
+async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
+    """Ссылка на чат. Возвращает (получилось, ссылка или причина)."""
+    if chat_id in _cache:
+        return True, _cache[chat_id]
+
+    if bot is None:
+        from .tg import bot as default_bot
+
+        bot = default_bot
+
+    try:
+        chat = await bot.get_chat(chat_id)
+    except Exception as exc:  # noqa: BLE001
+        log.info("Чат %s недоступен: %s", chat_id, exc)
+        return False, "Чат недоступен: бот удалён из группы или потерял права."
+
+    username = getattr(chat, "username", "") or ""
+    if username:
+        link = f"https://t.me/{username}"
+        _cache[chat_id] = link
+        return True, link
+
+    existing = getattr(chat, "invite_link", "") or ""
+    if existing:
+        # Ссылка владельца уже существует — используем её, а не свою.
+        _cache[chat_id] = existing
+        return True, existing
+
+    try:
+        created = await bot.create_chat_invite_link(chat_id, name=LINK_TITLE)
+    except Exception as exc:  # noqa: BLE001
+        log.info("Ссылка для %s не создана: %s", chat_id, exc)
+        return False, ("Ссылки нет, и создать её не удалось: нужно право "
+                       "«Пригласительные ссылки» у бота в этой группе.")
+
+    link = getattr(created, "invite_link", "") or ""
+    if not link:
+        return False, "Telegram не вернул ссылку."
+    _cache[chat_id] = link
+    return True, link
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_81'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_82'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -27188,13 +27311,14 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
+    ChatMemberUpdated,
     ChatPermissions,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
 
-from .. import features, moderation
+from .. import chatlink, features, moderation
 from ..db import repo
 
 log = logging.getLogger("radar.group")
@@ -27296,9 +27420,61 @@ async def _apply(message: Message, decision: moderation.Decision,
             log.debug("Сообщение о модерации не отправлено", exc_info=True)
 
 
+@router.my_chat_member()
+async def track_membership(event: ChatMemberUpdated) -> None:
+    """Бота добавили, повысили или выгнали.
+
+    Чат заводится сам: просить человека переписать в панель
+    идентификатор вида -1001234567890 — значит предложить ошибиться.
+    """
+    status = getattr(event.new_chat_member, "status", "")
+    title = getattr(event.chat, "title", "") or ""
+
+    if status in ("left", "kicked"):
+        await repo.chat_forget(event.chat.id)
+        chatlink.forget(event.chat.id)
+        log.info("Бот удалён из чата %s", event.chat.id)
+        return
+
+    if status == "administrator":
+        await repo.chat_save(event.chat.id, title=title, enabled=True)
+        _complained.discard(event.chat.id)
+        try:
+            await event.bot.send_message(
+                event.chat.id,
+                "🛡 Модерация включена.\n\n"
+                "Тех, кто уже в группе, это не касается: проверка "
+                "и приветствие — только для тех, кто войдёт дальше. "
+                "Администраторов чата бот не модерирует.\n\n"
+                "Команды для админов: /warn, /mute, /ban, /unban "
+                "ответом на сообщение и /modstatus."
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("Приветствие в чат не отправлено", exc_info=True)
+        return
+
+    # Добавили обычным участником — прав на модерацию нет.
+    await repo.chat_save(event.chat.id, title=title, enabled=False)
+    try:
+        await event.bot.send_message(
+            event.chat.id,
+            "Бот добавлен, но модерировать не может: нужны права "
+            "администратора — «Удаление сообщений» и «Блокировка "
+            "участников»."
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("Сообщение о правах не отправлено", exc_info=True)
+
+
 @router.message(F.new_chat_members)
 async def greet_newcomers(message: Message) -> None:
-    """Встреча новичков: приветствие и кнопка-подтверждение."""
+    """Встреча новичков: приветствие и кнопка-подтверждение.
+
+    Только для тех, кто входит ПОСЛЕ подключения бота: событие
+    приходит на само вступление, и уже сидящих в группе оно не касается
+    вовсе. Это осознанно — здороваться с людьми, которые тут давно,
+    и требовать от них нажать кнопку было бы навязчиво.
+    """
     if not features.enabled("moderation"):
         return
     enabled, _settings_of = await _settings(message.chat.id)
@@ -27367,11 +27543,58 @@ async def clean_leave(message: Message) -> None:
             pass
 
 
-@router.message(Command("modstatus"))
-async def status(message: Message) -> None:
-    enabled, settings = await _settings(message.chat.id)
+@router.message(Command("modon", "modoff"))
+async def switch(message: Message) -> None:
+    """Включить или выключить модерацию прямо в группе.
+
+    Нужно ещё и потому, что `my_chat_member` приходит только НА ИЗМЕНЕНИЕ:
+    группы, куда бота добавили до появления модерации, сами о себе
+    не заявят. Одна команда от администратора — и чат в списке.
+    """
     if not await _is_admin(message, message.from_user.id):
         return
+
+    wanted = (message.text or "").split()[0].lstrip("/").split("@")[0] == "modon"
+    await repo.chat_save(message.chat.id,
+                         title=message.chat.title or "",
+                         enabled=wanted)
+    if not wanted:
+        await message.answer("Модерация выключена в этом чате.")
+        return
+
+    if not features.enabled("moderation"):
+        await message.answer(
+            "Чат записан, но модерация выключена во всём боте — "
+            "включите возможность «Модерация групп» в разделе "
+            "«Возможности»."
+        )
+        return
+    await message.answer(
+        "🛡 Модерация включена.\n\n"
+        "Тех, кто уже в группе, это не касается: приветствие и проверка — "
+        "только для входящих дальше. Администраторов чата бот "
+        "не модерирует."
+    )
+
+
+@router.message(Command("modstatus"))
+async def status(message: Message) -> None:
+    if not await _is_admin(message, message.from_user.id):
+        return
+
+    enabled, settings = await _settings(message.chat.id)
+    known = await repo.chat_get(message.chat.id)
+    if known is None:
+        # Чат добавлен раньше, чем появилась модерация: заведём его,
+        # но включать без просьбы не будем.
+        await repo.chat_save(message.chat.id,
+                             title=message.chat.title or "", enabled=False)
+        await message.answer(
+            "Чат записан. Модерация пока выключена — включите командой "
+            "<code>/modon</code>."
+        )
+        return
+
     await message.answer(
         f"Модерация: {'включена' if enabled else 'выключена'}\n"
         f"Предупреждений до мута: {settings.warns_before_mute}, "
@@ -27477,9 +27700,138 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_81
+RADAR_FILE_82
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_83'
+"""Раздел «Чаты» в самой переписке с ботом.
+
+Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
+кнопка ведёт по ссылке — публичному имени, существующей ссылке владельца
+или, если ни того ни другого нет, по созданной ботом (см. `radar/chatlink.py`).
+
+Раздел личный, а не групповой: список чатов и переходы — дело
+администрации, а не участников группы.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from .. import chatlink, features, roles
+from ..db import repo
+from ..textutils import esc
+from ..tg import safe_edit, send_html
+
+router = Router(name="chats")
+
+ADD_HINT = (
+    "🛡 <b>Чаты под модерацией</b>\n\n"
+    "Пока ни одной группы.\n\n"
+    "<b>Как добавить бота:</b>\n"
+    "1. Откройте группу → «Участники» → «Добавить».\n"
+    "2. Найдите бота по имени и добавьте.\n"
+    "3. Там же сделайте его администратором и включите права "
+    "<b>«Удаление сообщений»</b> и <b>«Блокировка участников»</b>.\n"
+    "4. Напишите в группе <code>/modon</code> — чат появится здесь.\n\n"
+    "<b>Бот уже в группе?</b> Тогда ничего добавлять не нужно: "
+    "проверьте, что он администратор с этими правами, и напишите "
+    "в группе <code>/modon</code>. Группы, куда бота добавили раньше, "
+    "сами о себе не заявляют — Telegram сообщает боту только "
+    "об изменениях.\n\n"
+    "<i>Менять privacy mode у @BotFather не нужно: администратор "
+    "получает все сообщения и так. Тем, кто уже в группе, бот ничего "
+    "не пишет — проверка только для тех, кто войдёт после включения.</i>"
+)
+
+
+def _keyboard(rows: list[dict], links: dict[int, str]) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    for row in rows:
+        chat_id = row["chat_id"]
+        title = row["title"] or str(chat_id)
+        mark = "🟢" if row["enabled"] else "⚪️"
+        link = links.get(chat_id, "")
+        if link:
+            buttons.append([InlineKeyboardButton(
+                text=f"{mark} {title}", url=link)])
+        else:
+            buttons.append([InlineKeyboardButton(
+                text=f"{mark} {title}", callback_data=f"chat:why:{chat_id}")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад",
+                                         callback_data="menu:manage")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
+    rows = await repo.chat_list()
+    if not rows:
+        return ADD_HINT, InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")
+        ]])
+
+    links: dict[int, str] = {}
+    lines = ["🛡 <b>Чаты под модерацией</b>", ""]
+    for row in rows:
+        ok, value = await chatlink.link_for(row["chat_id"])
+        if ok:
+            links[row["chat_id"]] = value
+        state = "модерация включена" if row["enabled"] else "модерация выключена"
+        lines.append(f"• <b>{esc(row['title'] or str(row['chat_id']))}</b> — {state}")
+        if not ok:
+            lines.append(f"  <i>{esc(value)}</i>")
+    lines.append("")
+    lines.append("<i>Нажмите на группу, чтобы перейти в неё.</i>")
+    return "\n".join(lines), _keyboard(rows, links)
+
+
+@router.message(Command("chats"))
+async def cmd_chats(message: Message, role: str) -> None:
+    if not roles.is_admin(role):
+        return
+    if not features.enabled("moderation"):
+        await send_html(message.chat.id,
+                        "Модерация выключена — включите её в разделе "
+                        "«Возможности».")
+        return
+    text, keyboard = await _render(role)
+    await send_html(message.chat.id, text, keyboard)
+
+
+@router.callback_query(F.data == "menu:chats")
+async def menu_chats(call: CallbackQuery, role: str) -> None:
+    if not roles.is_admin(role):
+        await call.answer("Только для администрации.", show_alert=True)
+        return
+    await call.answer()
+    text, keyboard = await _render(role)
+    await safe_edit(call, text, keyboard)
+
+
+@router.callback_query(F.data.startswith("chat:why:"))
+async def explain(call: CallbackQuery, role: str) -> None:
+    """Почему у чата нет кнопки перехода."""
+    if not roles.is_admin(role):
+        await call.answer("Только для администрации.", show_alert=True)
+        return
+    chat_id = int(call.data.rsplit(":", 1)[1])
+    _ok, reason = await chatlink.link_for(chat_id)
+    await call.answer(reason, show_alert=True)
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_82'
+cat > "radar/cli.py" <<'RADAR_FILE_84'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -27959,9 +28311,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_82
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_83'
+cat > "radar/__main__.py" <<'RADAR_FILE_85'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -27983,9 +28335,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_83
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_84'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_86'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -28126,9 +28478,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_84
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_85'
+cat > "tools/restore.sh" <<'RADAR_FILE_87'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -28370,9 +28722,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_85
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_86'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_88'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -28468,9 +28820,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_86
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_87'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_89'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -28663,9 +29015,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_87
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_88'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_90'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -28680,6 +29032,7 @@ from aiogram import Dispatcher, F
 
 from . import (
     assistant,
+    chats,
     common,
     digest,
     features,
@@ -28709,7 +29062,7 @@ from . import (
 PRIVATE_ROUTERS = (
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
-    linkcheck, music, digest, sos,
+    linkcheck, music, digest, sos, chats,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
     subscription,
@@ -28737,9 +29090,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_88
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_89'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_91'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -29182,9 +29535,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_89
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_90'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_92'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -29350,9 +29703,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_90
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_91'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_93'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -29857,9 +30210,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_91
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_92'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_94'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -30334,9 +30687,9 @@ async def cmd_check_sources(message: Message, role: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_92
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_93'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_95'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
 
 # --------------------------------------------------------------------------
@@ -30703,9 +31056,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> No
         f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
         "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
     )
-RADAR_FILE_93
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_96'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -30852,9 +31205,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_94
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_97'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -31142,9 +31495,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_95
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_98'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -31351,9 +31704,9 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_96
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_99'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -31724,9 +32077,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_97
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_100'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -32301,9 +32654,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_98
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_101'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -32404,9 +32757,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_99
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_102'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -32496,9 +32849,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_100
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_103'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -32919,9 +33272,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_101
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_104'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -34084,9 +34437,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_102
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_105'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -34817,9 +35170,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_103
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_106'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -35343,9 +35696,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_104
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_107'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -35553,9 +35906,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_105
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_108'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -35968,9 +36321,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_106
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_109'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -36233,9 +36586,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_107
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_110'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -36385,9 +36738,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_108
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_109'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_111'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -36855,9 +37208,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_109
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_110'
+cat > "radar/cookies.py" <<'RADAR_FILE_112'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -36988,9 +37341,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_110
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_111'
+cat > "radar/music.py" <<'RADAR_FILE_113'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -37498,9 +37851,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_111
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_114'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -38005,9 +38358,9 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_112
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_113'
+cat > "multitool/__init__.py" <<'RADAR_FILE_115'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -38033,9 +38386,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_113'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_113
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_114'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_116'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -38068,9 +38421,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_114'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_114
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_115'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_117'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -38477,9 +38830,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_115
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_116'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_118'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -38894,9 +39247,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_116
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_117'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_119'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -39090,7 +39443,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_117
+RADAR_FILE_119
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

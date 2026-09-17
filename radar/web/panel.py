@@ -868,9 +868,26 @@ async def _chats_body(session, ok: str = "", err: str = "") -> str:
         )
         return "".join(parts)
 
+    from .. import chatlink
+
+    links: dict[int, str] = {}
+    for row in rows:
+        ok_link, value = await chatlink.link_for(row["chat_id"])
+        if ok_link:
+            links[row["chat_id"]] = value
+
+    def _title(row: dict) -> str:
+        """Название чата ссылкой, если до группы можно дойти."""
+        name = html.escape(row["title"] or "—")
+        link = links.get(row["chat_id"], "")
+        if not link:
+            return name
+        return (f'<a href="{html.escape(link)}" target="_blank" '
+                f'rel="noopener">{name}</a>')
+
     body = "".join(
         "<tr>"
-        f'<td data-label="Чат">{html.escape(row["title"] or "—")}<br>'
+        f'<td data-label="Чат">{_title(row)}<br>'
         f'<code>{row["chat_id"]}</code></td>'
         f'<td data-label="Модерация">'
         f'<span class="badge {"ok" if row["enabled"] else "bad"}">'

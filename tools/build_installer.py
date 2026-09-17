@@ -107,7 +107,9 @@ MANIFEST = [
     "radar/updater.py",
     "radar/wipe.py",
     "radar/moderation.py",
+    "radar/chatlink.py",
     "radar/handlers/group.py",
+    "radar/handlers/chats.py",
     "radar/cli.py",
     "radar/__main__.py",
     # Скрипты обслуживания теперь едут на сервер вместе с кодом.

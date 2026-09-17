@@ -1,4 +1,4 @@
-# Radar v4.9.8.11
+# Radar v4.9.8.12
 
 [Русская версия](README.md)
 
@@ -234,6 +234,37 @@ bash tools/radarctl.sh chats off -1001234567890
 separate fix in the same release: before it, a bot added to a group
 answered every member with "access denied", registered them as its own
 users, and replied with AI to any text.
+
+### Adding the bot to a group
+
+1. Group → Members → Add → find the bot by name.
+2. In the same place make it an **administrator** with **Delete
+   messages** and **Ban users**. "Invite links" helps the jump-to-group
+   button, but only when the group has neither a public name nor an
+   existing invite link.
+3. Type `/modon` in the group — the chat shows up under "Chats".
+
+No need to change privacy mode at @BotFather: an administrator receives
+every message anyway.
+
+### The bot is already in the group
+
+Nothing to add — check the administrator rights and type `/modon` in the
+group. The separate command exists because Telegram only tells a bot
+about **changes**: groups it was added to earlier never announce
+themselves. `/modoff` turns moderation off for that chat, `/modstatus`
+shows the current settings.
+
+**People already in the group are never written to.** The greeting and
+the "I am not a bot" check only reach those who join afterwards.
+
+### Jumping into a group from the bot
+
+The "Chats" section (a button under Manage) lists every group; tapping
+one opens it. The link is chosen in this order: the public `@name`, then
+the **existing** owner's invite link, and only if neither exists does the
+bot create its own. It never revokes the previous link — that would break
+it for everyone it was handed to.
 
 ## The web panel
 

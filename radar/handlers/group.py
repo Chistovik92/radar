@@ -31,13 +31,14 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
+    ChatMemberUpdated,
     ChatPermissions,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
 
-from .. import features, moderation
+from .. import chatlink, features, moderation
 from ..db import repo
 
 log = logging.getLogger("radar.group")
@@ -139,9 +140,61 @@ async def _apply(message: Message, decision: moderation.Decision,
             log.debug("Сообщение о модерации не отправлено", exc_info=True)
 
 
+@router.my_chat_member()
+async def track_membership(event: ChatMemberUpdated) -> None:
+    """Бота добавили, повысили или выгнали.
+
+    Чат заводится сам: просить человека переписать в панель
+    идентификатор вида -1001234567890 — значит предложить ошибиться.
+    """
+    status = getattr(event.new_chat_member, "status", "")
+    title = getattr(event.chat, "title", "") or ""
+
+    if status in ("left", "kicked"):
+        await repo.chat_forget(event.chat.id)
+        chatlink.forget(event.chat.id)
+        log.info("Бот удалён из чата %s", event.chat.id)
+        return
+
+    if status == "administrator":
+        await repo.chat_save(event.chat.id, title=title, enabled=True)
+        _complained.discard(event.chat.id)
+        try:
+            await event.bot.send_message(
+                event.chat.id,
+                "🛡 Модерация включена.\n\n"
+                "Тех, кто уже в группе, это не касается: проверка "
+                "и приветствие — только для тех, кто войдёт дальше. "
+                "Администраторов чата бот не модерирует.\n\n"
+                "Команды для админов: /warn, /mute, /ban, /unban "
+                "ответом на сообщение и /modstatus."
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("Приветствие в чат не отправлено", exc_info=True)
+        return
+
+    # Добавили обычным участником — прав на модерацию нет.
+    await repo.chat_save(event.chat.id, title=title, enabled=False)
+    try:
+        await event.bot.send_message(
+            event.chat.id,
+            "Бот добавлен, но модерировать не может: нужны права "
+            "администратора — «Удаление сообщений» и «Блокировка "
+            "участников»."
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("Сообщение о правах не отправлено", exc_info=True)
+
+
 @router.message(F.new_chat_members)
 async def greet_newcomers(message: Message) -> None:
-    """Встреча новичков: приветствие и кнопка-подтверждение."""
+    """Встреча новичков: приветствие и кнопка-подтверждение.
+
+    Только для тех, кто входит ПОСЛЕ подключения бота: событие
+    приходит на само вступление, и уже сидящих в группе оно не касается
+    вовсе. Это осознанно — здороваться с людьми, которые тут давно,
+    и требовать от них нажать кнопку было бы навязчиво.
+    """
     if not features.enabled("moderation"):
         return
     enabled, _settings_of = await _settings(message.chat.id)
@@ -210,11 +263,58 @@ async def clean_leave(message: Message) -> None:
             pass
 
 
-@router.message(Command("modstatus"))
-async def status(message: Message) -> None:
-    enabled, settings = await _settings(message.chat.id)
+@router.message(Command("modon", "modoff"))
+async def switch(message: Message) -> None:
+    """Включить или выключить модерацию прямо в группе.
+
+    Нужно ещё и потому, что `my_chat_member` приходит только НА ИЗМЕНЕНИЕ:
+    группы, куда бота добавили до появления модерации, сами о себе
+    не заявят. Одна команда от администратора — и чат в списке.
+    """
     if not await _is_admin(message, message.from_user.id):
         return
+
+    wanted = (message.text or "").split()[0].lstrip("/").split("@")[0] == "modon"
+    await repo.chat_save(message.chat.id,
+                         title=message.chat.title or "",
+                         enabled=wanted)
+    if not wanted:
+        await message.answer("Модерация выключена в этом чате.")
+        return
+
+    if not features.enabled("moderation"):
+        await message.answer(
+            "Чат записан, но модерация выключена во всём боте — "
+            "включите возможность «Модерация групп» в разделе "
+            "«Возможности»."
+        )
+        return
+    await message.answer(
+        "🛡 Модерация включена.\n\n"
+        "Тех, кто уже в группе, это не касается: приветствие и проверка — "
+        "только для входящих дальше. Администраторов чата бот "
+        "не модерирует."
+    )
+
+
+@router.message(Command("modstatus"))
+async def status(message: Message) -> None:
+    if not await _is_admin(message, message.from_user.id):
+        return
+
+    enabled, settings = await _settings(message.chat.id)
+    known = await repo.chat_get(message.chat.id)
+    if known is None:
+        # Чат добавлен раньше, чем появилась модерация: заведём его,
+        # но включать без просьбы не будем.
+        await repo.chat_save(message.chat.id,
+                             title=message.chat.title or "", enabled=False)
+        await message.answer(
+            "Чат записан. Модерация пока выключена — включите командой "
+            "<code>/modon</code>."
+        )
+        return
+
     await message.answer(
         f"Модерация: {'включена' if enabled else 'выключена'}\n"
         f"Предупреждений до мута: {settings.warns_before_mute}, "

@@ -98,6 +98,7 @@ EN_STRINGS: dict[str, str] = {
                                 "server, unlimited video downloads, and all "
                                 "digest topics. Danger alerts stay free "
                                 "always.",
+    "manage.chats": "🛡 Chats",
     "rustdesk.setup_steps": "<b>How to add a device:</b>\n"
                             "1. Install RustDesk (button below).\n"
                             "2. Tap ⚙️ → \"Network\" → \"ID/Relay Server\".\n"

@@ -12,6 +12,7 @@ from aiogram import Dispatcher, F
 
 from . import (
     assistant,
+    chats,
     common,
     digest,
     features,
@@ -41,7 +42,7 @@ from . import (
 PRIVATE_ROUTERS = (
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
-    linkcheck, music, digest, sos,
+    linkcheck, music, digest, sos, chats,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
     subscription,

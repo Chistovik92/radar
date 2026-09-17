@@ -133,6 +133,11 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
             InlineKeyboardButton(text=label("manage.links", "🔗 Ссылки"),
                                  callback_data="short:menu"),
         ])
+        if features.enabled("moderation"):
+            rows.append([
+                InlineKeyboardButton(text=label("manage.chats", "🛡 Чаты"),
+                                     callback_data="menu:chats")
+            ])
 
     if roles.is_superadmin(role):
         rows.append([
