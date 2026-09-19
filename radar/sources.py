@@ -35,6 +35,10 @@ class Item:
     text: str
     kind: str = "tg"  # tg | rss
     link: str = ""    # прямая ссылка на публикацию
+    # Время публикации в источнике, секунды эпохи; 0 — неизвестно
+    # (с 4.9.9.3). Нужно метрике задержки доставки: от поста в канале
+    # до сообщения человеку.
+    published: float = 0.0
 
     @property
     def key(self) -> str:
@@ -89,12 +93,18 @@ def parse_channel(page: str, channel: str, limit: int) -> list[Item]:
         # у Telegram не было никогда, хотя веб-превью отдаёт её
         # в атрибуте data-post рядом с текстом.
         link = ""
+        published = 0.0
         holder = block.find_parent(attrs={"data-post": True})
         if holder is not None:
             post = str(holder.get("data-post") or "").strip("/")
             if post and "/" in post:
                 link = f"https://t.me/{post}"
-        items.append(Item(source=channel, text=text, kind="tg", link=link))
+            # Время поста веб-превью отдаёт тегом <time datetime="…">.
+            stamp = holder.find("time")
+            if stamp is not None:
+                published = publication_time(str(stamp.get("datetime") or ""))
+        items.append(Item(source=channel, text=text, kind="tg", link=link,
+                          published=published))
     return items
 
 
@@ -139,7 +149,11 @@ def parse_rss(body: str, url: str, limit: int) -> list[Item]:
         body_text = _child_text(entry, "description") or _child_text(entry, "summary")
         text = clean(f"{title}\n{body_text}")
         if len(text) >= 20:
-            items.append(Item(source=label, text=text, kind="rss", link=_entry_link(entry)))
+            when = (_child_text(entry, "pubDate") or _child_text(entry, "published")
+                    or _child_text(entry, "updated"))
+            items.append(Item(source=label, text=text, kind="rss",
+                              link=_entry_link(entry),
+                              published=publication_time(when)))
     return items
 
 
@@ -179,6 +193,31 @@ def _entry_link(entry: ET.Element) -> str:
     if guid is not None and guid.text and guid.text.strip().startswith("http"):
         return guid.text.strip()
     return ""
+
+
+def publication_time(text: str) -> float:
+    """Время публикации в секундах эпохи. 0 — не разобрать.
+
+    Форматы два: RFC 822 у RSS («Tue, 17 Sep 2026 21:10:00 +0300»)
+    и ISO 8601 у Atom и веб-превью Telegram («2026-09-17T21:10:00+00:00»).
+    Время без пояса считаем UTC — так пишут оба источника, когда пишут.
+    """
+    from datetime import datetime, timezone
+    from email.utils import parsedate_to_datetime
+
+    value = (text or "").strip()
+    if not value:
+        return 0.0
+    try:
+        moment = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        try:
+            moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return 0.0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
 
 
 def _child_text(entry: ET.Element, tag: str) -> str:

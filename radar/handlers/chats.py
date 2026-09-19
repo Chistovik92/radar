@@ -99,25 +99,36 @@ def _keyboard(rows: list[dict], links: dict[int, str],
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
+async def _render(role: str, lang: str = "ru") -> tuple[str, InlineKeyboardMarkup]:
+    # Список виден администрации — переведён в 4.9.9.3. Объявления
+    # и ссылки приглашения ниже — только суперадминистратору и по
+    # правилу проекта остаются русскими (ROADMAP, п.20).
+    from .. import i18n
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows = await repo.chat_list()
     if not rows:
-        return ADD_HINT, InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")
+        return _("chats.add_hint", ADD_HINT), InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=_("menu.back", "◀️ Назад"),
+                                 callback_data="menu:manage")
         ]])
 
     links: dict[int, str] = {}
-    lines = ["🛡 <b>Чаты под модерацией</b>", ""]
+    lines = [_("chats.title", "🛡 <b>Чаты под модерацией</b>"), ""]
     for row in rows:
         ok, value = await chatlink.link_for(row["chat_id"])
         if ok:
             links[row["chat_id"]] = value
-        state = "модерация включена" if row["enabled"] else "модерация выключена"
+        state = (_("chats.mod_on", "модерация включена") if row["enabled"]
+                 else _("chats.mod_off", "модерация выключена"))
         lines.append(f"• <b>{esc(row['title'] or str(row['chat_id']))}</b> — {state}")
         if not ok:
             lines.append(f"  <i>{esc(value)}</i>")
     lines.append("")
-    lines.append("<i>Нажмите на группу, чтобы перейти в неё.</i>")
+    lines.append("<i>" + _("chats.tap_hint", "Нажмите на группу, чтобы перейти в неё.")
+                 + "</i>")
     if roles.is_superadmin(role):
         lines.append("<i>🔗 — своя ссылка приглашения задана, ➕ — задать.</i>")
     if can_post(role):
@@ -126,25 +137,32 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
 
 
 @router.message(Command("chats"))
-async def cmd_chats(message: Message, role: str) -> None:
+async def cmd_chats(message: Message, role: str, user: dict) -> None:
+    from .. import i18n
+
     if not roles.is_admin(role):
         return
+    lang = i18n.language_of(user)
     if not features.enabled("moderation"):
-        await send_html(message.chat.id,
-                        "Модерация выключена — включите её в разделе "
-                        "«Возможности».")
+        await send_html(message.chat.id, i18n.t(
+            "chats.mod_disabled", lang,
+            "Модерация выключена — включите её в разделе «Возможности»."))
         return
-    text, keyboard = await _render(role)
+    text, keyboard = await _render(role, lang)
     await send_html(message.chat.id, text, keyboard)
 
 
 @router.callback_query(F.data == "menu:chats")
-async def menu_chats(call: CallbackQuery, role: str) -> None:
+async def menu_chats(call: CallbackQuery, role: str, user: dict) -> None:
+    from .. import i18n
+
+    lang = i18n.language_of(user)
     if not roles.is_admin(role):
-        await call.answer("Только для администрации.", show_alert=True)
+        await call.answer(i18n.t("chats.admins_only", lang, "Только для администрации."),
+                          show_alert=True)
         return
     await call.answer()
-    text, keyboard = await _render(role)
+    text, keyboard = await _render(role, lang)
     await safe_edit(call, text, keyboard)
 
 

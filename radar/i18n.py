@@ -532,11 +532,145 @@ EN_STRINGS: dict[str, str] = {
     "common.user_not_found": "User not found.",
     "common.cancel": "Cancel",
     "common.back": "◀️ Back",
+    "common.cancel_x": "❌ Cancel",
+    "common.yes": "✅ Yes",
+
+    # --- экраны модератора: пользователи (с 4.9.9.3) ---
+    "users.no_rights": "Not enough rights.",
+    "users.not_found": "User not found.",
+    "users.list_title": "👥 <b>Users</b> — {total} in total (page {page}/{pages})",
+    "users.locations_count": "locations: {count}",
+    "users.open_hint": "Tap a user to open their card.",
+    "users.none": "none",
+    "users.card_title": "👤 <b>User</b>",
+    "users.nick": "Username",
+    "users.role": "Role",
+    "users.locations": "Locations",
+    "users.categories": "Alert categories",
+    "users.weather": "Weather",
+    "users.settings_title": "⚙️ <b>User's alerts</b>",
+    "users.self_role": "You cannot change your own role.",
+    "users.role_denied": "Not enough rights for this role.",
+    "users.role_changed": "Role changed: {role}",
+    "users.role_notice": "ℹ️ Your role in Radar has been changed to {role}.",
+    "users.delete_admins": "Deleting is available to administrators.",
+    "users.delete_ask": "⚠️ Delete user {id} ({role}) together with all their locations?",
+    "users.deleted_short": "User deleted",
+    "users.deleted": "✅ User {id} deleted.",
+    "users.invite_title": "🔗 <b>Invite link</b>",
+    "users.invite_hint": "Whoever follows it gets the «User» role: their own "
+                         "locations and alerts. Only the administration can "
+                         "raise the role.",
+    "users.default_city": "The default city is {city}.",
+    "users.add_loc_title": "➕ <b>Location for</b>",
+    "users.add_loc_prompt": "Send an address as text, for example "
+                            "<code>Chapaeva street, 12</code>.",
+    "users.add_loc_geo": "You can also forward or send a location — it will be "
+                         "added to this user.",
+    "users.cancel_hint": "/cancel — cancel.",
+    "users.loc_added_notice": "📍 An administrator added a location for you: {name}.\n"
+                              "Alerts for it are already on — you can manage it "
+                              "under «My locations».",
+    "users.loc_added": "✅ Location {name} added to user {id}.",
+    "users.no_street": "The street was not determined — address-level utility "
+                       "alerts may be inaccurate.",
+    "users.back_to_user": "◀️ Back to the user",
+    "users.gone_or_denied": "User not found or not enough rights.",
+    "users.address_not_found": "Address not found. Be more specific — for example, "
+                               "<code>Saratov, Chapaeva street, 12</code>. "
+                               "/cancel — cancel.",
+    "users.variants": "🔎 <b>Matches found: {count}</b>",
+    "users.pick_one": "Pick the right one.",
+    "users.list_stale": "The list is out of date, start again.",
+    "users.adding": "Adding…",
+
+    # --- клавиатуры модератора (с 4.9.9.3) ---
+    "ucard.locs": "📍 Locations",
+    "ucard.alerts": "⚙️ Alerts",
+    "ucard.add_loc": "➕ Add a location",
+    "ucard.weather": "🌤 User's weather",
+    "ucard.delete": "🔨 Delete user",
+    "ucard.back": "◀️ Back to the list",
+    "ucard.locs_short": "loc.",
+    "mod.queue": "📥 Source queue",
+    "mod.list": "📋 Source list",
+    "mod.check": "🔍 Check availability",
+    "mod.add_channel": "➕ Add a channel",
+    "mod.add_rss": "🌐 Add a news RSS feed",
+    "mod.export": "⬇️ Download the list",
+    "mod.import": "⬆️ Upload a list",
+    "mod.back": "◀️ Back to management",
+    "mod.approve": "✅ Accept",
+    "mod.reject": "❌ Reject",
+
+    # --- чаты под модерацией, часть администрации (с 4.9.9.3) ---
+    "chats.title": "🛡 <b>Chats under moderation</b>",
+    "chats.mod_on": "moderation on",
+    "chats.mod_off": "moderation off",
+    "chats.tap_hint": "Tap a group to open it.",
+    "chats.mod_disabled": "Moderation is off — turn it on under «Features».",
+    "chats.admins_only": "For the administration only.",
+    "chats.add_hint": (
+        "🛡 <b>Chats under moderation</b>\n\n"
+        "No groups yet.\n\n"
+        "<b>How to add the bot:</b>\n"
+        "1. Open the group → «Members» → «Add».\n"
+        "2. Find the bot by name and add it.\n"
+        "3. Make it an administrator there and enable "
+        "<b>«Delete messages»</b> and <b>«Ban users»</b>.\n"
+        "4. Send <code>/modon</code> in the group — the chat will appear here.\n\n"
+        "<b>Is the bot already in the group?</b> Then nothing needs adding: "
+        "check that it is an administrator with these rights and send "
+        "<code>/modon</code> in the group. Groups the bot was added to "
+        "earlier do not announce themselves — Telegram only tells the bot "
+        "about changes.\n\n"
+        "<i>There is no need to change the privacy mode in @BotFather: an "
+        "administrator receives all messages anyway. The bot writes nothing "
+        "to those already in the group — the check is only for those who "
+        "join after it is turned on.</i>"
+    ),
+
+    # --- экраны модератора: источники (с 4.9.9.3) ---
+    "src.menu_text": "📡 <b>Sources</b>\n\nChannels and feeds are added here, "
+                     "their availability is checked and user suggestions are "
+                     "reviewed.",
+    "src.queue_empty": "📥 The queue is empty.",
+    "src.queue_item": "📥 <b>Queue: {count}</b>\nReviewing: {channel}",
+    "src.approved": "Accepted",
+    "src.rejected": "Rejected",
+    "src.empty": "— empty —",
+    "src.list_channels": "📋 <b>Telegram channels</b>",
+    "src.list_feeds": "🌐 <b>RSS feeds</b>",
+    "src.add_prompt": "➕ Send a channel username. Several at once — separated "
+                      "by commas or new lines.",
+    "src.added": "✅ Added: ",
+    "src.skipped": "⚠️ Skipped: ",
+    "src.nothing_added": "Nothing added",
+    "src.rss_prompt": "🌐 Send the address of a news or official RSS feed "
+                      "(for example <code>https://example.ru/rss</code>).",
+    "src.feeds_added": "✅ Feeds added:",
+    "src.no_valid": "⚠️ No valid addresses found.",
+    "src.export_off": "Source export is disabled.",
+    "src.preparing": "Preparing the file…",
+    "src.import_off": "Source import is disabled.",
+    "src.import_admins": "Importing is available to administrators.",
+    "src.import_denied": "⛔️ Importing sources is available to administrators.",
+    "src.none": "There are no sources.",
+    "src.check_start": "Starting the check…",
+    "src.checking": "🔍 Checking sources: <b>{total}</b>…",
+    "src.check_denied": "⛔️ Checking sources is available to moderators and above.",
+    "src.drop_hint": "Unavailable ones can be removed with the button below.",
+    "src.drop_button": "🗑 Remove unavailable ({count})",
+    "src.stale": "The list is out of date — run the check again.",
+    "src.removed_short": "Sources removed: {count}",
+    "src.removed": "🗑 Unavailable sources removed: <b>{removed}</b>.\n"
+                   "Left: channels {channels}, feeds {feeds}.",
 
     # --- раздел «Управление» ---
     "manage.sources": "📡 Sources",
     "manage.users": "👥 Users",
     "manage.stats": "📊 Statistics",
+    "manage.metrics": "🩺 Metrics and health",
     "manage.links": "🔗 Links",
     "manage.features": "⚙️ Features",
     "manage.keys": "🔑 Access keys",

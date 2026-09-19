@@ -345,6 +345,41 @@ def due_today(last_run: str, now: datetime) -> bool:
     return last_run != now.strftime("%Y-%m-%d")
 
 
+SUMMARY_KEY = "sourcecheck_last_report"
+
+
+async def remember_summary(report: CheckReport, now: datetime) -> None:
+    """Итог проверки — для метрик (с 4.9.9.3).
+
+    Доля мёртвых источников — одна из четырёх метрик дорожной карты,
+    и считать её заново при каждом открытии экрана нельзя: проверка
+    идёт минутами. Поэтому берётся итог последней — ночной или ручной.
+    """
+    from .db import repo
+
+    try:
+        await repo.set_meta(SUMMARY_KEY, {
+            "at": now.strftime("%Y-%m-%d %H:%M"),
+            "total": report.total,
+            "alive": len(report.alive),
+            "stale": len(report.stale),
+            "dead": len(report.dead),
+        })
+    except Exception:  # noqa: BLE001
+        log.debug("Итог проверки источников не сохранён", exc_info=True)
+
+
+async def last_summary() -> dict:
+    """Итог последней проверки. Пустой словарь — проверок не было."""
+    from .db import repo
+
+    try:
+        value = await repo.get_meta(SUMMARY_KEY, {})
+    except Exception:  # noqa: BLE001
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 async def run_scheduled(now: datetime) -> str:
     """Ночная проверка источников. Пустая строка — не время или не о чем.
 
@@ -382,6 +417,7 @@ async def run_scheduled(now: datetime) -> str:
         return ""
 
     report = await check_all(channels, feeds, vk_groups)
+    await remember_summary(report, now)
 
     # Результат отмечаем в базе — по нему панель и отчёты видят
     # проблемные источники; тот же вызов, что у кнопки модератора.

@@ -1,4 +1,4 @@
-# Radar v4.9.9.2
+# Radar v4.9.9.3
 
 [Русская версия](README.md)
 
@@ -62,6 +62,14 @@ taken before anything is overwritten.
 | `--uninstall` | stop and remove containers and image, keep the data |
 | `--skip-updates` | do not update system packages |
 
+The database is SQLite by default; PostgreSQL is available for a stronger
+machine (`DB_BACKEND=postgres` in `.env` and the `postgres` compose
+profile). Since 4.9.9.3 the installer tunes PostgreSQL for the machine's
+memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
+eighth of the memory but no more than 128 MB, so the database does not hit
+its own container limit. Values set by hand are left alone; without these
+lines the database starts with the old defaults.
+
 ## What it does
 
 Watches public Telegram channels of utility services, emergency services
@@ -95,6 +103,15 @@ Two rules added in 4.9.9.2:
   Telegram means: it reads channels through the web preview, not as a
   member. Posts from Telegram channels now carry a link to the original,
   like RSS news always did.
+* **VPN ads are cut out** (since 4.9.9.3, the "Hide VPN ads" feature).
+  Channels and media put VPN-service ads into their posts; the bot does
+  not pass them on. In alerts, memos and summaries the ad paragraph is
+  replaced with a "[реклама VPN-сервиса скрыта]" (VPN ad hidden) mark —
+  with no partner: advertising inside alerts is not allowed, our own
+  included. In news digests the ad posts are replaced by a single
+  partner-project line. News about VPNs (say, about blocking) is not
+  treated as an ad: it takes both a VPN mention and an ad sign — a promo
+  code, a price, the legal "Реклама" label, an erid.
 
 Sources are polled **in parallel**, with at most `SOURCE_CONCURRENCY` of
 them at a time (6 by default). Until 4.7.7 the walk was sequential: a
@@ -124,6 +141,11 @@ Alerts matter more than anything else here, so their path is guarded separately.
   the database and survive a restart; the queue limit is per recipient.
 * **Section failures are explained.** A handler that crashes tells the person
   what went wrong instead of leaving a dead button.
+* **Metrics and health on one screen** (since 4.9.9.3). `/metrics` or
+  "Management → 🩺 Metrics and health": delivered alerts and the latency
+  from the source post to the message (median and 90%), AI quota spend,
+  the share of unavailable sources, memory, disks, database size and
+  container state.
 
 ## Time zone
 
@@ -172,6 +194,20 @@ nightly report — the "Disk watching" toggle in `/features`; the letter
 arrives when space is running out. The "🗜 Compress" button on a track
 re-encodes it to opus at the source bitrate — the size drops several
 times with no audible difference.
+
+### Selections and similar tracks (since 4.9.9.3)
+
+The "🎛 Build a selection" button in the music section lists the genres
+and artists of your storage that have at least two tracks and builds a
+playlist from them; pressing it again rebuilds the playlist instead of
+creating a second one.
+
+The "Music: data from open databases" feature (`music_meta`, off by
+default) asks MusicBrainz for a genre after a track is uploaded, if the
+tags have none, and ListenBrainz for related artists — similar-track
+matching gets more accurate. Everything stays within your own storage:
+there is no shared library. It is off by default because these are
+requests to third-party services carrying the track's name.
 
 ### Music in the cloud (since 4.9.9)
 

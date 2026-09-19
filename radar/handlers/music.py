@@ -47,6 +47,11 @@ def _menu(user: dict, role: str) -> InlineKeyboardMarkup:
             callback_data=f"mus:pl:{pl['name'][:40]}")])
     rows.append([InlineKeyboardButton(
         text="➕ Новый плейлист", callback_data="mus:newpl")])
+    # Подборки по жанру и артисту (с 4.9.9.3) — только когда собирать
+    # есть из чего: пустой экран выбора обещал бы впустую.
+    if music.smart_choices(user, "genre") or music.smart_choices(user, "artist"):
+        rows.append([InlineKeyboardButton(
+            text="🎛 Собрать подборку", callback_data="mus:smart")])
     rows.append([InlineKeyboardButton(text="🏠 В главное меню",
                                       callback_data="menu:main")])
     del role
@@ -200,6 +205,7 @@ async def take_track(message: Message, user: dict, role: str) -> None:
                                has_similar=similar_now),
     )
     log.info("Добавлен трек: %s", label[:60])
+    _enrich_later(message.from_user.id, track_id)
 
 
 def _same_tag(a: str | None, b: str | None) -> bool:
@@ -510,3 +516,98 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
+
+
+# --------------------------------------------------------------------------
+#  Данные из открытых баз (с 4.9.9.3)
+# --------------------------------------------------------------------------
+#
+# Фоном, после ответа человеку: MusicBrainz разрешает запрос в секунду,
+# и ждать его у кнопки «загружено» незачем. Ссылки на задачи держим,
+# иначе asyncio вправе собрать задачу посреди ожидания.
+
+_enrichment: set = set()
+
+
+def _enrich_later(user_id: int, track_id: str) -> None:
+    import asyncio
+
+    from .. import musicmeta
+
+    if not musicmeta.enabled():
+        return
+    task = asyncio.create_task(_enrich(user_id, track_id))
+    _enrichment.add(task)
+    task.add_done_callback(_enrichment.discard)
+
+
+async def _enrich(user_id: int, track_id: str) -> None:
+    from .. import musicmeta
+
+    user = storage.get_user(user_id)
+    track = music.find_track(user or {}, track_id)
+    if track is None:
+        return
+    meta = await musicmeta.lookup(track.get("artist") or "",
+                                  track.get("title") or "")
+    # Перечитываем: за время запроса трек могли удалить.
+    user = storage.get_user(user_id)
+    track = music.find_track(user or {}, track_id)
+    if track is None or not meta:
+        return
+    if musicmeta.apply(track, meta):
+        try:
+            await storage.save(user_id)
+        except Exception:  # noqa: BLE001
+            log.debug("Метаданные трека не сохранены", exc_info=True)
+
+
+# --------------------------------------------------------------------------
+#  Подборки по жанру и артисту (с 4.9.9.3)
+# --------------------------------------------------------------------------
+
+
+@router.callback_query(F.data == "mus:smart")
+async def smart_menu(call) -> None:
+    await call.answer()
+    user = _user_of(call)
+    rows: list[list[InlineKeyboardButton]] = []
+    for kind, icon in (("genre", "🎼"), ("artist", "🎤")):
+        for index, (value, count) in enumerate(music.smart_choices(user, kind)):
+            rows.append([InlineKeyboardButton(
+                text=f"{icon} {value} ({count})",
+                callback_data=f"mus:sm:{kind[0]}:{index}")])
+    rows.append([InlineKeyboardButton(text="◀️ К музыке",
+                                      callback_data="mus:menu")])
+    await safe_edit(
+        call,
+        "🎛 <b>Собрать подборку</b>\n\n"
+        "Плейлист соберётся из ваших треков с этим жанром или артистом. "
+        "Повторное нажатие пересоберёт его — новые треки добавятся.",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("mus:sm:"))
+async def smart_build(call) -> None:
+    # Индекс, а не само значение: жанр или имя артиста в callback_data
+    # не влезут в 64 байта, а русские буквы занимают по два.
+    _prefix, _sm, letter, raw_index = call.data.split(":", 3)
+    kind = "genre" if letter == "g" else "artist"
+    user = _user_of(call)
+    choices = music.smart_choices(user, kind)
+    try:
+        value = choices[int(raw_index)][0]
+    except (ValueError, IndexError):
+        await call.answer("Список изменился — откройте заново.", show_alert=True)
+        return
+
+    ok, result = music.build_smart_playlist(user, kind, value)
+    if not ok:
+        await call.answer(result, show_alert=True)
+        return
+    await storage.save(call.from_user.id)
+    await call.answer(f"Подборка «{result}» собрана.")
+    await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
+                          f"{music.describe(user, _role_of(call))}",
+                    _menu(user, _role_of(call)))

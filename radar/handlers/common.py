@@ -260,12 +260,14 @@ async def menu_mod(call: CallbackQuery, state: FSMContext, role: str, user: dict
         return
     await state.clear()
     await call.answer()
+    lang = i18n.language_of(user)
     await safe_edit(
         call,
-        "📡 <b>Источники</b>\n\n"
-        "Здесь добавляются каналы и ленты, проверяется их доступность "
-        "и разбирается очередь предложений от пользователей.",
-        keyboards.moderation_menu(),
+        i18n.t("src.menu_text", lang,
+               "📡 <b>Источники</b>\n\n"
+               "Здесь добавляются каналы и ленты, проверяется их доступность "
+               "и разбирается очередь предложений от пользователей."),
+        keyboards.moderation_menu(lang),
     )
 
 

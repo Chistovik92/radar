@@ -142,6 +142,11 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
             InlineKeyboardButton(text=label("manage.links", "🔗 Ссылки"),
                                  callback_data="short:menu"),
         ])
+        # Метрики и здоровье (с 4.9.9.3): доходят ли оповещения, с какой
+        # задержкой, не кончается ли диск — одним экраном.
+        rows.append([InlineKeyboardButton(
+            text=label("manage.metrics", "🩺 Метрики и здоровье"),
+            callback_data="metrics:show")])
         if features.enabled("moderation"):
             rows.append([
                 InlineKeyboardButton(text=label("manage.chats", "🛡 Чаты"),
@@ -490,31 +495,51 @@ def locations_menu(locations: Sequence[dict[str, Any]], owner: str = "") -> Inli
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def moderation_menu() -> InlineKeyboardMarkup:
+def moderation_menu(lang: str = "ru") -> InlineKeyboardMarkup:
+    # Переведено в 4.9.9.3 (ROADMAP, п.20: экраны модератора).
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📥 Очередь источников", callback_data="src:queue")],
-            [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
-            [InlineKeyboardButton(text="🔍 Проверить доступность", callback_data="src:check")],
-            [InlineKeyboardButton(text="➕ Добавить канал", callback_data="src:add")],
-            [InlineKeyboardButton(text="🌐 Добавить RSS СМИ", callback_data="src:addrss")],
+            [InlineKeyboardButton(text=label("mod.queue", "📥 Очередь источников"),
+                                  callback_data="src:queue")],
+            [InlineKeyboardButton(text=label("mod.list", "📋 Список источников"),
+                                  callback_data="src:list")],
+            [InlineKeyboardButton(text=label("mod.check", "🔍 Проверить доступность"),
+                                  callback_data="src:check")],
+            [InlineKeyboardButton(text=label("mod.add_channel", "➕ Добавить канал"),
+                                  callback_data="src:add")],
+            [InlineKeyboardButton(text=label("mod.add_rss", "🌐 Добавить RSS СМИ"),
+                                  callback_data="src:addrss")],
             [
-                InlineKeyboardButton(text="⬇️ Скачать список", callback_data="src:export"),
-                InlineKeyboardButton(text="⬆️ Загрузить список", callback_data="src:import"),
+                InlineKeyboardButton(text=label("mod.export", "⬇️ Скачать список"),
+                                     callback_data="src:export"),
+                InlineKeyboardButton(text=label("mod.import", "⬆️ Загрузить список"),
+                                     callback_data="src:import"),
             ],
-            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
+            [InlineKeyboardButton(text=label("mod.back", "◀️ К управлению"),
+                                  callback_data="menu:manage")],
         ]
     )
 
 
-def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardMarkup:
+def user_card(target: str, target_role: str, actor_role: str,
+              lang: str = "ru") -> InlineKeyboardMarkup:
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows: list[list[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton(text="📍 Локации", callback_data=f"usr:locs:{target}"),
-            InlineKeyboardButton(text="⚙️ Оповещения", callback_data=f"usr:sets:{target}"),
+            InlineKeyboardButton(text=label("ucard.locs", "📍 Локации"),
+                                 callback_data=f"usr:locs:{target}"),
+            InlineKeyboardButton(text=label("ucard.alerts", "⚙️ Оповещения"),
+                                 callback_data=f"usr:sets:{target}"),
         ],
-        [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{target}")],
-        [InlineKeyboardButton(text="🌤 Погода пользователя", callback_data=f"usr:wth:{target}")],
+        [InlineKeyboardButton(text=label("ucard.add_loc", "➕ Добавить локацию"),
+                              callback_data=f"usr:addloc:{target}")],
+        [InlineKeyboardButton(text=label("ucard.weather", "🌤 Погода пользователя"),
+                              callback_data=f"usr:wth:{target}")],
     ]
     assignable = [
         role for role in roles.assignable_roles(actor_role)
@@ -524,26 +549,31 @@ def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardM
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"→ {roles.title(role)}", callback_data=f"usr:role:{target}:{role}"
+                    text=f"→ {roles.title(role, lang)}",
+                    callback_data=f"usr:role:{target}:{role}"
                 )
                 for role in assignable
             ]
         )
     if roles.can_delete_user(actor_role, target_role):
         rows.append(
-            [InlineKeyboardButton(text="🔨 Удалить пользователя", callback_data=f"usr:del:{target}")]
+            [InlineKeyboardButton(text=label("ucard.delete", "🔨 Удалить пользователя"),
+                                  callback_data=f"usr:del:{target}")]
         )
-    rows.append([InlineKeyboardButton(text="◀️ К списку", callback_data="usr:list:0")])
+    rows.append([InlineKeyboardButton(text=label("ucard.back", "◀️ К списку"),
+                                      callback_data="usr:list:0")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def users_page(
-    items: Sequence[tuple[str, str, int]], page: int, pages: int
+    items: Sequence[tuple[str, str, int]], page: int, pages: int,
+    lang: str = "ru",
 ) -> InlineKeyboardMarkup:
+    short = i18n.t("ucard.locs_short", lang, "лок.")
     rows = [
         [
             InlineKeyboardButton(
-                text=f"{roles.title(role).split()[0]} {uid} · {count} лок.",
+                text=f"{roles.title(role, lang).split()[0]} {uid} · {count} {short}",
                 callback_data=f"usr:card:{uid}",
             )
         ]
@@ -556,11 +586,13 @@ def users_page(
         nav.append(InlineKeyboardButton(text="▶️", callback_data=f"usr:list:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+                                      callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def geocode_choices(results: list[dict[str, str]], target: str) -> InlineKeyboardMarkup:
+def geocode_choices(results: list[dict[str, str]], target: str,
+                    lang: str = "ru") -> InlineKeyboardMarkup:
     """Варианты найденных адресов: выбор администратором."""
     rows = [
         [
@@ -571,28 +603,35 @@ def geocode_choices(results: list[dict[str, str]], target: str) -> InlineKeyboar
         ]
         for index, item in enumerate(results)
     ]
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"usr:card:{target}")])
+    rows.append([InlineKeyboardButton(text=i18n.t("common.cancel_x", lang, "❌ Отмена"),
+                                      callback_data=f"usr:card:{target}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm(action: str, argument: str, back: str) -> InlineKeyboardMarkup:
+def confirm(action: str, argument: str, back: str,
+            lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Да", callback_data=f"{action}:{argument}"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data=back),
+                InlineKeyboardButton(text=i18n.t("common.yes", lang, "✅ Да"),
+                                     callback_data=f"{action}:{argument}"),
+                InlineKeyboardButton(text=i18n.t("common.cancel_x", lang, "❌ Отмена"),
+                                     callback_data=back),
             ]
         ]
     )
 
 
-def queue_item() -> InlineKeyboardMarkup:
+def queue_item(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Принять", callback_data="src:approve"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data="src:reject"),
+                InlineKeyboardButton(text=i18n.t("mod.approve", lang, "✅ Принять"),
+                                     callback_data="src:approve"),
+                InlineKeyboardButton(text=i18n.t("mod.reject", lang, "❌ Отклонить"),
+                                     callback_data="src:reject"),
             ],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
+            [InlineKeyboardButton(text=i18n.t("menu.back", lang, "◀️ Назад"),
+                                  callback_data="menu:mod")],
         ]
     )

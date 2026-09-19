@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import re
 
 from aiogram import F, Router
@@ -37,6 +39,15 @@ from ..textutils import esc
 from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="sources")
+
+
+def _t(who: dict | None, key: str, russian: str) -> str:
+    """Строка на языке человека `who` (экраны модератора — с 4.9.9.3)."""
+    return i18n.t(key, i18n.language_of(who), russian)
+
+
+def _lang(who: dict | None) -> str:
+    return i18n.language_of(who)
 
 # Разбор и проверка переехали в radar/sourceedit.py: те же действия делает
 # веб-панель, и два набора правил разъехались бы. Имена оставлены здесь
@@ -114,72 +125,76 @@ async def save_suggestion(message: Message, state: FSMContext, user: dict) -> No
 
 
 @router.callback_query(F.data == "src:queue")
-async def queue(call: CallbackQuery, role: str) -> None:
+async def queue(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
     items = storage.pending()
     if not items:
-        await safe_edit(call, "📥 Очередь пуста.", back_kb("menu:mod", "◀️ Назад"))
+        await safe_edit(call, _t(user, "src.queue_empty", "📥 Очередь пуста."), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
         return
     channel = items[0]
     await safe_edit(
         call,
-        f"📥 <b>Очередь: {len(items)}</b>\nПроверка: @{esc(channel)}\n"
-        f"https://t.me/{esc(channel)}",
-        keyboards.queue_item(),
+        _t(user, "src.queue_item", "📥 <b>Очередь: {count}</b>\nПроверка: {channel}").format(
+            count=len(items), channel=f"@{esc(channel)}")
+        + f"\nhttps://t.me/{esc(channel)}",
+        keyboards.queue_item(_lang(user)),
     )
 
 
 @router.callback_query(F.data.in_({"src:approve", "src:reject"}))
-async def decide(call: CallbackQuery, role: str) -> None:
+async def decide(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     items = storage.pending()
     if not items:
-        await queue(call, role)
+        await queue(call, role, user)
         return
     channel = items.pop(0)
     if call.data.endswith("approve") and channel not in storage.channels():
         storage.channels().append(channel)
     await storage.save()
-    await call.answer("Принято" if call.data.endswith("approve") else "Отклонено")
-    await queue(call, role)
+    await call.answer(_t(user, "src.approved", "Принято") if call.data.endswith("approve")
+                      else _t(user, "src.rejected", "Отклонено"))
+    await queue(call, role, user)
 
 
 @router.callback_query(F.data == "src:list")
-async def show_list(call: CallbackQuery, role: str) -> None:
+async def show_list(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
-    channels = "\n".join(f"• @{esc(item)}" for item in storage.channels()) or "— пусто —"
-    feeds = "\n".join(f"• {esc(item)}" for item in storage.rss_feeds()) or "— пусто —"
+    channels = "\n".join(f"• @{esc(item)}" for item in storage.channels()) or _t(user, "src.empty", "— пусто —")
+    feeds = "\n".join(f"• {esc(item)}" for item in storage.rss_feeds()) or _t(user, "src.empty", "— пусто —")
     await safe_edit(
         call,
-        f"📋 <b>Telegram-каналы</b>\n{channels}\n\n🌐 <b>RSS-ленты</b>\n{feeds}",
-        back_kb("menu:mod", "◀️ Назад"),
+        _t(user, "src.list_channels", "📋 <b>Telegram-каналы</b>") + f"\n{channels}\n\n"
+        + _t(user, "src.list_feeds", "🌐 <b>RSS-ленты</b>") + f"\n{feeds}",
+        back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")),
     )
 
 
 @router.callback_query(F.data == "src:add")
-async def ask_channel(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_channel(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
     await safe_edit(
         call,
-        "➕ Пришлите юзернейм канала. Можно несколько через запятую или с новой строки.",
-        back_kb("menu:mod", "Отмена"),
+        _t(user, "src.add_prompt", "➕ Пришлите юзернейм канала. Можно несколько через "
+           "запятую или с новой строки."),
+        back_kb("menu:mod", _t(user, "common.cancel", "Отмена")),
     )
     await state.set_state(Form.add_channel)
 
 
 @router.message(Form.add_channel)
-async def add_channel(message: Message, state: FSMContext, role: str) -> None:
+async def add_channel(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
@@ -187,40 +202,41 @@ async def add_channel(message: Message, state: FSMContext, role: str) -> None:
     await storage.save()
     lines = []
     if added:
-        lines.append("✅ Добавлены: " + ", ".join(f"@{esc(c)}" for c in added))
+        lines.append(_t(user, "src.added", "✅ Добавлены: ") + ", ".join(f"@{esc(c)}" for c in added))
     if skipped:
-        lines.append("⚠️ Пропущены: " + ", ".join(esc(s) for s in skipped))
-    await message.answer("\n".join(lines) or "Ничего не добавлено",
-                         reply_markup=back_kb("menu:mod", "◀️ Назад"))
+        lines.append(_t(user, "src.skipped", "⚠️ Пропущены: ") + ", ".join(esc(s) for s in skipped))
+    await message.answer("\n".join(lines) or _t(user, "src.nothing_added", "Ничего не добавлено"),
+                         reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 @router.callback_query(F.data == "src:addrss")
-async def ask_rss(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_rss(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
     await safe_edit(
         call,
-        "🌐 Пришлите адрес RSS-ленты СМИ или официального сайта "
-        "(например <code>https://example.ru/rss</code>).",
-        back_kb("menu:mod", "Отмена"),
+        _t(user, "src.rss_prompt", "🌐 Пришлите адрес RSS-ленты СМИ или официального сайта "
+           "(например <code>https://example.ru/rss</code>)."),
+        back_kb("menu:mod", _t(user, "common.cancel", "Отмена")),
     )
     await state.set_state(Form.add_rss)
 
 
 @router.message(Form.add_rss)
-async def add_rss(message: Message, state: FSMContext, role: str) -> None:
+async def add_rss(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
     added, _skipped = sourceedit.add(sourceedit.RSS, message.text or "")
     await storage.save()
     text = (
-        "✅ Добавлены ленты:\n" + "\n".join(f"• {esc(u)}" for u in added)
-        if added else "⚠️ Корректных адресов не найдено."
+        _t(user, "src.feeds_added", "✅ Добавлены ленты:") + "\n"
+        + "\n".join(f"• {esc(u)}" for u in added)
+        if added else _t(user, "src.no_valid", "⚠️ Корректных адресов не найдено.")
     )
-    await message.answer(text, reply_markup=back_kb("menu:mod", "◀️ Назад"))
+    await message.answer(text, reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 # --------------------------------------------------------------------------
@@ -241,14 +257,14 @@ def _export_enabled() -> bool:
 
 
 @router.callback_query(F.data == "src:export")
-async def export_sources(call: CallbackQuery, role: str) -> None:
+async def export_sources(call: CallbackQuery, role: str, user: dict) -> None:
     if not _export_enabled():
-        await call.answer("Выгрузка источников отключена.", show_alert=True)
+        await call.answer(_t(user, "src.export_off", "Выгрузка источников отключена."), show_alert=True)
         return
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
-    await call.answer("Готовлю файл…")
+    await call.answer(_t(user, "src.preparing", "Готовлю файл…"))
 
     payload = exporting.export_bundle(
         storage.channels(), storage.rss_feeds(), storage.pending(), config.VERSION
@@ -262,16 +278,17 @@ async def export_sources(call: CallbackQuery, role: str) -> None:
         "<i>Файл читается будущими версиями бота. Чтобы восстановить список — "
         "просто пришлите его сюда.</i>"
     )
-    await call.message.answer_document(document, caption=caption, reply_markup=back_kb("menu:mod", "◀️ Назад"))
+    await call.message.answer_document(document, caption=caption, reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 @router.callback_query(F.data == "src:import")
-async def ask_import(call: CallbackQuery, role: str) -> None:
+async def ask_import(call: CallbackQuery, role: str, user: dict) -> None:
     if not _export_enabled():
-        await call.answer("Загрузка источников отключена.", show_alert=True)
+        await call.answer(_t(user, "src.import_off", "Загрузка источников отключена."), show_alert=True)
         return
     if not roles.is_admin(role):
-        await call.answer("Загрузка доступна администраторам.", show_alert=True)
+        await call.answer(_t(user, "src.import_admins", "Загрузка доступна администраторам."),
+                          show_alert=True)
         return
     await call.answer()
     await safe_edit(
@@ -281,14 +298,15 @@ async def ask_import(call: CallbackQuery, role: str) -> None:
         "Принимаются также простой список каналов текстовым файлом и "
         "<code>db.json</code> от версий 2.x.\n\n"
         "<i>Существующие источники сохраняются — новые добавляются к ним.</i>",
-        back_kb("menu:mod", "Отмена"),
+        back_kb("menu:mod", _t(user, "common.cancel", "Отмена")),
     )
 
 
 @router.message(F.document)
-async def import_sources(message: Message, role: str) -> None:
+async def import_sources(message: Message, role: str, user: dict) -> None:
     if not roles.is_admin(role):
-        await message.answer("⛔️ Загрузка источников доступна администраторам.")
+        await message.answer(_t(user, "src.import_denied",
+                                "⛔️ Загрузка источников доступна администраторам."))
         return
 
     document = message.document
@@ -306,7 +324,7 @@ async def import_sources(message: Message, role: str) -> None:
     try:
         bundle = exporting.parse_bundle(raw)
     except exporting.ImportError_ as exc:
-        await message.answer(f"❌ {esc(exc)}", reply_markup=back_kb("menu:mod", "◀️ Назад"))
+        await message.answer(f"❌ {esc(exc)}", reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
         return
 
     added_channels, added_rss = exporting.merge(
@@ -335,7 +353,7 @@ async def import_sources(message: Message, role: str) -> None:
         if len(bundle.warnings) > 8:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
-    await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
+    await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 # --------------------------------------------------------------------------
@@ -348,9 +366,9 @@ _last_check: dict[str, list[tuple[str, str]]] = {}
 
 
 @router.callback_query(F.data == "src:check")
-async def check_sources(call: CallbackQuery, role: str) -> None:
+async def check_sources(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
 
     channels = list(storage.channels())
@@ -358,10 +376,10 @@ async def check_sources(call: CallbackQuery, role: str) -> None:
     vk_groups = list(storage.vk_groups())
     total = len(channels) + len(feeds) + len(vk_groups)
     if not total:
-        await call.answer("Источников нет.", show_alert=True)
+        await call.answer(_t(user, "src.none", "Источников нет."), show_alert=True)
         return
 
-    await call.answer("Начинаю проверку…")
+    await call.answer(_t(user, "src.check_start", "Начинаю проверку…"))
     estimate = int(total * (sourcecheck.POLITE_PAUSE + 1.2))
     notice = await call.message.answer(
         f"🔍 Проверяю источники: <b>{total}</b>\n"
@@ -387,6 +405,7 @@ async def check_sources(call: CallbackQuery, role: str) -> None:
             pass
 
     report = await sourcecheck.check_all(channels, feeds, vk_groups, progress=progress)
+    await sourcecheck.remember_summary(report, datetime.now())
 
     # Отмечаем результат в базе — по нему потом видно проблемные источники
     for item in report.statuses:
@@ -402,18 +421,19 @@ async def check_sources(call: CallbackQuery, role: str) -> None:
 
     text = sourcecheck.render(report)
     if report.dead:
-        text += "\n\n<i>Удалить недоступные можно кнопкой ниже.</i>"
+        text += "\n\n<i>" + _t(user, "src.drop_hint", "Удалить недоступные можно кнопкой ниже.") + "</i>"
         markup = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
-                    text=f"🗑 Убрать недоступные ({len(report.dead)})",
+                    text=_t(user, "src.drop_button", "🗑 Убрать недоступные ({count})").format(
+                        count=len(report.dead)),
                     callback_data="src:drop_dead",
                 )],
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
+                [InlineKeyboardButton(text=_t(user, "menu.back", "◀️ Назад"), callback_data="menu:mod")],
             ]
         )
     else:
-        markup = back_kb("menu:mod", "◀️ Назад")
+        markup = back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад"))
 
     _last_check[str(call.from_user.id)] = [
         (item.kind, item.ref) for item in report.dead
@@ -429,46 +449,52 @@ async def storage_repo_mark(item) -> None:
 
 
 @router.callback_query(F.data == "src:drop_dead")
-async def drop_dead(call: CallbackQuery, role: str) -> None:
+async def drop_dead(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
 
     dead = _last_check.get(str(call.from_user.id)) or []
     if not dead:
-        await call.answer("Список устарел — запустите проверку заново.", show_alert=True)
+        await call.answer(_t(user, "src.stale", "Список устарел — запустите проверку заново."),
+                          show_alert=True)
         return
 
     removed = sum(1 for kind, ref in dead if sourceedit.remove(kind, ref))
 
     await storage.save()
     _last_check.pop(str(call.from_user.id), None)
-    await call.answer(f"Удалено источников: {removed}")
+    await call.answer(_t(user, "src.removed_short", "Удалено источников: {count}").format(count=removed))
     await safe_edit(
         call,
-        f"🗑 Удалено недоступных источников: <b>{removed}</b>.\n"
-        f"Осталось: каналов {len(storage.channels())}, лент {len(storage.rss_feeds())}.",
-        back_kb("menu:mod", "◀️ Назад"),
+        _t(user, "src.removed", "🗑 Удалено недоступных источников: <b>{removed}</b>.\n"
+           "Осталось: каналов {channels}, лент {feeds}.").format(
+            removed=removed, channels=len(storage.channels()),
+            feeds=len(storage.rss_feeds())),
+        back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")),
     )
 
 
 @router.message(Command("checksources"))
-async def cmd_check_sources(message: Message, role: str) -> None:
+async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await message.answer("⛔️ Проверка источников доступна модераторам и выше.")
+        await message.answer(_t(user, "src.check_denied",
+                                "⛔️ Проверка источников доступна модераторам и выше."))
         return
 
     channels = list(storage.channels())
     feeds = list(storage.rss_feeds())
     total = len(channels) + len(feeds)
     if not total:
-        await message.answer("Источников нет.")
+        await message.answer(_t(user, "src.none", "Источников нет."))
         return
 
-    notice = await message.answer(f"🔍 Проверяю источники: <b>{total}</b>…")
+    notice = await message.answer(
+        _t(user, "src.checking", "🔍 Проверяю источники: <b>{total}</b>…").format(total=total))
     report = await sourcecheck.check_all(channels, feeds, list(storage.vk_groups()))
+    await sourcecheck.remember_summary(report, datetime.now())
     try:
         await notice.delete()
     except Exception:  # noqa: BLE001
         pass
-    await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
+    await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))

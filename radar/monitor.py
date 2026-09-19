@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,7 +63,44 @@ _stats = {
     "heartbeat": 0,
     # Сколько раз цикл поднимался заново после сбоя.
     "restarts": 0,
+    # Доставленных оповещений о событиях — без погоды (с 4.9.9.3).
+    "delivered": 0,
 }
+
+# Задержка от публикации в источнике до рассылки, секунды (с 4.9.9.3).
+# Ограниченная очередь: метрике нужны недавние значения, а не история
+# с первого запуска, и на одноплатнике память не бесконечна.
+_latency: "deque[float]" = deque(maxlen=300)
+
+# Дольше суток — это не задержка, а старая новость, всплывшая заново:
+# в медиану она внесла бы шум, а не правду.
+LATENCY_CEILING = 24 * 3600
+
+
+def record_latency(analyses: list, published: dict[str, float],
+                   now_ts: float) -> int:
+    """Записывает задержку для событий, по которым ушли оповещения.
+
+    Возвращает число записанных значений. Считается от времени поста
+    в источнике до конца рассылки этого цикла — то есть ровно то, что
+    чувствует человек: когда случилось и когда он узнал.
+    """
+    recorded = 0
+    for analysis in analyses:
+        if not analysis.relevant or analysis.historical or analysis.guidance:
+            continue
+        moment = published.get(analysis.raw, 0.0)
+        if not moment:
+            continue
+        delay = now_ts - moment
+        if 0 <= delay <= LATENCY_CEILING:
+            _latency.append(delay)
+            recorded += 1
+    return recorded
+
+
+def latency_samples() -> list[float]:
+    return list(_latency)
 
 def stats() -> dict[str, Any]:
     return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())
@@ -243,6 +281,9 @@ async def dispatch_user(
     for text in outgoing:
         if await send_html(uid, text):
             sent += 1
+            # Отдельно от общего счётчика: в «alerts» попадает и погода,
+            # а метрике задержки нужны только оповещения о событиях.
+            _stats["delivered"] += 1
             # Отметка о доставке ставится ПОСЛЕ отправки. До 4.9.8.14 она
             # шла раньше, и одной сетевой икоты хватало, чтобы тревога
             # пропала: отправка не удалась, а повтор был уже запрещён
@@ -693,6 +734,7 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     # от него внутри dispatch_user: пользователи живут в разных поясах.
     now = datetime.now(timezone.utc)
     changed = False
+    delivered_before = _stats["delivered"]
     with profiling.measure("dispatch"):
         for uid, user in list(storage.users().items()):
             try:
@@ -700,6 +742,11 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
                     changed = True
             except Exception:  # noqa: BLE001
                 log.exception("Ошибка рассылки пользователю %s", uid)
+    # Задержку пишем, только если в этом цикле ушло хоть одно оповещение:
+    # иначе в метрику попали бы события, которые никому не доставлялись.
+    if analyses and _stats["delivered"] > delivered_before:
+        published = {item.text: item.published for item in items if item.published}
+        record_latency(analyses, published, time.time())
     if changed:
         with profiling.measure("save"):
             await storage.save()

@@ -358,7 +358,12 @@ async def summaries_for(entries: Iterable[Entry],
     if not features.enabled("digest_summaries"):
         return {}
 
-    grouped = group(entries, subscription.allowed_topics())
+    # Рекламу VPN убираем и до пересказа: иначе модель перескажет её
+    # вместе с новостями, и фильтр в build уже ничего не поймает.
+    from . import adfilter
+
+    clean, _removed = adfilter.split_entries(list(entries))
+    grouped = group(clean, subscription.allowed_topics())
     result: dict[str, str] = {}
     for key, items in grouped.items():
         topic = BY_KEY.get(key)
@@ -376,7 +381,12 @@ def build(entries: Iterable[Entry], subscription: Subscription,
           now: datetime, city: str = "",
           summaries: dict[str, str] | None = None) -> str:
     """Собирает одно сообщение из всех тематик подписки."""
-    grouped = group(entries, subscription.allowed_topics())
+    from . import adfilter
+
+    # Реклама VPN из новостей — вон; вместо неё одна строка партнёра
+    # в конце подборки (с 4.9.9.3), а не по заглушке на каждый пост.
+    clean, ads_removed = adfilter.split_entries(list(entries))
+    grouped = group(clean, subscription.allowed_topics())
     if not grouped:
         return ""
 
@@ -424,6 +434,12 @@ def build(entries: Iterable[Entry], subscription: Subscription,
             lines.append(
                 f"<i>Ещё {hidden} выбранных тематик доступны по подписке.</i>"
             )
+
+    if ads_removed:
+        stub = adfilter.partner_stub()
+        if stub:
+            lines.append(stub)
+            lines.append("")
 
     lines.append(
         "<i>Это подборка новостей. Об опасности бот сообщает отдельно "

@@ -523,10 +523,22 @@ def _source_label(analysis: Analysis) -> str:
     return name
 
 
+def _no_ads(text: str) -> str:
+    """Текст без рекламы VPN — с нейтральной пометкой, не с партнёрской.
+
+    В оповещениях своя реклама недопустима так же, как чужая
+    (CLAUDE.md, «Что не обсуждается», п.2), поэтому здесь только
+    пометка о вырезанном — см. radar/adfilter.py.
+    """
+    from . import adfilter
+
+    return adfilter.strip(text)[0]
+
+
 def _event_line(analysis: Analysis) -> str:
     icon = "✅" if analysis.all_clear else SEVERITY_ICONS.get(analysis.severity, "🔵")
     mark = "" if analysis.engine == "ai" else " <i>(без ИИ)</i>"
-    line = f"{icon} <b>{_source_label(analysis)}</b>{mark}\n{esc(analysis.text())}"
+    line = f"{icon} <b>{_source_label(analysis)}</b>{mark}\n{esc(_no_ads(analysis.text()))}"
     if analysis.link:
         line += f'\n🔗 <a href="{esc_attr(analysis.link)}">Читать источник</a>'
     return line
@@ -618,7 +630,7 @@ def build_guidance(analysis: Analysis) -> str:
     Telegram ему нечем. Поэтому — полный текст и ссылка на оригинал,
     где пост виден таким, каким его опубликовали.
     """
-    body = (analysis.raw or analysis.summary).strip()
+    body = _no_ads((analysis.raw or analysis.summary).strip())
     if len(body) > GUIDANCE_LIMIT:
         body = body[:GUIDANCE_LIMIT].rstrip() + "…"
     lines = [
@@ -818,7 +830,7 @@ def build_recap(
         icon = CATEGORY_ICONS.get(category, "•")
         lines.append(f"{icon} <b>{esc(CATEGORY_TITLES.get(category, category))}</b>")
         for item in items[:6]:
-            lines.append(f"• {esc(item.text()[:280])}")
+            lines.append(f"• {esc(_no_ads(item.text())[:280])}")
             if item.link:
                 lines.append(f'  🔗 <a href="{esc_attr(item.link)}">источник</a>')
         if len(items) > 6:

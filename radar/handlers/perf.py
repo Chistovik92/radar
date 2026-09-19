@@ -204,3 +204,43 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
+
+
+# --------------------------------------------------------------------------
+#  Метрики и здоровье (с 4.9.9.3)
+# --------------------------------------------------------------------------
+#
+# Отдельно от /perf: там — где тратится время цикла, здесь — работает ли
+# система в целом. Администратору, а не только суперадминистратору:
+# «доходят ли оповещения и не кончается ли диск» — вопрос того, кто
+# отвечает за сервер, и ключей здесь нет.
+
+
+def _metrics_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="metrics:show")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")],
+    ])
+
+
+@router.message(Command("metrics", "health"))
+async def cmd_metrics(message: Message, role: str) -> None:
+    from .. import metrics
+
+    if not roles.is_admin(role):
+        await message.answer("⛔️ Метрики доступны администрации.")
+        return
+    await message.answer(metrics.render(await metrics.snapshot()),
+                         reply_markup=_metrics_menu())
+
+
+@router.callback_query(F.data == "metrics:show")
+async def metrics_show(call: CallbackQuery, role: str) -> None:
+    from .. import metrics
+
+    if not roles.is_admin(role):
+        await call.answer("Только для администрации.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, metrics.render(await metrics.snapshot()),
+                    _metrics_menu())

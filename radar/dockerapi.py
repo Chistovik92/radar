@@ -124,3 +124,56 @@ async def container_action(session_, name: str, action: str) -> tuple[bool, str]
     except Exception as exc:  # noqa: BLE001
         log.exception("Действие %s над контейнером %s не выполнено", action, name)
         return False, str(exc)
+
+
+def available() -> bool:
+    """Смонтирован ли сокет. Без него — ни чтения, ни действий."""
+    import os
+
+    return os.path.exists(SOCKET)
+
+
+async def list_containers(session_, prefix: str = "radar") -> list[dict]:
+    """Контейнеры системы: имя, состояние, здоровье (с 4.9.9.3).
+
+    Только чтение. Нужен для панели здоровья в боте: до 4.9.9.3 дорожная
+    карта обещала, что состояния контейнеров в боте не будет — «нужен
+    сокет Docker, а это доступ ко всему серверу». Довод устарел с 4.9.6:
+    сокет уже смонтирован ради обновления из панели и RustDesk. Раз цена
+    всё равно заплачена, показывать состояние — не новый риск, а польза
+    от уже принятого.
+
+    Фильтр по имени — чтобы не показывать чужие контейнеры хоста:
+    у одноплатника бывают и свои сервисы, и они — не дело этого бота.
+    """
+    import json
+
+    query = json.dumps({"name": [prefix]})
+    try:
+        async with session_.get(f"{API}/containers/json",
+                                params={"all": "1", "filters": query}) as response:
+            if response.status != 200:
+                return []
+            payload = await response.json(content_type=None)
+    except Exception:  # noqa: BLE001
+        log.debug("Список контейнеров не получен", exc_info=True)
+        return []
+
+    result: list[dict] = []
+    for item in payload if isinstance(payload, list) else []:
+        names = [str(name).lstrip("/") for name in item.get("Names") or []]
+        status = str(item.get("Status") or "")
+        health = ""
+        # Здоровье Docker пишет в Status скобкой: «Up 2 hours (healthy)».
+        for word in ("healthy", "unhealthy", "starting"):
+            if f"({word})" in status or f"(health: {word})" in status:
+                health = word
+                break
+        result.append({
+            "name": names[0] if names else "?",
+            "state": str(item.get("State") or ""),
+            "status": status,
+            "health": health,
+        })
+    result.sort(key=lambda row: row["name"])
+    return result

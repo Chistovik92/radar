@@ -3439,6 +3439,49 @@ else
     warn "Группа docker не найдена — обновление из панели будет недоступно"
 fi
 
+# Настройки PostgreSQL под память машины (ROADMAP 4.8, п.2; с 4.9.9.3).
+# Раньше параметры были зашиты под 1–2 ГБ, и на машине помощнее база
+# работала вполсилы, а на совсем слабой — впритык. Подбор осторожный:
+# * только при DB_BACKEND=postgres — SQLite эти значения не читает;
+# * только если их не задали руками — ручная настройка важнее расчёта;
+# * shared_buffers не выше четверти лимита контейнера базы (512 МБ
+#   в compose): иначе база упрётся в свой же лимит и её убьёт ядро;
+# * значения по умолчанию в compose прежние — без этих строк в .env
+#   база запускается ровно так же, как до 4.9.9.3.
+pg_tune() {
+    local mem_kb mem_mb shared cache work maint
+    grep -qE '^DB_BACKEND=postgres' .env 2>/dev/null || return 0
+    if grep -qE '^PG_SHARED_BUFFERS=' .env 2>/dev/null; then
+        info "Настройки PostgreSQL заданы вручную — подбор пропущен"
+        return 0
+    fi
+    mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)"
+    [ -n "$mem_kb" ] || return 0
+    mem_mb=$((mem_kb / 1024))
+
+    shared=$((mem_mb / 8))
+    [ "$shared" -lt 64 ] && shared=64
+    [ "$shared" -gt 128 ] && shared=128
+
+    cache=$((mem_mb / 2))
+    [ "$cache" -lt 192 ] && cache=192
+    [ "$cache" -gt 2048 ] && cache=2048
+
+    work=4
+    [ "$mem_mb" -ge 2048 ] && work=8
+
+    maint=$((mem_mb / 32))
+    [ "$maint" -lt 32 ] && maint=32
+    [ "$maint" -gt 256 ] && maint=256
+
+    set_env_value PG_SHARED_BUFFERS "${shared}MB"
+    set_env_value PG_EFFECTIVE_CACHE "${cache}MB"
+    set_env_value PG_WORK_MEM "${work}MB"
+    set_env_value PG_MAINTENANCE_MEM "${maint}MB"
+    info "PostgreSQL под память ${mem_mb} МБ: shared_buffers ${shared}MB, кэш ${cache}MB"
+}
+pg_tune
+
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"
 : "${TZ_VALUE:=Europe/Saratov}"

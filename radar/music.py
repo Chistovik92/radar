@@ -294,6 +294,77 @@ def format_size(size_bytes: float) -> str:
     return f"{int(size_bytes)} Б"
 
 
+def _related_of(track: dict) -> set[str]:
+    """Родственные артисты трека — нормализованные, как и сравниваемые."""
+    return {_norm_word(name) for name in track.get("related") or [] if name}
+
+
+# --------------------------------------------------------------------------
+#  Подборки по жанру и артисту (с 4.9.9.3)
+# --------------------------------------------------------------------------
+#
+# Пункт 4 раздела 4.9.5: «подборка по жанру или артисту — поверх готового
+# подбора похожих». Всё из своего хранилища: общей библиотеки нет
+# и не будет (п.5 того же раздела), подборка собирает только то, что
+# человек загрузил сам.
+
+SMART_KINDS = ("genre", "artist")
+SMART_MIN = 2       # подборка из одного трека — это трек, а не подборка
+SMART_OFFER = 8     # сколько вариантов показывать на экране выбора
+
+
+def smart_choices(user: dict, kind: str) -> list[tuple[str, int]]:
+    """Жанры или артисты своего хранилища: (название, треков), по убыванию."""
+    if kind not in SMART_KINDS:
+        return []
+    counts: dict[str, int] = {}
+    shown: dict[str, str] = {}
+    for track in tracks_of(user):
+        raw = (track.get(kind) or "").strip()
+        key = _norm_word(raw)
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        shown.setdefault(key, raw)
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], shown[pair[0]].lower()))
+    return [(shown[key], count) for key, count in ranked if count >= SMART_MIN][:SMART_OFFER]
+
+
+def smart_tracks(user: dict, kind: str, value: str) -> list[dict]:
+    """Треки своего хранилища с этим жанром или артистом."""
+    key = _norm_word(value)
+    if kind not in SMART_KINDS or not key:
+        return []
+    return [track for track in tracks_of(user)
+            if _norm_word(track.get(kind) or "") == key]
+
+
+def build_smart_playlist(user: dict, kind: str, value: str) -> tuple[bool, str]:
+    """Плейлист из подборки. Возвращает (получилось, имя или причина).
+
+    Одноимённый плейлист пересобирается, а не заводится вторым: иначе
+    каждое нажатие множило бы «Жанр: рок», «Жанр: рок», «Жанр: рок».
+    """
+    tracks = smart_tracks(user, kind, value)
+    if len(tracks) < SMART_MIN:
+        return False, "Для подборки нужно хотя бы два трека."
+
+    prefix = "Жанр" if kind == "genre" else "Артист"
+    name = safe_title(f"{prefix}: {value}")
+    data = dict(_slot(user))
+    playlists = [dict(pl) for pl in data.get("playlists") or []]
+    existing = next((pl for pl in playlists if pl.get("name") == name), None)
+    if existing is None:
+        if len(playlists) >= MAX_PLAYLISTS:
+            return False, f"Плейлистов уже {MAX_PLAYLISTS} — это предел."
+        existing = {"name": name, "tracks": []}
+        playlists.append(existing)
+    existing["tracks"] = [track["id"] for track in tracks]
+    data["playlists"] = playlists
+    user[SLOT] = data
+    return True, name
+
+
 def similar(user: dict, track_id: str, limit: int = 5) -> list[dict]:
     """Похожие треки из загруженного самим человеком.
 
@@ -323,8 +394,14 @@ def similar(user: dict, track_id: str, limit: int = 5) -> list[dict]:
             continue
 
         score = 0
-        if base_artist and _norm_word(track.get("artist") or "") == base_artist:
+        artist = _norm_word(track.get("artist") or "")
+        if base_artist and artist == base_artist:
             score += 5
+        elif artist and artist in _related_of(base):
+            # Родственный артист по открытым базам (с 4.9.9.3, см.
+            # radar/musicmeta.py): слабее своего, сильнее жанра — «похож
+            # по мнению слушателей» точнее, чем «та же полка в магазине».
+            score += 4
         if base_genre and base_genre == _norm_word(track.get("genre") or ""):
             score += 3
         year = (track.get("year") or "").strip()

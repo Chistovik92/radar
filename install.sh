@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.9.2 — автономный установщик.
+# Система «Радар» v4.9.9.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.9.2"
+VERSION="4.9.9.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=124
+FILE_COUNT=127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3113,14 +3113,16 @@ services:
       POSTGRES_USER: ${DB_USER:-radar}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-radar}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
-    # Значения подобраны под 1–2 ГБ ОЗУ. На машине с 4 ГB и больше
-    # можно поднять shared_buffers до 256MB, а effective_cache_size до 1GB.
+    # Значения по умолчанию — под 1–2 ГБ ОЗУ. С 4.9.9.3 установщик
+    # подбирает их под память машины и пишет в .env (PG_SHARED_BUFFERS
+    # и соседние); заданное руками он не трогает. shared_buffers не выше
+    # 128MB — четверти лимита контейнера ниже.
     command: >
       postgres
-      -c shared_buffers=96MB
-      -c effective_cache_size=256MB
-      -c work_mem=4MB
-      -c maintenance_work_mem=32MB
+      -c shared_buffers=${PG_SHARED_BUFFERS:-96MB}
+      -c effective_cache_size=${PG_EFFECTIVE_CACHE:-256MB}
+      -c work_mem=${PG_WORK_MEM:-4MB}
+      -c maintenance_work_mem=${PG_MAINTENANCE_MEM:-32MB}
       -c max_connections=20
       -c max_parallel_workers=0
       -c max_parallel_workers_per_gather=0
@@ -3238,6 +3240,26 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.9.3", [
+        "🚚 <b>Переезд на другой сервер проверен вживую.</b> Путь пройден "
+        "до конца, система на новой машине поднялась — работает, хотя "
+        "и не без ручной помощи по дороге.",
+        "🩺 <b>Метрики и здоровье — одним экраном.</b> <code>/metrics</code> "
+        "или «Управление → Метрики и здоровье»: сколько оповещений "
+        "доставлено и с какой задержкой от поста в источнике, расход квоты "
+        "ИИ, доля недоступных источников, память, диски, база и состояние "
+        "контейнеров.",
+        "🎛 <b>Подборки в музыке.</b> Плейлист по жанру или артисту "
+        "собирается одной кнопкой из своих треков. Жанр и родственных "
+        "артистов можно подтянуть из MusicBrainz и ListenBrainz — "
+        "возможность «Музыка: данные из открытых баз».",
+        "🚫 <b>Реклама VPN больше не пересылается.</b> В новостных подборках "
+        "вместо неё — строка партнёрского проекта, в оповещениях — только "
+        "пометка «реклама скрыта».",
+        "🌍 <b>Экраны модератора переведены на английский</b>: источники, "
+        "карточки пользователей, список чатов.",
+        "🗄 <b>PostgreSQL настраивается под память машины</b> при установке.",
+    ]),
     ("4.9.9.2", [
         "🖼 <b>Картинки из записей больше не зависают.</b> Поиск падал "
         "на первом же шаге и оставлял «Ищу картинки…» навсегда. Теперь "
@@ -4900,7 +4922,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.9.2"
+__version__ = "4.9.9.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -6395,10 +6417,22 @@ def _source_label(analysis: Analysis) -> str:
     return name
 
 
+def _no_ads(text: str) -> str:
+    """Текст без рекламы VPN — с нейтральной пометкой, не с партнёрской.
+
+    В оповещениях своя реклама недопустима так же, как чужая
+    (CLAUDE.md, «Что не обсуждается», п.2), поэтому здесь только
+    пометка о вырезанном — см. radar/adfilter.py.
+    """
+    from . import adfilter
+
+    return adfilter.strip(text)[0]
+
+
 def _event_line(analysis: Analysis) -> str:
     icon = "✅" if analysis.all_clear else SEVERITY_ICONS.get(analysis.severity, "🔵")
     mark = "" if analysis.engine == "ai" else " <i>(без ИИ)</i>"
-    line = f"{icon} <b>{_source_label(analysis)}</b>{mark}\n{esc(analysis.text())}"
+    line = f"{icon} <b>{_source_label(analysis)}</b>{mark}\n{esc(_no_ads(analysis.text()))}"
     if analysis.link:
         line += f'\n🔗 <a href="{esc_attr(analysis.link)}">Читать источник</a>'
     return line
@@ -6490,7 +6524,7 @@ def build_guidance(analysis: Analysis) -> str:
     Telegram ему нечем. Поэтому — полный текст и ссылка на оригинал,
     где пост виден таким, каким его опубликовали.
     """
-    body = (analysis.raw or analysis.summary).strip()
+    body = _no_ads((analysis.raw or analysis.summary).strip())
     if len(body) > GUIDANCE_LIMIT:
         body = body[:GUIDANCE_LIMIT].rstrip() + "…"
     lines = [
@@ -6690,7 +6724,7 @@ def build_recap(
         icon = CATEGORY_ICONS.get(category, "•")
         lines.append(f"{icon} <b>{esc(CATEGORY_TITLES.get(category, category))}</b>")
         for item in items[:6]:
-            lines.append(f"• {esc(item.text()[:280])}")
+            lines.append(f"• {esc(_no_ads(item.text())[:280])}")
             if item.link:
                 lines.append(f'  🔗 <a href="{esc_attr(item.link)}">источник</a>')
         if len(items) > 6:
@@ -6854,6 +6888,13 @@ FLAGS: tuple[Flag, ...] = (
          "«Погода картинкой». Осторожно: при слабом мобильном интернете "
          "картинка может не прогрузиться там, где текст дошёл бы.",
          group="Подача", since="4.6", default=False),
+    Flag("vpn_ad_filter", "Скрывать рекламу VPN",
+         "Реклама VPN-сервисов из постов каналов и СМИ вырезается. "
+         "В новостных подборках вместо неё — одна строка партнёрского "
+         "проекта; в оповещениях, памятках и сводках — нейтральная "
+         "пометка «реклама скрыта»: реклама внутри тревог недопустима, "
+         "в том числе своя.",
+         group="Подача", since="4.9.9.3"),
     Flag("quiet_hours", "Тихие часы",
          "Несрочное придерживается до утра. Военные угрозы и МЧС проходят всегда.",
          group="Подача", since="4.4", default=False),
@@ -6909,6 +6950,13 @@ FLAGS: tuple[Flag, ...] = (
          "раскладываются по плейлистам. Каждый слушает только своё. "
          "Подбор похожего — следующий шаг.",
          group="Медиа", since="4.9.5.2", default=False),
+    Flag("music_meta", "Музыка: данные из открытых баз",
+         "После загрузки трека бот спрашивает MusicBrainz о жанре (если "
+         "в тегах его нет) и ListenBrainz о родственных артистах — "
+         "подбор похожего становится точнее. Только внутри своего "
+         "хранилища: общей библиотеки нет. По умолчанию выключено: "
+         "это запросы к чужим сервисам с названием трека.",
+         group="Медиа", since="4.9.9.3", default=False),
     Flag("music_cloud", "Музыка в облаке",
          "Треки хранятся не на устройстве, а в облаке по WebDAV: рядом "
          "с ботом поднимается rclone serve webdav, и ёмкость перестаёт "
@@ -7983,6 +8031,41 @@ def due_today(last_run: str, now: datetime) -> bool:
     return last_run != now.strftime("%Y-%m-%d")
 
 
+SUMMARY_KEY = "sourcecheck_last_report"
+
+
+async def remember_summary(report: CheckReport, now: datetime) -> None:
+    """Итог проверки — для метрик (с 4.9.9.3).
+
+    Доля мёртвых источников — одна из четырёх метрик дорожной карты,
+    и считать её заново при каждом открытии экрана нельзя: проверка
+    идёт минутами. Поэтому берётся итог последней — ночной или ручной.
+    """
+    from .db import repo
+
+    try:
+        await repo.set_meta(SUMMARY_KEY, {
+            "at": now.strftime("%Y-%m-%d %H:%M"),
+            "total": report.total,
+            "alive": len(report.alive),
+            "stale": len(report.stale),
+            "dead": len(report.dead),
+        })
+    except Exception:  # noqa: BLE001
+        log.debug("Итог проверки источников не сохранён", exc_info=True)
+
+
+async def last_summary() -> dict:
+    """Итог последней проверки. Пустой словарь — проверок не было."""
+    from .db import repo
+
+    try:
+        value = await repo.get_meta(SUMMARY_KEY, {})
+    except Exception:  # noqa: BLE001
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 async def run_scheduled(now: datetime) -> str:
     """Ночная проверка источников. Пустая строка — не время или не о чем.
 
@@ -8020,6 +8103,7 @@ async def run_scheduled(now: datetime) -> str:
         return ""
 
     report = await check_all(channels, feeds, vk_groups)
+    await remember_summary(report, now)
 
     # Результат отмечаем в базе — по нему панель и отчёты видят
     # проблемные источники; тот же вызов, что у кнопки модератора.
@@ -11898,7 +11982,12 @@ async def summaries_for(entries: Iterable[Entry],
     if not features.enabled("digest_summaries"):
         return {}
 
-    grouped = group(entries, subscription.allowed_topics())
+    # Рекламу VPN убираем и до пересказа: иначе модель перескажет её
+    # вместе с новостями, и фильтр в build уже ничего не поймает.
+    from . import adfilter
+
+    clean, _removed = adfilter.split_entries(list(entries))
+    grouped = group(clean, subscription.allowed_topics())
     result: dict[str, str] = {}
     for key, items in grouped.items():
         topic = BY_KEY.get(key)
@@ -11916,7 +12005,12 @@ def build(entries: Iterable[Entry], subscription: Subscription,
           now: datetime, city: str = "",
           summaries: dict[str, str] | None = None) -> str:
     """Собирает одно сообщение из всех тематик подписки."""
-    grouped = group(entries, subscription.allowed_topics())
+    from . import adfilter
+
+    # Реклама VPN из новостей — вон; вместо неё одна строка партнёра
+    # в конце подборки (с 4.9.9.3), а не по заглушке на каждый пост.
+    clean, ads_removed = adfilter.split_entries(list(entries))
+    grouped = group(clean, subscription.allowed_topics())
     if not grouped:
         return ""
 
@@ -11964,6 +12058,12 @@ def build(entries: Iterable[Entry], subscription: Subscription,
             lines.append(
                 f"<i>Ещё {hidden} выбранных тематик доступны по подписке.</i>"
             )
+
+    if ads_removed:
+        stub = adfilter.partner_stub()
+        if stub:
+            lines.append(stub)
+            lines.append("")
 
     lines.append(
         "<i>Это подборка новостей. Об опасности бот сообщает отдельно "
@@ -13898,11 +13998,145 @@ EN_STRINGS: dict[str, str] = {
     "common.user_not_found": "User not found.",
     "common.cancel": "Cancel",
     "common.back": "◀️ Back",
+    "common.cancel_x": "❌ Cancel",
+    "common.yes": "✅ Yes",
+
+    # --- экраны модератора: пользователи (с 4.9.9.3) ---
+    "users.no_rights": "Not enough rights.",
+    "users.not_found": "User not found.",
+    "users.list_title": "👥 <b>Users</b> — {total} in total (page {page}/{pages})",
+    "users.locations_count": "locations: {count}",
+    "users.open_hint": "Tap a user to open their card.",
+    "users.none": "none",
+    "users.card_title": "👤 <b>User</b>",
+    "users.nick": "Username",
+    "users.role": "Role",
+    "users.locations": "Locations",
+    "users.categories": "Alert categories",
+    "users.weather": "Weather",
+    "users.settings_title": "⚙️ <b>User's alerts</b>",
+    "users.self_role": "You cannot change your own role.",
+    "users.role_denied": "Not enough rights for this role.",
+    "users.role_changed": "Role changed: {role}",
+    "users.role_notice": "ℹ️ Your role in Radar has been changed to {role}.",
+    "users.delete_admins": "Deleting is available to administrators.",
+    "users.delete_ask": "⚠️ Delete user {id} ({role}) together with all their locations?",
+    "users.deleted_short": "User deleted",
+    "users.deleted": "✅ User {id} deleted.",
+    "users.invite_title": "🔗 <b>Invite link</b>",
+    "users.invite_hint": "Whoever follows it gets the «User» role: their own "
+                         "locations and alerts. Only the administration can "
+                         "raise the role.",
+    "users.default_city": "The default city is {city}.",
+    "users.add_loc_title": "➕ <b>Location for</b>",
+    "users.add_loc_prompt": "Send an address as text, for example "
+                            "<code>Chapaeva street, 12</code>.",
+    "users.add_loc_geo": "You can also forward or send a location — it will be "
+                         "added to this user.",
+    "users.cancel_hint": "/cancel — cancel.",
+    "users.loc_added_notice": "📍 An administrator added a location for you: {name}.\n"
+                              "Alerts for it are already on — you can manage it "
+                              "under «My locations».",
+    "users.loc_added": "✅ Location {name} added to user {id}.",
+    "users.no_street": "The street was not determined — address-level utility "
+                       "alerts may be inaccurate.",
+    "users.back_to_user": "◀️ Back to the user",
+    "users.gone_or_denied": "User not found or not enough rights.",
+    "users.address_not_found": "Address not found. Be more specific — for example, "
+                               "<code>Saratov, Chapaeva street, 12</code>. "
+                               "/cancel — cancel.",
+    "users.variants": "🔎 <b>Matches found: {count}</b>",
+    "users.pick_one": "Pick the right one.",
+    "users.list_stale": "The list is out of date, start again.",
+    "users.adding": "Adding…",
+
+    # --- клавиатуры модератора (с 4.9.9.3) ---
+    "ucard.locs": "📍 Locations",
+    "ucard.alerts": "⚙️ Alerts",
+    "ucard.add_loc": "➕ Add a location",
+    "ucard.weather": "🌤 User's weather",
+    "ucard.delete": "🔨 Delete user",
+    "ucard.back": "◀️ Back to the list",
+    "ucard.locs_short": "loc.",
+    "mod.queue": "📥 Source queue",
+    "mod.list": "📋 Source list",
+    "mod.check": "🔍 Check availability",
+    "mod.add_channel": "➕ Add a channel",
+    "mod.add_rss": "🌐 Add a news RSS feed",
+    "mod.export": "⬇️ Download the list",
+    "mod.import": "⬆️ Upload a list",
+    "mod.back": "◀️ Back to management",
+    "mod.approve": "✅ Accept",
+    "mod.reject": "❌ Reject",
+
+    # --- чаты под модерацией, часть администрации (с 4.9.9.3) ---
+    "chats.title": "🛡 <b>Chats under moderation</b>",
+    "chats.mod_on": "moderation on",
+    "chats.mod_off": "moderation off",
+    "chats.tap_hint": "Tap a group to open it.",
+    "chats.mod_disabled": "Moderation is off — turn it on under «Features».",
+    "chats.admins_only": "For the administration only.",
+    "chats.add_hint": (
+        "🛡 <b>Chats under moderation</b>\n\n"
+        "No groups yet.\n\n"
+        "<b>How to add the bot:</b>\n"
+        "1. Open the group → «Members» → «Add».\n"
+        "2. Find the bot by name and add it.\n"
+        "3. Make it an administrator there and enable "
+        "<b>«Delete messages»</b> and <b>«Ban users»</b>.\n"
+        "4. Send <code>/modon</code> in the group — the chat will appear here.\n\n"
+        "<b>Is the bot already in the group?</b> Then nothing needs adding: "
+        "check that it is an administrator with these rights and send "
+        "<code>/modon</code> in the group. Groups the bot was added to "
+        "earlier do not announce themselves — Telegram only tells the bot "
+        "about changes.\n\n"
+        "<i>There is no need to change the privacy mode in @BotFather: an "
+        "administrator receives all messages anyway. The bot writes nothing "
+        "to those already in the group — the check is only for those who "
+        "join after it is turned on.</i>"
+    ),
+
+    # --- экраны модератора: источники (с 4.9.9.3) ---
+    "src.menu_text": "📡 <b>Sources</b>\n\nChannels and feeds are added here, "
+                     "their availability is checked and user suggestions are "
+                     "reviewed.",
+    "src.queue_empty": "📥 The queue is empty.",
+    "src.queue_item": "📥 <b>Queue: {count}</b>\nReviewing: {channel}",
+    "src.approved": "Accepted",
+    "src.rejected": "Rejected",
+    "src.empty": "— empty —",
+    "src.list_channels": "📋 <b>Telegram channels</b>",
+    "src.list_feeds": "🌐 <b>RSS feeds</b>",
+    "src.add_prompt": "➕ Send a channel username. Several at once — separated "
+                      "by commas or new lines.",
+    "src.added": "✅ Added: ",
+    "src.skipped": "⚠️ Skipped: ",
+    "src.nothing_added": "Nothing added",
+    "src.rss_prompt": "🌐 Send the address of a news or official RSS feed "
+                      "(for example <code>https://example.ru/rss</code>).",
+    "src.feeds_added": "✅ Feeds added:",
+    "src.no_valid": "⚠️ No valid addresses found.",
+    "src.export_off": "Source export is disabled.",
+    "src.preparing": "Preparing the file…",
+    "src.import_off": "Source import is disabled.",
+    "src.import_admins": "Importing is available to administrators.",
+    "src.import_denied": "⛔️ Importing sources is available to administrators.",
+    "src.none": "There are no sources.",
+    "src.check_start": "Starting the check…",
+    "src.checking": "🔍 Checking sources: <b>{total}</b>…",
+    "src.check_denied": "⛔️ Checking sources is available to moderators and above.",
+    "src.drop_hint": "Unavailable ones can be removed with the button below.",
+    "src.drop_button": "🗑 Remove unavailable ({count})",
+    "src.stale": "The list is out of date — run the check again.",
+    "src.removed_short": "Sources removed: {count}",
+    "src.removed": "🗑 Unavailable sources removed: <b>{removed}</b>.\n"
+                   "Left: channels {channels}, feeds {feeds}.",
 
     # --- раздел «Управление» ---
     "manage.sources": "📡 Sources",
     "manage.users": "👥 Users",
     "manage.stats": "📊 Statistics",
+    "manage.metrics": "🩺 Metrics and health",
     "manage.links": "🔗 Links",
     "manage.features": "⚙️ Features",
     "manage.keys": "🔑 Access keys",
@@ -24656,6 +24890,10 @@ class Item:
     text: str
     kind: str = "tg"  # tg | rss
     link: str = ""    # прямая ссылка на публикацию
+    # Время публикации в источнике, секунды эпохи; 0 — неизвестно
+    # (с 4.9.9.3). Нужно метрике задержки доставки: от поста в канале
+    # до сообщения человеку.
+    published: float = 0.0
 
     @property
     def key(self) -> str:
@@ -24710,12 +24948,18 @@ def parse_channel(page: str, channel: str, limit: int) -> list[Item]:
         # у Telegram не было никогда, хотя веб-превью отдаёт её
         # в атрибуте data-post рядом с текстом.
         link = ""
+        published = 0.0
         holder = block.find_parent(attrs={"data-post": True})
         if holder is not None:
             post = str(holder.get("data-post") or "").strip("/")
             if post and "/" in post:
                 link = f"https://t.me/{post}"
-        items.append(Item(source=channel, text=text, kind="tg", link=link))
+            # Время поста веб-превью отдаёт тегом <time datetime="…">.
+            stamp = holder.find("time")
+            if stamp is not None:
+                published = publication_time(str(stamp.get("datetime") or ""))
+        items.append(Item(source=channel, text=text, kind="tg", link=link,
+                          published=published))
     return items
 
 
@@ -24760,7 +25004,11 @@ def parse_rss(body: str, url: str, limit: int) -> list[Item]:
         body_text = _child_text(entry, "description") or _child_text(entry, "summary")
         text = clean(f"{title}\n{body_text}")
         if len(text) >= 20:
-            items.append(Item(source=label, text=text, kind="rss", link=_entry_link(entry)))
+            when = (_child_text(entry, "pubDate") or _child_text(entry, "published")
+                    or _child_text(entry, "updated"))
+            items.append(Item(source=label, text=text, kind="rss",
+                              link=_entry_link(entry),
+                              published=publication_time(when)))
     return items
 
 
@@ -24800,6 +25048,31 @@ def _entry_link(entry: ET.Element) -> str:
     if guid is not None and guid.text and guid.text.strip().startswith("http"):
         return guid.text.strip()
     return ""
+
+
+def publication_time(text: str) -> float:
+    """Время публикации в секундах эпохи. 0 — не разобрать.
+
+    Форматы два: RFC 822 у RSS («Tue, 17 Sep 2026 21:10:00 +0300»)
+    и ISO 8601 у Atom и веб-превью Telegram («2026-09-17T21:10:00+00:00»).
+    Время без пояса считаем UTC — так пишут оба источника, когда пишут.
+    """
+    from datetime import datetime, timezone
+    from email.utils import parsedate_to_datetime
+
+    value = (text or "").strip()
+    if not value:
+        return 0.0
+    try:
+        moment = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        try:
+            moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return 0.0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
 
 
 def _child_text(entry: ET.Element, tag: str) -> str:
@@ -26301,6 +26574,11 @@ def manage_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMar
             InlineKeyboardButton(text=label("manage.links", "🔗 Ссылки"),
                                  callback_data="short:menu"),
         ])
+        # Метрики и здоровье (с 4.9.9.3): доходят ли оповещения, с какой
+        # задержкой, не кончается ли диск — одним экраном.
+        rows.append([InlineKeyboardButton(
+            text=label("manage.metrics", "🩺 Метрики и здоровье"),
+            callback_data="metrics:show")])
         if features.enabled("moderation"):
             rows.append([
                 InlineKeyboardButton(text=label("manage.chats", "🛡 Чаты"),
@@ -26649,31 +26927,51 @@ def locations_menu(locations: Sequence[dict[str, Any]], owner: str = "") -> Inli
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def moderation_menu() -> InlineKeyboardMarkup:
+def moderation_menu(lang: str = "ru") -> InlineKeyboardMarkup:
+    # Переведено в 4.9.9.3 (ROADMAP, п.20: экраны модератора).
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📥 Очередь источников", callback_data="src:queue")],
-            [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
-            [InlineKeyboardButton(text="🔍 Проверить доступность", callback_data="src:check")],
-            [InlineKeyboardButton(text="➕ Добавить канал", callback_data="src:add")],
-            [InlineKeyboardButton(text="🌐 Добавить RSS СМИ", callback_data="src:addrss")],
+            [InlineKeyboardButton(text=label("mod.queue", "📥 Очередь источников"),
+                                  callback_data="src:queue")],
+            [InlineKeyboardButton(text=label("mod.list", "📋 Список источников"),
+                                  callback_data="src:list")],
+            [InlineKeyboardButton(text=label("mod.check", "🔍 Проверить доступность"),
+                                  callback_data="src:check")],
+            [InlineKeyboardButton(text=label("mod.add_channel", "➕ Добавить канал"),
+                                  callback_data="src:add")],
+            [InlineKeyboardButton(text=label("mod.add_rss", "🌐 Добавить RSS СМИ"),
+                                  callback_data="src:addrss")],
             [
-                InlineKeyboardButton(text="⬇️ Скачать список", callback_data="src:export"),
-                InlineKeyboardButton(text="⬆️ Загрузить список", callback_data="src:import"),
+                InlineKeyboardButton(text=label("mod.export", "⬇️ Скачать список"),
+                                     callback_data="src:export"),
+                InlineKeyboardButton(text=label("mod.import", "⬆️ Загрузить список"),
+                                     callback_data="src:import"),
             ],
-            [InlineKeyboardButton(text="◀️ К управлению", callback_data="menu:manage")],
+            [InlineKeyboardButton(text=label("mod.back", "◀️ К управлению"),
+                                  callback_data="menu:manage")],
         ]
     )
 
 
-def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardMarkup:
+def user_card(target: str, target_role: str, actor_role: str,
+              lang: str = "ru") -> InlineKeyboardMarkup:
+    def label(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows: list[list[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton(text="📍 Локации", callback_data=f"usr:locs:{target}"),
-            InlineKeyboardButton(text="⚙️ Оповещения", callback_data=f"usr:sets:{target}"),
+            InlineKeyboardButton(text=label("ucard.locs", "📍 Локации"),
+                                 callback_data=f"usr:locs:{target}"),
+            InlineKeyboardButton(text=label("ucard.alerts", "⚙️ Оповещения"),
+                                 callback_data=f"usr:sets:{target}"),
         ],
-        [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{target}")],
-        [InlineKeyboardButton(text="🌤 Погода пользователя", callback_data=f"usr:wth:{target}")],
+        [InlineKeyboardButton(text=label("ucard.add_loc", "➕ Добавить локацию"),
+                              callback_data=f"usr:addloc:{target}")],
+        [InlineKeyboardButton(text=label("ucard.weather", "🌤 Погода пользователя"),
+                              callback_data=f"usr:wth:{target}")],
     ]
     assignable = [
         role for role in roles.assignable_roles(actor_role)
@@ -26683,26 +26981,31 @@ def user_card(target: str, target_role: str, actor_role: str) -> InlineKeyboardM
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"→ {roles.title(role)}", callback_data=f"usr:role:{target}:{role}"
+                    text=f"→ {roles.title(role, lang)}",
+                    callback_data=f"usr:role:{target}:{role}"
                 )
                 for role in assignable
             ]
         )
     if roles.can_delete_user(actor_role, target_role):
         rows.append(
-            [InlineKeyboardButton(text="🔨 Удалить пользователя", callback_data=f"usr:del:{target}")]
+            [InlineKeyboardButton(text=label("ucard.delete", "🔨 Удалить пользователя"),
+                                  callback_data=f"usr:del:{target}")]
         )
-    rows.append([InlineKeyboardButton(text="◀️ К списку", callback_data="usr:list:0")])
+    rows.append([InlineKeyboardButton(text=label("ucard.back", "◀️ К списку"),
+                                      callback_data="usr:list:0")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def users_page(
-    items: Sequence[tuple[str, str, int]], page: int, pages: int
+    items: Sequence[tuple[str, str, int]], page: int, pages: int,
+    lang: str = "ru",
 ) -> InlineKeyboardMarkup:
+    short = i18n.t("ucard.locs_short", lang, "лок.")
     rows = [
         [
             InlineKeyboardButton(
-                text=f"{roles.title(role).split()[0]} {uid} · {count} лок.",
+                text=f"{roles.title(role, lang).split()[0]} {uid} · {count} {short}",
                 callback_data=f"usr:card:{uid}",
             )
         ]
@@ -26715,11 +27018,13 @@ def users_page(
         nav.append(InlineKeyboardButton(text="▶️", callback_data=f"usr:list:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+                                      callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def geocode_choices(results: list[dict[str, str]], target: str) -> InlineKeyboardMarkup:
+def geocode_choices(results: list[dict[str, str]], target: str,
+                    lang: str = "ru") -> InlineKeyboardMarkup:
     """Варианты найденных адресов: выбор администратором."""
     rows = [
         [
@@ -26730,29 +27035,36 @@ def geocode_choices(results: list[dict[str, str]], target: str) -> InlineKeyboar
         ]
         for index, item in enumerate(results)
     ]
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"usr:card:{target}")])
+    rows.append([InlineKeyboardButton(text=i18n.t("common.cancel_x", lang, "❌ Отмена"),
+                                      callback_data=f"usr:card:{target}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm(action: str, argument: str, back: str) -> InlineKeyboardMarkup:
+def confirm(action: str, argument: str, back: str,
+            lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Да", callback_data=f"{action}:{argument}"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data=back),
+                InlineKeyboardButton(text=i18n.t("common.yes", lang, "✅ Да"),
+                                     callback_data=f"{action}:{argument}"),
+                InlineKeyboardButton(text=i18n.t("common.cancel_x", lang, "❌ Отмена"),
+                                     callback_data=back),
             ]
         ]
     )
 
 
-def queue_item() -> InlineKeyboardMarkup:
+def queue_item(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Принять", callback_data="src:approve"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data="src:reject"),
+                InlineKeyboardButton(text=i18n.t("mod.approve", lang, "✅ Принять"),
+                                     callback_data="src:approve"),
+                InlineKeyboardButton(text=i18n.t("mod.reject", lang, "❌ Отклонить"),
+                                     callback_data="src:reject"),
             ],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
+            [InlineKeyboardButton(text=i18n.t("menu.back", lang, "◀️ Назад"),
+                                  callback_data="menu:mod")],
         ]
     )
 RADAR_FILE_72
@@ -26999,6 +27311,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27051,7 +27364,44 @@ _stats = {
     "heartbeat": 0,
     # Сколько раз цикл поднимался заново после сбоя.
     "restarts": 0,
+    # Доставленных оповещений о событиях — без погоды (с 4.9.9.3).
+    "delivered": 0,
 }
+
+# Задержка от публикации в источнике до рассылки, секунды (с 4.9.9.3).
+# Ограниченная очередь: метрике нужны недавние значения, а не история
+# с первого запуска, и на одноплатнике память не бесконечна.
+_latency: "deque[float]" = deque(maxlen=300)
+
+# Дольше суток — это не задержка, а старая новость, всплывшая заново:
+# в медиану она внесла бы шум, а не правду.
+LATENCY_CEILING = 24 * 3600
+
+
+def record_latency(analyses: list, published: dict[str, float],
+                   now_ts: float) -> int:
+    """Записывает задержку для событий, по которым ушли оповещения.
+
+    Возвращает число записанных значений. Считается от времени поста
+    в источнике до конца рассылки этого цикла — то есть ровно то, что
+    чувствует человек: когда случилось и когда он узнал.
+    """
+    recorded = 0
+    for analysis in analyses:
+        if not analysis.relevant or analysis.historical or analysis.guidance:
+            continue
+        moment = published.get(analysis.raw, 0.0)
+        if not moment:
+            continue
+        delay = now_ts - moment
+        if 0 <= delay <= LATENCY_CEILING:
+            _latency.append(delay)
+            recorded += 1
+    return recorded
+
+
+def latency_samples() -> list[float]:
+    return list(_latency)
 
 def stats() -> dict[str, Any]:
     return dict(_stats, seen=len(seen), cache=ai.cache_size(), **ai.counters())
@@ -27232,6 +27582,9 @@ async def dispatch_user(
     for text in outgoing:
         if await send_html(uid, text):
             sent += 1
+            # Отдельно от общего счётчика: в «alerts» попадает и погода,
+            # а метрике задержки нужны только оповещения о событиях.
+            _stats["delivered"] += 1
             # Отметка о доставке ставится ПОСЛЕ отправки. До 4.9.8.14 она
             # шла раньше, и одной сетевой икоты хватало, чтобы тревога
             # пропала: отправка не удалась, а повтор был уже запрещён
@@ -27682,6 +28035,7 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
     # от него внутри dispatch_user: пользователи живут в разных поясах.
     now = datetime.now(timezone.utc)
     changed = False
+    delivered_before = _stats["delivered"]
     with profiling.measure("dispatch"):
         for uid, user in list(storage.users().items()):
             try:
@@ -27689,6 +28043,11 @@ async def cycle(session: aiohttp.ClientSession, *, warmup: bool = False) -> None
                     changed = True
             except Exception:  # noqa: BLE001
                 log.exception("Ошибка рассылки пользователю %s", uid)
+    # Задержку пишем, только если в этом цикле ушло хоть одно оповещение:
+    # иначе в метрику попали бы события, которые никому не доставлялись.
+    if analyses and _stats["delivered"] > delivered_before:
+        published = {item.text: item.published for item in items if item.published}
+        record_latency(analyses, published, time.time())
     if changed:
         with profiling.measure("save"):
             await storage.save()
@@ -28223,6 +28582,59 @@ async def container_action(session_, name: str, action: str) -> tuple[bool, str]
     except Exception as exc:  # noqa: BLE001
         log.exception("Действие %s над контейнером %s не выполнено", action, name)
         return False, str(exc)
+
+
+def available() -> bool:
+    """Смонтирован ли сокет. Без него — ни чтения, ни действий."""
+    import os
+
+    return os.path.exists(SOCKET)
+
+
+async def list_containers(session_, prefix: str = "radar") -> list[dict]:
+    """Контейнеры системы: имя, состояние, здоровье (с 4.9.9.3).
+
+    Только чтение. Нужен для панели здоровья в боте: до 4.9.9.3 дорожная
+    карта обещала, что состояния контейнеров в боте не будет — «нужен
+    сокет Docker, а это доступ ко всему серверу». Довод устарел с 4.9.6:
+    сокет уже смонтирован ради обновления из панели и RustDesk. Раз цена
+    всё равно заплачена, показывать состояние — не новый риск, а польза
+    от уже принятого.
+
+    Фильтр по имени — чтобы не показывать чужие контейнеры хоста:
+    у одноплатника бывают и свои сервисы, и они — не дело этого бота.
+    """
+    import json
+
+    query = json.dumps({"name": [prefix]})
+    try:
+        async with session_.get(f"{API}/containers/json",
+                                params={"all": "1", "filters": query}) as response:
+            if response.status != 200:
+                return []
+            payload = await response.json(content_type=None)
+    except Exception:  # noqa: BLE001
+        log.debug("Список контейнеров не получен", exc_info=True)
+        return []
+
+    result: list[dict] = []
+    for item in payload if isinstance(payload, list) else []:
+        names = [str(name).lstrip("/") for name in item.get("Names") or []]
+        status = str(item.get("Status") or "")
+        health = ""
+        # Здоровье Docker пишет в Status скобкой: «Up 2 hours (healthy)».
+        for word in ("healthy", "unhealthy", "starting"):
+            if f"({word})" in status or f"(health: {word})" in status:
+                health = word
+                break
+        result.append({
+            "name": names[0] if names else "?",
+            "state": str(item.get("State") or ""),
+            "status": status,
+            "health": health,
+        })
+    result.sort(key=lambda row: row["name"])
+    return result
 RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
 cat > "radar/updater.py" <<'RADAR_FILE_79'
@@ -29655,8 +30067,637 @@ async def check() -> tuple[bool, str]:
         return False, str(body)
     return True, "управляющее API отвечает"
 RADAR_FILE_84
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/metrics.py"
+cat > "radar/metrics.py" <<'RADAR_FILE_85'
+"""Метрики и здоровье системы в одном месте (с 4.9.9.3).
+
+Закрывает два пункта раздела 4.9 дорожной карты:
+
+* **п.3 «Метрики»** — число оповещений, задержка доставки, расход квоты
+  ИИ, доля мёртвых источников. Данные собирались давно, но лежали
+  в четырёх местах (`/stats`, `/perf`, `/quota`, ночное письмо проверки
+  источников), и ответ на вопрос «как работает система» приходилось
+  складывать из них в голове;
+* **п.6 «Панель здоровья в боте»** — память, диски, база и контейнеры.
+  До 4.9.9.3 бот показывал только размер базы, а диск — лишь ночным
+  письмом и лишь при заполнении.
+
+Состояние контейнеров дорожная карта когда-то обещала не показывать:
+«нужен сокет Docker, а это доступ ко всему серверу». Довод устарел
+с 4.9.6 — сокет смонтирован ради обновления из панели и RustDesk. Раз
+цена уже заплачена, чтение списка контейнеров — не новый риск. Если
+сокета нет, строка просто объясняет, почему контейнеров не видно.
+
+Сбор отделён от вывода: снимок — обычный словарь, его можно проверить
+офлайн, а текст для бота строится отдельной функцией.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import shutil
+import time
+from typing import Any
+
+log = logging.getLogger("radar.metrics")
+
+# Порог тревоги по памяти и дискам — те же, что у диагностики установщика
+# и ночного письма: разные пороги в разных местах читались бы как разные
+# мнения системы о самой себе.
+MEMORY_WARN_MB = 300
+DISK_WARN_PERCENT = 85
+
+
+# --------------------------------------------------------------------------
+#  Сбор
+# --------------------------------------------------------------------------
+
+def system_memory() -> tuple[int, int]:
+    """Память машины: (всего, доступно) в МБ. (0, 0) — узнать нельзя."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            info = {
+                line.split(":")[0]: int(line.split()[1])
+                for line in handle if ":" in line and len(line.split()) > 1
+            }
+    except (OSError, ValueError):
+        return 0, 0
+    return info.get("MemTotal", 0) // 1024, info.get("MemAvailable", 0) // 1024
+
+
+def disks(paths: list[str]) -> list[dict[str, Any]]:
+    """Заполненность дисков. Одна точка монтирования — одна строка.
+
+    Пути могут вести на один и тот же диск (данные и музыка рядом) или
+    на разные (музыка вынесена на внешний носитель), поэтому повторы
+    отсеиваются по паре «всего/свободно».
+    """
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            usage = shutil.disk_usage(path or ".")
+        except OSError:
+            continue
+        key = f"{usage.total}:{usage.free}"
+        if key in seen:
+            continue
+        seen.add(key)
+        percent = int(usage.used * 100 / usage.total) if usage.total else 0
+        rows.append({"path": path, "used": usage.used, "total": usage.total,
+                     "percent": percent})
+    return rows
+
+
+def percentile(values: list[float], share: float) -> float:
+    """Значение, ниже которого лежит доля `share` выборки. Без numpy."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, round(share * (len(ordered) - 1))))
+    return ordered[index]
+
+
+def latency(samples: list[float]) -> dict[str, float]:
+    """Сводка задержки доставки: медиана, 90-й процентиль, число замеров."""
+    return {
+        "count": float(len(samples)),
+        "median": percentile(samples, 0.5),
+        "p90": percentile(samples, 0.9),
+    }
+
+
+async def containers() -> tuple[bool, list[dict[str, Any]]]:
+    """(доступен ли сокет, контейнеры системы)."""
+    from . import dockerapi
+
+    if not dockerapi.available():
+        return False, []
+    try:
+        session = await dockerapi.session()
+        async with session:
+            return True, await dockerapi.list_containers(session)
+    except Exception:  # noqa: BLE001
+        log.debug("Контейнеры не прочитаны", exc_info=True)
+        return True, []
+
+
+async def snapshot() -> dict[str, Any]:
+    """Всё, что показывает экран метрик. Каждая часть — отдельно
+    от остальных: сбой одной не должен прятать другие."""
+    from . import ai, config, monitor, sourcecheck
+
+    data: dict[str, Any] = {"at": time.time()}
+
+    try:
+        stats = monitor.stats()
+        healthy, silent = monitor.alive()
+        data["cycle"] = {
+            "cycles": int(stats.get("cycles") or 0),
+            "alerts": int(stats.get("alerts") or 0),
+            "delivered": int(stats.get("delivered") or 0),
+            "last_cycle": int(stats.get("last_cycle") or 0),
+            "restarts": int(stats.get("restarts") or 0),
+            "healthy": healthy,
+            "silent": silent,
+        }
+        data["latency"] = latency(monitor.latency_samples())
+    except Exception:  # noqa: BLE001
+        log.debug("Счётчики цикла не прочитаны", exc_info=True)
+
+    try:
+        data["quota"] = ai.quota_snapshot() if ai.ENABLED else {}
+    except Exception:  # noqa: BLE001
+        data["quota"] = {}
+
+    data["sources"] = await sourcecheck.last_summary()
+
+    total, available = system_memory()
+    data["memory"] = {"total": total, "available": available}
+
+    try:
+        from . import music
+
+        paths = [".", music.DIRECTORY, config.MEDIA_DIR]
+    except Exception:  # noqa: BLE001
+        paths = ["."]
+    data["disks"] = disks(paths)
+
+    try:
+        from . import dbcare
+
+        if config.is_sqlite():
+            data["database"] = {"kind": "SQLite",
+                                "report": dbcare.size_report(
+                                    dbcare.measure_sqlite(config.DB_FILE), "SQLite")}
+        else:
+            data["database"] = {"kind": "PostgreSQL", "report": ""}
+    except Exception:  # noqa: BLE001
+        data["database"] = {}
+
+    socket_ok, rows = await containers()
+    data["containers"] = {"socket": socket_ok, "rows": rows}
+    return data
+
+
+# --------------------------------------------------------------------------
+#  Вывод
+# --------------------------------------------------------------------------
+
+def _size(value: float) -> str:
+    from .music import format_size
+
+    return format_size(value)
+
+
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds} с"
+    if seconds < 5400:
+        return f"{seconds // 60} мин"
+    return f"{seconds // 3600} ч {seconds % 3600 // 60} мин"
+
+
+def render(data: dict[str, Any]) -> str:
+    """Экран метрик для бота."""
+    from datetime import datetime
+
+    from .textutils import esc
+
+    lines = ["📊 <b>Метрики и здоровье системы</b>", ""]
+
+    # --- оповещения ---
+    cycle = data.get("cycle") or {}
+    if cycle:
+        mark = "✅" if cycle.get("healthy") else "🚨"
+        last = cycle.get("last_cycle") or 0
+        when = datetime.fromtimestamp(last).strftime("%H:%M:%S") if last else "ещё не было"
+        lines.append("🛰 <b>Оповещения</b>")
+        lines.append(f"{mark} Последний проход: <b>{when}</b>"
+                     + ("" if cycle.get("healthy")
+                        else f" — цикл молчит {cycle.get('silent', 0)} с"))
+        lines.append(f"Доставлено оповещений о событиях: <b>{cycle.get('delivered', 0)}</b> "
+                     f"· всего сообщений с погодой: {cycle.get('alerts', 0)}")
+        lines.append(f"Циклов: {cycle.get('cycles', 0)}"
+                     + (f" · перезапусков цикла: <b>{cycle['restarts']}</b>"
+                        if cycle.get("restarts") else ""))
+
+    delay = data.get("latency") or {}
+    if delay.get("count"):
+        lines.append(
+            f"Задержка доставки: медиана <b>{_duration(delay['median'])}</b>, "
+            f"90% быстрее {_duration(delay['p90'])} "
+            f"<i>(замеров: {int(delay['count'])})</i>"
+        )
+    else:
+        lines.append("<i>Задержка доставки: замеров пока нет — считается "
+                     "с первого доставленного оповещения.</i>")
+    lines.append("")
+
+    # --- ИИ ---
+    quota = data.get("quota") or {}
+    lines.append("🧠 <b>Квота ИИ</b>")
+    if quota:
+        used, limit = quota.get("used_today", 0), quota.get("limit_day", 0)
+        share = f" ({used * 100 // limit}%)" if limit else ""
+        pause = " · ⏸ пауза после 429" if quota.get("paused") else ""
+        lines.append(f"За сутки: <b>{used}/{limit}</b>{share}{pause}")
+    else:
+        lines.append("ИИ выключен — разбор идёт эвристикой.")
+    lines.append("")
+
+    # --- источники ---
+    sources = data.get("sources") or {}
+    lines.append("📡 <b>Источники</b>")
+    if sources.get("total"):
+        total = sources["total"]
+        dead = sources.get("dead", 0)
+        lines.append(
+            f"Недоступны: <b>{dead} из {total}</b> ({dead * 100 // total}%) · "
+            f"молчат: {sources.get('stale', 0)} · живых: {sources.get('alive', 0)}"
+        )
+        lines.append(f"<i>По проверке {esc(str(sources.get('at', '')))}.</i>")
+    else:
+        lines.append("<i>Проверок ещё не было: Управление → Источники → "
+                     "«Проверить доступность» или ночная проверка.</i>")
+    lines.append("")
+
+    # --- машина ---
+    lines.append("💻 <b>Сервер</b>")
+    memory = data.get("memory") or {}
+    if memory.get("total"):
+        low = memory["available"] < MEMORY_WARN_MB
+        lines.append(
+            f"{'⚠️ ' if low else ''}Память: свободно <b>{memory['available']} МБ</b> "
+            f"из {memory['total']} МБ"
+        )
+    for disk in data.get("disks") or []:
+        warn = disk["percent"] >= DISK_WARN_PERCENT
+        lines.append(
+            f"{'⚠️ ' if warn else ''}Диск {esc(str(disk['path']))}: "
+            f"{_size(disk['used'])} из {_size(disk['total'])} (<b>{disk['percent']}%</b>)"
+        )
+    database = data.get("database") or {}
+    if database.get("report"):
+        lines.append(f"🗄 {esc(database['report'])}")
+    elif database.get("kind"):
+        lines.append(f"🗄 База: {esc(database['kind'])}")
+    lines.append("")
+
+    # --- контейнеры ---
+    boxes = data.get("containers") or {}
+    lines.append("📦 <b>Контейнеры</b>")
+    if not boxes.get("socket"):
+        lines.append("<i>Сокет Docker не смонтирован — состояние контейнеров "
+                     "боту не видно. Смотрите <code>docker ps</code> на сервере.</i>")
+    elif not boxes.get("rows"):
+        lines.append("<i>Docker не ответил.</i>")
+    else:
+        for row in boxes["rows"]:
+            state = row.get("state") or ""
+            health = row.get("health") or ""
+            icon = "🟢" if state == "running" and health != "unhealthy" else (
+                "🟠" if state == "running" else "🔴")
+            tail = f" · {health}" if health else ""
+            lines.append(f"{icon} {esc(row['name'])} — {esc(state)}{esc(tail)}")
+
+    return "\n".join(lines)
+RADAR_FILE_85
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adfilter.py"
+cat > "radar/adfilter.py" <<'RADAR_FILE_86'
+"""Реклама VPN-сервисов в пересылаемых текстах (с 4.9.9.3).
+
+Городские каналы и СМИ всё чаще вставляют в посты рекламу VPN:
+«быстрый VPN без блокировок, промокод…», «Реклама. erid: …». Бот
+пересказывает и пересылает эти посты — и без фильтра раздавал бы чужую
+рекламу от своего имени.
+
+Два разных места, и в них разные замены:
+
+* **новостные подборки** — рекламный пост заменяется одной заглушкой
+  партнёрского проекта (кнопка «HydraSite» из настроек `PROMO_*`).
+  Подборка — новостной продукт, и партнёрская строка в нём допустима;
+* **оповещения, памятки и сводки** — рекламный абзац вырезается
+  и заменяется **нейтральной** пометкой, без партнёра. Правило проекта
+  «реклама не появляется внутри тревожных сообщений» (CLAUDE.md,
+  «Что не обсуждается», п.2) касается и нашей рекламы тоже: вместо
+  чужой вставлять свою — та же реклама в тревоге.
+
+Распознавание — по абзацу, а не по всему тексту: пост про отключение
+воды с рекламным хвостом должен дойти без хвоста, а не пропасть целиком.
+Абзац считается рекламой VPN, только если в нём есть и VPN, и признак
+рекламы: слово «VPN» в новости о блокировках — это новость, а не реклама.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import re
+from dataclasses import replace
+from typing import Iterable, TypeVar
+
+# Упоминание VPN или его синонима «для обхода блокировок».
+VPN_RE = re.compile(
+    r"\bvpn\b|\bвпн\b|\bv\s*p\s*n\b|обход\w*\s+блокиров|"
+    r"без\s+блокировок|впн-сервис|vpn-сервис",
+    re.I,
+)
+
+# Признаки рекламы: маркировка по закону, промокоды, призывы, цены.
+AD_RE = re.compile(
+    r"\bреклама\b|\berid\b|промокод|скидк\w*|бесплатн\w*\s+(?:пробн|период|дн)|"
+    r"пробн\w*\s+период|подключ\w*\s+(?:по\s+ссылке|сейчас|здесь)|"
+    r"переход\w*\s+по\s+ссылке|жми|подпис\w*\s+на|тариф\w*|"
+    r"\d+\s*(?:₽|руб)|@\w*bot\b|t\.me/\w*(?:vpn|bot)\w*|"
+    r"купи\w*|оформ\w*\s+подписк",
+    re.I,
+)
+
+NEUTRAL_STUB = "[реклама VPN-сервиса скрыта]"
+
+_PARAGRAPHS = re.compile(r"\n\s*\n|\n")
+
+
+def is_vpn_ad(text: str) -> bool:
+    """Реклама ли это VPN: и VPN упомянут, и признаки рекламы есть."""
+    value = text or ""
+    return bool(VPN_RE.search(value)) and bool(AD_RE.search(value))
+
+
+def enabled() -> bool:
+    try:
+        from . import features
+
+        return features.enabled("vpn_ad_filter")
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def strip(text: str, stub: str = NEUTRAL_STUB) -> tuple[str, int]:
+    """Вырезает рекламные абзацы. Возвращает (текст, сколько вырезано).
+
+    Подряд идущие рекламные абзацы сливаются в одну пометку: три строки
+    рекламы не должны превращаться в три одинаковые заглушки.
+    """
+    value = text or ""
+    if not value or not enabled() or not VPN_RE.search(value):
+        return value, 0
+
+    pieces = [piece for piece in _PARAGRAPHS.split(value)]
+    result: list[str] = []
+    removed = 0
+    previous_was_stub = False
+    for piece in pieces:
+        if piece.strip() and is_vpn_ad(piece):
+            removed += 1
+            if not previous_was_stub:
+                result.append(stub)
+            previous_was_stub = True
+            continue
+        result.append(piece)
+        previous_was_stub = False
+
+    # Рекламный признак бывает в соседнем абзаце, а не в том же, где VPN:
+    # «Быстрый VPN без ограничений.» + «Реклама. erid: 2Vtzq…». Если
+    # по абзацам ничего не нашлось, а текст целиком — реклама, режем целиком.
+    if not removed and is_vpn_ad(value) and len(value) <= 600:
+        return stub, 1
+
+    return "\n".join(result).strip(), removed
+
+
+def partner_stub() -> str:
+    """Заглушка партнёрского проекта для подборок. Пусто — партнёр выключен."""
+    from . import config
+
+    if not config.PROMO_ENABLED or not config.PROMO_URL:
+        return ""
+    from .textutils import esc, esc_attr
+
+    title = config.PROMO_TITLE or "Партнёр"
+    return (f'🐙 Реклама VPN из новостей скрыта. Надёжный доступ — '
+            f'<a href="{esc_attr(config.PROMO_URL)}">{esc(title)}</a>, '
+            f'наш партнёр.')
+
+
+Item = TypeVar("Item")
+
+
+def split_entries(entries: Iterable[Item]) -> tuple[list[Item], int]:
+    """Отделяет рекламные новости подборки. Возвращает (чистые, сколько убрано).
+
+    Новость с рекламным хвостом остаётся, но без хвоста; новость,
+    которая целиком реклама, уходит из подборки — её заменит одна
+    партнёрская строка в конце.
+    """
+    clean: list[Item] = []
+    removed = 0
+    for entry in entries:
+        summary = str(getattr(entry, "summary", "") or "")
+        if not enabled() or not VPN_RE.search(summary):
+            clean.append(entry)
+            continue
+        text, cut = strip(summary, stub="")
+        if not cut:
+            clean.append(entry)
+            continue
+        removed += 1
+        if text.strip():
+            clean.append(replace(entry, summary=text.strip()))
+    return clean, removed
+RADAR_FILE_86
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicmeta.py"
+cat > "radar/musicmeta.py" <<'RADAR_FILE_87'
+"""Метаданные треков из открытых баз (с 4.9.9.3).
+
+Пункт 3 раздела 4.9.5 дорожной карты: «источники для подбора». Подбор
+похожего работал только по ID3-тегам самого файла, а у половины треков
+жанра в тегах нет — и подбор для них был пуст. Здесь два открытых
+источника, без ключей и регистрации:
+
+* **MusicBrainz** — жанр и идентификатор артиста по паре «артист —
+  название». Жанр дописывается в трек, только если в тегах его не было:
+  то, что человек задал сам, не переписывается;
+* **ListenBrainz** — родственные артисты по идентификатору: кого слушают
+  вместе. Список хранится в треке и учитывается подбором похожего
+  *внутри своего хранилища* — общей библиотеки по-прежнему нет.
+
+Last.fm сюда не входит: ему нужен ключ, а его условия ограничивают
+перепродажу — для бота с платной ёмкостью это не формальность.
+
+Вежливость к чужим сервисам не обсуждается: MusicBrainz разрешает один
+запрос в секунду и требует внятный User-Agent с контактом. Обогащение
+идёт фоном после загрузки трека и никогда не задерживает ни ответ
+человеку, ни оповещения.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Any
+
+log = logging.getLogger("radar.musicmeta")
+
+MUSICBRAINZ = "https://musicbrainz.org/ws/2/recording"
+LISTENBRAINZ = "https://labs.api.listenbrainz.org/similar-artists/json"
+# Алгоритм ListenBrainz — строка из их документации; меняется ими,
+# а не нами, поэтому живёт константой рядом с адресом.
+LB_ALGORITHM = ("session_based_days_7500_session_300_contribution_5_"
+                "threshold_10_limit_100_filter_True_skip_30")
+
+USER_AGENT = "RadarBot/1.0 ( https://github.com/Chistovik92/radar )"
+TIMEOUT = 15
+MIN_INTERVAL = 1.1      # MusicBrainz: не чаще раза в секунду, с запасом
+MAX_RELATED = 15        # родственных артистов хватит и полутора десятков
+
+_last_call = 0.0
+_gate = asyncio.Lock()
+
+
+def enabled() -> bool:
+    from . import features
+
+    return features.enabled("music_meta")
+
+
+async def _polite_pause() -> None:
+    """Держит интервал между запросами к MusicBrainz."""
+    global _last_call
+    wait = MIN_INTERVAL - (time.monotonic() - _last_call)
+    if wait > 0:
+        await asyncio.sleep(wait)
+    _last_call = time.monotonic()
+
+
+def best_genre(recording: dict[str, Any]) -> str:
+    """Жанр записи: сначала «genres», потом самый весомый тег."""
+    for key in ("genres", "tags"):
+        items = recording.get(key) or []
+        ranked = sorted(
+            (item for item in items if isinstance(item, dict) and item.get("name")),
+            key=lambda item: -int(item.get("count") or 0),
+        )
+        if ranked:
+            return str(ranked[0]["name"])[:40]
+    return ""
+
+
+def parse_recording(payload: dict[str, Any]) -> tuple[str, str]:
+    """(жанр, MBID артиста) из ответа поиска записи."""
+    recordings = payload.get("recordings") or []
+    if not recordings:
+        return "", ""
+    first = recordings[0]
+    genre = best_genre(first)
+    credit = first.get("artist-credit") or []
+    mbid = ""
+    if credit and isinstance(credit[0], dict):
+        mbid = str((credit[0].get("artist") or {}).get("id") or "")
+    return genre, mbid
+
+
+def parse_similar(payload: Any) -> list[str]:
+    """Имена родственных артистов из ответа ListenBrainz."""
+    names: list[str] = []
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("artist_name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= MAX_RELATED:
+            break
+    return names
+
+
+def _quote(value: str) -> str:
+    """Экранирование для языка запросов Lucene в MusicBrainz."""
+    special = '+-&|!(){}[]^"~*?:\\/'
+    return "".join("\\" + char if char in special else char for char in value)
+
+
+async def lookup(artist: str, title: str) -> dict[str, Any]:
+    """Жанр и родственные артисты. Пустой словарь — ничего не нашлось."""
+    import aiohttp
+
+    artist, title = (artist or "").strip(), (title or "").strip()
+    if not artist or not title:
+        return {}
+
+    query = f'recording:"{_quote(title)}" AND artist:"{_quote(artist)}"'
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    result: dict[str, Any] = {}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with _gate:
+                await _polite_pause()
+                async with session.get(MUSICBRAINZ, params={
+                    "query": query, "fmt": "json", "limit": "1",
+                    "inc": "genres+tags",
+                }) as response:
+                    if response.status != 200:
+                        log.info("MusicBrainz ответил %s", response.status)
+                        return {}
+                    payload = await response.json(content_type=None)
+            genre, mbid = parse_recording(payload if isinstance(payload, dict) else {})
+            if genre:
+                result["genre"] = genre
+            if mbid:
+                async with session.get(LISTENBRAINZ, params={
+                    "artist_mbids": mbid, "algorithm": LB_ALGORITHM,
+                }) as response:
+                    if response.status == 200:
+                        related = parse_similar(await response.json(content_type=None))
+                        if related:
+                            result["related"] = related
+    except Exception as exc:  # noqa: BLE001
+        # Метаданные — украшение, а не необходимость: без них трек
+        # остаётся на месте и играет, подбор просто беднее.
+        log.info("Метаданные трека не получены: %s", type(exc).__name__)
+        return result
+    return result
+
+
+def apply(track: dict, meta: dict[str, Any]) -> bool:
+    """Дописывает найденное в трек. True — что-то изменилось.
+
+    Жанр из тегов человека не переписывается: если он его задал, значит,
+    так и считает, а база может ошибиться с каверов и ремиксов.
+    """
+    changed = False
+    genre = str(meta.get("genre") or "")
+    if genre and not (track.get("genre") or "").strip():
+        track["genre"] = genre[:40]
+        changed = True
+    related = [str(name)[:80] for name in meta.get("related") or []][:MAX_RELATED]
+    if related and related != track.get("related"):
+        track["related"] = related
+        changed = True
+    return changed
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_85'
+cat > "radar/chatpost.py" <<'RADAR_FILE_88'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -29760,9 +30801,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_85
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_89'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -30189,9 +31230,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_86
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_87'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_90'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -30293,25 +31334,36 @@ def _keyboard(rows: list[dict], links: dict[int, str],
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
+async def _render(role: str, lang: str = "ru") -> tuple[str, InlineKeyboardMarkup]:
+    # Список виден администрации — переведён в 4.9.9.3. Объявления
+    # и ссылки приглашения ниже — только суперадминистратору и по
+    # правилу проекта остаются русскими (ROADMAP, п.20).
+    from .. import i18n
+
+    def _(key: str, russian: str) -> str:
+        return i18n.t(key, lang, russian)
+
     rows = await repo.chat_list()
     if not rows:
-        return ADD_HINT, InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")
+        return _("chats.add_hint", ADD_HINT), InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=_("menu.back", "◀️ Назад"),
+                                 callback_data="menu:manage")
         ]])
 
     links: dict[int, str] = {}
-    lines = ["🛡 <b>Чаты под модерацией</b>", ""]
+    lines = [_("chats.title", "🛡 <b>Чаты под модерацией</b>"), ""]
     for row in rows:
         ok, value = await chatlink.link_for(row["chat_id"])
         if ok:
             links[row["chat_id"]] = value
-        state = "модерация включена" if row["enabled"] else "модерация выключена"
+        state = (_("chats.mod_on", "модерация включена") if row["enabled"]
+                 else _("chats.mod_off", "модерация выключена"))
         lines.append(f"• <b>{esc(row['title'] or str(row['chat_id']))}</b> — {state}")
         if not ok:
             lines.append(f"  <i>{esc(value)}</i>")
     lines.append("")
-    lines.append("<i>Нажмите на группу, чтобы перейти в неё.</i>")
+    lines.append("<i>" + _("chats.tap_hint", "Нажмите на группу, чтобы перейти в неё.")
+                 + "</i>")
     if roles.is_superadmin(role):
         lines.append("<i>🔗 — своя ссылка приглашения задана, ➕ — задать.</i>")
     if can_post(role):
@@ -30320,25 +31372,32 @@ async def _render(role: str) -> tuple[str, InlineKeyboardMarkup]:
 
 
 @router.message(Command("chats"))
-async def cmd_chats(message: Message, role: str) -> None:
+async def cmd_chats(message: Message, role: str, user: dict) -> None:
+    from .. import i18n
+
     if not roles.is_admin(role):
         return
+    lang = i18n.language_of(user)
     if not features.enabled("moderation"):
-        await send_html(message.chat.id,
-                        "Модерация выключена — включите её в разделе "
-                        "«Возможности».")
+        await send_html(message.chat.id, i18n.t(
+            "chats.mod_disabled", lang,
+            "Модерация выключена — включите её в разделе «Возможности»."))
         return
-    text, keyboard = await _render(role)
+    text, keyboard = await _render(role, lang)
     await send_html(message.chat.id, text, keyboard)
 
 
 @router.callback_query(F.data == "menu:chats")
-async def menu_chats(call: CallbackQuery, role: str) -> None:
+async def menu_chats(call: CallbackQuery, role: str, user: dict) -> None:
+    from .. import i18n
+
+    lang = i18n.language_of(user)
     if not roles.is_admin(role):
-        await call.answer("Только для администрации.", show_alert=True)
+        await call.answer(i18n.t("chats.admins_only", lang, "Только для администрации."),
+                          show_alert=True)
         return
     await call.answer()
-    text, keyboard = await _render(role)
+    text, keyboard = await _render(role, lang)
     await safe_edit(call, text, keyboard)
 
 
@@ -30657,9 +31716,9 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
             )
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_87
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_88'
+cat > "radar/cli.py" <<'RADAR_FILE_91'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -31139,9 +32198,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_88
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_89'
+cat > "radar/__main__.py" <<'RADAR_FILE_92'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -31163,9 +32222,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_89
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_90'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_93'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -31307,9 +32366,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_90
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_91'
+cat > "tools/restore.sh" <<'RADAR_FILE_94'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -31551,9 +32610,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_91
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_92'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_95'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -31649,9 +32708,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_92
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_93'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_96'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -31844,9 +32903,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_93
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_94'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_97'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -31961,9 +33020,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_94
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_95'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_98'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -32226,12 +33285,14 @@ async def menu_mod(call: CallbackQuery, state: FSMContext, role: str, user: dict
         return
     await state.clear()
     await call.answer()
+    lang = i18n.language_of(user)
     await safe_edit(
         call,
-        "📡 <b>Источники</b>\n\n"
-        "Здесь добавляются каналы и ленты, проверяется их доступность "
-        "и разбирается очередь предложений от пользователей.",
-        keyboards.moderation_menu(),
+        i18n.t("src.menu_text", lang,
+               "📡 <b>Источники</b>\n\n"
+               "Здесь добавляются каналы и ленты, проверяется их доступность "
+               "и разбирается очередь предложений от пользователей."),
+        keyboards.moderation_menu(lang),
     )
 
 
@@ -32432,9 +33493,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_95
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_96'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_99'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -32600,9 +33661,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_96
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_97'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_100'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -33107,9 +34168,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_97
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_101'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -33119,6 +34180,8 @@ cat > "radar/handlers/sources.py" <<'RADAR_FILE_98'
 # --------------------------------------------------------------------------
 
 from __future__ import annotations
+
+from datetime import datetime
 
 import re
 
@@ -33149,6 +34212,15 @@ from ..textutils import esc
 from ..tg import back_kb, safe_edit, send_html
 
 router = Router(name="sources")
+
+
+def _t(who: dict | None, key: str, russian: str) -> str:
+    """Строка на языке человека `who` (экраны модератора — с 4.9.9.3)."""
+    return i18n.t(key, i18n.language_of(who), russian)
+
+
+def _lang(who: dict | None) -> str:
+    return i18n.language_of(who)
 
 # Разбор и проверка переехали в radar/sourceedit.py: те же действия делает
 # веб-панель, и два набора правил разъехались бы. Имена оставлены здесь
@@ -33226,72 +34298,76 @@ async def save_suggestion(message: Message, state: FSMContext, user: dict) -> No
 
 
 @router.callback_query(F.data == "src:queue")
-async def queue(call: CallbackQuery, role: str) -> None:
+async def queue(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
     items = storage.pending()
     if not items:
-        await safe_edit(call, "📥 Очередь пуста.", back_kb("menu:mod", "◀️ Назад"))
+        await safe_edit(call, _t(user, "src.queue_empty", "📥 Очередь пуста."), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
         return
     channel = items[0]
     await safe_edit(
         call,
-        f"📥 <b>Очередь: {len(items)}</b>\nПроверка: @{esc(channel)}\n"
-        f"https://t.me/{esc(channel)}",
-        keyboards.queue_item(),
+        _t(user, "src.queue_item", "📥 <b>Очередь: {count}</b>\nПроверка: {channel}").format(
+            count=len(items), channel=f"@{esc(channel)}")
+        + f"\nhttps://t.me/{esc(channel)}",
+        keyboards.queue_item(_lang(user)),
     )
 
 
 @router.callback_query(F.data.in_({"src:approve", "src:reject"}))
-async def decide(call: CallbackQuery, role: str) -> None:
+async def decide(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     items = storage.pending()
     if not items:
-        await queue(call, role)
+        await queue(call, role, user)
         return
     channel = items.pop(0)
     if call.data.endswith("approve") and channel not in storage.channels():
         storage.channels().append(channel)
     await storage.save()
-    await call.answer("Принято" if call.data.endswith("approve") else "Отклонено")
-    await queue(call, role)
+    await call.answer(_t(user, "src.approved", "Принято") if call.data.endswith("approve")
+                      else _t(user, "src.rejected", "Отклонено"))
+    await queue(call, role, user)
 
 
 @router.callback_query(F.data == "src:list")
-async def show_list(call: CallbackQuery, role: str) -> None:
+async def show_list(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
-    channels = "\n".join(f"• @{esc(item)}" for item in storage.channels()) or "— пусто —"
-    feeds = "\n".join(f"• {esc(item)}" for item in storage.rss_feeds()) or "— пусто —"
+    channels = "\n".join(f"• @{esc(item)}" for item in storage.channels()) or _t(user, "src.empty", "— пусто —")
+    feeds = "\n".join(f"• {esc(item)}" for item in storage.rss_feeds()) or _t(user, "src.empty", "— пусто —")
     await safe_edit(
         call,
-        f"📋 <b>Telegram-каналы</b>\n{channels}\n\n🌐 <b>RSS-ленты</b>\n{feeds}",
-        back_kb("menu:mod", "◀️ Назад"),
+        _t(user, "src.list_channels", "📋 <b>Telegram-каналы</b>") + f"\n{channels}\n\n"
+        + _t(user, "src.list_feeds", "🌐 <b>RSS-ленты</b>") + f"\n{feeds}",
+        back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")),
     )
 
 
 @router.callback_query(F.data == "src:add")
-async def ask_channel(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_channel(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
     await safe_edit(
         call,
-        "➕ Пришлите юзернейм канала. Можно несколько через запятую или с новой строки.",
-        back_kb("menu:mod", "Отмена"),
+        _t(user, "src.add_prompt", "➕ Пришлите юзернейм канала. Можно несколько через "
+           "запятую или с новой строки."),
+        back_kb("menu:mod", _t(user, "common.cancel", "Отмена")),
     )
     await state.set_state(Form.add_channel)
 
 
 @router.message(Form.add_channel)
-async def add_channel(message: Message, state: FSMContext, role: str) -> None:
+async def add_channel(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
@@ -33299,40 +34375,41 @@ async def add_channel(message: Message, state: FSMContext, role: str) -> None:
     await storage.save()
     lines = []
     if added:
-        lines.append("✅ Добавлены: " + ", ".join(f"@{esc(c)}" for c in added))
+        lines.append(_t(user, "src.added", "✅ Добавлены: ") + ", ".join(f"@{esc(c)}" for c in added))
     if skipped:
-        lines.append("⚠️ Пропущены: " + ", ".join(esc(s) for s in skipped))
-    await message.answer("\n".join(lines) or "Ничего не добавлено",
-                         reply_markup=back_kb("menu:mod", "◀️ Назад"))
+        lines.append(_t(user, "src.skipped", "⚠️ Пропущены: ") + ", ".join(esc(s) for s in skipped))
+    await message.answer("\n".join(lines) or _t(user, "src.nothing_added", "Ничего не добавлено"),
+                         reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 @router.callback_query(F.data == "src:addrss")
-async def ask_rss(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_rss(call: CallbackQuery, state: FSMContext, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
     await call.answer()
     await safe_edit(
         call,
-        "🌐 Пришлите адрес RSS-ленты СМИ или официального сайта "
-        "(например <code>https://example.ru/rss</code>).",
-        back_kb("menu:mod", "Отмена"),
+        _t(user, "src.rss_prompt", "🌐 Пришлите адрес RSS-ленты СМИ или официального сайта "
+           "(например <code>https://example.ru/rss</code>)."),
+        back_kb("menu:mod", _t(user, "common.cancel", "Отмена")),
     )
     await state.set_state(Form.add_rss)
 
 
 @router.message(Form.add_rss)
-async def add_rss(message: Message, state: FSMContext, role: str) -> None:
+async def add_rss(message: Message, state: FSMContext, role: str, user: dict) -> None:
     await state.clear()
     if not roles.can_moderate_sources(role):
         return
     added, _skipped = sourceedit.add(sourceedit.RSS, message.text or "")
     await storage.save()
     text = (
-        "✅ Добавлены ленты:\n" + "\n".join(f"• {esc(u)}" for u in added)
-        if added else "⚠️ Корректных адресов не найдено."
+        _t(user, "src.feeds_added", "✅ Добавлены ленты:") + "\n"
+        + "\n".join(f"• {esc(u)}" for u in added)
+        if added else _t(user, "src.no_valid", "⚠️ Корректных адресов не найдено.")
     )
-    await message.answer(text, reply_markup=back_kb("menu:mod", "◀️ Назад"))
+    await message.answer(text, reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 # --------------------------------------------------------------------------
@@ -33353,14 +34430,14 @@ def _export_enabled() -> bool:
 
 
 @router.callback_query(F.data == "src:export")
-async def export_sources(call: CallbackQuery, role: str) -> None:
+async def export_sources(call: CallbackQuery, role: str, user: dict) -> None:
     if not _export_enabled():
-        await call.answer("Выгрузка источников отключена.", show_alert=True)
+        await call.answer(_t(user, "src.export_off", "Выгрузка источников отключена."), show_alert=True)
         return
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
-    await call.answer("Готовлю файл…")
+    await call.answer(_t(user, "src.preparing", "Готовлю файл…"))
 
     payload = exporting.export_bundle(
         storage.channels(), storage.rss_feeds(), storage.pending(), config.VERSION
@@ -33374,16 +34451,17 @@ async def export_sources(call: CallbackQuery, role: str) -> None:
         "<i>Файл читается будущими версиями бота. Чтобы восстановить список — "
         "просто пришлите его сюда.</i>"
     )
-    await call.message.answer_document(document, caption=caption, reply_markup=back_kb("menu:mod", "◀️ Назад"))
+    await call.message.answer_document(document, caption=caption, reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 @router.callback_query(F.data == "src:import")
-async def ask_import(call: CallbackQuery, role: str) -> None:
+async def ask_import(call: CallbackQuery, role: str, user: dict) -> None:
     if not _export_enabled():
-        await call.answer("Загрузка источников отключена.", show_alert=True)
+        await call.answer(_t(user, "src.import_off", "Загрузка источников отключена."), show_alert=True)
         return
     if not roles.is_admin(role):
-        await call.answer("Загрузка доступна администраторам.", show_alert=True)
+        await call.answer(_t(user, "src.import_admins", "Загрузка доступна администраторам."),
+                          show_alert=True)
         return
     await call.answer()
     await safe_edit(
@@ -33393,14 +34471,15 @@ async def ask_import(call: CallbackQuery, role: str) -> None:
         "Принимаются также простой список каналов текстовым файлом и "
         "<code>db.json</code> от версий 2.x.\n\n"
         "<i>Существующие источники сохраняются — новые добавляются к ним.</i>",
-        back_kb("menu:mod", "Отмена"),
+        back_kb("menu:mod", _t(user, "common.cancel", "Отмена")),
     )
 
 
 @router.message(F.document)
-async def import_sources(message: Message, role: str) -> None:
+async def import_sources(message: Message, role: str, user: dict) -> None:
     if not roles.is_admin(role):
-        await message.answer("⛔️ Загрузка источников доступна администраторам.")
+        await message.answer(_t(user, "src.import_denied",
+                                "⛔️ Загрузка источников доступна администраторам."))
         return
 
     document = message.document
@@ -33418,7 +34497,7 @@ async def import_sources(message: Message, role: str) -> None:
     try:
         bundle = exporting.parse_bundle(raw)
     except exporting.ImportError_ as exc:
-        await message.answer(f"❌ {esc(exc)}", reply_markup=back_kb("menu:mod", "◀️ Назад"))
+        await message.answer(f"❌ {esc(exc)}", reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
         return
 
     added_channels, added_rss = exporting.merge(
@@ -33447,7 +34526,7 @@ async def import_sources(message: Message, role: str) -> None:
         if len(bundle.warnings) > 8:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
-    await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", "◀️ Назад"))
+    await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
 
 
 # --------------------------------------------------------------------------
@@ -33460,9 +34539,9 @@ _last_check: dict[str, list[tuple[str, str]]] = {}
 
 
 @router.callback_query(F.data == "src:check")
-async def check_sources(call: CallbackQuery, role: str) -> None:
+async def check_sources(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
 
     channels = list(storage.channels())
@@ -33470,10 +34549,10 @@ async def check_sources(call: CallbackQuery, role: str) -> None:
     vk_groups = list(storage.vk_groups())
     total = len(channels) + len(feeds) + len(vk_groups)
     if not total:
-        await call.answer("Источников нет.", show_alert=True)
+        await call.answer(_t(user, "src.none", "Источников нет."), show_alert=True)
         return
 
-    await call.answer("Начинаю проверку…")
+    await call.answer(_t(user, "src.check_start", "Начинаю проверку…"))
     estimate = int(total * (sourcecheck.POLITE_PAUSE + 1.2))
     notice = await call.message.answer(
         f"🔍 Проверяю источники: <b>{total}</b>\n"
@@ -33499,6 +34578,7 @@ async def check_sources(call: CallbackQuery, role: str) -> None:
             pass
 
     report = await sourcecheck.check_all(channels, feeds, vk_groups, progress=progress)
+    await sourcecheck.remember_summary(report, datetime.now())
 
     # Отмечаем результат в базе — по нему потом видно проблемные источники
     for item in report.statuses:
@@ -33514,18 +34594,19 @@ async def check_sources(call: CallbackQuery, role: str) -> None:
 
     text = sourcecheck.render(report)
     if report.dead:
-        text += "\n\n<i>Удалить недоступные можно кнопкой ниже.</i>"
+        text += "\n\n<i>" + _t(user, "src.drop_hint", "Удалить недоступные можно кнопкой ниже.") + "</i>"
         markup = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
-                    text=f"🗑 Убрать недоступные ({len(report.dead)})",
+                    text=_t(user, "src.drop_button", "🗑 Убрать недоступные ({count})").format(
+                        count=len(report.dead)),
                     callback_data="src:drop_dead",
                 )],
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:mod")],
+                [InlineKeyboardButton(text=_t(user, "menu.back", "◀️ Назад"), callback_data="menu:mod")],
             ]
         )
     else:
-        markup = back_kb("menu:mod", "◀️ Назад")
+        markup = back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад"))
 
     _last_check[str(call.from_user.id)] = [
         (item.kind, item.ref) for item in report.dead
@@ -33541,53 +34622,68 @@ async def storage_repo_mark(item) -> None:
 
 
 @router.callback_query(F.data == "src:drop_dead")
-async def drop_dead(call: CallbackQuery, role: str) -> None:
+async def drop_dead(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_t(user, "users.no_rights", "Недостаточно прав."), show_alert=True)
         return
 
     dead = _last_check.get(str(call.from_user.id)) or []
     if not dead:
-        await call.answer("Список устарел — запустите проверку заново.", show_alert=True)
+        await call.answer(_t(user, "src.stale", "Список устарел — запустите проверку заново."),
+                          show_alert=True)
         return
 
     removed = sum(1 for kind, ref in dead if sourceedit.remove(kind, ref))
 
     await storage.save()
     _last_check.pop(str(call.from_user.id), None)
-    await call.answer(f"Удалено источников: {removed}")
+    await call.answer(_t(user, "src.removed_short", "Удалено источников: {count}").format(count=removed))
     await safe_edit(
         call,
-        f"🗑 Удалено недоступных источников: <b>{removed}</b>.\n"
-        f"Осталось: каналов {len(storage.channels())}, лент {len(storage.rss_feeds())}.",
-        back_kb("menu:mod", "◀️ Назад"),
+        _t(user, "src.removed", "🗑 Удалено недоступных источников: <b>{removed}</b>.\n"
+           "Осталось: каналов {channels}, лент {feeds}.").format(
+            removed=removed, channels=len(storage.channels()),
+            feeds=len(storage.rss_feeds())),
+        back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")),
     )
 
 
 @router.message(Command("checksources"))
-async def cmd_check_sources(message: Message, role: str) -> None:
+async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     if not roles.can_moderate_sources(role):
-        await message.answer("⛔️ Проверка источников доступна модераторам и выше.")
+        await message.answer(_t(user, "src.check_denied",
+                                "⛔️ Проверка источников доступна модераторам и выше."))
         return
 
     channels = list(storage.channels())
     feeds = list(storage.rss_feeds())
     total = len(channels) + len(feeds)
     if not total:
-        await message.answer("Источников нет.")
+        await message.answer(_t(user, "src.none", "Источников нет."))
         return
 
-    notice = await message.answer(f"🔍 Проверяю источники: <b>{total}</b>…")
+    notice = await message.answer(
+        _t(user, "src.checking", "🔍 Проверяю источники: <b>{total}</b>…").format(total=total))
     report = await sourcecheck.check_all(channels, feeds, list(storage.vk_groups()))
+    await sourcecheck.remember_summary(report, datetime.now())
     try:
         await notice.delete()
     except Exception:  # noqa: BLE001
         pass
-    await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", "◀️ Назад"))
-RADAR_FILE_98
+    await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_99'
-"""Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек."""
+cat > "radar/handlers/users.py" <<'RADAR_FILE_102'
+"""Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
+
+Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
+кандидаты»). Два разных языка в одном файле, и путать их нельзя:
+
+* экраны модератора — на языке **модератора** (`user` из middleware);
+* уведомления, которые уходят человеку, чью карточку правят, — на языке
+  **этого человека** (`storage.get_user(target)`): модератор-англичанин
+  не должен сообщать русскоязычному пользователю по-английски.
+"""
 
 # --------------------------------------------------------------------------
 # Система «Радар» — мониторинг городских угроз и аварий ЖКХ
@@ -33602,7 +34698,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import config, geocode, keyboards, roles, storage
+from .. import config, geocode, i18n, keyboards, roles, storage
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, bot, safe_edit, send_html
@@ -33611,6 +34707,12 @@ from .locations import locations_text
 router = Router(name="users")
 
 PAGE_SIZE = 8
+
+
+def _t(who: dict | None, key: str, russian: str) -> str:
+    """Строка на языке человека `who`."""
+    return i18n.t(key, i18n.language_of(who), russian)
+
 
 def _page(page: int) -> tuple[list[tuple[str, str, int]], int]:
     records = sorted(
@@ -33627,10 +34729,18 @@ def _page(page: int) -> tuple[list[tuple[str, str, int]], int]:
     return items, pages
 
 
+def _no_rights(user: dict | None) -> str:
+    return _t(user, "users.no_rights", "Недостаточно прав.")
+
+
+def _not_found(user: dict | None) -> str:
+    return _t(user, "users.not_found", "Пользователь не найден.")
+
+
 @router.callback_query(F.data.startswith("usr:list:"))
-async def list_users(call: CallbackQuery, role: str) -> None:
+async def list_users(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.is_moderator(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_no_rights(user), show_alert=True)
         return
     await call.answer()
     try:
@@ -33639,149 +34749,175 @@ async def list_users(call: CallbackQuery, role: str) -> None:
         page = 0
     items, pages = _page(page)
     page = max(0, min(page, pages - 1))
-    lines = [f"👥 <b>Пользователи</b> — всего {len(storage.users())} (стр. {page + 1}/{pages})"]
+    lang = i18n.language_of(user)
+    lines = [
+        _t(user, "users.list_title", "👥 <b>Пользователи</b> — всего {total} "
+           "(стр. {page}/{pages})").format(
+            total=len(storage.users()), page=page + 1, pages=pages)
+    ]
     for uid, user_role, count in items:
-        user = storage.get_user(uid) or {}
-        username = f" @{esc(user.get('username'))}" if user.get("username") else ""
-        lines.append(f"<code>{uid}</code>{username} — {roles.title(user_role)}, локаций: {count}")
-    lines.append("\n<i>Нажмите на пользователя, чтобы открыть карточку.</i>")
-    await safe_edit(call, "\n".join(lines), keyboards.users_page(items, page, pages))
+        record = storage.get_user(uid) or {}
+        username = f" @{esc(record.get('username'))}" if record.get("username") else ""
+        lines.append(
+            f"<code>{uid}</code>{username} — {roles.title(user_role, lang)}, "
+            + _t(user, "users.locations_count", "локаций: {count}").format(count=count)
+        )
+    lines.append("\n<i>" + _t(user, "users.open_hint",
+                             "Нажмите на пользователя, чтобы открыть карточку.") + "</i>")
+    await safe_edit(call, "\n".join(lines),
+                    keyboards.users_page(items, page, pages, lang))
 
 
-def _card_text(uid: str) -> str:
-    user = storage.get_user(uid) or {}
-    settings = user.get("settings") or {}
-    active = ", ".join(key for key, value in settings.items() if value) or "нет"
-    username = f"@{esc(user.get('username'))}" if user.get("username") else "—"
-    return "\n".join(
-        [
-            f"👤 <b>Пользователь</b> <code>{uid}</code>",
-            f"Ник: {username}",
-            f"Роль: {roles.title(user.get('role'))}",
-            f"Локаций: <b>{len(user.get('locs') or [])}</b>",
-            f"Категории оповещений: {esc(active)}",
-            f"Погода: {esc(keyboards.weather_label(user))}",
-        ]
-    )
+def _card_text(uid: str, viewer: dict | None = None) -> str:
+    record = storage.get_user(uid) or {}
+    lang = i18n.language_of(viewer)
+    settings = record.get("settings") or {}
+    active = ", ".join(key for key, value in settings.items() if value) or \
+        _t(viewer, "users.none", "нет")
+    username = f"@{esc(record.get('username'))}" if record.get("username") else "—"
+    return "\n".join([
+        _t(viewer, "users.card_title", "👤 <b>Пользователь</b>") + f" <code>{uid}</code>",
+        _t(viewer, "users.nick", "Ник") + f": {username}",
+        _t(viewer, "users.role", "Роль") + f": {roles.title(record.get('role'), lang)}",
+        _t(viewer, "users.locations", "Локаций") + f": <b>{len(record.get('locs') or [])}</b>",
+        _t(viewer, "users.categories", "Категории оповещений") + f": {esc(active)}",
+        _t(viewer, "users.weather", "Погода") + f": "
+        f"{esc(keyboards.weather_label(record, lang))}",
+    ])
 
 
 @router.callback_query(F.data.startswith("usr:card:"))
-async def card(call: CallbackQuery, role: str) -> None:
+async def card(call: CallbackQuery, role: str, user: dict) -> None:
     if not roles.is_moderator(role):
-        await call.answer("Недостаточно прав.", show_alert=True)
+        await call.answer(_no_rights(user), show_alert=True)
         return
     target = call.data.split(":")[2]
-    user = storage.get_user(target)
-    if user is None:
-        await call.answer("Пользователь не найден.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None:
+        await call.answer(_not_found(user), show_alert=True)
         return
     await call.answer()
     await safe_edit(
-        call, _card_text(target), keyboards.user_card(target, user.get("role", "user"), role)
+        call, _card_text(target, user),
+        keyboards.user_card(target, record.get("role", "user"), role,
+                            i18n.language_of(user)),
     )
 
 
 @router.callback_query(F.data.startswith("usr:locs:"))
-async def user_locations(call: CallbackQuery, role: str) -> None:
+async def user_locations(call: CallbackQuery, role: str, user: dict) -> None:
     target = call.data.split(":")[2]
-    user = storage.get_user(target)
-    if user is None:
-        await call.answer("Пользователь не найден.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None:
+        await call.answer(_not_found(user), show_alert=True)
         return
-    if not roles.can_edit_user(role, user.get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+    if not roles.can_edit_user(role, record.get("role")):
+        await call.answer(_no_rights(user), show_alert=True)
         return
     await call.answer()
     await safe_edit(
         call,
-        locations_text(user, owner_label=f"<code>{target}</code>"),
-        keyboards.locations_menu(user.get("locs") or [], owner=target),
+        locations_text(record, owner_label=f"<code>{target}</code>"),
+        keyboards.locations_menu(record.get("locs") or [], owner=target),
     )
 
 
 @router.callback_query(F.data.startswith("usr:sets:"))
-async def user_settings(call: CallbackQuery, role: str) -> None:
+async def user_settings(call: CallbackQuery, role: str, user: dict) -> None:
     target = call.data.split(":")[2]
-    user = storage.get_user(target)
-    if user is None:
-        await call.answer("Пользователь не найден.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None:
+        await call.answer(_not_found(user), show_alert=True)
         return
-    if not roles.can_edit_user(role, user.get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+    if not roles.can_edit_user(role, record.get("role")):
+        await call.answer(_no_rights(user), show_alert=True)
         return
     await call.answer()
     await safe_edit(
         call,
-        f"⚙️ <b>Оповещения пользователя</b> <code>{target}</code>",
-        keyboards.settings_menu(user, target),
+        _t(user, "users.settings_title", "⚙️ <b>Оповещения пользователя</b>")
+        + f" <code>{target}</code>",
+        keyboards.settings_menu(record, target),
     )
 
 
 @router.callback_query(F.data.startswith("usr:role:"))
-async def change_role(call: CallbackQuery, role: str) -> None:
+async def change_role(call: CallbackQuery, role: str, user: dict) -> None:
     parts = call.data.split(":")
     target, new_role = parts[2], parts[3]
-    user = storage.get_user(target)
-    if user is None:
-        await call.answer("Пользователь не найден.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None:
+        await call.answer(_not_found(user), show_alert=True)
         return
     if target == str(call.from_user.id):
-        await call.answer("Нельзя менять роль самому себе.", show_alert=True)
+        await call.answer(_t(user, "users.self_role", "Нельзя менять роль самому себе."),
+                          show_alert=True)
         return
-    if not roles.can_assign(role, user.get("role"), new_role):
-        await call.answer("Недостаточно прав для этой роли.", show_alert=True)
+    if not roles.can_assign(role, record.get("role"), new_role):
+        await call.answer(_t(user, "users.role_denied",
+                             "Недостаточно прав для этой роли."), show_alert=True)
         return
 
-    user["role"] = new_role
+    record["role"] = new_role
     await storage.save()
-    await call.answer(f"Роль изменена: {new_role}")
-    await safe_edit(call, _card_text(target), keyboards.user_card(target, new_role, role))
+    await call.answer(_t(user, "users.role_changed", "Роль изменена: {role}").format(
+        role=roles.title(new_role, i18n.language_of(user))))
+    await safe_edit(call, _card_text(target, user),
+                    keyboards.user_card(target, new_role, role, i18n.language_of(user)))
+    # Уведомление — на языке того, чью роль поменяли, а не модератора.
     await send_html(
-        target, f"ℹ️ Ваша роль в системе «Радар» изменена на {roles.title(new_role)}."
+        target,
+        _t(record, "users.role_notice",
+           "ℹ️ Ваша роль в системе «Радар» изменена на {role}.").format(
+            role=roles.title(new_role, i18n.language_of(record))),
     )
 
 
 @router.callback_query(F.data.startswith("usr:del:"))
-async def ask_delete(call: CallbackQuery, role: str) -> None:
+async def ask_delete(call: CallbackQuery, role: str, user: dict) -> None:
     target = call.data.split(":")[2]
-    user = storage.get_user(target)
-    if user is None:
-        await call.answer("Пользователь не найден.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None:
+        await call.answer(_not_found(user), show_alert=True)
         return
-    if not roles.can_delete_user(role, user.get("role")):
-        await call.answer("Удаление доступно администраторам.", show_alert=True)
+    if not roles.can_delete_user(role, record.get("role")):
+        await call.answer(_t(user, "users.delete_admins",
+                             "Удаление доступно администраторам."), show_alert=True)
         return
     await call.answer()
+    lang = i18n.language_of(user)
     await safe_edit(
         call,
-        f"⚠️ Удалить пользователя <code>{target}</code> "
-        f"({roles.title(user.get('role'))}) вместе со всеми локациями?",
-        keyboards.confirm("usr:delok", target, f"usr:card:{target}"),
+        _t(user, "users.delete_ask",
+           "⚠️ Удалить пользователя {id} ({role}) вместе со всеми локациями?").format(
+            id=f"<code>{target}</code>", role=roles.title(record.get("role"), lang)),
+        keyboards.confirm("usr:delok", target, f"usr:card:{target}", lang),
     )
 
 
 @router.callback_query(F.data.startswith("usr:delok:"))
-async def confirm_delete(call: CallbackQuery, role: str) -> None:
+async def confirm_delete(call: CallbackQuery, role: str, user: dict) -> None:
     target = call.data.split(":")[2]
-    user = storage.get_user(target)
-    if user is None:
-        await call.answer("Пользователь не найден.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None:
+        await call.answer(_not_found(user), show_alert=True)
         return
-    if not roles.can_delete_user(role, user.get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+    if not roles.can_delete_user(role, record.get("role")):
+        await call.answer(_no_rights(user), show_alert=True)
         return
     await storage.drop_user(target)
-    await call.answer("Пользователь удалён")
+    await call.answer(_t(user, "users.deleted_short", "Пользователь удалён"))
     items, pages = _page(0)
     await safe_edit(
         call,
-        f"✅ Пользователь <code>{target}</code> удалён.",
-        keyboards.users_page(items, 0, pages),
+        _t(user, "users.deleted", "✅ Пользователь {id} удалён.").format(
+            id=f"<code>{target}</code>"),
+        keyboards.users_page(items, 0, pages, i18n.language_of(user)),
     )
 
 
 @router.callback_query(F.data == "usr:invite")
-async def invite(call: CallbackQuery) -> None:
+async def invite(call: CallbackQuery, user: dict) -> None:
     """Приглашение доступно любому пользователю: система тем полезнее,
     чем больше соседей о ней знает. Перешедший получает роль «Пользователь»,
     повысить её может только администрация."""
@@ -33789,11 +34925,13 @@ async def invite(call: CallbackQuery) -> None:
     me = await bot.get_me()
     await safe_edit(
         call,
-        "🔗 <b>Инвайт-ссылка</b>\n"
-        f"https://t.me/{me.username}?start=join\n\n"
-        "<i>Перешедший по ней получает роль «Пользователь»: свои локации "
-        "и оповещения. Повысить роль может только администрация.</i>",
-        back_kb("menu:main", "🏠 В главное меню"),
+        _t(user, "users.invite_title", "🔗 <b>Инвайт-ссылка</b>") + "\n"
+        f"https://t.me/{me.username}?start=join\n\n<i>"
+        + _t(user, "users.invite_hint",
+             "Перешедший по ней получает роль «Пользователь»: свои локации "
+             "и оповещения. Повысить роль может только администрация.")
+        + "</i>",
+        back_kb("menu:main", _t(user, "menu.home", "🏠 В главное меню")),
     )
 
 
@@ -33802,27 +34940,35 @@ async def invite(call: CallbackQuery) -> None:
 # --------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("usr:addloc:"))
-async def ask_location(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def ask_location(call: CallbackQuery, state: FSMContext, role: str,
+                       user: dict) -> None:
     target = call.data.split(":")[2]
-    user = storage.get_user(target)
-    if user is None:
-        await call.answer("Пользователь не найден.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None:
+        await call.answer(_not_found(user), show_alert=True)
         return
-    if not roles.can_edit_user(role, user.get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+    if not roles.can_edit_user(role, record.get("role")):
+        await call.answer(_no_rights(user), show_alert=True)
         return
 
     await call.answer()
     await state.set_state(Form.admin_add_location)
     await state.update_data(target_id=target)
-    hint = f" Город по умолчанию — {esc(config.DEFAULT_CITY)}." if config.DEFAULT_CITY else ""
+    hint = ""
+    if config.DEFAULT_CITY:
+        hint = " " + _t(user, "users.default_city",
+                        "Город по умолчанию — {city}.").format(city=esc(config.DEFAULT_CITY))
     await safe_edit(
         call,
-        f"➕ <b>Локация для</b> <code>{target}</code>\n\n"
-        f"Пришлите адрес текстом, например <code>улица Чапаева, 12</code>.{hint}\n"
-        "Можно также переслать или отправить геопозицию — она будет добавлена "
-        "этому пользователю.\n\n<i>/cancel — отмена.</i>",
-        back_kb(f"usr:card:{target}", "Отмена"),
+        _t(user, "users.add_loc_title", "➕ <b>Локация для</b>") + f" <code>{target}</code>\n\n"
+        + _t(user, "users.add_loc_prompt",
+             "Пришлите адрес текстом, например <code>улица Чапаева, 12</code>.")
+        + hint + "\n"
+        + _t(user, "users.add_loc_geo",
+             "Можно также переслать или отправить геопозицию — она будет добавлена "
+             "этому пользователю.")
+        + "\n\n<i>" + _t(user, "users.cancel_hint", "/cancel — отмена.") + "</i>",
+        back_kb(f"usr:card:{target}", _t(user, "common.cancel", "Отмена")),
     )
 
 
@@ -33845,117 +34991,135 @@ async def _attach(target: str, info: dict[str, str], lat: float, lon: float) -> 
     return location
 
 
-async def _report(message: Message, target: str, location: dict) -> None:
+async def _notify_owner(target: str, location: dict) -> None:
+    """Сообщение человеку, которому добавили локацию, — на его языке."""
+    record = storage.get_user(target)
+    await send_html(
+        target,
+        _t(record, "users.loc_added_notice",
+           "📍 Администратор добавил вам локацию {name}.\n"
+           "Оповещения по ней уже включены — управлять можно в разделе "
+           "«Мои локации».").format(name=f"<b>{esc(location['name'])}</b>"),
+    )
+
+
+async def _report(message: Message, target: str, location: dict,
+                  viewer: dict | None) -> None:
     details = ", ".join(
         part for part in (location["district"], location["city"], location["region"]) if part
     )
-    text = (
-        f"✅ Локация <b>{esc(location['name'])}</b> добавлена пользователю "
-        f"<code>{target}</code>."
-    )
+    text = _t(viewer, "users.loc_added", "✅ Локация {name} добавлена пользователю {id}.").format(
+        name=f"<b>{esc(location['name'])}</b>", id=f"<code>{target}</code>")
     if details:
         text += f"\n<i>{esc(details)}</i>"
     if not location["street"]:
-        text += "\n⚠️ <i>Улица не определена — адресные оповещения ЖКХ могут быть неточными.</i>"
-    await message.answer(text, reply_markup=back_kb(f"usr:card:{target}", "◀️ К пользователю"))
-    await send_html(
-        target,
-        f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
-        "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
-    )
+        text += "\n⚠️ <i>" + _t(viewer, "users.no_street",
+                               "Улица не определена — адресные оповещения ЖКХ "
+                               "могут быть неточными.") + "</i>"
+    await message.answer(text, reply_markup=back_kb(
+        f"usr:card:{target}", _t(viewer, "users.back_to_user", "◀️ К пользователю")))
+    await _notify_owner(target, location)
+
+
+def _denied_text(viewer: dict | None) -> str:
+    return "❌ " + _t(viewer, "users.gone_or_denied",
+                     "Пользователь не найден или недостаточно прав.")
 
 
 @router.message(Form.admin_add_location, F.location)
-async def add_by_geo(message: Message, state: FSMContext, role: str) -> None:
+async def add_by_geo(message: Message, state: FSMContext, role: str,
+                     user: dict) -> None:
     data = await state.get_data()
     target = data.get("target_id", "")
-    user = storage.get_user(target)
-    if user is None or not roles.can_edit_user(role, user.get("role")):
+    record = storage.get_user(target)
+    if record is None or not roles.can_edit_user(role, record.get("role")):
         await state.clear()
-        await message.answer("❌ Пользователь не найден или недостаточно прав.")
+        await message.answer(_denied_text(user))
         return
 
     lat, lon = message.location.latitude, message.location.longitude
     async with _session() as session:
         info = await geocode.reverse(session, lat, lon)
     await state.clear()
-    await _report(message, target, await _attach(target, info, lat, lon))
+    await _report(message, target, await _attach(target, info, lat, lon), user)
 
 
 @router.message(Form.admin_add_location, F.text)
-async def add_by_address(message: Message, state: FSMContext, role: str) -> None:
+async def add_by_address(message: Message, state: FSMContext, role: str,
+                         user: dict) -> None:
     query = (message.text or "").strip()
     if query.startswith("/"):
         return
 
     data = await state.get_data()
     target = data.get("target_id", "")
-    user = storage.get_user(target)
-    if user is None or not roles.can_edit_user(role, user.get("role")):
+    record = storage.get_user(target)
+    if record is None or not roles.can_edit_user(role, record.get("role")):
         await state.clear()
-        await message.answer("❌ Пользователь не найден или недостаточно прав.")
+        await message.answer(_denied_text(user))
         return
 
     async with _session() as session:
         found = await geocode.forward(session, query, config.DEFAULT_CITY)
 
     if not found:
-        await message.answer(
-            "❌ Адрес не найден. Уточните формулировку — например, "
-            "<code>Саратов, улица Чапаева, 12</code>. /cancel — отмена."
-        )
+        await message.answer("❌ " + _t(
+            user, "users.address_not_found",
+            "Адрес не найден. Уточните формулировку — например, "
+            "<code>Саратов, улица Чапаева, 12</code>. /cancel — отмена."))
         return
 
     if len(found) == 1:
         await state.clear()
         item = found[0]
         location = await _attach(target, item, float(item["lat"]), float(item["lon"]))
-        await _report(message, target, location)
+        await _report(message, target, location, user)
         return
 
     await state.update_data(candidates=found)
-    lines = [f"🔎 <b>Найдено вариантов: {len(found)}</b>", ""]
+    lines = [_t(user, "users.variants", "🔎 <b>Найдено вариантов: {count}</b>").format(
+        count=len(found)), ""]
     lines += [
         f"{index + 1}. {esc(item['display'][:120])}" for index, item in enumerate(found)
     ]
     lines.append("")
-    lines.append("<i>Выберите нужный.</i>")
-    await message.answer("\n".join(lines), reply_markup=keyboards.geocode_choices(found, target))
+    lines.append("<i>" + _t(user, "users.pick_one", "Выберите нужный.") + "</i>")
+    await message.answer("\n".join(lines), reply_markup=keyboards.geocode_choices(
+        found, target, i18n.language_of(user)))
 
 
 @router.callback_query(F.data.startswith("usr:pickloc:"))
-async def pick_location(call: CallbackQuery, state: FSMContext, role: str) -> None:
+async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
+                        user: dict) -> None:
     parts = call.data.split(":")
     target, index = parts[2], int(parts[3])
-    user = storage.get_user(target)
-    if user is None or not roles.can_edit_user(role, user.get("role")):
-        await call.answer("Недостаточно прав.", show_alert=True)
+    record = storage.get_user(target)
+    if record is None or not roles.can_edit_user(role, record.get("role")):
+        await call.answer(_no_rights(user), show_alert=True)
         return
 
     candidates = (await state.get_data()).get("candidates") or []
     if index >= len(candidates):
-        await call.answer("Список устарел, начните заново.", show_alert=True)
+        await call.answer(_t(user, "users.list_stale", "Список устарел, начните заново."),
+                          show_alert=True)
         await state.clear()
         return
 
     item = candidates[index]
     await state.clear()
-    await call.answer("Добавляю…")
+    await call.answer(_t(user, "users.adding", "Добавляю…"))
     location = await _attach(target, item, float(item["lat"]), float(item["lon"]))
     await safe_edit(
         call,
-        f"✅ Локация <b>{esc(location['name'])}</b> добавлена пользователю "
-        f"<code>{target}</code>.",
-        keyboards.user_card(target, user.get("role", "user"), role),
+        _t(user, "users.loc_added", "✅ Локация {name} добавлена пользователю {id}.").format(
+            name=f"<b>{esc(location['name'])}</b>", id=f"<code>{target}</code>"),
+        keyboards.user_card(target, record.get("role", "user"), role,
+                            i18n.language_of(user)),
     )
-    await send_html(
-        target,
-        f"📍 Администратор добавил вам локацию <b>{esc(location['name'])}</b>.\n"
-        "Оповещения по ней уже включены — управлять можно в разделе «Мои локации».",
-    )
-RADAR_FILE_99
+    await _notify_owner(target, location)
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_103'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -34102,9 +35266,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_100
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_104'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -34392,9 +35556,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_101
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_105'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -34601,9 +35765,49 @@ async def perf_reset(call: CallbackQuery, role: str) -> None:
     profiling.reset()
     await call.answer("Счётчики сброшены.")
     await safe_edit(call, _report(), _menu())
-RADAR_FILE_102
+
+
+# --------------------------------------------------------------------------
+#  Метрики и здоровье (с 4.9.9.3)
+# --------------------------------------------------------------------------
+#
+# Отдельно от /perf: там — где тратится время цикла, здесь — работает ли
+# система в целом. Администратору, а не только суперадминистратору:
+# «доходят ли оповещения и не кончается ли диск» — вопрос того, кто
+# отвечает за сервер, и ключей здесь нет.
+
+
+def _metrics_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="metrics:show")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:manage")],
+    ])
+
+
+@router.message(Command("metrics", "health"))
+async def cmd_metrics(message: Message, role: str) -> None:
+    from .. import metrics
+
+    if not roles.is_admin(role):
+        await message.answer("⛔️ Метрики доступны администрации.")
+        return
+    await message.answer(metrics.render(await metrics.snapshot()),
+                         reply_markup=_metrics_menu())
+
+
+@router.callback_query(F.data == "metrics:show")
+async def metrics_show(call: CallbackQuery, role: str) -> None:
+    from .. import metrics
+
+    if not roles.is_admin(role):
+        await call.answer("Только для администрации.", show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, metrics.render(await metrics.snapshot()),
+                    _metrics_menu())
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_106'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -34974,9 +36178,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_103
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_107'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -35551,9 +36755,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_104
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_108'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -35654,9 +36858,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_105
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_109'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -35746,9 +36950,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_106
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_110'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -36169,9 +37373,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_107
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_111'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -37357,9 +38561,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_108
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_109'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_112'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -38090,9 +39294,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_109
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_113'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -38616,9 +39820,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_110
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_114'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -38826,9 +40030,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_111
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_115'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -39241,9 +40445,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_112
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_113'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_116'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -39506,9 +40710,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_113
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_114'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_117'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -39658,9 +40862,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_114
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_115'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_118'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -40128,9 +41332,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_115
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_116'
+cat > "radar/cookies.py" <<'RADAR_FILE_119'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -40261,9 +41465,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_116
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_117'
+cat > "radar/music.py" <<'RADAR_FILE_120'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -40560,6 +41764,77 @@ def format_size(size_bytes: float) -> str:
     return f"{int(size_bytes)} Б"
 
 
+def _related_of(track: dict) -> set[str]:
+    """Родственные артисты трека — нормализованные, как и сравниваемые."""
+    return {_norm_word(name) for name in track.get("related") or [] if name}
+
+
+# --------------------------------------------------------------------------
+#  Подборки по жанру и артисту (с 4.9.9.3)
+# --------------------------------------------------------------------------
+#
+# Пункт 4 раздела 4.9.5: «подборка по жанру или артисту — поверх готового
+# подбора похожих». Всё из своего хранилища: общей библиотеки нет
+# и не будет (п.5 того же раздела), подборка собирает только то, что
+# человек загрузил сам.
+
+SMART_KINDS = ("genre", "artist")
+SMART_MIN = 2       # подборка из одного трека — это трек, а не подборка
+SMART_OFFER = 8     # сколько вариантов показывать на экране выбора
+
+
+def smart_choices(user: dict, kind: str) -> list[tuple[str, int]]:
+    """Жанры или артисты своего хранилища: (название, треков), по убыванию."""
+    if kind not in SMART_KINDS:
+        return []
+    counts: dict[str, int] = {}
+    shown: dict[str, str] = {}
+    for track in tracks_of(user):
+        raw = (track.get(kind) or "").strip()
+        key = _norm_word(raw)
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        shown.setdefault(key, raw)
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], shown[pair[0]].lower()))
+    return [(shown[key], count) for key, count in ranked if count >= SMART_MIN][:SMART_OFFER]
+
+
+def smart_tracks(user: dict, kind: str, value: str) -> list[dict]:
+    """Треки своего хранилища с этим жанром или артистом."""
+    key = _norm_word(value)
+    if kind not in SMART_KINDS or not key:
+        return []
+    return [track for track in tracks_of(user)
+            if _norm_word(track.get(kind) or "") == key]
+
+
+def build_smart_playlist(user: dict, kind: str, value: str) -> tuple[bool, str]:
+    """Плейлист из подборки. Возвращает (получилось, имя или причина).
+
+    Одноимённый плейлист пересобирается, а не заводится вторым: иначе
+    каждое нажатие множило бы «Жанр: рок», «Жанр: рок», «Жанр: рок».
+    """
+    tracks = smart_tracks(user, kind, value)
+    if len(tracks) < SMART_MIN:
+        return False, "Для подборки нужно хотя бы два трека."
+
+    prefix = "Жанр" if kind == "genre" else "Артист"
+    name = safe_title(f"{prefix}: {value}")
+    data = dict(_slot(user))
+    playlists = [dict(pl) for pl in data.get("playlists") or []]
+    existing = next((pl for pl in playlists if pl.get("name") == name), None)
+    if existing is None:
+        if len(playlists) >= MAX_PLAYLISTS:
+            return False, f"Плейлистов уже {MAX_PLAYLISTS} — это предел."
+        existing = {"name": name, "tracks": []}
+        playlists.append(existing)
+    existing["tracks"] = [track["id"] for track in tracks]
+    data["playlists"] = playlists
+    user[SLOT] = data
+    return True, name
+
+
 def similar(user: dict, track_id: str, limit: int = 5) -> list[dict]:
     """Похожие треки из загруженного самим человеком.
 
@@ -40589,8 +41864,14 @@ def similar(user: dict, track_id: str, limit: int = 5) -> list[dict]:
             continue
 
         score = 0
-        if base_artist and _norm_word(track.get("artist") or "") == base_artist:
+        artist = _norm_word(track.get("artist") or "")
+        if base_artist and artist == base_artist:
             score += 5
+        elif artist and artist in _related_of(base):
+            # Родственный артист по открытым базам (с 4.9.9.3, см.
+            # radar/musicmeta.py): слабее своего, сильнее жанра — «похож
+            # по мнению слушателей» точнее, чем «та же полка в магазине».
+            score += 4
         if base_genre and base_genre == _norm_word(track.get("genre") or ""):
             score += 3
         year = (track.get("year") or "").strip()
@@ -40981,9 +42262,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_117
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_118'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_121'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -41033,6 +42314,11 @@ def _menu(user: dict, role: str) -> InlineKeyboardMarkup:
             callback_data=f"mus:pl:{pl['name'][:40]}")])
     rows.append([InlineKeyboardButton(
         text="➕ Новый плейлист", callback_data="mus:newpl")])
+    # Подборки по жанру и артисту (с 4.9.9.3) — только когда собирать
+    # есть из чего: пустой экран выбора обещал бы впустую.
+    if music.smart_choices(user, "genre") or music.smart_choices(user, "artist"):
+        rows.append([InlineKeyboardButton(
+            text="🎛 Собрать подборку", callback_data="mus:smart")])
     rows.append([InlineKeyboardButton(text="🏠 В главное меню",
                                       callback_data="menu:main")])
     del role
@@ -41186,6 +42472,7 @@ async def take_track(message: Message, user: dict, role: str) -> None:
                                has_similar=similar_now),
     )
     log.info("Добавлен трек: %s", label[:60])
+    _enrich_later(message.from_user.id, track_id)
 
 
 def _same_tag(a: str | None, b: str | None) -> bool:
@@ -41496,9 +42783,104 @@ def _user_of(call) -> dict:
 
 def _role_of(call) -> str:
     return (_user_of(call).get("role") or "user")
-RADAR_FILE_118
+
+
+# --------------------------------------------------------------------------
+#  Данные из открытых баз (с 4.9.9.3)
+# --------------------------------------------------------------------------
+#
+# Фоном, после ответа человеку: MusicBrainz разрешает запрос в секунду,
+# и ждать его у кнопки «загружено» незачем. Ссылки на задачи держим,
+# иначе asyncio вправе собрать задачу посреди ожидания.
+
+_enrichment: set = set()
+
+
+def _enrich_later(user_id: int, track_id: str) -> None:
+    import asyncio
+
+    from .. import musicmeta
+
+    if not musicmeta.enabled():
+        return
+    task = asyncio.create_task(_enrich(user_id, track_id))
+    _enrichment.add(task)
+    task.add_done_callback(_enrichment.discard)
+
+
+async def _enrich(user_id: int, track_id: str) -> None:
+    from .. import musicmeta
+
+    user = storage.get_user(user_id)
+    track = music.find_track(user or {}, track_id)
+    if track is None:
+        return
+    meta = await musicmeta.lookup(track.get("artist") or "",
+                                  track.get("title") or "")
+    # Перечитываем: за время запроса трек могли удалить.
+    user = storage.get_user(user_id)
+    track = music.find_track(user or {}, track_id)
+    if track is None or not meta:
+        return
+    if musicmeta.apply(track, meta):
+        try:
+            await storage.save(user_id)
+        except Exception:  # noqa: BLE001
+            log.debug("Метаданные трека не сохранены", exc_info=True)
+
+
+# --------------------------------------------------------------------------
+#  Подборки по жанру и артисту (с 4.9.9.3)
+# --------------------------------------------------------------------------
+
+
+@router.callback_query(F.data == "mus:smart")
+async def smart_menu(call) -> None:
+    await call.answer()
+    user = _user_of(call)
+    rows: list[list[InlineKeyboardButton]] = []
+    for kind, icon in (("genre", "🎼"), ("artist", "🎤")):
+        for index, (value, count) in enumerate(music.smart_choices(user, kind)):
+            rows.append([InlineKeyboardButton(
+                text=f"{icon} {value} ({count})",
+                callback_data=f"mus:sm:{kind[0]}:{index}")])
+    rows.append([InlineKeyboardButton(text="◀️ К музыке",
+                                      callback_data="mus:menu")])
+    await safe_edit(
+        call,
+        "🎛 <b>Собрать подборку</b>\n\n"
+        "Плейлист соберётся из ваших треков с этим жанром или артистом. "
+        "Повторное нажатие пересоберёт его — новые треки добавятся.",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("mus:sm:"))
+async def smart_build(call) -> None:
+    # Индекс, а не само значение: жанр или имя артиста в callback_data
+    # не влезут в 64 байта, а русские буквы занимают по два.
+    _prefix, _sm, letter, raw_index = call.data.split(":", 3)
+    kind = "genre" if letter == "g" else "artist"
+    user = _user_of(call)
+    choices = music.smart_choices(user, kind)
+    try:
+        value = choices[int(raw_index)][0]
+    except (ValueError, IndexError):
+        await call.answer("Список изменился — откройте заново.", show_alert=True)
+        return
+
+    ok, result = music.build_smart_playlist(user, kind, value)
+    if not ok:
+        await call.answer(result, show_alert=True)
+        return
+    await storage.save(call.from_user.id)
+    await call.answer(f"Подборка «{result}» собрана.")
+    await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
+                          f"{music.describe(user, _role_of(call))}",
+                    _menu(user, _role_of(call)))
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_119'
+cat > "multitool/__init__.py" <<'RADAR_FILE_122'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -41524,9 +42906,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_119'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_119
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_120'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_123'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -41559,9 +42941,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_120'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_120
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_121'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_124'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -41968,9 +43350,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_121
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_122'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_125'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -42454,9 +43836,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_122
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_123'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_126'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -42696,7 +44078,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_123
+RADAR_FILE_126
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
@@ -43339,6 +44721,49 @@ if [ -n "$DOCKER_GID_VALUE" ]; then
 else
     warn "Группа docker не найдена — обновление из панели будет недоступно"
 fi
+
+# Настройки PostgreSQL под память машины (ROADMAP 4.8, п.2; с 4.9.9.3).
+# Раньше параметры были зашиты под 1–2 ГБ, и на машине помощнее база
+# работала вполсилы, а на совсем слабой — впритык. Подбор осторожный:
+# * только при DB_BACKEND=postgres — SQLite эти значения не читает;
+# * только если их не задали руками — ручная настройка важнее расчёта;
+# * shared_buffers не выше четверти лимита контейнера базы (512 МБ
+#   в compose): иначе база упрётся в свой же лимит и её убьёт ядро;
+# * значения по умолчанию в compose прежние — без этих строк в .env
+#   база запускается ровно так же, как до 4.9.9.3.
+pg_tune() {
+    local mem_kb mem_mb shared cache work maint
+    grep -qE '^DB_BACKEND=postgres' .env 2>/dev/null || return 0
+    if grep -qE '^PG_SHARED_BUFFERS=' .env 2>/dev/null; then
+        info "Настройки PostgreSQL заданы вручную — подбор пропущен"
+        return 0
+    fi
+    mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)"
+    [ -n "$mem_kb" ] || return 0
+    mem_mb=$((mem_kb / 1024))
+
+    shared=$((mem_mb / 8))
+    [ "$shared" -lt 64 ] && shared=64
+    [ "$shared" -gt 128 ] && shared=128
+
+    cache=$((mem_mb / 2))
+    [ "$cache" -lt 192 ] && cache=192
+    [ "$cache" -gt 2048 ] && cache=2048
+
+    work=4
+    [ "$mem_mb" -ge 2048 ] && work=8
+
+    maint=$((mem_mb / 32))
+    [ "$maint" -lt 32 ] && maint=32
+    [ "$maint" -gt 256 ] && maint=256
+
+    set_env_value PG_SHARED_BUFFERS "${shared}MB"
+    set_env_value PG_EFFECTIVE_CACHE "${cache}MB"
+    set_env_value PG_WORK_MEM "${work}MB"
+    set_env_value PG_MAINTENANCE_MEM "${maint}MB"
+    info "PostgreSQL под память ${mem_mb} МБ: shared_buffers ${shared}MB, кэш ${cache}MB"
+}
+pg_tune
 
 
 TZ_VALUE="$(grep -E '^TZ=' .env | cut -d= -f2- || true)"

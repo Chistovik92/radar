@@ -523,7 +523,9 @@ up.
 
 ## 4.7.1 — moving to another server
 
-19. ⚠️ **A full move with one command.** The code has been ready since 4.7.1; the fire drill has not been run.
+19. ✅ **A full move with one command** — works, but not without a fight
+    (a live move was completed in September 2026; details at the end of
+    this item). The code has been ready since 4.7.1.
     `install.sh --migrate` on the old machine builds a backup and prints
     the next steps; `install.sh --restore=FILE` on the new one deploys the
     system, loads the dump before the bot starts, and recounts users,
@@ -589,9 +591,14 @@ up.
     "after installing Docker, run the same file again — no new link
     needed", and a re-run of `--restore-url` with the already downloaded
     copy when the link has burned out.
-    **Still left:** forward the port on a live move and walk the whole
-    path end to end.
-    on a clean machine. Until then the mechanism is considered unverified.
+    **A live move has been completed (September 2026) — it works, but
+    not without a fight.** The path went through to the end and the
+    system came up on the new machine, but not "with one command" in
+    the sense the heading promises: manual intervention was needed along
+    the way. Hence the ✅, but without the word "smooth". What exactly had
+    to be fixed on the way is worth recording here as separate lines:
+    every such snag is a candidate for an installer fix, as already
+    happened in 4.8.4.1.
 
 ---
 
@@ -638,9 +645,14 @@ up.
     editor. The superadministrator is the author himself, and translating
     those screens would double the maintenance burden without a single
     reader — for exactly the same reason the installer's technical log
-    lines stayed in Russian (item 9). Moderator screens — the source queue
-    and user cards — remain candidates: a reader is theoretically possible
-    there, but there is none yet.
+    lines stayed in Russian (item 9). **Moderator screens were translated in
+    4.9.9.3:** the source queue and list, adding, availability checks,
+    export and import, user cards with role changes and adding locations,
+    and the list of moderated chats. Notifications sent to a person from
+    their card use that person's language, not the moderator's. By the same
+    superadmin rule, posting to groups and invite links stay in Russian, as
+    does the source-check report text (`sourcecheck.render`) — it is shared
+    with the nightly letter to the administration.
     A caveat that proved its worth: the text used to be scattered across
     modules as inline strings in the code, so the first step was moving it
     into a shared dictionary. Without that, translation would have had to
@@ -818,12 +830,15 @@ became item 21.
    and moving parsing off the event loop (4.7.7). **PostgreSQL under load
    stays unverified:** the server runs SQLite, so there is nothing to
    measure.
-2. ⚠️ **Tuning PostgreSQL for the actual amount of memory.** Settings were
-   raised for 4 GB in 4.0.5 (`shared_buffers=256MB`, 1 GB cache). Automatic
-   tuning at install time is **not done and deliberately deferred:** the
-   server runs SQLite, there is no way to verify the tuning, and writing
-   blind the parameters a database start depends on is exactly what this
-   project avoids.
+2. ⚠️ **Tuning PostgreSQL for the actual amount of memory.** Automatic
+   tuning was added in 4.9.9.3 — carefully, so as not to write blind the
+   values a database start depends on: only with `DB_BACKEND=postgres`, only
+   if the values were not set by hand, `shared_buffers` is an eighth of the
+   memory but no more than 128 MB (a quarter of the database container
+   limit), and the defaults in `docker-compose.yml` are unchanged. Without
+   the `PG_*` lines in `.env` the database starts exactly as before. The
+   calculation was checked on five memory sizes; not verified on a live
+   PostgreSQL — the server runs SQLite.
 3. ⚠️ **Container limits** — memory caps were set in 4.0.5 so one process
    cannot drag down the whole system. Refining them from measurements runs
    into the same PostgreSQL that is not on the server.
@@ -991,7 +1006,7 @@ became item 21.
    would drift from the disk exactly when that hurts most: after a crash
    mid-work.
 
-## 4.9 — subscription and operations ✅ partly
+## 4.9 — subscription and operations ✅ implemented
 
 1. **One subscription for the whole bot** ✅ done in 4.9. The model was
    already unified — paying for either part opened both — but it was sold
@@ -1011,9 +1026,15 @@ became item 21.
    4.8.4.4 an update failed on import, diagnostics caught it before the
    bot started, and the installer rolled back to 4.8.4.3 with no downtime.
 
-3. ⚠️ **Metrics** — alert counts, delivery latency, AI quota spend, share
-   of dead sources. The data is already collected; gathering it into one
-   place is not done.
+3. ✅ **Metrics** — alert counts, delivery latency, AI quota spend, share
+   of dead sources. Gathered into one place in 4.9.9.3: the `/metrics`
+   command and the "🩺 Metrics and health" button under "Management"
+   (`radar/metrics.py`). Latency is measured from the post time in the
+   source (Telegram — from the web preview, RSS — from `pubDate`) to
+   delivery and shown as a median and a 90th percentile; summaries, memos
+   and news older than a day are left out. The dead-source share comes from
+   the latest check — nightly or manual. ⚠️ Latency has not been collected
+   on a live server yet: samples appear with the first alert.
 
 4. ⚠️→✅ **Scheduled source checks** ✅ done in 4.9.5. The
    `source_autocheck` flag (off by default): at night, with the same
@@ -1035,11 +1056,16 @@ became item 21.
    retention and rotation worked before, now the administration gets
    a short report — and only when the cleanup actually did something.
 
-6. **Health panel in the bot** — rescoped. Memory, disk and database size
-   are fine to show. **Container state is not and will not be:** the bot
-   would need the Docker socket, which is effectively full access to the
-   server. The project declined that deliberately, and we are not trading
-   the decision for a convenient line in a report.
+6. ✅ **Health panel in the bot** — the same screen as the metrics
+   (4.9.9.3): machine memory, how full each disk is (including moved-out
+   music), database size and **container state**.
+   This item used to say "container state is not and will not be: the bot
+   would need the Docker socket, which is full access to the server". That
+   argument went stale in 4.9.6: the socket is already mounted for updating
+   from the panel and for RustDesk, so the price has been paid. Reading the
+   container list (`dockerapi.list_containers`, read-only and `radar*`
+   containers only) adds no new risk. Without the socket the screen says
+   plainly why no containers are shown.
 
 7. **Link shortener — an administrator privilege** ✅ done in 4.9.3.
    `/short` and `/shorts` work for admins and above; links have no
@@ -1113,7 +1139,7 @@ for signs of fraud.
    handler's messages are bilingual; the report is Russian for now —
    to be translated separately, like the weather summary once was.
 
-## 4.9.5 — music and playlists 🔨 in progress
+## 4.9.5 — music and playlists ✅ implemented
 
 An idea from August 2026: uploading tracks to the bot, personal playlists,
 similar-track suggestions. A subsystem separate from monitoring — placed
@@ -1138,17 +1164,25 @@ in 4.9.5.2 — the skeleton is ready:
      The genre (TCON) is read with the track. With no tags on the
      sample the suggestions are empty: guessing by file name is the
      road to "similar: everything at random";
-   - **MusicBrainz + ListenBrainz** — open databases, a free license, a
-     public API with no key. They give "similar artists" and genres
-     honestly and legally;
-   - **Last.fm API** — a free key, rich "similar to" links, but the terms
-     of use restrict resale;
+   - **MusicBrainz + ListenBrainz** ⚠️ done in 4.9.9.3
+     (`radar/musicmeta.py`, flag `music_meta`, off by default): after a
+     track is uploaded, in the background — the genre from MusicBrainz if
+     the tags have none (a user's own genre is never overwritten), and
+     related artists from ListenBrainz; similar-track matching gives a
+     related artist 4 points. Only within one's own storage. MusicBrainz is
+     queried no more than once a second, with a contact in the User-Agent.
+     ListenBrainz serves similar artists through its experimental labs API
+     — not verified on a live server;
+   - **Last.fm API** ❌ not used: it needs a key, and its terms restrict
+     resale — for a bot with paid capacity that is not a formality;
    - **YouTube Music** — tempting, but only reachable through unofficial
      scrapers: breaks with every layout change and directly violates the
      service's terms. Not viable as a foundation.
-4. **Mixing** ✅ partly in 4.9.5.3: shuffling a playlist with the new
-   order remembered. A selection by genre or artist is the next step,
-   on top of the ready similar-tracks matching.
+4. **Mixing** ✅ shuffling a playlist — in 4.9.5.3, a selection by genre
+   or artist — in 4.9.9.3: the "🎛 Build a selection" button lists the
+   genres and artists of one's own storage that have at least two tracks
+   and builds a playlist from them; pressing again rebuilds it instead of
+   creating a second one.
    In 4.9.5.4 **track compression** was added: opus at the source
    bitrate (48–96 kbps), the size drops several times with no audible
    loss; and **external storage**: the music directory moves to
@@ -1244,6 +1278,11 @@ separate media (`MUSIC_DIR` or a mount).
      a cache of recent tracks with a 256 MB budget and eviction by last
      access, a storage check in `/doctor`, and an `rclone` service in
      `docker-compose.yml` behind a profile. Not verified on a live server.
+     In 4.9.9.1 clouds can also be connected from the web panel (the
+     "Cloud" section, `radar/rclonerc.py`): WebDAV, S3, SFTP and FTP are
+     set up through rclone's control API, with no terminal. OAuth
+     providers cannot be set up there — they need a browser. ⚠️ Not
+     verified on a live server.
 3. **What it buys.** Capacity stops being limited by the board's memory
    card: Yandex.Disk, Mail.ru, S3, WebDAV — everything rclone speaks. For
    the paid capacity in the monetization table this is the missing part:

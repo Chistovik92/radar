@@ -242,14 +242,16 @@ services:
       POSTGRES_USER: ${DB_USER:-radar}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-radar}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
-    # Значения подобраны под 1–2 ГБ ОЗУ. На машине с 4 ГB и больше
-    # можно поднять shared_buffers до 256MB, а effective_cache_size до 1GB.
+    # Значения по умолчанию — под 1–2 ГБ ОЗУ. С 4.9.9.3 установщик
+    # подбирает их под память машины и пишет в .env (PG_SHARED_BUFFERS
+    # и соседние); заданное руками он не трогает. shared_buffers не выше
+    # 128MB — четверти лимита контейнера ниже.
     command: >
       postgres
-      -c shared_buffers=96MB
-      -c effective_cache_size=256MB
-      -c work_mem=4MB
-      -c maintenance_work_mem=32MB
+      -c shared_buffers=${PG_SHARED_BUFFERS:-96MB}
+      -c effective_cache_size=${PG_EFFECTIVE_CACHE:-256MB}
+      -c work_mem=${PG_WORK_MEM:-4MB}
+      -c maintenance_work_mem=${PG_MAINTENANCE_MEM:-32MB}
       -c max_connections=20
       -c max_parallel_workers=0
       -c max_parallel_workers_per_gather=0
