@@ -387,6 +387,8 @@ async def take_invite(message: Message, state: FSMContext, role: str) -> None:
         await state.clear()
         await repo.chat_set_invite(chat_id, "")
         chatlink.forget(chat_id)
+        # Меню пользователей строится из этого списка — обновляем сразу.
+        await chatlink.refresh_published()
         await send_html(
             message.chat.id,
             f"✅ Своя ссылка на «{esc(title)}» убрана — бот снова ищет её сам.",
@@ -412,6 +414,8 @@ async def take_invite(message: Message, state: FSMContext, role: str) -> None:
     # Сбрасываем запомненное: иначе кнопка ещё сутки вела бы по старому
     # адресу, и человек решил бы, что ссылка не сохранилась.
     chatlink.forget(chat_id)
+    # Меню пользователей строится из этого списка — обновляем сразу.
+    await chatlink.refresh_published()
     log.info("Задана ссылка приглашения для чата %s", chat_id)
     await send_html(
         message.chat.id,
@@ -419,3 +423,43 @@ async def take_invite(message: Message, state: FSMContext, role: str) -> None:
         f"в списке чатов.",
         back_kb_chats(),
     )
+
+
+# --------------------------------------------------------------------------
+#  «Наши чаты» — для всех пользователей (с 4.9.9.2)
+# --------------------------------------------------------------------------
+#
+# Своя ссылка приглашения до 4.9.9.2 была видна только администрации
+# в разделе «Чаты», то есть тем, кто в группах и так состоит. Здесь её
+# видят все: кнопка в главном меню, по кнопке на каждый чат.
+# Показываются только чаты со ссылкой, заданной суперадминистратором, —
+# см. chatlink.refresh_published.
+
+
+@router.callback_query(F.data == "grp:list")
+async def list_groups(call: CallbackQuery, user: dict) -> None:
+    from .. import i18n
+
+    lang = i18n.language_of(user)
+    await call.answer()
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for _chat_id, title, link in chatlink.published():
+        rows.append([InlineKeyboardButton(text=title or "Чат", url=link)])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+        callback_data="menu:main")])
+
+    if len(rows) == 1:
+        text = i18n.t("groups.empty", lang, "Пока нет чатов, куда можно вступить.")
+    else:
+        text = (
+            i18n.t("groups.title", lang, "💬 <b>Наши чаты</b>")
+            + "\n\n"
+            + i18n.t(
+                "groups.hint", lang,
+                "Нажмите на чат, чтобы перейти в него. В часть чатов "
+                "вступают по заявке — её одобряют администраторы чата.",
+            )
+        )
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))

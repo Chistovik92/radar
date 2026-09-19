@@ -358,8 +358,13 @@ async def fetch_page(session, url: str, limit_kb: int = 512) -> str:
 # именно фолбэк после основной попытки, а не замена ей. Отказ зеркала
 # не ошибка: человек просто получит объяснение, как и раньше.
 
+# ddinstagram.com убран в 4.9.9.2: домен больше не существует (DNS
+# отвечает «не найдено»), и каждая ссылка на Instagram впустую тратила
+# на него запрос. Замены с той же надёжностью нет — открытые зеркала
+# Instagram в 2026 году либо закрылись, либо отдают браузеру рекламу
+# вместо записи. Поэтому для Instagram зеркала пока нет вовсе: честный
+# отказ быстрее и понятнее, чем ожидание мёртвого сервиса.
 MIRROR_URLS = (
-    ("instagram.com", "https://ddinstagram.com", "page"),
     ("x.com", "https://api.fxtwitter.com", "json"),
     ("twitter.com", "https://api.fxtwitter.com", "json"),
 )
@@ -429,3 +434,93 @@ async def via_mirror(session, url: str) -> list[str]:
     if kind == "json":
         return from_fxtwitter(payload)
     return from_page(payload, target)
+
+
+# --------------------------------------------------------------------------
+#  Сбор картинок записи целиком (с 4.9.9.2)
+# --------------------------------------------------------------------------
+#
+# До 4.9.9.2 у каждого запроса был свой таймаут в 90 секунд, а картинки
+# качались по одной. На карусели из десяти снимков это складывалось
+# в минуты ожидания, а один застрявший снимок держал все следующие.
+# Теперь срок общий, у отдельного запроса короткий, а картинки идут
+# параллельно — но не больше нескольких сразу: одноплатник за домашним
+# роутером не должен забивать канал ради одной записи.
+
+# Общий срок на страницу, зеркало и все картинки. Считает вызывающая
+# сторона — здесь только значение, чтобы оно жило рядом с остальными.
+TOTAL_BUDGET = 120
+# Срок одного запроса: страница, зеркало или картинка.
+REQUEST_TIMEOUT = 25
+CONNECT_TIMEOUT = 10
+# Сколько картинок качаем одновременно.
+PARALLEL = 4
+
+# Обычный браузерный заголовок с честной подписью бота. Чужим краулером
+# не притворяемся: метаданные площадки отдают и так, а подмена агента
+# ради обхода — не то, чем должен заниматься бот оповещений.
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; RadarBot/1.0; "
+        "+https://github.com/Chistovik92/radar)"
+    ),
+    "Accept-Language": "ru,en;q=0.8",
+}
+
+
+async def download_all(session, links: list[str], limit_mb: int,
+                       parallel: int = PARALLEL) -> list[tuple[bytes, str]]:
+    """Качает картинки параллельно, сохраняя их порядок.
+
+    Порядок важен: первая в списке — главная картинка записи, и в альбоме
+    она должна идти первой. `gather` возвращает результаты в порядке
+    аргументов, а не завершения, поэтому порядок держится сам.
+    """
+    import asyncio
+
+    gate = asyncio.Semaphore(max(1, parallel))
+
+    async def one(link: str) -> tuple[bytes, str]:
+        async with gate:
+            data, _complaint = await fetch(session, link, limit_mb)
+        return data, filename_from(link)
+
+    results = await asyncio.gather(*(one(link) for link in links),
+                                   return_exceptions=True)
+    collected: list[tuple[bytes, str]] = []
+    for item in results:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+        if isinstance(item, BaseException):
+            log.debug("Картинка не скачана: %s", item)
+            continue
+        data, name = item
+        if data:
+            collected.append((data, name))
+    return collected
+
+
+async def collect(url: str, limit_mb: int) -> list[tuple[bytes, str]]:
+    """Все картинки записи: страница, при неудаче зеркало, затем загрузка.
+
+    Резолвер `netguard` отсекает внутренние адреса — и на самом запросе,
+    и на каждом редиректе: ссылку присылает кто угодно, и без этого бот
+    стал бы ходить по домашней сети за роутером по чужой указке.
+    """
+    import aiohttp
+
+    from . import netguard
+
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT,
+                                    connect=CONNECT_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout, headers=HEADERS,
+                                     connector=netguard.connector()) as session:
+        markup = await fetch_page(session, url)
+        links = from_page(markup, url)
+        if not links:
+            # Страница входа метаданных не отдаёт — пробуем зеркало,
+            # если оно для этой площадки есть (с 4.9.4.6).
+            links = await via_mirror(session, url)
+        if not links:
+            return []
+        return await download_all(session, links, limit_mb)

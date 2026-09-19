@@ -85,6 +85,10 @@ class Analysis:
     link: str = ""            # ссылка на новость (для RSS)
     all_clear: bool = False   # отбой ранее объявленной опасности
     historical: bool = False  # событие в прошлом: сводка, а не тревога
+    # Памятка, а не событие (с 4.9.9.2): инструкция о действиях при
+    # аварии, номера экстренных служб. Пересылается целиком и спокойно,
+    # без «опасности» в заголовке — тревогой она не является.
+    guidance: bool = False
     engine: str = "ai"  # ai | heuristic
 
     @classmethod
@@ -106,7 +110,7 @@ class Analysis:
         categories = [c for c in (payload.get("categories") or []) if c in CATEGORY_TITLES]
         severity = str(payload.get("severity") or "info").lower()
         scope = str(payload.get("scope") or "city").lower()
-        return cls(
+        return refine(cls(
             relevant=bool(payload.get("relevant")) and bool(categories),
             categories=categories,
             severity=severity if severity in SEVERITY_ICONS else "info",
@@ -121,7 +125,8 @@ class Analysis:
             link=link,
             all_clear=bool(payload.get("all_clear")),
             historical=bool(payload.get("historical")),
-        )
+            guidance=bool(payload.get("guidance")),
+        ))
 
     @property
     def is_city_wide(self) -> bool:
@@ -203,6 +208,97 @@ ALL_CLEAR_RE = re.compile(
     re.I,
 )
 
+# --------------------------------------------------------------------------
+#  Страховка поверх разбора ИИ (с 4.9.9.2)
+# --------------------------------------------------------------------------
+#
+# Модель — главный судья, но не единственный. Две ошибки она делала
+# на живом сервере, и обе стоят доверия к сигналам:
+#
+# * новость СМИ пересказывает уже прошедшую ракетную опасность
+#   («вечером в Саратове была объявлена ракетная опасность, она
+#   действовала с 21:10 до 22:40») — и уходила тревогой, потому что
+#   в тексте есть «ракетная опасность»;
+# * памятка ЖКХ о действиях при аварии уходила как авария с заголовком
+#   «ЖКХ и аварии на сетях» — хотя никакой аварии не было.
+#
+# Правила ниже не заменяют модель, а ловят то, что она пропустила.
+# Ошибиться в обратную сторону — спрятать настоящую тревогу — хуже,
+# поэтому обе проверки уступают признакам «происходит сейчас».
+
+# Сама опасность описана в прошедшем времени: «была объявлена»,
+# «объявлялась», «действовала», закрытый интервал «с 21:10 до 22:40».
+# Настоящее и перфект («объявлена», «введена», «действует») сюда
+# не попадают — это ровно то, что должно оставаться тревогой.
+PAST_THREAT_RE = re.compile(
+    r"\b(?:был[аои]?|ранее)\s+(?:\w+\s+){0,2}(?:объявлен|введ[её]н|действовал)\w*|"
+    r"\bобъявлял\w*|\bвводил\w*|\bдействовал\w*|"
+    r"\bс\s+\d{1,2}[:.]\d{2}\s+до\s+\d{1,2}[:.]\d{2}|"
+    r"\bв течение\s+(?:\d+\s+)?(?:час|минут)\w*",
+    re.I,
+)
+
+# Признаки того, что опасность действует прямо сейчас. При них
+# ни «прошедшее время», ни «памятка» тревогу не отменяют.
+LIVE_THREAT_RE = re.compile(
+    r"оставайтесь|укройтесь|пройдите в укрыти|пройти в укрыти|"
+    r"до (?:объявления )?отбоя|пока не будет объявлен отбой|"
+    r"\bдействует\b|сохраняется\b|продолжает действовать|"
+    r"прямо сейчас|в данный момент|\bвнимание\s*!",
+    re.I,
+)
+
+# Памятка, а не событие: как действовать, куда звонить.
+GUIDANCE_RE = re.compile(
+    r"памятк|инструкци\w*\s+(?:о|по)\s+действи|как (?:правильно )?действовать|"
+    r"что делать,?\s+(?:при|если|в случае)|правил\w*\s+поведения|"
+    r"порядок действий|рекомендаци\w*\s+(?:жител|населени|граждан)|"
+    r"номер\w*\s+(?:телефон\w*\s+)?(?:экстренн|аварийн|единой дежурн)|"
+    r"напоминаем\s+(?:жител|о правил|номер|порядок)",
+    re.I,
+)
+
+THREAT_CATEGORIES = frozenset({"bpla", "mchs"})
+
+
+def refine(analysis: "Analysis") -> "Analysis":
+    """Доправляет разбор там, где модель ошибалась (с 4.9.9.2).
+
+    Возвращает тот же объект — правка на месте, чтобы не терять поля,
+    которые сюда не относятся.
+    """
+    text = analysis.raw or analysis.summary
+    live = bool(LIVE_THREAT_RE.search(text))
+
+    # Памятка. От модели — верим как есть: она видит контекст целиком.
+    # От правила — только когда нет признаков «происходит сейчас»:
+    # живое оповещение с порядком действий памяткой не становится.
+    if not analysis.guidance and not live and GUIDANCE_RE.search(text):
+        analysis.guidance = True
+    if analysis.guidance:
+        # Памятка не бывает «в прошлом» и не бывает отбоем: это просто
+        # текст, который полезно прочитать. И она общегородская — улиц
+        # у инструкции нет, а по совпадению улиц её иначе не доставить.
+        analysis.historical = False
+        analysis.all_clear = False
+        analysis.severity = "info"
+        analysis.scope = "city"
+        analysis.streets = []
+        return analysis
+
+    # Прошедшая опасность, которую пересказывает новость.
+    if (
+        not analysis.historical
+        and not analysis.all_clear
+        and set(analysis.categories) & THREAT_CATEGORIES
+        and not live
+        and PAST_THREAT_RE.search(text)
+    ):
+        analysis.historical = True
+        analysis.severity = "info"
+    return analysis
+
+
 _STREET_TYPE_RE = (
     r"(?:ул(?:ица|\.)?|пр(?:оспект|-т|\.)?|пер(?:еулок|\.)?|б(?:ульвар|-р)|"
     r"ш(?:оссе|\.)?|пл(?:ощадь|\.)?|проезд|наб(?:ережная|\.)?|тракт|мкр(?:орайон)?)"
@@ -260,7 +356,7 @@ def heuristic_analysis(
     else:
         severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
     summary = re.sub(r"\s+", " ", text).strip()
-    return Analysis(
+    return refine(Analysis(
         relevant=True,
         all_clear=all_clear,
         historical=historical,
@@ -275,7 +371,7 @@ def heuristic_analysis(
         raw=text,
         link=link,
         engine="heuristic",
-    )
+    ))
 
 
 # --------------------------------------------------------------------------
@@ -499,6 +595,43 @@ def build_utility_alert(locations: Sequence[dict[str, Any]], events: Sequence[An
     return "\n".join(lines)
 
 
+# Предел текста памятки. Telegram режет на 4096, send_html делит длинное
+# на части, но памятка на три сообщения — это уже не памятка, а стена.
+GUIDANCE_LIMIT = 3000
+
+
+def source_link(analysis: Analysis) -> str:
+    """Ссылка на оригинал: сохранённая или собранная по имени канала."""
+    if analysis.link:
+        return analysis.link
+    name = (analysis.source or "").lstrip("@")
+    if re.fullmatch(r"[A-Za-z0-9_]{5,32}", name):
+        return f"https://t.me/{name}"
+    return ""
+
+
+def build_guidance(analysis: Analysis) -> str:
+    """Памятка целиком, со ссылкой на источник и без «опасности».
+
+    Пересылкой в прямом смысле это быть не может: бот читает каналы
+    через веб-превью, а не как участник, и переслать пост средствами
+    Telegram ему нечем. Поэтому — полный текст и ссылка на оригинал,
+    где пост виден таким, каким его опубликовали.
+    """
+    body = (analysis.raw or analysis.summary).strip()
+    if len(body) > GUIDANCE_LIMIT:
+        body = body[:GUIDANCE_LIMIT].rstrip() + "…"
+    lines = [
+        f"ℹ️ <b>Памятка</b> · {_source_label(analysis)}",
+        "",
+        esc(body),
+    ]
+    link = source_link(analysis)
+    if link:
+        lines += ["", f'🔗 <a href="{esc_attr(link)}">Оригинал сообщения</a>']
+    return "\n".join(lines)
+
+
 def cluster_title(cluster: Sequence[dict[str, Any]]) -> str:
     """Заголовок сводки погоды: одна локация или список объединённых."""
     names = ", ".join(_loc_label(loc) for loc in cluster)
@@ -567,9 +700,19 @@ def plan_alerts(
 
     city_buckets: dict[str, dict[str, Any]] = {}
     cluster_buckets: dict[int, dict[str, Any]] = {}
+    guidance: list[str] = []
 
     for analysis in analyses:
         if not analysis.relevant or not (set(analysis.categories) & enabled):
+            continue
+
+        # Памятка — отдельным сообщением, до разбора на тревоги: она
+        # не опасность и не должна попасть ни в «ОПАСНОСТЬ — город»,
+        # ни в «ЖКХ и аварии на сетях». География та же, что у тревоги:
+        # без подтверждённого города её не шлём.
+        if analysis.guidance:
+            if match_locations(analysis, locations):
+                guidance.append(build_guidance(analysis))
             continue
 
         # Событие в прошлом — не повод для тревоги. Оно уйдёт в сводку,
@@ -633,6 +776,9 @@ def plan_alerts(
                 ),
             )
         )
+    # Памятки — последними: сначала то, что происходит, потом то,
+    # что полезно знать.
+    messages.extend(("guidance", text) for text in guidance)
     return messages
 
 

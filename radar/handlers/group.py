@@ -153,6 +153,10 @@ async def track_membership(event: ChatMemberUpdated) -> None:
     if status in ("left", "kicked"):
         await repo.chat_forget(event.chat.id)
         chatlink.forget(event.chat.id)
+        # Чат, откуда бота выгнали, не должен висеть кнопкой в меню
+        # у пользователей: ссылка могла пережить бота, но звать туда
+        # от имени бота уже незачем.
+        await chatlink.refresh_published()
         log.info("Бот удалён из чата %s", event.chat.id)
         return
 

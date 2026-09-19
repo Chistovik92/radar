@@ -219,6 +219,27 @@ async def post_images(message: Message, url: str, user: dict | None = None) -> N
             pass
 
 
+async def _edit_quietly(notice, text: str) -> None:
+    """Правка служебного сообщения, которая не роняет обработчик.
+
+    «Не изменилось», «сообщение удалено», сетевая икота — всё это
+    не повод бросать работу на полпути: человек ждёт картинки, а не
+    идеального статуса.
+    """
+    try:
+        await notice.edit_text(text)
+    except TelegramBadRequest:
+        pass
+    except Exception:  # noqa: BLE001
+        log.debug("Служебное сообщение не обновлено", exc_info=True)
+
+
+def _swallow_result(finished: asyncio.Future) -> None:
+    """Забирает исключение брошенной задачи — чтобы asyncio не ругался."""
+    if not finished.cancelled():
+        _ = finished.exception()
+
+
 async def _send_post_images(message: Message, url: str, notice) -> bool:
     """Картинки из записи, в которой нет видео. False — не вышло.
 
@@ -227,52 +248,54 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     не всесильный — закрытая запись отдаёт страницу входа, и картинок
     в ней не будет. Тогда возвращаем False, и человек увидит объяснение.
     """
-    import aiohttp
     from aiogram.types import BufferedInputFile, InputMediaPhoto
 
     owner = storage.get_user(message.from_user.id)
     lang = i18n.language_of(owner)
-    await notice.edit_text(
-        i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
-    )
+    looking = i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
+    # Правка через обёртку, а не напрямую. До 4.9.9.2 здесь стоял голый
+    # edit_text с тем же текстом, что уже показан из post_images, —
+    # Telegram отвечает на это «message is not modified», исключение
+    # ничем не ловилось, и обработчик падал в первой же строке.
+    # Снаружи это выглядело как вечное «Ищу картинки в записи…»:
+    # ни картинок, ни объяснения, на каждой ссылке без исключения.
+    await _edit_quietly(notice, looking)
 
-    # Обычный User-Agent, а не наш: метаданные предпросмотра площадки
-    # отдают браузерам и краулерам, а незнакомому агенту нередко
-    # показывают страницу входа.
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (compatible; RadarBot/1.0; "
-            "+https://github.com/Chistovik92/radar)"
-        ),
-        "Accept-Language": "ru,en;q=0.8",
-    }
-    timeout = aiohttp.ClientTimeout(total=90)
     limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    # Общий срок на поиск и загрузку. Раньше срок был у каждого запроса
+    # отдельно — по 90 секунд на страницу, зеркало и каждую картинку,
+    # то есть на карусели из десяти снимков до пятнадцати минут
+    # «ищу картинки». Ждать дольше двух минут никто не станет.
+    # asyncio.wait, а не wait_for: wait_for ждёт, пока отмена дойдёт
+    # до застрявшего транспорта, и на этом когда-то зависала проверка
+    # ссылок (см. linkcheck._net_with_deadline).
+    task = asyncio.create_task(images.collect(url, limit_mb))
+    done, _pending = await asyncio.wait({task}, timeout=images.TOTAL_BUDGET)
+    if task not in done:
+        task.cancel()
+        task.add_done_callback(_swallow_result)
+        log.info("Картинки не собраны за %d с: %s", images.TOTAL_BUDGET, url)
+        await _edit_quietly(notice, i18n.t(
+            "img.too_slow", lang,
+            "🖼 Площадка не отдала картинки за две минуты — остановился.\n"
+            "<i>Такое бывает, когда запись закрыта или площадка тормозит "
+            "незнакомых посетителей. Попробуйте позже.</i>",
+        ))
+        return True  # объяснение уже показано, второе не нужно
+
+    try:
+        collected = task.result()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Сбор картинок не удался: %s", exc)
+        return False
 
     photos: list[tuple[bytes, str]] = []
     heavy: list[tuple[bytes, str]] = []
-
-    # Резолвер отсекает внутренние адреса — и на самом запросе,
-    # и на каждом редиректе: ссылку присылает кто угодно.
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers,
-                                     connector=netguard.connector()) as session:
-        markup = await images.fetch_page(session, url)
-        links = images.from_page(markup, url)
-        if not links:
-            # Страница входа метаданных не отдаёт — пробуем публичное
-            # зеркало: оно показывает запись анонимно (с 4.9.4.6).
-            links = await images.via_mirror(session, url)
-        if not links:
-            return False
-
-        for link in links:
-            data, _complaint = await images.fetch(session, link, limit_mb)
-            if not data:
-                continue
-            name = images.filename_from(link)
-            # Крупная картинка альбомом не уходит: у фотографий свой
-            # предел в 10 МБ. Такие отправляем отдельно, файлом.
-            (photos if images.as_photo(len(data)) else heavy).append((data, name))
+    for data, name in collected:
+        # Крупная картинка альбомом не уходит: у фотографий свой
+        # предел в 10 МБ. Такие отправляем отдельно, файлом.
+        (photos if images.as_photo(len(data)) else heavy).append((data, name))
 
     if not photos and not heavy:
         return False

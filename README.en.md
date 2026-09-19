@@ -1,4 +1,4 @@
-# Radar v4.9.9.1
+# Radar v4.9.9.2
 
 [Русская версия](README.md)
 
@@ -76,6 +76,25 @@ analysed by an AI model, then matched against your locations.
 * **News digests** — eighteen topics, delivered at a time you choose.
 * **SOS** — an alert to your trusted contacts with your location.
 * **Video download** — 20 clips a day for free, up to 50 MB each.
+
+Two rules added in 4.9.9.2:
+
+* **A retold past danger is a summary, not an alert.** A news item saying
+  "a missile danger was declared in the evening and lasted from 21:10 to
+  22:40" goes into the morning or evening summary as something that
+  happened. What decides is when the event itself took place, by the sense
+  of the text, not the words "missile danger" in the headline. If there is
+  a call to take cover or "until the all-clear" nearby, it is still an
+  alert: staying silent about a live danger is worse than sending one too
+  many.
+* **A memo is not an incident.** Instructions on what to do when a pipe
+  bursts or gas smells, or a list of emergency numbers, arrive in full with
+  a link to the original and a calm "ℹ️ Памятка" (memo) heading — without
+  "utility failures" and without danger. Like the alerts themselves, the
+  memo is sent in Russian: it retells Russian-language sources. The bot cannot forward the post by
+  Telegram means: it reads channels through the web preview, not as a
+  member. Posts from Telegram channels now carry a link to the original,
+  like RSS news always did.
 
 Sources are polled **in parallel**, with at most `SOURCE_CONCURRENCY` of
 them at a time (6 by default). Until 4.7.7 the walk was sequential: a
@@ -407,6 +426,11 @@ than a fallback. Two ways, whichever suits:
   it again;
 * **in the panel** — the "Chats" section, the "Invite" column: the field
   is edited where it is shown. An empty field removes your own link.
+
+Since 4.9.9.2 such chats are visible to **all users**: a "💬 Our chats"
+button appears in the main menu with a button for each one. Only chats
+with a manually set link are shown: a closed group the bot was merely added
+to for moderation does not become open to everyone because of it.
 
 Once saved, the jump button in the chat list follows it. Any address of
 the form `https://t.me/…` will do.

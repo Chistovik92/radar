@@ -53,6 +53,15 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
                               callback_data="usr:invite")],
     ]
 
+    # Чаты со ссылкой приглашения (с 4.9.9.2). Кнопка появляется, только
+    # когда есть куда вести: пустой раздел обещал бы впустую.
+    from . import chatlink
+
+    if chatlink.published():
+        rows.append([InlineKeyboardButton(
+            text=label("menu.groups", "💬 Наши чаты"),
+            callback_data="grp:list")])
+
     if features.enabled("digest"):
         rows.append([InlineKeyboardButton(
             text=label("menu.digest", "📰 Новостные подборки"),

@@ -21,7 +21,7 @@ import logging
 import socket
 import ssl
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
@@ -32,7 +32,7 @@ MAX_REDIRECTS = 5
 RDAP_BOOTSTRAP = "https://rdap.org/domain/"
 
 
-async def _session() -> aiohttp.ClientSession:
+def _session() -> aiohttp.ClientSession:
     """Сессия, которая не соединится с внутренним адресом.
 
     Проверка `_is_public_ip` ниже делается ДО запроса, а соединение
@@ -40,6 +40,13 @@ async def _session() -> aiohttp.ClientSession:
     Домен с коротким TTL отдавал публичный адрес на проверку
     и `127.0.0.1` на само соединение (DNS rebinding). Резолвер
     в соединителе закрывает и это, и редиректы.
+
+    Обычная функция, а не корутина. До 4.9.9.2 здесь стояло
+    `async def`, а вызывалась она как `async with _session() as sess` —
+    корутина не бывает контекстным менеджером, и каждый такой вызов
+    кончался `TypeError`. Проверка ловила его и писала «error: TypeError»,
+    то есть с 4.9.4 ни одна сетевая проверка ссылки не отработала
+    ни разу: ни редиректы, ни возраст домена, ни Safe Browsing.
     """
     connector = None
     try:
@@ -81,6 +88,22 @@ async def _resolve(host: str) -> list[str]:
         return []
 
 
+# Коды, которыми сервер отвечает «HEAD не поддерживаю». Такой сайт
+# на GET может редиректить как обычно, и считать его конечной точкой
+# цепочки после одного HEAD — значит показать человеку не тот адрес.
+_HEAD_REFUSED = frozenset({403, 404, 405, 501})
+
+
+async def _probe_redirect(sess, url: str) -> tuple[int, str]:
+    """Код ответа и адрес редиректа. HEAD, при отказе — GET без тела."""
+    async with sess.head(url, allow_redirects=False) as resp:
+        if resp.status not in _HEAD_REFUSED:
+            return resp.status, resp.headers.get("Location") or ""
+    async with sess.get(url, allow_redirects=False) as resp:
+        # Тело не читаем: нужен только код и заголовок.
+        return resp.status, resp.headers.get("Location") or ""
+
+
 async def expand(url: str) -> "NetResult":
     from .analyze import NetResult
 
@@ -103,17 +126,19 @@ async def expand(url: str) -> "NetResult":
 
         try:
             async with _session() as sess:
-                async with sess.head(cur, allow_redirects=False) as resp:
-                    if 300 <= resp.status < 400:
-                        location = resp.headers.get("Location")
-                        if not location:
-                            break
-                        cur = location if location.startswith("http") else f"{parsed.scheme}://{host}{location}"
-                        res.chain.append(cur)
-                        continue
-                    res.success = True
-                    res.final_url = cur
-                    return res
+                status, location = await _probe_redirect(sess, cur)
+                if 300 <= status < 400:
+                    if not location:
+                        break
+                    # urljoin, а не склейка: адрес редиректа бывает
+                    # относительным без ведущего слэша, с портом или
+                    # «//host/path» — склейка теряла порт и путь.
+                    cur = urljoin(cur, location)
+                    res.chain.append(cur)
+                    continue
+                res.success = True
+                res.final_url = cur
+                return res
         except asyncio.TimeoutError:
             res.notes.append("timeout")
             break
@@ -191,10 +216,14 @@ async def safe_browsing(url: str, api_key: str | None) -> "NetResult":
                 "threatEntries": [{"url": url}],
             },
         }
+        # Ключ — заголовком, а не в адресе. В адресе он попадал бы
+        # в текст исключения aiohttp, а оттуда в журнал: при любом
+        # сетевом сбое ключ оказывался бы в логах открытым текстом.
         async with _session() as sess:
             async with sess.post(
-                f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={api_key}",
+                "https://safebrowsing.googleapis.com/v4/threatMatches:find",
                 json=body,
+                headers={"X-Goog-Api-Key": api_key},
             ) as resp:
                 if resp.status != 200:
                     res.notes.append(f"safebrowsing {resp.status}")
@@ -206,7 +235,8 @@ async def safe_browsing(url: str, api_key: str | None) -> "NetResult":
                     res.threats.append(t)
                 res.success = True
     except Exception as exc:  # noqa: BLE001
-        log.warning("safebrowsing failed %s: %s", url, exc)
+        # Только тип исключения: текст может нести заголовки запроса.
+        log.warning("safebrowsing failed %s: %s", url, type(exc).__name__)
         res.notes.append(f"safebrowsing error: {type(exc).__name__}")
     return res
 
@@ -309,9 +339,12 @@ async def cert_info(host: str) -> "NetResult":
         if ssl_object is not None:
             res.tls_version = ssl_object.version() or ""
 
-        sock = writer.get_extra_info("socket")
-        if sock:
-            cert = sock.getpeercert()
+        # Сертификат — через «peercert», а не через сокет. asyncio отдаёт
+        # по «socket» обёртку TransportSocket, у которой getpeercert нет:
+        # до 4.9.9.2 здесь каждый раз был AttributeError, и срок
+        # сертификата не проверялся никогда.
+        cert = writer.get_extra_info("peercert") or {}
+        if cert:
             not_after = cert.get("notAfter")
             if not_after:
                 expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
@@ -360,17 +393,18 @@ async def http_security(url: str) -> "NetResult":
 
                 # Форма входа на незащищённой странице: пароль уходит
                 # открытым текстом, и это не зависит от честности сайта.
+                # Читаем только начало: по ссылке может лежать образ
+                # диска на гигабайты, а resp.text() тянул его целиком
+                # в память одноплатника ради шестидесяти килобайт.
+                head = await resp.content.read(65536)
+                low = head.decode("utf-8", errors="replace").lower()
                 if url.lower().startswith("http://"):
-                    body = await resp.text(errors="replace")
-                    low = body[:65536].lower()
                     if "<form" in low and (
                         'type="password"' in low or "type='password'" in low
                     ):
                         res.login_form_http = True
                     # Смешанный контент: HTTPS-страница, тянущая HTTP.
                 elif url.lower().startswith("https://"):
-                    body = await resp.text(errors="replace")
-                    low = body[:65536].lower()
                     if 'src="http://' in low or "src='http://" in low:
                         res.mixed_content = low.count('src="http://') + \
                             low.count("src='http://")
@@ -385,20 +419,55 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
     from .analyze import NetResult
 
     chain = await expand(url)
-    if not chain.success:
-        return chain
-
-    parsed = urlparse(chain.final_url)
+    # Сбой цепочки редиректов — не повод бросать остальное. До 4.9.9.2
+    # проверка на этом заканчивалась: сайт, отвергший HEAD или
+    # ответивший медленно, оставался без возраста домена, Safe Browsing
+    # и сертификата, а человек видел «0/100, риск Ok» — то есть
+    # отсутствие проверки выглядело как чистый результат.
+    target = chain.final_url or url
+    parsed = urlparse(target)
     host = parsed.netloc.split("@")[-1].split(":")[0]
 
-    age = await domain_age(host)
-    sb = await safe_browsing(chain.final_url, api_key)
-    cert = await cert_info(host)
-    sec = await http_security(chain.final_url)
+    # Внутренний адрес — дальше не идём. Проверка сертификата открывает
+    # соединение напрямую, мимо фильтра сессии, и без этого пошла бы
+    # по домашней сети за роутером по чужой ссылке.
+    if "private ip blocked" in chain.notes or not host:
+        return chain
+    addresses = await _resolve(host)
+    if not addresses:
+        # Имя не разрешилось — проверять нечего, и это само по себе
+        # признак: у живого сайта DNS есть.
+        if "dns failed" not in chain.notes:
+            chain.notes.append("dns failed")
+        return chain
+    if not all(_is_public_ip(ip) for ip in addresses):
+        chain.notes.append("private ip blocked")
+        return chain
+
+    # Параллельно: проверки друг от друга не зависят, и последовательно
+    # они складывались в полминуты ожидания. Сбой одной не роняет другие.
+    results = await asyncio.gather(
+        domain_age(host),
+        safe_browsing(target, api_key),
+        cert_info(host),
+        http_security(target),
+        return_exceptions=True,
+    )
+    for item in results:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+    age, sb, cert, sec = (
+        item if isinstance(item, NetResult) else NetResult(
+            notes=[f"error: {type(item).__name__}"])
+        for item in results
+    )
 
     return NetResult(
-        success=True,
-        final_url=chain.final_url,
+        # Успехом считаем, если сработала хоть одна содержательная
+        # проверка: иначе «не проверено» опять покажется «безопасно».
+        success=bool(chain.success or age.domain_age_days is not None
+                     or sb.success or cert.success or sec.success),
+        final_url=target,
         chain=chain.chain,
         domain_age_days=age.domain_age_days,
         domain_registrar=age.domain_registrar,

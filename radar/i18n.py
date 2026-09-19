@@ -62,6 +62,11 @@ EN_STRINGS: dict[str, str] = {
     "menu.history": "📖 History",
     "menu.media": "🎬 Download video",
     "menu.partners": "🤝 Partner projects",
+    "menu.groups": "💬 Our chats",
+    "groups.title": "💬 <b>Our chats</b>",
+    "groups.hint": "Tap a chat to open it. Some of them admit by request — "
+                   "the chat administrators approve it.",
+    "groups.empty": "There are no chats to join yet.",
     "menu.home": "🏠 Main menu",
     "menu.back": "◀️ Back",
 

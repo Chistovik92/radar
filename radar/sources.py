@@ -82,8 +82,19 @@ def parse_channel(page: str, channel: str, limit: int) -> list[Item]:
     items: list[Item] = []
     for block in blocks[-limit:]:
         text = clean(block.get_text(separator="\n"))
-        if len(text) >= 20:
-            items.append(Item(source=channel, text=text, kind="tg"))
+        if len(text) < 20:
+            continue
+        # Ссылка на сам пост (с 4.9.9.2). Без неё сообщение из канала
+        # нельзя было открыть в оригинале — у RSS ссылка была всегда,
+        # у Telegram не было никогда, хотя веб-превью отдаёт её
+        # в атрибуте data-post рядом с текстом.
+        link = ""
+        holder = block.find_parent(attrs={"data-post": True})
+        if holder is not None:
+            post = str(holder.get("data-post") or "").strip("/")
+            if post and "/" in post:
+                link = f"https://t.me/{post}"
+        items.append(Item(source=channel, text=text, kind="tg", link=link))
     return items
 
 

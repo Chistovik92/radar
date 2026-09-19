@@ -22,6 +22,46 @@ def _verdict_icon(level: str) -> str:
     return {"ok": "✅", "attention": "⚠️", "suspect": "🔶", "danger": "🚨"}.get(level, "❓")
 
 
+# Служебные пометки сетевых проверок — человеческими словами (с 4.9.9.2).
+# Раньше в отчёт уходило как есть: «error: TypeError», «no api key»,
+# «rdap 404». Человек не знает, что это, и не может понять, насколько
+# доверять остальному отчёту.
+_NOTES = {
+    "dns failed": "имя сайта не находится в DNS — сайта может не существовать",
+    "private ip blocked": "адрес ведёт во внутреннюю сеть — проверка остановлена",
+    "timeout": "сайт не ответил вовремя",
+    "no api key": "Safe Browsing не проверен — не задан ключ Google",
+}
+
+
+def humanize_note(note: str) -> str:
+    """Пометка проверки понятным текстом. Незнакомая остаётся как есть."""
+    text = (note or "").strip()
+    if text in _NOTES:
+        return _NOTES[text]
+    if text.startswith("rdap "):
+        return "возраст домена не узнать: реестр не ответил"
+    if text.startswith("safebrowsing "):
+        return "Safe Browsing не ответил"
+    if text.startswith("cert error"):
+        return "сертификат не получен: сайт без HTTPS или отверг соединение"
+    if text.startswith("security error"):
+        return "заголовки безопасности не получены"
+    if text.startswith("error:"):
+        return "сетевая проверка не удалась"
+    return text
+
+
+def net_incomplete(v: Verdict) -> bool:
+    """Сетевые проверки не дали ничего содержательного.
+
+    Тогда нулевой счёт означает не «чисто», а «не проверено», и зелёная
+    галочка рядом с ним — обман: до 4.9.9.2 именно так и выглядел отчёт
+    при сломанной сетевой части.
+    """
+    return v.net is not None and not v.net.success
+
+
 def build_report(v: Verdict) -> str:
     if not v.signals and not v.net:
         return "Ничего не удалось проанализировать."
@@ -45,8 +85,8 @@ def build_report(v: Verdict) -> str:
         if not v.net.success:
             lines.append("  <i>Не удалось завершить сетевую проверку</i>")
             if v.net.notes:
-                for note in v.net.notes:
-                    lines.append(f"      <code>{html.escape(note)}</code>")
+                for note in dict.fromkeys(v.net.notes):
+                    lines.append(f"      • {html.escape(humanize_note(note))}")
         else:
             if v.net.chain and len(v.net.chain) > 1:
                 lines.append("  <b>Перенаправления:</b>")
@@ -104,15 +144,21 @@ def build_report(v: Verdict) -> str:
                     lines.append(f"      <code>{html.escape(t)}</code>")
                 lines.append("")
             if v.net.notes:
-                lines.append("  <b>Примечания сети:</b>")
-                for note in v.net.notes:
-                    lines.append(f"      <code>{html.escape(note)}</code>")
+                lines.append("  <b>Что проверить не удалось:</b>")
+                for note in dict.fromkeys(v.net.notes):
+                    lines.append(f"      • {html.escape(humanize_note(note))}")
                 lines.append("")
     score = v.score
     level = v.level
     icon = _verdict_icon(level)
-    lines.append(f"<b>Итоговый счёт:</b> {score}/100 {icon}")
-    lines.append(f"<b>Уровень риска:</b> {level.title()}")
+    if net_incomplete(v) and level == "ok":
+        # Признаков нет, но и сеть не проверена — это не «чисто».
+        lines.append(f"<b>Итоговый счёт:</b> {score}/100 ❓")
+        lines.append("<b>Уровень риска:</b> не определён — сетевая часть "
+                     "не прошла, оценка только по виду адреса")
+    else:
+        lines.append(f"<b>Итоговый счёт:</b> {score}/100 {icon}")
+        lines.append(f"<b>Уровень риска:</b> {level.title()}")
     lines.append("")
     lines.append(
         "⚠️ <i>Это не гарантия безопасности. "

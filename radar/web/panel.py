@@ -3229,6 +3229,8 @@ async def create_app() -> Any:
         # Запомненное сбрасываем: иначе кнопка ещё сутки вела бы
         # по прежнему адресу.
         chatlink.forget(chat_id)
+        # Меню пользователей строится из этого списка — обновляем сразу.
+        await chatlink.refresh_published()
         audit.record(session.user_key,
                      "задана ссылка чата" if link else "снята ссылка чата",
                      str(chat_id))

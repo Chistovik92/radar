@@ -235,10 +235,14 @@ class TestDescription(unittest.TestCase):
 class MirrorTest(unittest.TestCase):
     """Публичные зеркала записей: адрес и разбор ответа (с 4.9.4.6)."""
 
-    def test_mirror_for_instagram(self):
+    def test_no_dead_mirror_for_instagram(self):
+        """ddinstagram.com закрылся (с 4.9.9.2 DNS его не находит).
+        Мёртвое зеркало хуже отсутствующего: каждая ссылка тратила
+        на него запрос и время человека."""
         url = "https://www.instagram.com/p/Cx123AbCdEf/"
-        self.assertEqual(images.mirror_for(url),
-                         "https://ddinstagram.com/p/Cx123AbCdEf")
+        self.assertEqual(images.mirror_for(url), "")
+        for _domain, base, _kind in images.MIRROR_URLS:
+            self.assertNotIn("ddinstagram", base)
 
     def test_mirror_for_x(self):
         url = "https://x.com/user/status/1234567890"

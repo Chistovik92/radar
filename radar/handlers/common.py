@@ -286,8 +286,10 @@ async def menu_about(call: CallbackQuery) -> None:
         "",
         "<i>Система не заменяет официальные каналы оповещения.</i>",
     ]
-    if config.PROMO_ENABLED and config.PROMO_TEXT:
-        parts += ["", "———", "", config.PROMO_TEXT]
+    # Текст о партнёрском проекте отсюда убран в 4.9.9.2: проект стал
+    # рекламным продуктом со своим разделом «Партнёрские проекты»,
+    # а описание системы — не место для рекламы. Кнопка раздела ниже
+    # остаётся: кто захочет, найдёт.
     await safe_edit(call, "\n".join(parts), keyboards.promo_with_back())
 
 

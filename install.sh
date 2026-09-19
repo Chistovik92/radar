@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.9.1 — автономный установщик.
+# Система «Радар» v4.9.9.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.9.1"
+VERSION="4.9.9.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3238,6 +3238,24 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("4.9.9.2", [
+        "🖼 <b>Картинки из записей больше не зависают.</b> Поиск падал "
+        "на первом же шаге и оставлял «Ищу картинки…» навсегда. Теперь "
+        "картинки качаются параллельно, а если площадка не отдаёт их "
+        "за две минуты — бот так и говорит.",
+        "🔍 <b>Проверка ссылок заработала полностью.</b> Сетевая часть — "
+        "редиректы, возраст домена, Safe Browsing, сертификат — из-за "
+        "ошибки в коде не выполнялась вовсе. Исправлено, а непроверенное "
+        "больше не выглядит как «безопасно».",
+        "🗞 <b>Прошедшая опасность — в сводку, а не тревогой.</b> Новость "
+        "о том, что ракетная опасность действовала вчера вечером, больше "
+        "не поднимает тревогу: она уходит в сводку как случившееся.",
+        "ℹ️ <b>Памятки ЖКХ приходят целиком.</b> Инструкция о действиях "
+        "при аварии — полным текстом, со ссылкой на оригинал и без "
+        "«опасности» в заголовке.",
+        "💬 <b>Наши чаты — в главном меню.</b> Чаты, для которых задана "
+        "ссылка приглашения, теперь видны всем пользователям.",
+    ]),
     ("4.9.9.1", [
         "☁️ <b>Облака подключаются из панели.</b> Раздел «Облако» заводит "
         "и убирает хранилища сам — WebDAV, S3, SFTP и FTP, всё, чему "
@@ -4719,6 +4737,13 @@ async def prepare_database() -> None:
         )
     await storage.load()
     features.apply(await repo.load_features())
+    # Чаты со своей ссылкой — для кнопки «💬 Наши чаты» в меню
+    # (с 4.9.9.2). Меню синхронное и в базу само не ходит.
+    from radar import chatlink
+
+    published = await chatlink.refresh_published()
+    if published:
+        log.info("Чатов в меню пользователей: %d", published)
     active = sum(1 for flag in features.FLAGS if features.enabled(flag.key))
     log.info("Возможностей включено: %d из %d", active, len(features.FLAGS))
     logstore.ensure_directory()
@@ -4875,7 +4900,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.9.1"
+__version__ = "4.9.9.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -5932,6 +5957,10 @@ class Analysis:
     link: str = ""            # ссылка на новость (для RSS)
     all_clear: bool = False   # отбой ранее объявленной опасности
     historical: bool = False  # событие в прошлом: сводка, а не тревога
+    # Памятка, а не событие (с 4.9.9.2): инструкция о действиях при
+    # аварии, номера экстренных служб. Пересылается целиком и спокойно,
+    # без «опасности» в заголовке — тревогой она не является.
+    guidance: bool = False
     engine: str = "ai"  # ai | heuristic
 
     @classmethod
@@ -5953,7 +5982,7 @@ class Analysis:
         categories = [c for c in (payload.get("categories") or []) if c in CATEGORY_TITLES]
         severity = str(payload.get("severity") or "info").lower()
         scope = str(payload.get("scope") or "city").lower()
-        return cls(
+        return refine(cls(
             relevant=bool(payload.get("relevant")) and bool(categories),
             categories=categories,
             severity=severity if severity in SEVERITY_ICONS else "info",
@@ -5968,7 +5997,8 @@ class Analysis:
             link=link,
             all_clear=bool(payload.get("all_clear")),
             historical=bool(payload.get("historical")),
-        )
+            guidance=bool(payload.get("guidance")),
+        ))
 
     @property
     def is_city_wide(self) -> bool:
@@ -6050,6 +6080,97 @@ ALL_CLEAR_RE = re.compile(
     re.I,
 )
 
+# --------------------------------------------------------------------------
+#  Страховка поверх разбора ИИ (с 4.9.9.2)
+# --------------------------------------------------------------------------
+#
+# Модель — главный судья, но не единственный. Две ошибки она делала
+# на живом сервере, и обе стоят доверия к сигналам:
+#
+# * новость СМИ пересказывает уже прошедшую ракетную опасность
+#   («вечером в Саратове была объявлена ракетная опасность, она
+#   действовала с 21:10 до 22:40») — и уходила тревогой, потому что
+#   в тексте есть «ракетная опасность»;
+# * памятка ЖКХ о действиях при аварии уходила как авария с заголовком
+#   «ЖКХ и аварии на сетях» — хотя никакой аварии не было.
+#
+# Правила ниже не заменяют модель, а ловят то, что она пропустила.
+# Ошибиться в обратную сторону — спрятать настоящую тревогу — хуже,
+# поэтому обе проверки уступают признакам «происходит сейчас».
+
+# Сама опасность описана в прошедшем времени: «была объявлена»,
+# «объявлялась», «действовала», закрытый интервал «с 21:10 до 22:40».
+# Настоящее и перфект («объявлена», «введена», «действует») сюда
+# не попадают — это ровно то, что должно оставаться тревогой.
+PAST_THREAT_RE = re.compile(
+    r"\b(?:был[аои]?|ранее)\s+(?:\w+\s+){0,2}(?:объявлен|введ[её]н|действовал)\w*|"
+    r"\bобъявлял\w*|\bвводил\w*|\bдействовал\w*|"
+    r"\bс\s+\d{1,2}[:.]\d{2}\s+до\s+\d{1,2}[:.]\d{2}|"
+    r"\bв течение\s+(?:\d+\s+)?(?:час|минут)\w*",
+    re.I,
+)
+
+# Признаки того, что опасность действует прямо сейчас. При них
+# ни «прошедшее время», ни «памятка» тревогу не отменяют.
+LIVE_THREAT_RE = re.compile(
+    r"оставайтесь|укройтесь|пройдите в укрыти|пройти в укрыти|"
+    r"до (?:объявления )?отбоя|пока не будет объявлен отбой|"
+    r"\bдействует\b|сохраняется\b|продолжает действовать|"
+    r"прямо сейчас|в данный момент|\bвнимание\s*!",
+    re.I,
+)
+
+# Памятка, а не событие: как действовать, куда звонить.
+GUIDANCE_RE = re.compile(
+    r"памятк|инструкци\w*\s+(?:о|по)\s+действи|как (?:правильно )?действовать|"
+    r"что делать,?\s+(?:при|если|в случае)|правил\w*\s+поведения|"
+    r"порядок действий|рекомендаци\w*\s+(?:жител|населени|граждан)|"
+    r"номер\w*\s+(?:телефон\w*\s+)?(?:экстренн|аварийн|единой дежурн)|"
+    r"напоминаем\s+(?:жител|о правил|номер|порядок)",
+    re.I,
+)
+
+THREAT_CATEGORIES = frozenset({"bpla", "mchs"})
+
+
+def refine(analysis: "Analysis") -> "Analysis":
+    """Доправляет разбор там, где модель ошибалась (с 4.9.9.2).
+
+    Возвращает тот же объект — правка на месте, чтобы не терять поля,
+    которые сюда не относятся.
+    """
+    text = analysis.raw or analysis.summary
+    live = bool(LIVE_THREAT_RE.search(text))
+
+    # Памятка. От модели — верим как есть: она видит контекст целиком.
+    # От правила — только когда нет признаков «происходит сейчас»:
+    # живое оповещение с порядком действий памяткой не становится.
+    if not analysis.guidance and not live and GUIDANCE_RE.search(text):
+        analysis.guidance = True
+    if analysis.guidance:
+        # Памятка не бывает «в прошлом» и не бывает отбоем: это просто
+        # текст, который полезно прочитать. И она общегородская — улиц
+        # у инструкции нет, а по совпадению улиц её иначе не доставить.
+        analysis.historical = False
+        analysis.all_clear = False
+        analysis.severity = "info"
+        analysis.scope = "city"
+        analysis.streets = []
+        return analysis
+
+    # Прошедшая опасность, которую пересказывает новость.
+    if (
+        not analysis.historical
+        and not analysis.all_clear
+        and set(analysis.categories) & THREAT_CATEGORIES
+        and not live
+        and PAST_THREAT_RE.search(text)
+    ):
+        analysis.historical = True
+        analysis.severity = "info"
+    return analysis
+
+
 _STREET_TYPE_RE = (
     r"(?:ул(?:ица|\.)?|пр(?:оспект|-т|\.)?|пер(?:еулок|\.)?|б(?:ульвар|-р)|"
     r"ш(?:оссе|\.)?|пл(?:ощадь|\.)?|проезд|наб(?:ережная|\.)?|тракт|мкр(?:орайон)?)"
@@ -6107,7 +6228,7 @@ def heuristic_analysis(
     else:
         severity = "critical" if {"bpla", "mchs"} & set(categories) else "warning"
     summary = re.sub(r"\s+", " ", text).strip()
-    return Analysis(
+    return refine(Analysis(
         relevant=True,
         all_clear=all_clear,
         historical=historical,
@@ -6122,7 +6243,7 @@ def heuristic_analysis(
         raw=text,
         link=link,
         engine="heuristic",
-    )
+    ))
 
 
 # --------------------------------------------------------------------------
@@ -6346,6 +6467,43 @@ def build_utility_alert(locations: Sequence[dict[str, Any]], events: Sequence[An
     return "\n".join(lines)
 
 
+# Предел текста памятки. Telegram режет на 4096, send_html делит длинное
+# на части, но памятка на три сообщения — это уже не памятка, а стена.
+GUIDANCE_LIMIT = 3000
+
+
+def source_link(analysis: Analysis) -> str:
+    """Ссылка на оригинал: сохранённая или собранная по имени канала."""
+    if analysis.link:
+        return analysis.link
+    name = (analysis.source or "").lstrip("@")
+    if re.fullmatch(r"[A-Za-z0-9_]{5,32}", name):
+        return f"https://t.me/{name}"
+    return ""
+
+
+def build_guidance(analysis: Analysis) -> str:
+    """Памятка целиком, со ссылкой на источник и без «опасности».
+
+    Пересылкой в прямом смысле это быть не может: бот читает каналы
+    через веб-превью, а не как участник, и переслать пост средствами
+    Telegram ему нечем. Поэтому — полный текст и ссылка на оригинал,
+    где пост виден таким, каким его опубликовали.
+    """
+    body = (analysis.raw or analysis.summary).strip()
+    if len(body) > GUIDANCE_LIMIT:
+        body = body[:GUIDANCE_LIMIT].rstrip() + "…"
+    lines = [
+        f"ℹ️ <b>Памятка</b> · {_source_label(analysis)}",
+        "",
+        esc(body),
+    ]
+    link = source_link(analysis)
+    if link:
+        lines += ["", f'🔗 <a href="{esc_attr(link)}">Оригинал сообщения</a>']
+    return "\n".join(lines)
+
+
 def cluster_title(cluster: Sequence[dict[str, Any]]) -> str:
     """Заголовок сводки погоды: одна локация или список объединённых."""
     names = ", ".join(_loc_label(loc) for loc in cluster)
@@ -6414,9 +6572,19 @@ def plan_alerts(
 
     city_buckets: dict[str, dict[str, Any]] = {}
     cluster_buckets: dict[int, dict[str, Any]] = {}
+    guidance: list[str] = []
 
     for analysis in analyses:
         if not analysis.relevant or not (set(analysis.categories) & enabled):
+            continue
+
+        # Памятка — отдельным сообщением, до разбора на тревоги: она
+        # не опасность и не должна попасть ни в «ОПАСНОСТЬ — город»,
+        # ни в «ЖКХ и аварии на сетях». География та же, что у тревоги:
+        # без подтверждённого города её не шлём.
+        if analysis.guidance:
+            if match_locations(analysis, locations):
+                guidance.append(build_guidance(analysis))
             continue
 
         # Событие в прошлом — не повод для тревоги. Оно уйдёт в сводку,
@@ -6480,6 +6648,9 @@ def plan_alerts(
                 ),
             )
         )
+    # Памятки — последними: сначала то, что происходит, потом то,
+    # что полезно знать.
+    messages.extend(("guidance", text) for text in guidance)
     return messages
 
 
@@ -9531,8 +9702,13 @@ async def fetch_page(session, url: str, limit_kb: int = 512) -> str:
 # именно фолбэк после основной попытки, а не замена ей. Отказ зеркала
 # не ошибка: человек просто получит объяснение, как и раньше.
 
+# ddinstagram.com убран в 4.9.9.2: домен больше не существует (DNS
+# отвечает «не найдено»), и каждая ссылка на Instagram впустую тратила
+# на него запрос. Замены с той же надёжностью нет — открытые зеркала
+# Instagram в 2026 году либо закрылись, либо отдают браузеру рекламу
+# вместо записи. Поэтому для Instagram зеркала пока нет вовсе: честный
+# отказ быстрее и понятнее, чем ожидание мёртвого сервиса.
 MIRROR_URLS = (
-    ("instagram.com", "https://ddinstagram.com", "page"),
     ("x.com", "https://api.fxtwitter.com", "json"),
     ("twitter.com", "https://api.fxtwitter.com", "json"),
 )
@@ -9602,6 +9778,96 @@ async def via_mirror(session, url: str) -> list[str]:
     if kind == "json":
         return from_fxtwitter(payload)
     return from_page(payload, target)
+
+
+# --------------------------------------------------------------------------
+#  Сбор картинок записи целиком (с 4.9.9.2)
+# --------------------------------------------------------------------------
+#
+# До 4.9.9.2 у каждого запроса был свой таймаут в 90 секунд, а картинки
+# качались по одной. На карусели из десяти снимков это складывалось
+# в минуты ожидания, а один застрявший снимок держал все следующие.
+# Теперь срок общий, у отдельного запроса короткий, а картинки идут
+# параллельно — но не больше нескольких сразу: одноплатник за домашним
+# роутером не должен забивать канал ради одной записи.
+
+# Общий срок на страницу, зеркало и все картинки. Считает вызывающая
+# сторона — здесь только значение, чтобы оно жило рядом с остальными.
+TOTAL_BUDGET = 120
+# Срок одного запроса: страница, зеркало или картинка.
+REQUEST_TIMEOUT = 25
+CONNECT_TIMEOUT = 10
+# Сколько картинок качаем одновременно.
+PARALLEL = 4
+
+# Обычный браузерный заголовок с честной подписью бота. Чужим краулером
+# не притворяемся: метаданные площадки отдают и так, а подмена агента
+# ради обхода — не то, чем должен заниматься бот оповещений.
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; RadarBot/1.0; "
+        "+https://github.com/Chistovik92/radar)"
+    ),
+    "Accept-Language": "ru,en;q=0.8",
+}
+
+
+async def download_all(session, links: list[str], limit_mb: int,
+                       parallel: int = PARALLEL) -> list[tuple[bytes, str]]:
+    """Качает картинки параллельно, сохраняя их порядок.
+
+    Порядок важен: первая в списке — главная картинка записи, и в альбоме
+    она должна идти первой. `gather` возвращает результаты в порядке
+    аргументов, а не завершения, поэтому порядок держится сам.
+    """
+    import asyncio
+
+    gate = asyncio.Semaphore(max(1, parallel))
+
+    async def one(link: str) -> tuple[bytes, str]:
+        async with gate:
+            data, _complaint = await fetch(session, link, limit_mb)
+        return data, filename_from(link)
+
+    results = await asyncio.gather(*(one(link) for link in links),
+                                   return_exceptions=True)
+    collected: list[tuple[bytes, str]] = []
+    for item in results:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+        if isinstance(item, BaseException):
+            log.debug("Картинка не скачана: %s", item)
+            continue
+        data, name = item
+        if data:
+            collected.append((data, name))
+    return collected
+
+
+async def collect(url: str, limit_mb: int) -> list[tuple[bytes, str]]:
+    """Все картинки записи: страница, при неудаче зеркало, затем загрузка.
+
+    Резолвер `netguard` отсекает внутренние адреса — и на самом запросе,
+    и на каждом редиректе: ссылку присылает кто угодно, и без этого бот
+    стал бы ходить по домашней сети за роутером по чужой указке.
+    """
+    import aiohttp
+
+    from . import netguard
+
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT,
+                                    connect=CONNECT_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout, headers=HEADERS,
+                                     connector=netguard.connector()) as session:
+        markup = await fetch_page(session, url)
+        links = from_page(markup, url)
+        if not links:
+            # Страница входа метаданных не отдаёт — пробуем зеркало,
+            # если оно для этой площадки есть (с 4.9.4.6).
+            links = await via_mirror(session, url)
+        if not links:
+            return []
+        return await download_all(session, links, limit_mb)
 RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/secrets.py"
 cat > "radar/secrets.py" <<'RADAR_FILE_22'
@@ -13162,6 +13428,11 @@ EN_STRINGS: dict[str, str] = {
     "menu.history": "📖 History",
     "menu.media": "🎬 Download video",
     "menu.partners": "🤝 Partner projects",
+    "menu.groups": "💬 Our chats",
+    "groups.title": "💬 <b>Our chats</b>",
+    "groups.hint": "Tap a chat to open it. Some of them admit by request — "
+                   "the chat administrators approve it.",
+    "groups.empty": "There are no chats to join yet.",
     "menu.home": "🏠 Main menu",
     "menu.back": "◀️ Back",
 
@@ -18842,6 +19113,8 @@ async def create_app() -> Any:
         # Запомненное сбрасываем: иначе кнопка ещё сутки вела бы
         # по прежнему адресу.
         chatlink.forget(chat_id)
+        # Меню пользователей строится из этого списка — обновляем сразу.
+        await chatlink.refresh_published()
         audit.record(session.user_key,
                      "задана ссылка чата" if link else "снята ссылка чата",
                      str(chat_id))
@@ -23220,6 +23493,7 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
    "relevant": true,
    "all_clear": false,
    "historical": false,
+   "guidance": false,
    "categories": ["jkh"],
    "severity": "critical" | "warning" | "info",
    "scope": "region" | "city" | "district" | "street",
@@ -23245,11 +23519,27 @@ ANALYST_PROMPT = """Разбери сообщения из городских и
    «в ночь на», «по итогам суток», «был сбит», «напомним», «как сообщалось»,
    а также если названа дата в прошлом. Такие сообщения нужны как сводка,
    но тревогой не считаются.
+   Отдельно про новости СМИ: если в заметке сказано, что ракетная или
+   беспилотная опасность «была объявлена», «объявлялась», «действовала»,
+   «вводилась», указан уже закрытый промежуток («с 21:10 до 22:40») или
+   весь текст рассказывает о случившемся, — это historical=true, даже
+   если в заголовке стоит «введена ракетная опасность». Решает время
+   самого события по смыслу заметки, а не наличие слов об опасности.
+   Сомневаешься, происходит ли это сейчас, — смотри, есть ли призыв
+   к действию («пройдите в укрытие», «оставайтесь дома»): он означает,
+   что опасность действует.
 10. Поля region и city заполняй всегда, когда место можно определить, —
     хотя бы по названию источника или упоминанию области. Пустой город
     означает, что оповещение не дойдёт до пользователей: без географии
     рассылать тревогу нельзя.
-11. Количество объектов в массиве должно совпадать с количеством сообщений."""
+11. guidance=true, если сообщение — памятка, а не событие: инструкция
+    о действиях при аварии или ЧС, правила поведения, номера экстренных
+    и аварийных служб, «что делать, если…». Такие сообщения полезны,
+    но об опасности не говорят. Категорию ставь по теме (памятка ЖКХ —
+    ["jkh"]), scope="city", streets=[], severity="info", relevant=true.
+    Если же в тексте есть конкретное событие здесь и сейчас (авария
+    по адресу, объявленная тревога) — это не памятка, guidance=false.
+12. Количество объектов в массиве должно совпадать с количеством сообщений."""
 
 _cache: "OrderedDict[str, Analysis]" = OrderedDict()
 _CACHE_LIMIT = 800
@@ -24413,8 +24703,19 @@ def parse_channel(page: str, channel: str, limit: int) -> list[Item]:
     items: list[Item] = []
     for block in blocks[-limit:]:
         text = clean(block.get_text(separator="\n"))
-        if len(text) >= 20:
-            items.append(Item(source=channel, text=text, kind="tg"))
+        if len(text) < 20:
+            continue
+        # Ссылка на сам пост (с 4.9.9.2). Без неё сообщение из канала
+        # нельзя было открыть в оригинале — у RSS ссылка была всегда,
+        # у Telegram не было никогда, хотя веб-превью отдаёт её
+        # в атрибуте data-post рядом с текстом.
+        link = ""
+        holder = block.find_parent(attrs={"data-post": True})
+        if holder is not None:
+            post = str(holder.get("data-post") or "").strip("/")
+            if post and "/" in post:
+                link = f"https://t.me/{post}"
+        items.append(Item(source=channel, text=text, kind="tg", link=link))
     return items
 
 
@@ -25910,6 +26211,15 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
         [InlineKeyboardButton(text=label("menu.invite", "🔗 Пригласить"),
                               callback_data="usr:invite")],
     ]
+
+    # Чаты со ссылкой приглашения (с 4.9.9.2). Кнопка появляется, только
+    # когда есть куда вести: пустой раздел обещал бы впустую.
+    from . import chatlink
+
+    if chatlink.published():
+        rows.append([InlineKeyboardButton(
+            text=label("menu.groups", "💬 Наши чаты"),
+            callback_data="grp:list")])
 
     if features.enabled("digest"):
         rows.append([InlineKeyboardButton(
@@ -28645,6 +28955,51 @@ def forget(chat_id: int) -> None:
     _cache.pop(chat_id, None)
 
 
+# --------------------------------------------------------------------------
+#  Чаты для пользователей (с 4.9.9.2)
+# --------------------------------------------------------------------------
+#
+# Ссылка приглашения, заданная суперадминистратором, до 4.9.9.2 была
+# видна только в разделе «Чаты» у администрации — то есть тем, кто
+# в группе и так состоит. Теперь чаты со своей ссылкой видны всем
+# в главном меню кнопкой «💬 Наши чаты».
+#
+# Показываются только чаты со ссылкой, заданной руками. Ссылку, которую
+# бот нашёл или создал сам, не публикуем: закрытая группа, куда бота
+# просто добавили модерировать, не обязана становиться открытой для всех
+# пользователей бота. Решение «показывать» — это ровно ручная ссылка.
+#
+# Меню собирается синхронно, в базу из него не сходить — поэтому список
+# держится в памяти и обновляется при старте и при каждой правке ссылки.
+
+_published: list[tuple[int, str, str]] = []
+
+
+async def refresh_published() -> int:
+    """Перечитывает чаты со своей ссылкой. Возвращает их число."""
+    try:
+        from .db import repo
+
+        rows = await repo.chat_list()
+    except Exception:  # noqa: BLE001
+        log.debug("Список чатов для меню не прочитан", exc_info=True)
+        return len(_published)
+
+    fresh = [
+        (int(row["chat_id"]), str(row.get("title") or ""), str(row.get("invite") or ""))
+        for row in rows
+        if valid_invite(str(row.get("invite") or ""))
+    ]
+    fresh.sort(key=lambda item: item[1].lower())
+    _published[:] = fresh
+    return len(_published)
+
+
+def published() -> list[tuple[int, str, str]]:
+    """Чаты для меню: (id, название, ссылка)."""
+    return list(_published)
+
+
 # Что считаем ссылкой на чат. Проверка нужна не от злого умысла —
 # ссылку задаёт суперадминистратор, — а от опечатки: кнопка с мусором
 # вместо адреса выглядит как поломка бота, а не как промах в поле.
@@ -29563,6 +29918,10 @@ async def track_membership(event: ChatMemberUpdated) -> None:
     if status in ("left", "kicked"):
         await repo.chat_forget(event.chat.id)
         chatlink.forget(event.chat.id)
+        # Чат, откуда бота выгнали, не должен висеть кнопкой в меню
+        # у пользователей: ссылка могла пережить бота, но звать туда
+        # от имени бота уже незачем.
+        await chatlink.refresh_published()
         log.info("Бот удалён из чата %s", event.chat.id)
         return
 
@@ -30222,6 +30581,8 @@ async def take_invite(message: Message, state: FSMContext, role: str) -> None:
         await state.clear()
         await repo.chat_set_invite(chat_id, "")
         chatlink.forget(chat_id)
+        # Меню пользователей строится из этого списка — обновляем сразу.
+        await chatlink.refresh_published()
         await send_html(
             message.chat.id,
             f"✅ Своя ссылка на «{esc(title)}» убрана — бот снова ищет её сам.",
@@ -30247,6 +30608,8 @@ async def take_invite(message: Message, state: FSMContext, role: str) -> None:
     # Сбрасываем запомненное: иначе кнопка ещё сутки вела бы по старому
     # адресу, и человек решил бы, что ссылка не сохранилась.
     chatlink.forget(chat_id)
+    # Меню пользователей строится из этого списка — обновляем сразу.
+    await chatlink.refresh_published()
     log.info("Задана ссылка приглашения для чата %s", chat_id)
     await send_html(
         message.chat.id,
@@ -30254,6 +30617,46 @@ async def take_invite(message: Message, state: FSMContext, role: str) -> None:
         f"в списке чатов.",
         back_kb_chats(),
     )
+
+
+# --------------------------------------------------------------------------
+#  «Наши чаты» — для всех пользователей (с 4.9.9.2)
+# --------------------------------------------------------------------------
+#
+# Своя ссылка приглашения до 4.9.9.2 была видна только администрации
+# в разделе «Чаты», то есть тем, кто в группах и так состоит. Здесь её
+# видят все: кнопка в главном меню, по кнопке на каждый чат.
+# Показываются только чаты со ссылкой, заданной суперадминистратором, —
+# см. chatlink.refresh_published.
+
+
+@router.callback_query(F.data == "grp:list")
+async def list_groups(call: CallbackQuery, user: dict) -> None:
+    from .. import i18n
+
+    lang = i18n.language_of(user)
+    await call.answer()
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for _chat_id, title, link in chatlink.published():
+        rows.append([InlineKeyboardButton(text=title or "Чат", url=link)])
+    rows.append([InlineKeyboardButton(
+        text=i18n.t("menu.home", lang, "🏠 В главное меню"),
+        callback_data="menu:main")])
+
+    if len(rows) == 1:
+        text = i18n.t("groups.empty", lang, "Пока нет чатов, куда можно вступить.")
+    else:
+        text = (
+            i18n.t("groups.title", lang, "💬 <b>Наши чаты</b>")
+            + "\n\n"
+            + i18n.t(
+                "groups.hint", lang,
+                "Нажмите на чат, чтобы перейти в него. В часть чатов "
+                "вступают по заявке — её одобряют администраторы чата.",
+            )
+        )
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
 RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
 cat > "radar/cli.py" <<'RADAR_FILE_88'
@@ -31849,8 +32252,10 @@ async def menu_about(call: CallbackQuery) -> None:
         "",
         "<i>Система не заменяет официальные каналы оповещения.</i>",
     ]
-    if config.PROMO_ENABLED and config.PROMO_TEXT:
-        parts += ["", "———", "", config.PROMO_TEXT]
+    # Текст о партнёрском проекте отсюда убран в 4.9.9.2: проект стал
+    # рекламным продуктом со своим разделом «Партнёрские проекты»,
+    # а описание системы — не место для рекламы. Кнопка раздела ниже
+    # остаётся: кто захочет, найдёт.
     await safe_edit(call, "\n".join(parts), keyboards.promo_with_back())
 
 
@@ -35988,6 +36393,27 @@ async def post_images(message: Message, url: str, user: dict | None = None) -> N
             pass
 
 
+async def _edit_quietly(notice, text: str) -> None:
+    """Правка служебного сообщения, которая не роняет обработчик.
+
+    «Не изменилось», «сообщение удалено», сетевая икота — всё это
+    не повод бросать работу на полпути: человек ждёт картинки, а не
+    идеального статуса.
+    """
+    try:
+        await notice.edit_text(text)
+    except TelegramBadRequest:
+        pass
+    except Exception:  # noqa: BLE001
+        log.debug("Служебное сообщение не обновлено", exc_info=True)
+
+
+def _swallow_result(finished: asyncio.Future) -> None:
+    """Забирает исключение брошенной задачи — чтобы asyncio не ругался."""
+    if not finished.cancelled():
+        _ = finished.exception()
+
+
 async def _send_post_images(message: Message, url: str, notice) -> bool:
     """Картинки из записи, в которой нет видео. False — не вышло.
 
@@ -35996,52 +36422,54 @@ async def _send_post_images(message: Message, url: str, notice) -> bool:
     не всесильный — закрытая запись отдаёт страницу входа, и картинок
     в ней не будет. Тогда возвращаем False, и человек увидит объяснение.
     """
-    import aiohttp
     from aiogram.types import BufferedInputFile, InputMediaPhoto
 
     owner = storage.get_user(message.from_user.id)
     lang = i18n.language_of(owner)
-    await notice.edit_text(
-        i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
-    )
+    looking = i18n.t("img.looking", lang, "🖼 <b>Ищу картинки в записи…</b>")
+    # Правка через обёртку, а не напрямую. До 4.9.9.2 здесь стоял голый
+    # edit_text с тем же текстом, что уже показан из post_images, —
+    # Telegram отвечает на это «message is not modified», исключение
+    # ничем не ловилось, и обработчик падал в первой же строке.
+    # Снаружи это выглядело как вечное «Ищу картинки в записи…»:
+    # ни картинок, ни объяснения, на каждой ссылке без исключения.
+    await _edit_quietly(notice, looking)
 
-    # Обычный User-Agent, а не наш: метаданные предпросмотра площадки
-    # отдают браузерам и краулерам, а незнакомому агенту нередко
-    # показывают страницу входа.
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (compatible; RadarBot/1.0; "
-            "+https://github.com/Chistovik92/radar)"
-        ),
-        "Accept-Language": "ru,en;q=0.8",
-    }
-    timeout = aiohttp.ClientTimeout(total=90)
     limit_mb = media.size_limit_mb(config.uses_local_api())
+
+    # Общий срок на поиск и загрузку. Раньше срок был у каждого запроса
+    # отдельно — по 90 секунд на страницу, зеркало и каждую картинку,
+    # то есть на карусели из десяти снимков до пятнадцати минут
+    # «ищу картинки». Ждать дольше двух минут никто не станет.
+    # asyncio.wait, а не wait_for: wait_for ждёт, пока отмена дойдёт
+    # до застрявшего транспорта, и на этом когда-то зависала проверка
+    # ссылок (см. linkcheck._net_with_deadline).
+    task = asyncio.create_task(images.collect(url, limit_mb))
+    done, _pending = await asyncio.wait({task}, timeout=images.TOTAL_BUDGET)
+    if task not in done:
+        task.cancel()
+        task.add_done_callback(_swallow_result)
+        log.info("Картинки не собраны за %d с: %s", images.TOTAL_BUDGET, url)
+        await _edit_quietly(notice, i18n.t(
+            "img.too_slow", lang,
+            "🖼 Площадка не отдала картинки за две минуты — остановился.\n"
+            "<i>Такое бывает, когда запись закрыта или площадка тормозит "
+            "незнакомых посетителей. Попробуйте позже.</i>",
+        ))
+        return True  # объяснение уже показано, второе не нужно
+
+    try:
+        collected = task.result()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Сбор картинок не удался: %s", exc)
+        return False
 
     photos: list[tuple[bytes, str]] = []
     heavy: list[tuple[bytes, str]] = []
-
-    # Резолвер отсекает внутренние адреса — и на самом запросе,
-    # и на каждом редиректе: ссылку присылает кто угодно.
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers,
-                                     connector=netguard.connector()) as session:
-        markup = await images.fetch_page(session, url)
-        links = images.from_page(markup, url)
-        if not links:
-            # Страница входа метаданных не отдаёт — пробуем публичное
-            # зеркало: оно показывает запись анонимно (с 4.9.4.6).
-            links = await images.via_mirror(session, url)
-        if not links:
-            return False
-
-        for link in links:
-            data, _complaint = await images.fetch(session, link, limit_mb)
-            if not data:
-                continue
-            name = images.filename_from(link)
-            # Крупная картинка альбомом не уходит: у фотографий свой
-            # предел в 10 МБ. Такие отправляем отдельно, файлом.
-            (photos if images.as_photo(len(data)) else heavy).append((data, name))
+    for data, name in collected:
+        # Крупная картинка альбомом не уходит: у фотографий свой
+        # предел в 10 МБ. Такие отправляем отдельно, файлом.
+        (photos if images.as_photo(len(data)) else heavy).append((data, name))
 
     if not photos and not heavy:
         return False
@@ -41566,7 +41994,7 @@ import logging
 import socket
 import ssl
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
@@ -41577,7 +42005,7 @@ MAX_REDIRECTS = 5
 RDAP_BOOTSTRAP = "https://rdap.org/domain/"
 
 
-async def _session() -> aiohttp.ClientSession:
+def _session() -> aiohttp.ClientSession:
     """Сессия, которая не соединится с внутренним адресом.
 
     Проверка `_is_public_ip` ниже делается ДО запроса, а соединение
@@ -41585,6 +42013,13 @@ async def _session() -> aiohttp.ClientSession:
     Домен с коротким TTL отдавал публичный адрес на проверку
     и `127.0.0.1` на само соединение (DNS rebinding). Резолвер
     в соединителе закрывает и это, и редиректы.
+
+    Обычная функция, а не корутина. До 4.9.9.2 здесь стояло
+    `async def`, а вызывалась она как `async with _session() as sess` —
+    корутина не бывает контекстным менеджером, и каждый такой вызов
+    кончался `TypeError`. Проверка ловила его и писала «error: TypeError»,
+    то есть с 4.9.4 ни одна сетевая проверка ссылки не отработала
+    ни разу: ни редиректы, ни возраст домена, ни Safe Browsing.
     """
     connector = None
     try:
@@ -41626,6 +42061,22 @@ async def _resolve(host: str) -> list[str]:
         return []
 
 
+# Коды, которыми сервер отвечает «HEAD не поддерживаю». Такой сайт
+# на GET может редиректить как обычно, и считать его конечной точкой
+# цепочки после одного HEAD — значит показать человеку не тот адрес.
+_HEAD_REFUSED = frozenset({403, 404, 405, 501})
+
+
+async def _probe_redirect(sess, url: str) -> tuple[int, str]:
+    """Код ответа и адрес редиректа. HEAD, при отказе — GET без тела."""
+    async with sess.head(url, allow_redirects=False) as resp:
+        if resp.status not in _HEAD_REFUSED:
+            return resp.status, resp.headers.get("Location") or ""
+    async with sess.get(url, allow_redirects=False) as resp:
+        # Тело не читаем: нужен только код и заголовок.
+        return resp.status, resp.headers.get("Location") or ""
+
+
 async def expand(url: str) -> "NetResult":
     from .analyze import NetResult
 
@@ -41648,17 +42099,19 @@ async def expand(url: str) -> "NetResult":
 
         try:
             async with _session() as sess:
-                async with sess.head(cur, allow_redirects=False) as resp:
-                    if 300 <= resp.status < 400:
-                        location = resp.headers.get("Location")
-                        if not location:
-                            break
-                        cur = location if location.startswith("http") else f"{parsed.scheme}://{host}{location}"
-                        res.chain.append(cur)
-                        continue
-                    res.success = True
-                    res.final_url = cur
-                    return res
+                status, location = await _probe_redirect(sess, cur)
+                if 300 <= status < 400:
+                    if not location:
+                        break
+                    # urljoin, а не склейка: адрес редиректа бывает
+                    # относительным без ведущего слэша, с портом или
+                    # «//host/path» — склейка теряла порт и путь.
+                    cur = urljoin(cur, location)
+                    res.chain.append(cur)
+                    continue
+                res.success = True
+                res.final_url = cur
+                return res
         except asyncio.TimeoutError:
             res.notes.append("timeout")
             break
@@ -41736,10 +42189,14 @@ async def safe_browsing(url: str, api_key: str | None) -> "NetResult":
                 "threatEntries": [{"url": url}],
             },
         }
+        # Ключ — заголовком, а не в адресе. В адресе он попадал бы
+        # в текст исключения aiohttp, а оттуда в журнал: при любом
+        # сетевом сбое ключ оказывался бы в логах открытым текстом.
         async with _session() as sess:
             async with sess.post(
-                f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={api_key}",
+                "https://safebrowsing.googleapis.com/v4/threatMatches:find",
                 json=body,
+                headers={"X-Goog-Api-Key": api_key},
             ) as resp:
                 if resp.status != 200:
                     res.notes.append(f"safebrowsing {resp.status}")
@@ -41751,7 +42208,8 @@ async def safe_browsing(url: str, api_key: str | None) -> "NetResult":
                     res.threats.append(t)
                 res.success = True
     except Exception as exc:  # noqa: BLE001
-        log.warning("safebrowsing failed %s: %s", url, exc)
+        # Только тип исключения: текст может нести заголовки запроса.
+        log.warning("safebrowsing failed %s: %s", url, type(exc).__name__)
         res.notes.append(f"safebrowsing error: {type(exc).__name__}")
     return res
 
@@ -41854,9 +42312,12 @@ async def cert_info(host: str) -> "NetResult":
         if ssl_object is not None:
             res.tls_version = ssl_object.version() or ""
 
-        sock = writer.get_extra_info("socket")
-        if sock:
-            cert = sock.getpeercert()
+        # Сертификат — через «peercert», а не через сокет. asyncio отдаёт
+        # по «socket» обёртку TransportSocket, у которой getpeercert нет:
+        # до 4.9.9.2 здесь каждый раз был AttributeError, и срок
+        # сертификата не проверялся никогда.
+        cert = writer.get_extra_info("peercert") or {}
+        if cert:
             not_after = cert.get("notAfter")
             if not_after:
                 expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
@@ -41905,17 +42366,18 @@ async def http_security(url: str) -> "NetResult":
 
                 # Форма входа на незащищённой странице: пароль уходит
                 # открытым текстом, и это не зависит от честности сайта.
+                # Читаем только начало: по ссылке может лежать образ
+                # диска на гигабайты, а resp.text() тянул его целиком
+                # в память одноплатника ради шестидесяти килобайт.
+                head = await resp.content.read(65536)
+                low = head.decode("utf-8", errors="replace").lower()
                 if url.lower().startswith("http://"):
-                    body = await resp.text(errors="replace")
-                    low = body[:65536].lower()
                     if "<form" in low and (
                         'type="password"' in low or "type='password'" in low
                     ):
                         res.login_form_http = True
                     # Смешанный контент: HTTPS-страница, тянущая HTTP.
                 elif url.lower().startswith("https://"):
-                    body = await resp.text(errors="replace")
-                    low = body[:65536].lower()
                     if 'src="http://' in low or "src='http://" in low:
                         res.mixed_content = low.count('src="http://') + \
                             low.count("src='http://")
@@ -41930,20 +42392,55 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
     from .analyze import NetResult
 
     chain = await expand(url)
-    if not chain.success:
-        return chain
-
-    parsed = urlparse(chain.final_url)
+    # Сбой цепочки редиректов — не повод бросать остальное. До 4.9.9.2
+    # проверка на этом заканчивалась: сайт, отвергший HEAD или
+    # ответивший медленно, оставался без возраста домена, Safe Browsing
+    # и сертификата, а человек видел «0/100, риск Ok» — то есть
+    # отсутствие проверки выглядело как чистый результат.
+    target = chain.final_url or url
+    parsed = urlparse(target)
     host = parsed.netloc.split("@")[-1].split(":")[0]
 
-    age = await domain_age(host)
-    sb = await safe_browsing(chain.final_url, api_key)
-    cert = await cert_info(host)
-    sec = await http_security(chain.final_url)
+    # Внутренний адрес — дальше не идём. Проверка сертификата открывает
+    # соединение напрямую, мимо фильтра сессии, и без этого пошла бы
+    # по домашней сети за роутером по чужой ссылке.
+    if "private ip blocked" in chain.notes or not host:
+        return chain
+    addresses = await _resolve(host)
+    if not addresses:
+        # Имя не разрешилось — проверять нечего, и это само по себе
+        # признак: у живого сайта DNS есть.
+        if "dns failed" not in chain.notes:
+            chain.notes.append("dns failed")
+        return chain
+    if not all(_is_public_ip(ip) for ip in addresses):
+        chain.notes.append("private ip blocked")
+        return chain
+
+    # Параллельно: проверки друг от друга не зависят, и последовательно
+    # они складывались в полминуты ожидания. Сбой одной не роняет другие.
+    results = await asyncio.gather(
+        domain_age(host),
+        safe_browsing(target, api_key),
+        cert_info(host),
+        http_security(target),
+        return_exceptions=True,
+    )
+    for item in results:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+    age, sb, cert, sec = (
+        item if isinstance(item, NetResult) else NetResult(
+            notes=[f"error: {type(item).__name__}"])
+        for item in results
+    )
 
     return NetResult(
-        success=True,
-        final_url=chain.final_url,
+        # Успехом считаем, если сработала хоть одна содержательная
+        # проверка: иначе «не проверено» опять покажется «безопасно».
+        success=bool(chain.success or age.domain_age_days is not None
+                     or sb.success or cert.success or sec.success),
+        final_url=target,
         chain=chain.chain,
         domain_age_days=age.domain_age_days,
         domain_registrar=age.domain_registrar,
@@ -41984,6 +42481,46 @@ def _verdict_icon(level: str) -> str:
     return {"ok": "✅", "attention": "⚠️", "suspect": "🔶", "danger": "🚨"}.get(level, "❓")
 
 
+# Служебные пометки сетевых проверок — человеческими словами (с 4.9.9.2).
+# Раньше в отчёт уходило как есть: «error: TypeError», «no api key»,
+# «rdap 404». Человек не знает, что это, и не может понять, насколько
+# доверять остальному отчёту.
+_NOTES = {
+    "dns failed": "имя сайта не находится в DNS — сайта может не существовать",
+    "private ip blocked": "адрес ведёт во внутреннюю сеть — проверка остановлена",
+    "timeout": "сайт не ответил вовремя",
+    "no api key": "Safe Browsing не проверен — не задан ключ Google",
+}
+
+
+def humanize_note(note: str) -> str:
+    """Пометка проверки понятным текстом. Незнакомая остаётся как есть."""
+    text = (note or "").strip()
+    if text in _NOTES:
+        return _NOTES[text]
+    if text.startswith("rdap "):
+        return "возраст домена не узнать: реестр не ответил"
+    if text.startswith("safebrowsing "):
+        return "Safe Browsing не ответил"
+    if text.startswith("cert error"):
+        return "сертификат не получен: сайт без HTTPS или отверг соединение"
+    if text.startswith("security error"):
+        return "заголовки безопасности не получены"
+    if text.startswith("error:"):
+        return "сетевая проверка не удалась"
+    return text
+
+
+def net_incomplete(v: Verdict) -> bool:
+    """Сетевые проверки не дали ничего содержательного.
+
+    Тогда нулевой счёт означает не «чисто», а «не проверено», и зелёная
+    галочка рядом с ним — обман: до 4.9.9.2 именно так и выглядел отчёт
+    при сломанной сетевой части.
+    """
+    return v.net is not None and not v.net.success
+
+
 def build_report(v: Verdict) -> str:
     if not v.signals and not v.net:
         return "Ничего не удалось проанализировать."
@@ -42007,8 +42544,8 @@ def build_report(v: Verdict) -> str:
         if not v.net.success:
             lines.append("  <i>Не удалось завершить сетевую проверку</i>")
             if v.net.notes:
-                for note in v.net.notes:
-                    lines.append(f"      <code>{html.escape(note)}</code>")
+                for note in dict.fromkeys(v.net.notes):
+                    lines.append(f"      • {html.escape(humanize_note(note))}")
         else:
             if v.net.chain and len(v.net.chain) > 1:
                 lines.append("  <b>Перенаправления:</b>")
@@ -42066,15 +42603,21 @@ def build_report(v: Verdict) -> str:
                     lines.append(f"      <code>{html.escape(t)}</code>")
                 lines.append("")
             if v.net.notes:
-                lines.append("  <b>Примечания сети:</b>")
-                for note in v.net.notes:
-                    lines.append(f"      <code>{html.escape(note)}</code>")
+                lines.append("  <b>Что проверить не удалось:</b>")
+                for note in dict.fromkeys(v.net.notes):
+                    lines.append(f"      • {html.escape(humanize_note(note))}")
                 lines.append("")
     score = v.score
     level = v.level
     icon = _verdict_icon(level)
-    lines.append(f"<b>Итоговый счёт:</b> {score}/100 {icon}")
-    lines.append(f"<b>Уровень риска:</b> {level.title()}")
+    if net_incomplete(v) and level == "ok":
+        # Признаков нет, но и сеть не проверена — это не «чисто».
+        lines.append(f"<b>Итоговый счёт:</b> {score}/100 ❓")
+        lines.append("<b>Уровень риска:</b> не определён — сетевая часть "
+                     "не прошла, оценка только по виду адреса")
+    else:
+        lines.append(f"<b>Итоговый счёт:</b> {score}/100 {icon}")
+        lines.append(f"<b>Уровень риска:</b> {level.title()}")
     lines.append("")
     lines.append(
         "⚠️ <i>Это не гарантия безопасности. "
