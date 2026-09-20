@@ -1,4 +1,4 @@
-# Radar v4.9.9.3
+# Radar v4.9.9.4
 
 [Русская версия](README.md)
 
@@ -596,6 +596,24 @@ mask such as `AIza…9kQw`: enough to check which key is in place, not
 enough to take it. Access to a hijacked panel session must not mean access
 to every key at once. The full value stays in `.env` on the server, and
 the panel's own log records the key's name, never its value.
+
+### The MAX messenger (since 4.9.9.4) ⚠️ not verified in operation
+
+The "MAX messenger" feature (`platform_max`, off by default). The adapter
+is written from the [dev.max.ru](https://dev.max.ru/docs-api/)
+documentation: polling for events, sending messages, answering button
+presses, the platform's limits and a 30-requests-per-second limiter. The
+token is set with `MAX_BOT_TOKEN`, the address with `MAX_API_URL`.
+
+**Not a single request has run against a live server.** MAX issues tokens
+only to verified Russian legal entities, and without a token neither the
+address, nor the field names, nor the response shapes can be checked.
+
+What the bot can do in MAX right now: `/start`, `/help`, `/status` and an
+honest answer to everything else. **No alerts are sent from there:**
+locations, roles and the subscription are tied to the Telegram account, and
+without a confirmed address no alert is sent. The full core is not ported
+to MAX until the platform has been checked by at least one live request.
 
 ## Language
 

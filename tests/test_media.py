@@ -499,6 +499,15 @@ class TestHelpers(unittest.TestCase):
 # ==========================================================================
 
 class TestMaxTransport(unittest.TestCase):
+    """Адаптер MAX: то, что не зависит от схемы событий.
+
+    Разбор событий переехал в tests/test_maxadapter.py и в 4.9.9.4
+    переписан под документированную схему dev.max.ru: прежние тесты
+    закрепляли выдуманные имена полей (плоский chat_id, message.text,
+    message.from), которых в API нет. Тест, повторяющий догадку,
+    не ловит ошибку — он её узаконивает.
+    """
+
     def setUp(self):
         from radar.platforms.max import MaxTransport
 
@@ -510,9 +519,9 @@ class TestMaxTransport(unittest.TestCase):
         self.assertFalse(MaxTransport(token="").configured)
         self.assertTrue(self.transport.configured)
 
-    def test_render_strips_html(self):
-        self.assertEqual(self.transport.render("<b>Текст</b>"), "Текст")
-        self.assertEqual(self.transport.render("a &amp; b"), "a & b")
+    def test_plain_strips_html(self):
+        self.assertEqual(self.transport.plain("<b>Текст</b>"), "Текст")
+        self.assertEqual(self.transport.plain("a &amp; b"), "a & b")
 
     def test_keyboard_conversion(self):
         from radar.platforms import Button
@@ -525,48 +534,6 @@ class TestMaxTransport(unittest.TestCase):
 
     def test_empty_keyboard(self):
         self.assertEqual(self.transport.to_keyboard([]), [])
-
-    def test_parse_flat_message(self):
-        event = self.transport.parse_update(
-            {"update_type": "message_created",
-             "message": {"chat_id": 100, "text": "привет",
-                         "from": {"user_id": 55, "name": "Иван"}}}
-        )
-        self.assertIsNotNone(event)
-        self.assertEqual(event.chat_id, "100")
-        self.assertEqual(event.key, "max:55")
-        self.assertEqual(event.kind.value, "message")
-
-    def test_parse_nested_chat(self):
-        event = self.transport.parse_update(
-            {"message": {"chat": {"id": 200}, "text": "текст"}}
-        )
-        self.assertIsNotNone(event)
-        self.assertEqual(event.chat_id, "200")
-
-    def test_parse_command(self):
-        event = self.transport.parse_update(
-            {"message": {"chat_id": 1, "text": "/start join"}}
-        )
-        self.assertEqual(event.kind.value, "command")
-        self.assertEqual(event.command, "start")
-        self.assertEqual(event.args, "join")
-
-    def test_parse_location(self):
-        event = self.transport.parse_update(
-            {"message": {"chat_id": 1, "location": {"latitude": 51.5, "longitude": 46.0}}}
-        )
-        self.assertEqual(event.kind.value, "location")
-        self.assertEqual(event.latitude, 51.5)
-
-    def test_parse_without_chat_returns_none(self):
-        self.assertIsNone(self.transport.parse_update({"update_type": "ping"}))
-        self.assertIsNone(self.transport.parse_update("не словарь"))
-
-    def test_identity_separate_from_telegram(self):
-        event = self.transport.parse_update({"message": {"chat_id": 42, "text": "т"}})
-        self.assertEqual(event.key, "max:42")
-        self.assertNotEqual(event.key, "42")
 
 
 if __name__ == "__main__":

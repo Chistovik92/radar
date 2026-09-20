@@ -37,6 +37,7 @@ from typing import Any
 log = logging.getLogger("radar.musicmeta")
 
 MUSICBRAINZ = "https://musicbrainz.org/ws/2/recording"
+MUSICBRAINZ_ARTIST = "https://musicbrainz.org/ws/2/artist"
 LISTENBRAINZ = "https://labs.api.listenbrainz.org/similar-artists/json"
 # Алгоритм ListenBrainz — строка из их документации; меняется ими,
 # а не нами, поэтому живёт константой рядом с адресом.
@@ -94,6 +95,20 @@ def parse_recording(payload: dict[str, Any]) -> tuple[str, str]:
     return genre, mbid
 
 
+def parse_artist(payload: dict[str, Any]) -> str:
+    """MBID артиста из поиска по имени. Пусто — не нашёлся.
+
+    Нужен затем, что у половины треков в тегах есть артист и нет
+    названия, а по одному названию запись в MusicBrainz не ищется.
+    Без этого пути запрос к ListenBrainz не уходил бы вовсе: ему нужен
+    идентификатор артиста, а взять его было неоткуда.
+    """
+    artists = payload.get("artists") or []
+    if not artists or not isinstance(artists[0], dict):
+        return ""
+    return str(artists[0].get("id") or "")
+
+
 def parse_similar(payload: Any) -> list[str]:
     """Имена родственных артистов из ответа ListenBrainz."""
     names: list[str] = []
@@ -118,27 +133,46 @@ async def lookup(artist: str, title: str) -> dict[str, Any]:
     """Жанр и родственные артисты. Пустой словарь — ничего не нашлось."""
     import aiohttp
 
+    # Достаточно одного артиста: по нему находится и он сам, и его
+    # родственники. Название уточняет жанр, но без него путь не обрывается.
     artist, title = (artist or "").strip(), (title or "").strip()
-    if not artist or not title:
+    if not artist:
         return {}
 
-    query = f'recording:"{_quote(title)}" AND artist:"{_quote(artist)}"'
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     result: dict[str, Any] = {}
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with _gate:
-                await _polite_pause()
-                async with session.get(MUSICBRAINZ, params={
-                    "query": query, "fmt": "json", "limit": "1",
-                    "inc": "genres+tags",
-                }) as response:
-                    if response.status != 200:
-                        log.info("MusicBrainz ответил %s", response.status)
-                        return {}
-                    payload = await response.json(content_type=None)
-            genre, mbid = parse_recording(payload if isinstance(payload, dict) else {})
+            genre, mbid = "", ""
+            if title:
+                query = f'recording:"{_quote(title)}" AND artist:"{_quote(artist)}"'
+                async with _gate:
+                    await _polite_pause()
+                    async with session.get(MUSICBRAINZ, params={
+                        "query": query, "fmt": "json", "limit": "1",
+                        "inc": "genres+tags",
+                    }) as response:
+                        if response.status == 200:
+                            payload = await response.json(content_type=None)
+                            genre, mbid = parse_recording(
+                                payload if isinstance(payload, dict) else {})
+                        else:
+                            log.info("MusicBrainz ответил %s", response.status)
+
+            if not mbid:
+                # Записи нет или названия не было — ищем самого артиста.
+                async with _gate:
+                    await _polite_pause()
+                    async with session.get(MUSICBRAINZ_ARTIST, params={
+                        "query": f'artist:"{_quote(artist)}"',
+                        "fmt": "json", "limit": "1",
+                    }) as response:
+                        if response.status == 200:
+                            payload = await response.json(content_type=None)
+                            mbid = parse_artist(
+                                payload if isinstance(payload, dict) else {})
+
             if genre:
                 result["genre"] = genre
             if mbid:
@@ -149,6 +183,11 @@ async def lookup(artist: str, title: str) -> dict[str, Any]:
                         related = parse_similar(await response.json(content_type=None))
                         if related:
                             result["related"] = related
+                            log.info("ListenBrainz: родственных артистов %d",
+                                     len(related))
+                    else:
+                        log.info("ListenBrainz ответил %s — подбор останется "
+                                 "по своим тегам", response.status)
     except Exception as exc:  # noqa: BLE001
         # Метаданные — украшение, а не необходимость: без них трек
         # остаётся на месте и играет, подбор просто беднее.

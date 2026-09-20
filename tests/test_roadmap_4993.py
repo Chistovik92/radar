@@ -273,6 +273,13 @@ class MusicMetaTests(unittest.TestCase):
         self.assertEqual(track["genre"], "Шансон")
         self.assertEqual(track["related"], ["X"])
 
+    def test_artist_mbid_parsed(self):
+        """По одному артисту тоже находится MBID — иначе запрос
+        к ListenBrainz не ушёл бы никогда (уточнено в 4.9.9.4)."""
+        payload = {"artists": [{"id": "mbid-2", "name": "Кино"}]}
+        self.assertEqual(musicmeta.parse_artist(payload), "mbid-2")
+        self.assertEqual(musicmeta.parse_artist({}), "")
+
     def test_lucene_escaped(self):
         self.assertEqual(musicmeta._quote('AC/DC: "Live"'), 'AC\\/DC\\: \\"Live\\"')
 

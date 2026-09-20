@@ -1475,18 +1475,66 @@ rewrite.
 
 ---
 
-## 6.0 — MAX
+## 6.0 — MAX ⚠️ written from the documentation
 
-1. **MAX — bringing it to production.** The adapter was written in 4.2, but
-   not a single request has run against a live server. Needed: owner
-   verification (a legal entity, sole proprietor, or self-employed person
-   registered in Russia), a webhook instead of long polling, linking Telegram
-   and MAX accounts, its own FSM on the shared database. The blockers here
-   are not in the code — the code can be finished in a day, the verification
-   cannot.
-   Plus a platform limit: **reading other people's public channels on MAX is
-   not possible** — the API is bot-centric. MAX is a delivery channel, not a
-   source.
+1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2
+   it was a set of guesses: the address, the field names and the button
+   format were all invented, and the tests locked those guesses in — a test
+   that repeats a guess does not catch the mistake, it legitimises it. The
+   code now follows the dev.max.ru description:
+
+   - base `https://platform-api.max.ru` (the `botapi.max.ru` domain was
+     retired in October 2025), the token goes in the `Authorization` header
+     **without** "Bearer": passing it in the query string no longer works;
+   - `GET /updates` with `marker`, `limit`, `timeout`; the marker is taken
+     from the response rather than computed as "last + 1" — that very
+     self-made counting is what loses events;
+   - `POST /messages?chat_id=…` with `text` / `attachments` / `format` /
+     `notify`; `POST /answers?callback_id=…` — without answering a button
+     press the person is left with a spinner;
+   - button limits (210 in total, 30 rows, 7 per row and 3 for links) are
+     respected by wrapping rather than dropping: a lost button is an action
+     nobody will ever know about;
+   - a 30-requests-per-second limiter — the platform's own cap;
+   - markup is sent with `format: "html"` and a narrow list of tags; the
+     first 400 switches the session to plain text — content matters more
+     than formatting.
+
+2. **The bot in MAX stopped being silent** (4.9.9.4). Until then the
+   adapter received events and did nothing with them: no handler was passed
+   at all. From the outside that is indistinguishable from a broken bot.
+   There is now a built-in responder, `radar/platforms/maxbot.py`:
+   `/start`, `/help`, `/status` and an honest answer to everything else —
+   "the alerts live in Telegram". The full core is deliberately not ported:
+   commands, roles, locations and dispatch are written on aiogram, and a
+   second implementation of them on top of an unverified API would cost
+   more than it gives.
+
+3. **What stays theoretical — and why code cannot fix it:**
+
+   - **the token.** Publishing bots in MAX is allowed only to verified
+     Russian legal entities. Without a token not a single request can be
+     made — neither the address, nor the field names, nor the response
+     shape can be checked;
+   - **the callback answer shape.** `POST /answers` is documented, but the
+     set of body fields (`notification` versus `message`) is described
+     ambiguously;
+   - **the method for bot commands:** the documentation mentions both
+     `PATCH /me` and `PATCH /me/commands`. The code tries the first and
+     falls back to the second on a 404;
+   - **which HTML tags MAX understands.** The list taken is narrow, with a
+     fallback to plain text on the first refusal;
+   - **the webhook.** The documentation calls long polling a development
+     tool outright. Production needs an HTTPS address — the same domain and
+     certificate as the web panel;
+   - **linking accounts** between Telegram and MAX: without it a person in
+     MAX is not the same person as in Telegram, and therefore has no
+     locations. That needs a decision about how to confirm the link, not
+     more transport code.
+
+   The platform limit that will not change: **reading other people's public
+   channels in MAX is impossible** — the API is bot-centric. MAX is a
+   delivery channel, not a source.
 
 ---
 
