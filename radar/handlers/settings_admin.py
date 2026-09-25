@@ -363,8 +363,6 @@ async def cmd_panel(message: Message, role: str) -> None:
     if features.enabled("web_panel"):
         # Одноразовый код входа (5.7): запасной путь, когда виджет Telegram
         # недоступен — панель по IP-адресу или домен не привязан у BotFather.
-        import asyncio
-
         from .. import i18n, links, storage
 
         uid = str(message.from_user.id)

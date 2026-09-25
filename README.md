@@ -1,4 +1,4 @@
-# Система «Радар» v5.7
+# Система «Радар» v5.7.1
 
 [English version](README.en.md)
 

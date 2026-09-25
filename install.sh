@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.7 — автономный установщик.
+# Система «Радар» v5.7.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.7"
+VERSION="5.7.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3240,6 +3240,12 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.7.1", [
+        "📰 Новостная подборка больше не пропадает, если бот был занят или "
+        "перезапускался в назначенное время: она приходит с опозданием, "
+        "а не теряется.",
+        "🌍 Бот во ВКонтакте, MAX и Discord отвечает по-английски после /lang en.",
+    ]),
     ("5.7", [
         "🔗 <b>Один аккаунт во всех сетях.</b> Telegram, ВКонтакте, MAX "
         "и Discord теперь входы в один профиль: адреса и настройки общие, "
@@ -5048,7 +5054,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.7"
+__version__ = "5.7.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -12183,14 +12189,25 @@ def store_subscription(user: dict[str, Any], subscription: Subscription) -> None
 #  Расписание
 # --------------------------------------------------------------------------
 
+# Сколько подборка ждёт опоздавший цикл. До 5.7.1 окно было пять минут,
+# а цикл идёт раз в POLL_INTERVAL (по умолчанию 180 с) плюс время самого
+# прохода: медленный проход на одноплатнике, перезапуск или интервал
+# больше 300 с — и оплаченная подборка за день молча не приходила.
+DIGEST_CATCHUP = 45 * 60
+
+
 def due(subscription: Subscription, now: datetime) -> str | None:
-    """Пора ли отправлять подборку. Возвращает метку отправки или None."""
+    """Пора ли отправлять подборку. Возвращает метку отправки или None.
+
+    Из наступивших за последние `DIGEST_CATCHUP` времён берётся самое
+    позднее: догнав пропуск, не шлём следом вторую подборку за более
+    раннее время.
+    """
     if not subscription.allowed_topics():
         return None
 
-    stamp = f"{now:%H:%M}"
+    latest: tuple[float, str] | None = None
     for moment in subscription.times:
-        # Окно в пять минут: фоновый цикл идёт не каждую минуту.
         # Некорректное время в настройках пропускаем, а не роняем рассылку.
         try:
             hour, minute = (int(part) for part in moment.split(":"))
@@ -12198,11 +12215,12 @@ def due(subscription: Subscription, now: datetime) -> str | None:
         except (ValueError, TypeError):
             continue
         delta = (now - target).total_seconds()
-        if 0 <= delta <= 300:
-            marker = f"{now:%Y-%m-%d}-{moment}"
-            if subscription.last_sent != marker:
-                return marker
-    return None
+        if 0 <= delta <= DIGEST_CATCHUP and (latest is None or delta < latest[0]):
+            latest = (delta, moment)
+    if latest is None:
+        return None
+    marker = f"{now:%Y-%m-%d}-{latest[1]}"
+    return None if subscription.last_sent == marker else marker
 
 
 def period_title(now: datetime) -> str:
@@ -13918,6 +13936,45 @@ EN_STRINGS: dict[str, str] = {
                    "Telegram bot settings.",
     "link.unlinked_net": "Unlinked: this account is no longer connected to the others.",
     "link.not_linked": "This account is not linked to anything.",
+    "text.about": "Radar watches city threats and utility outages at your addresses "
+                  "and sends only what concerns them.",
+    "text.has_addresses": "Addresses are set — alerts for them arrive here.",
+    "text.no_addresses": "No addresses yet. Add the first one: /address street, house, "
+                         "city — or send a geolocation.",
+    "text.commands": "/address street, house, city — add an address\n"
+                     "/addresses — my addresses, /remove N — delete\n"
+                     "/link — link with Telegram, VK, MAX or Discord\n"
+                     "/unlink — unlink this account\n"
+                     "/status — is monitoring running\n"
+                     "/panel — web panel sign-in code (moderators)\n"
+                     "/lang ru — по-русски",
+    "text.disclaimer": "The system does not replace official warning channels.",
+    "text.status_ok": "✅ Monitoring is running.",
+    "text.status_bad": "🚨 Monitoring has been silent for about {minutes} min. "
+                       "The administrators have been notified.",
+    "text.already": "ℹ️ This address is already saved: {name}.",
+    "text.confirm_address": "Found: {place}\nSave this address? Reply \"yes\" or \"no\". "
+                            "If it's wrong, be more specific: /address street, house, city.",
+    "text.limit": "❌ Address limit reached ({limit}).",
+    "text.saved": "🏠 Address saved: {name}. Alerts for it will arrive here.",
+    "text.no_street": "⚠️ The street was not determined — utility outage alerts for "
+                      "the address may be inaccurate.",
+    "text.empty": "No addresses yet. /address street, house, city",
+    "text.list": "Your addresses:",
+    "text.remove_hint": "Delete: /remove N",
+    "text.geo_failed": "Could not determine the address. Try again later.",
+    "text.not_saved": "OK, not saved.",
+    "text.not_found": "Address not found. Be more specific: street, house, city — or send "
+                      "a geolocation.",
+    "text.no_such": "No such number. /addresses — the list.",
+    "text.removed": "Deleted: {name}.",
+    "text.lang_set": "Reply language: English.",
+    "panel.off": "The web panel is turned off.",
+    "panel.denied": "The web panel is for moderators and above.",
+    "panel.code": "Web panel sign-in code: {code}\nOne-time, valid for 5 minutes. Enter it "
+                  "on the panel's sign-in page. If you didn't request it, do nothing.",
+    "panel.notice": "🔐 A web panel sign-in code was requested from {net}. If it wasn't "
+                    "you, unlink that network (/unlink).",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 
@@ -44700,8 +44757,6 @@ async def cmd_panel(message: Message, role: str) -> None:
     if features.enabled("web_panel"):
         # Одноразовый код входа (5.7): запасной путь, когда виджет Telegram
         # недоступен — панель по IP-адресу или домен не привязан у BotFather.
-        import asyncio
-
         from .. import i18n, links, storage
 
         uid = str(message.from_user.id)
@@ -45852,7 +45907,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from .. import features, i18n, payments, roles, storage, vpn, vpnsales
+from .. import features, i18n, payments, storage, vpn, vpnsales
 from ..textutils import esc
 from ..tg import safe_edit, send_html
 from ..vpnpanels import Account, PanelError

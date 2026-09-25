@@ -313,6 +313,19 @@ class TestSchedule(unittest.TestCase):
         empty = digest.Subscription(times=["08:30"])
         self.assertIsNone(digest.due(empty, datetime(2026, 8, 15, 8, 31)))
 
+    def test_late_cycle_still_delivers(self):
+        """Цикл опоздал на 20 минут (медленный проход, перезапуск) —
+        оплаченная подборка всё равно уходит (до 5.7.1 окно было 5 минут)."""
+        self.assertIsNotNone(digest.due(self.subscription, datetime(2026, 8, 15, 8, 50)))
+
+    def test_only_latest_of_missed_times(self):
+        two = digest.Subscription(topics=["city"], times=["08:30", "08:45"])
+        marker = digest.due(two, datetime(2026, 8, 15, 8, 50))
+        self.assertTrue(marker.endswith("08:45"))
+        two.last_sent = marker
+        self.assertIsNone(digest.due(two, datetime(2026, 8, 15, 8, 53)),
+                          "за 08:30 вторая подборка следом не уходит")
+
     def test_broken_time_ignored(self):
         broken = digest.Subscription(topics=["city"], times=["25:99", "08:30"])
         self.assertIsNotNone(digest.due(broken, datetime(2026, 8, 15, 8, 31)))

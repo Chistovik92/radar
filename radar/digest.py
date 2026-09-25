@@ -284,14 +284,25 @@ def store_subscription(user: dict[str, Any], subscription: Subscription) -> None
 #  Расписание
 # --------------------------------------------------------------------------
 
+# Сколько подборка ждёт опоздавший цикл. До 5.7.1 окно было пять минут,
+# а цикл идёт раз в POLL_INTERVAL (по умолчанию 180 с) плюс время самого
+# прохода: медленный проход на одноплатнике, перезапуск или интервал
+# больше 300 с — и оплаченная подборка за день молча не приходила.
+DIGEST_CATCHUP = 45 * 60
+
+
 def due(subscription: Subscription, now: datetime) -> str | None:
-    """Пора ли отправлять подборку. Возвращает метку отправки или None."""
+    """Пора ли отправлять подборку. Возвращает метку отправки или None.
+
+    Из наступивших за последние `DIGEST_CATCHUP` времён берётся самое
+    позднее: догнав пропуск, не шлём следом вторую подборку за более
+    раннее время.
+    """
     if not subscription.allowed_topics():
         return None
 
-    stamp = f"{now:%H:%M}"
+    latest: tuple[float, str] | None = None
     for moment in subscription.times:
-        # Окно в пять минут: фоновый цикл идёт не каждую минуту.
         # Некорректное время в настройках пропускаем, а не роняем рассылку.
         try:
             hour, minute = (int(part) for part in moment.split(":"))
@@ -299,11 +310,12 @@ def due(subscription: Subscription, now: datetime) -> str | None:
         except (ValueError, TypeError):
             continue
         delta = (now - target).total_seconds()
-        if 0 <= delta <= 300:
-            marker = f"{now:%Y-%m-%d}-{moment}"
-            if subscription.last_sent != marker:
-                return marker
-    return None
+        if 0 <= delta <= DIGEST_CATCHUP and (latest is None or delta < latest[0]):
+            latest = (delta, moment)
+    if latest is None:
+        return None
+    marker = f"{now:%Y-%m-%d}-{latest[1]}"
+    return None if subscription.last_sent == marker else marker
 
 
 def period_title(now: datetime) -> str:
