@@ -30,6 +30,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.5", [
+        "💬 <b>Discord.</b> Канал сообщества: суточная сводка событий "
+        "по категориям и сообщения о смене статуса мониторинга, "
+        "слеш-команды /about, /status, /summary. Оповещения по адресам "
+        "остаются в Telegram. Возможность «Discord», по умолчанию выключена.",
+        "🔌 Адаптер без новых зависимостей: сам переподключается, "
+        "восстанавливает сессию и соблюдает пределы Discord.",
+    ]),
     ("5.0.2", [
         "💳 <b>Продажа VPN по тарифам.</b> Тарифы задаются в разделе "
         "ключей (VPN_PLANS), оплата — через Crypto Pay или "
@@ -1672,6 +1680,22 @@ async def main() -> None:
                 "Мессенджер MAX включён флагом, но MAX_BOT_TOKEN пуст — "
                 "адаптер не запускается"
             )
+
+    # Discord (с 5.5): канал сообщества — сводки и статус, не оповещения.
+    # Своя задача, как у MAX: сбой Discord не касается Telegram и тревог.
+    if features.enabled("platform_discord"):
+        from radar import secrets as secrets_module
+        from radar.platforms import discordbot
+        from radar.platforms.discord import DiscordTransport
+
+        discord_transport = DiscordTransport(
+            secrets_module.get("DISCORD_BOT_TOKEN"), discordbot.reply)
+        if discord_transport.configured:
+            spawn(discordbot.run(discord_transport), "discord")
+            log.info("Адаптер Discord запущен")
+        else:
+            log.warning("Discord включён флагом, но DISCORD_BOT_TOKEN пуст — "
+                        "адаптер не запускается")
 
     # Кто писал, пока бот был выключен. Спрашиваем ДО сброса очереди:
     # delete_webhook(drop_pending_updates=True) стирает её без следа,

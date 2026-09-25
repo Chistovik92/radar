@@ -231,6 +231,11 @@ FLAGS: tuple[Flag, ...] = (
     # --- платформы ---
     Flag("platform_max", "Мессенджер MAX", "Работа бота в MAX параллельно с Telegram.",
          group="Платформы", since="4.2", default=False),
+    Flag("platform_discord", "Discord",
+         "Канал сообщества в Discord: слеш-команды, суточная сводка событий "
+         "и статус мониторинга. Оповещений по адресам в Discord нет — "
+         "они в Telegram. Нужен DISCORD_BOT_TOKEN.",
+         group="Платформы", since="5.5", default=False),
 
     # --- партнёрские проекты ---
     Flag("partners", "Партнёрские проекты", "Раздел меню со списком проектов автора.",

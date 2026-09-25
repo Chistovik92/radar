@@ -61,6 +61,10 @@ jobs:
           python -m pip install --quiet aiohttp
           python tools/vpn_http_check.py
 
+      # Адаптер Discord по настоящему WebSocket: эмулятор Gateway и REST.
+      - name: Discord по WebSocket
+        run: python tools/discord_http_check.py
+
       - name: Порядок функций в install.sh
         run: python tools/lint_shellorder.py
 

@@ -87,6 +87,8 @@ MANIFEST = [
     "radar/platforms/base.py",
     "radar/platforms/max.py",
     "radar/platforms/maxbot.py",
+    "radar/platforms/discord.py",
+    "radar/platforms/discordbot.py",
     "radar/storage.py",
     "radar/exporting.py",
     "radar/ai.py",

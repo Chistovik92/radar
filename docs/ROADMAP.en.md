@@ -1506,7 +1506,7 @@ the price of being wrong here is not a commission but the bot.
 
 ---
 
-## 5.5 — Discord
+## 5.5 — Discord ⚠️ code written
 
 The "other messengers" section is split per platform: they differ not in the
 amount of work but in what someone else's API allows at all. Putting them in
@@ -1527,6 +1527,18 @@ rewrite.
    permission to read message content (Message Content Intent).
    The sensible use case is not address-based alerts but a community
    channel: summaries and system status.
+
+   ⚠️ Done in 5.5 exactly that way: `radar/platforms/discord.py` and
+   `discordbot.py`, the `platform_discord` flag (off). The adapter is on
+   `aiohttp`, without discord.py: REST and the Gateway with heartbeats,
+   RESUME and stopping on unrecoverable close codes; the protocol was
+   checked against the discord.py source. Slash commands `/about`,
+   `/status`, `/summary`, `/help`; a daily per-category summary to a
+   channel — no addresses, cities or text; messages when monitoring
+   status changes. The Message Content intent is not requested at all —
+   slash commands are enough. The transport is exercised over a real
+   WebSocket against an emulator (`tools/discord_http_check.py`, a CI
+   step). Not verified against real Discord.
 
 ---
 

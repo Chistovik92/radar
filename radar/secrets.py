@@ -132,6 +132,17 @@ SETTINGS: tuple[Setting, ...] = (
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
 
+    # --- Discord (с 5.5) ---
+    Setting("DISCORD_BOT_TOKEN", "Discord: токен бота",
+            "Developer Portal → приложение → Bot → Reset Token.", "Discord",
+            restart=True, where="discord.com/developers/applications"),
+    Setting("DISCORD_CHANNEL_ID", "Discord: канал сводок",
+            "Числовой id канала для суточной сводки и статуса мониторинга "
+            "(в Discord: режим разработчика → ПКМ по каналу → Copy ID).",
+            "Discord", secret=False),
+    Setting("DISCORD_SUMMARY_TIME", "Discord: время сводки",
+            "ЧЧ:ММ по времени сервера, по умолчанию 20:00.", "Discord", secret=False),
+
     # --- VPN: общее для всех панелей (с 5.0) ---
     Setting("VPN_DAYS", "VPN: срок выдачи, дней",
             "Срок новой записи и шаг продления. По умолчанию 30.",

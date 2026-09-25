@@ -1,4 +1,4 @@
-# Radar v5.0.2
+# Radar v5.5
 
 [Русская версия](README.md)
 
@@ -708,6 +708,26 @@ honest answer to everything else. **No alerts are sent from there:**
 locations, roles and the subscription are tied to the Telegram account, and
 without a confirmed address no alert is sent. The full core is not ported
 to MAX until the platform has been checked by at least one live request.
+
+### Discord (since 5.5) ⚠️ not verified in operation
+
+Feature flag `platform_discord`, off by default. Discord here is a
+**community channel**, not address-based alerts: no alert goes out
+without confirmed geography, and addresses live in Telegram.
+
+- slash commands `/about`, `/status`, `/summary`, `/help`;
+- a daily summary in the `DISCORD_CHANNEL_ID` channel at
+  `DISCORD_SUMMARY_TIME` (20:00 by default): how many events there were
+  per category and how many all-clears — no addresses, cities or text;
+- a channel message when monitoring goes silent and when it recovers.
+
+The adapter is written on `aiohttp` without `discord.py`: REST and the
+Gateway (WebSocket) with heartbeats, session resume and the platform's
+limits respected. The protocol was checked against the `discord.py`
+source; the transport is exercised over a real WebSocket against an
+emulator (`tools/discord_http_check.py`, a CI step). It has never talked
+to real Discord. Setup is in section 15 of
+[docs/API_SETUP.md](docs/API_SETUP.md).
 
 ## Language
 
