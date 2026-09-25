@@ -53,12 +53,20 @@ class Identity:
 def parse(key: str | int) -> Identity:
     """Разбирает ключ рабочего набора в пару платформа/идентификатор."""
     text = str(key).strip()
-    if ":" in text:
-        platform, _, external = text.partition(":")
-        platform = platform.strip().lower()
-        if platform in PLATFORMS:
-            return Identity(platform, external.strip())
+    # «vk.5» — тот же ключ в данных кнопки (5.7): двоеточие там разделяет
+    # поля, и «usr:card:vk:5» разобралось бы как пользователь «vk».
+    for separator in (":", "."):
+        if separator in text:
+            platform, _, external = text.partition(separator)
+            platform = platform.strip().lower()
+            if platform in PLATFORMS:
+                return Identity(platform, external.strip())
     return Identity(TELEGRAM, text)
+
+
+def cb_key(key: str | int) -> str:
+    """Ключ для данных кнопки: без двоеточия. Telegram-ключ не меняется."""
+    return parse(key).key.replace(":", ".")
 
 
 def make(platform: str, external_id: str | int) -> Identity:

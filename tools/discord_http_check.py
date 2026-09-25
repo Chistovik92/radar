@@ -75,6 +75,7 @@ class Emulator:
         self.heartbeats = 0
         self.base = ""
         self.done = asyncio.Event()
+        self.dm_requests: list[dict[str, Any]] = []
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -83,6 +84,7 @@ class Emulator:
         app.router.add_put("/api/v10/applications/{app}/commands", self.put_commands)
         app.router.add_post("/api/v10/interactions/{id}/{token}/callback", self.callback)
         app.router.add_post("/api/v10/channels/{channel}/messages", self.message)
+        app.router.add_post("/api/v10/users/@me/channels", self.dm_channel)
         app.router.add_get("/gw/", self.gateway)
         app.router.add_get("/resume/", self.gateway)
         return app
@@ -122,8 +124,16 @@ class Emulator:
             return web.json_response({"message": "You are being rate limited.",
                                       "retry_after": 0.3, "global": False}, status=429)
         body = await request.json()
-        self.messages.append(body)
+        self.messages.append(dict(body, channel=request.match_info["channel"]))
         return web.json_response({"id": str(len(self.messages)), **body})
+
+    async def dm_channel(self, request: web.Request) -> web.Response:
+        """Канал личной переписки (5.7): как `start_private_message` в discord.py."""
+        if not self.authed(request):
+            return web.json_response({}, status=401)
+        body = await request.json()
+        self.dm_requests.append(body)
+        return web.json_response({"id": f"DM{body.get('recipient_id')}", "type": 1})
 
     async def script(self, ws: web.WebSocketResponse) -> None:
         """READY → пауза на сердцебиения → слеш-команда → RECONNECT."""
@@ -200,17 +210,22 @@ async def main() -> int:
             stopped_in = time.monotonic() - started
             send_ok = await transport.send("55", OutboundMessage(
                 text="<b>Сводка</b> " + "x" * 2500))
+            dm_ok = (await transport.send_text("42", "🚨 <b>Тревога</b>")
+                     and await transport.send_text("42", "Отбой"))
     except asyncio.TimeoutError:
         checks.append(("адаптер остановился на коде 4004", False,
                        "за 20 с не остановился — переподключается в цикле"))
-        stopped_in, send_ok = 0.0, False
+        stopped_in, send_ok, dm_ok = 0.0, False, False
     finally:
         await transport.stop()
         await runner.cleanup()
 
     names = [item["name"] for item in emulator.commands]
-    checks.append(("слеш-команды зарегистрированы",
-                   "commands:A1" in emulator.log and names == [n for n, _ in discordbot.COMMANDS],
+    address = next((item for item in emulator.commands if item["name"] == "address"), {})
+    checks.append(("слеш-команды зарегистрированы, у /address — параметр",
+                   "commands:A1" in emulator.log
+                   and names == [item[0] for item in discordbot.COMMANDS]
+                   and (address.get("options") or [{}])[0].get("type") == 3,
                    ", ".join(names)))
     checks.append(("IDENTIFY с токеном и намерениями GUILDS",
                    "identify:intents=1" in emulator.log, str(emulator.log[:2])))
@@ -230,11 +245,18 @@ async def main() -> int:
                    f"{resume}"))
     checks.append(("код 4004 останавливает адаптер", 0 < stopped_in < 20 and "fatal" in emulator.log,
                    f"за {stopped_in:.1f} с"))
+    channel_messages = [item for item in emulator.messages if item["channel"] == "55"]
+    direct = [item for item in emulator.messages if item["channel"] == "DM42"]
+    checks.append(("тревога в личку: канал создан один раз, оба сообщения дошли",
+                   dm_ok and len(emulator.dm_requests) == 1
+                   and emulator.dm_requests[0].get("recipient_id") == "42"
+                   and len(direct) == 2 and direct[0]["content"] == "🚨 **Тревога**",
+                   f"каналов: {len(emulator.dm_requests)}, сообщений: {len(direct)}"))
     checks.append(("429 → пауза и повтор, длинный текст разрезан",
-                   send_ok and emulator.rate_limited and len(emulator.messages) == 2
-                   and all(len(m.get("content", "")) <= 2000 for m in emulator.messages)
-                   and emulator.messages[0]["content"].startswith("**Сводка**"),
-                   f"сообщений: {len(emulator.messages)}"))
+                   send_ok and emulator.rate_limited and len(channel_messages) == 2
+                   and all(len(m.get("content", "")) <= 2000 for m in channel_messages)
+                   and channel_messages[0]["content"].startswith("**Сводка**"),
+                   f"сообщений: {len(channel_messages)}"))
 
     failures = 0
     print("Адаптер Discord по WebSocket и HTTP:\n")

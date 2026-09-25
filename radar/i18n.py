@@ -148,17 +148,35 @@ EN_STRINGS: dict[str, str] = {
     "vpn.cancel_order": "✖️ Cancel order",
     "vpn.order_done": "✅ Payment received, access is open.",
     "vpn.not_paid": "The payment hasn't arrived yet. Try again in a minute.",
-    "link.button": "🔗 Link VK or MAX",
-    "link.title": "🔗 <b>Link VK and MAX</b>",
-    "link.intro": "Alerts for your addresses will also arrive there — a copy "
-                  "of what arrives here. Addresses and settings stay in Telegram.",
+    "link.button": "🔗 Linked networks",
+    "link.title": "🔗 <b>Linked networks</b>",
+    "link.intro": "One account in every network: addresses and settings are shared, "
+                  "alerts arrive there too. You can link VK, MAX and Discord.",
     "link.linked": "linked",
     "link.unlink": "✖️ Unlink",
-    "link.code": "Your code: <code>{code}</code>\nSend it to the bot in VK "
-                 "or MAX. The code is valid for 10 minutes.",
     "link.get_code": "🔑 Get a code",
     "link.unlinked": "Unlinked.",
     "link.unavailable": "Linking is not available right now.",
+    "link.code_any": "Your code: {code}\nSend it to the bot in another network — in "
+                     "Telegram as /link {code}, in VK, MAX or Discord just the code. "
+                     "The code is valid for 10 minutes.",
+    "link.enter_hint": "<i>Got a code in another network? Send it here as</i> "
+                       "<code>/link CODE</code>.",
+    "link.confirm": "Link this account with the account that has {nets}?\n\n"
+                    "Addresses and settings become shared and alerts arrive in all "
+                    "linked networks. If someone else sent you this code, decline: "
+                    "they would get access to your addresses.",
+    "link.answer": "Reply \"yes\" or \"no\".",
+    "link.yes": "✅ Link",
+    "link.no": "✖️ Decline",
+    "link.done": "✅ Accounts linked. Addresses and settings are now shared, alerts "
+                 "arrive in all linked networks. To unlink — /unlink.",
+    "link.declined": "OK, the accounts are not linked.",
+    "link.notice": "🔗 {net} has been linked to your account. If it wasn't you, "
+                   "unlink it: /unlink in that network or \"Linked networks\" in the "
+                   "Telegram bot settings.",
+    "link.unlinked_net": "Unlinked: this account is no longer connected to the others.",
+    "link.not_linked": "This account is not linked to anything.",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 

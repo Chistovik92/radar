@@ -78,7 +78,7 @@ async def save(uid: str | int | None = None) -> None:
     global _sources_snapshot
     async with _lock:
         if uid is not None:
-            key = str(uid)
+            key = _key(uid)
             data = DB["users"].get(key)
             if data is not None:
                 mark = _fingerprint(data)
@@ -111,12 +111,19 @@ def users() -> dict[str, Any]:
     return DB["users"]
 
 
+def _key(uid: int | str) -> str:
+    """Ключ профиля. «vk.5» из данных кнопки — тот же «vk:5» (5.7)."""
+    from .identity import parse
+
+    return parse(uid).key
+
+
 def get_user(uid: int | str) -> dict[str, Any] | None:
-    return DB["users"].get(str(uid))
+    return DB["users"].get(_key(uid))
 
 
 def exists(uid: int | str) -> bool:
-    return str(uid) in DB["users"]
+    return _key(uid) in DB["users"]
 
 
 def role_of(uid: int | str) -> str | None:
@@ -151,8 +158,8 @@ def remove_location(uid: int | str, loc_id: str) -> bool:
 
 async def drop_user(uid: int | str) -> None:
     """Полное удаление пользователя вместе с локациями."""
-    DB["users"].pop(str(uid), None)
-    _snapshots.pop(str(uid), None)
+    DB["users"].pop(_key(uid), None)
+    _snapshots.pop(_key(uid), None)
     await repo.delete_user(uid)
 
 

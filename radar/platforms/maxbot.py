@@ -1,21 +1,14 @@
-"""Встроенный ответчик MAX: что бот умеет, пока ядро живёт в Telegram.
+"""Ответчик MAX (4.9.9.4; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН — как и весь адаптер MAX.
 
-До 4.9.9.4 адаптер получал события и **ничего с ними не делал**:
-обработчик в `main.py` не передавался, события разбирались и молча
-выбрасывались. Человек, написавший боту в MAX, не получал ответа вовсе —
-худший из исходов: снаружи это неотличимо от сломанного бота.
-
-Почему ответчик отдельный и маленький. Ядро «Радара» — команды, роли,
-локации, оповещения — написано на aiogram и привязано к Telegram.
-Перенести его на MAX означает вторую реализацию всего, поверх API,
-который не проверен ни одним живым запросом. Пока MAX отвечает честно:
-рассказывает, что есть, и уводит туда, где всё работает.
-
-Что здесь есть: `/start`, `/help`, `/status` и ответ на любое другое
-сообщение. Оповещения отсюда **не** рассылаются: без подтверждённой
-географии тревога не отправляется, а локации живут в Telegram-аккаунте.
+До 4.9.9.4 адаптер получал события и **ничего с ними не делал**. До 5.7
+ответчик только рассказывал, что адреса живут в Telegram. С общим
+аккаунтом (`radar/links.py`) начать можно и здесь: адрес задаётся
+командой `/address` или геопозицией, тревоги по нему приходят сюда,
+а Telegram, ВК и Discord привязываются общим кодом. Логика ответов
+общая с ВКонтакте — `radar/platforms/textbot.py`; здесь остаётся
+приветствие при добавлении бота и кнопка перехода в Telegram.
 """
 
 # --------------------------------------------------------------------------
@@ -29,6 +22,7 @@ from __future__ import annotations
 import logging
 
 from .. import config
+from ..textutils import esc
 from .base import Button, EventKind, InboundEvent, OutboundMessage
 
 log = logging.getLogger("radar.platform.maxbot")
@@ -37,21 +31,11 @@ ABOUT = (
     "<b>Система «Радар»</b>\n\n"
     "Следит за городскими угрозами и авариями ЖКХ по вашим адресам: "
     "читает каналы служб и ленты СМИ, разбирает сообщения и присылает "
-    "только то, что касается ваших локаций.\n\n"
-    "<b>Здесь, в MAX, приходят копии тревог.</b> Локации и настройки "
-    "живут в Telegram-боте: нажмите там «🔗 Привязать ВК или MAX» "
-    "и пришлите сюда шестизначный код. Адаптер MAX написан, но ещё "
-    "не проверен в работе.\n\n"
+    "только то, что касается ваших адресов.\n\n"
+    "Добавьте адрес: /address улица, дом, город — или отправьте геопозицию. "
+    "Уже пользуетесь ботом в Telegram или ВК? /link — и аккаунт станет общим. "
+    "Адаптер MAX написан, но ещё не проверен в работе.\n\n"
     "<i>Система не заменяет официальные каналы оповещения.</i>"
-)
-
-HELP = (
-    "<b>Команды</b>\n"
-    "/start — что это такое\n"
-    "/help — этот список\n"
-    "/status — жив ли мониторинг\n\n"
-    "Оповещения приходят в Telegram-боте: там задаются адреса, "
-    "без подтверждённого адреса тревога не отправляется."
 )
 
 
@@ -97,50 +81,29 @@ def status_text() -> str:
 
 
 def answer_for(event: InboundEvent, username: str = "") -> OutboundMessage:
-    """Что ответить на событие. Отделено от отправки — проверяется офлайн."""
-    if event.kind is EventKind.JOINED:
-        return OutboundMessage(text=ABOUT, keyboard=telegram_button(username))
-
-    if event.kind is EventKind.COMMAND:
-        if event.command in ("start", "about"):
-            return OutboundMessage(text=ABOUT, keyboard=telegram_button(username))
-        if event.command == "help":
-            return OutboundMessage(text=HELP, keyboard=telegram_button(username))
-        if event.command == "status":
-            return OutboundMessage(text=status_text())
-        return OutboundMessage(
-            text="Такой команды нет. /help — что бот умеет.")
-
-    if event.kind is EventKind.LOCATION:
-        # Геопозиция здесь ничего не даёт: локации привязаны к учётной
-        # записи Telegram. Сказать об этом прямо честнее, чем принять
-        # точку и ничего по ней не прислать.
-        return OutboundMessage(
-            text="Адреса пока задаются только в Telegram-боте — "
-                 "здесь геопозиция ни к чему не привяжется.",
-            keyboard=telegram_button(username))
-
-    return OutboundMessage(text=HELP, keyboard=telegram_button(username))
+    """Приветствие при добавлении бота. Остальное отвечает `textbot`."""
+    return OutboundMessage(text=ABOUT, keyboard=telegram_button(username))
 
 
 async def reply(event: InboundEvent, transport) -> None:
     """Обработчик, который адаптер зовёт на каждое событие."""
+    from . import textbot
+
     if event.kind is EventKind.CALLBACK and event.args:
         # Сначала гасим «часики» у нажатой кнопки, потом отвечаем.
         await transport.answer_callback(event.args)
 
-    # Код привязки к Telegram (5.6): с ним MAX начинает получать копии
-    # тревог по адресам привязанного человека.
-    if event.kind in (EventKind.MESSAGE, EventKind.COMMAND):
-        from .. import links
-
-        linked = await links.handle_text("max", event.identity.external_id,
-                                         event.text or f"/{event.command}")
-        if linked:
-            await transport.send(event.chat_id, OutboundMessage(text=linked))
-            return
-
-    message = answer_for(event, await telegram_username())
+    if event.kind is EventKind.JOINED:
+        message = answer_for(event, await telegram_username())
+    elif event.kind in (EventKind.MESSAGE, EventKind.COMMAND, EventKind.LOCATION):
+        location = None
+        if event.kind is EventKind.LOCATION and event.latitude is not None:
+            location = (event.latitude, event.longitude)
+        text = event.text or (f"/{event.command} {event.args}".strip() if event.command else "")
+        message = OutboundMessage(text=esc(await textbot.answer(
+            "max", event.identity.external_id, text, location=location)))
+    else:
+        return
     if not message.text:
         return
     sent = await transport.send(event.chat_id, message)

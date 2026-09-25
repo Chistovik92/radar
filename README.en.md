@@ -1,4 +1,4 @@
-# Radar v5.6.2
+# Radar v5.7
 
 [Русская версия](README.md)
 
@@ -729,24 +729,47 @@ emulator (`tools/discord_http_check.py`, a CI step). It has never talked
 to real Discord. Setup is in section 15 of
 [docs/API_SETUP.md](docs/API_SETUP.md).
 
-### VK and alert copies (since 5.6) ⚠️ not verified in operation
+### One account in every network (since 5.7) ⚠️ not verified in operation
 
-Feature flag `platform_vk`, off by default. The VK community bot runs on
-the Bots Long Poll API — no inbound address needed.
+A person has one profile — addresses, settings, role, subscription — and
+Telegram, VK (flag `platform_vk`), MAX (`platform_max`) and Discord
+(`platform_discord`) are equal ways to sign in to it. The platform flags
+are off by default. You can start in any network:
 
-**Linking.** In Telegram: "⚙️ Alerts" → "🔗 Link VK or MAX" (or `/link`)
-— the bot gives a six-digit code valid for 10 minutes. The code is sent
-to the bot in VK or in MAX, and from then on **alerts for the person's
-addresses arrive there too** — a copy of what arrived in Telegram.
-Addresses and settings stay in Telegram: geography is confirmed there,
-so the rule "no alert without confirmed geography" holds.
+- **VK and MAX**: `/address street, house, city` or a geolocation — the
+  bot shows the address it found and saves it **only after "yes"** (no
+  alert without confirmed geography). `/addresses` lists them, `/remove N`
+  deletes one, plus `/status` and `/lang en`;
+- **Discord**: the same `/address`, `/addresses`, `/remove` as slash
+  commands, replies are visible only to the author, alerts arrive in DMs;
+- **Telegram** — the full interface, as before.
 
-- the copy is sent by a background task: Telegram does not wait for it,
-  and a VK or MAX failure neither delays nor breaks the alert loop;
-- only Telegram, where the addresses are, issues the code: nobody can
-  route someone else's alerts to themselves by knowing a VK id;
-  brute force is limited to five wrong codes per 10 minutes;
-- `/unlink` in VK or MAX, or the button in Telegram, removes the link.
+**Linking networks.** In one network — `/link` (in Telegram also
+"⚙️ Alerts" → "🔗 Linked networks"): the bot gives a six-digit code valid
+for 10 minutes. In another network the code is sent to the bot (in
+Telegram as `/link CODE`) and confirmed with "yes". After that addresses
+and settings are shared, **alerts arrive in every linked network**, and
+all networks of the account are told about the new link.
+
+- if the account has Telegram, the profile is stored under the Telegram
+  key; when Telegram is linked to a VK account, the addresses move there;
+- two profiles' addresses are merged (points closer than 40 m are the
+  same), the role stays with the main profile: merging never raises it;
+- an account has one entry per network — two Telegram accounts never merge;
+- confirmation is mandatory: a code links addresses too, and a planted
+  code would give someone else's account access to them; brute force is
+  limited to five wrong codes per 10 minutes;
+- `/unlink` in any network or the button in Telegram detaches a network.
+
+**Web panel sign-in by code.** `/panel` in any network of the account
+(moderators and above) gives a one-time code valid for 5 minutes; it is
+entered on the panel's sign-in page instead of the Telegram widget — so the
+panel also opens by IP address, where the widget does not work. The other
+networks of the account are told about every code request.
+
+Copies and delivery to VK, MAX and Discord run as background tasks:
+Telegram does not wait for them, and a platform failure does not delay
+the alert loop.
 
 Viber and WhatsApp are not connected: since 2024 Viber bots require a
 contract and €115 a month plus a fee per message, and since July 2025

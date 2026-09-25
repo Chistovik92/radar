@@ -172,9 +172,38 @@ class ResponderTests(unittest.TestCase):
         self.assertIn("Telegram", answer.text)
         self.assertIn("не заменяет официальные каналы", answer.text)
 
-    def test_unknown_command_answered(self):
-        answer = maxbot.answer_for(self._event(EventKind.COMMAND, "vpn"))
-        self.assertIn("/help", answer.text)
+    def test_commands_and_places_go_to_textbot(self):
+        """С 5.7 MAX — полноценный вход: команды, текст и геопозиция уходят
+        общему ответчику, приветствие остаётся своим."""
+        from unittest import mock
+
+        from radar.platforms import textbot
+
+        seen = []
+
+        async def fake_answer(platform, external_id, text="", *, location=None):
+            seen.append((platform, external_id, text, location))
+            return "ответ & <тег>"
+
+        class Transport:
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, chat_id, message):
+                self.sent.append(message.text)
+                return True
+
+        transport = Transport()
+        event = self._event(EventKind.COMMAND, "address")
+        event.args = "Тверская 1"
+        place = self._event(EventKind.LOCATION)
+        place.latitude, place.longitude = 55.7, 37.6
+        with mock.patch.object(textbot, "answer", fake_answer):
+            run(maxbot.reply(event, transport))
+            run(maxbot.reply(place, transport))
+        self.assertEqual(seen[0], ("max", "1", "/address Тверская 1", None))
+        self.assertEqual(seen[1][3], (55.7, 37.6))
+        self.assertEqual(transport.sent[0], "ответ &amp; &lt;тег&gt;", "MAX получает HTML")
 
     def test_any_message_gets_help(self):
         answer = maxbot.answer_for(self._event(EventKind.MESSAGE, text="привет"))

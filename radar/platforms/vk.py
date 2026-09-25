@@ -97,7 +97,18 @@ def parse_update(update: dict[str, Any]) -> InboundEvent | None:
     event = InboundEvent(platform=VK, identity=make_identity(VK, str(from_id)),
                          chat_id=str(peer_id), text=text, raw=update,
                          message_id=str(message.get("id") or ""))
-    if text.startswith("/"):
+    # Геопозиция (5.7): `geo.coordinates` — как в описании объекта
+    # сообщения ВК и в моделях vkbottle (`Geo.coordinates`).
+    coordinates = ((message.get("geo") or {}).get("coordinates") or {})
+    try:
+        latitude = float(coordinates["latitude"])
+        longitude = float(coordinates["longitude"])
+    except (KeyError, TypeError, ValueError):
+        latitude = longitude = None
+    if latitude is not None and longitude is not None:
+        event.kind = EventKind.LOCATION
+        event.latitude, event.longitude = latitude, longitude
+    elif text.startswith("/"):
         command, _, args = text[1:].partition(" ")
         event.kind, event.command, event.args = EventKind.COMMAND, command.lower(), args.strip()
     else:

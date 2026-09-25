@@ -435,7 +435,10 @@ async def deliver(
 
             picture = weather_image.render(data, title, lang)
 
-    if picture is None:
+    from .identity import is_telegram
+
+    # Картинку умеет только Telegram; профилю из ВК или MAX (5.7) — текстом.
+    if picture is None or not is_telegram(chat_id):
         await send_html(chat_id, render(data, title, lang), markup)
         return
 

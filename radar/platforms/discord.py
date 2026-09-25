@@ -197,7 +197,12 @@ def parse_interaction(data: dict[str, Any]) -> InboundEvent | None:
     if kind == APPLICATION_COMMAND:
         event.kind = EventKind.COMMAND
         event.command = str(payload.get("name") or "")
-        event.text = f"/{event.command}"
+        # Параметры слеш-команды (5.7: /link код, /address улица…) —
+        # `data.options[].value`, как в discord.py (`ApplicationCommandInteractionData`).
+        event.args = " ".join(str(option.get("value") or "").strip()
+                              for option in payload.get("options") or []
+                              if isinstance(option, dict)).strip()
+        event.text = f"/{event.command} {event.args}".strip()
     elif kind == MESSAGE_COMPONENT:
         event.kind = EventKind.CALLBACK
         event.payload = str(payload.get("custom_id") or "")
@@ -237,6 +242,7 @@ class DiscordTransport:
         self._acked = True
         self._beat: asyncio.Task | None = None
         self._delay = 1.0
+        self._dm: dict[str, str] = {}
 
     @property
     def configured(self) -> bool:
@@ -279,6 +285,23 @@ class DiscordTransport:
                 return json.loads(text) if text else {}
         return None
 
+    async def send_text(self, user_id: str, text: str) -> bool:
+        """Личное сообщение человеку — для тревог общего аккаунта (5.7).
+
+        Канал личной переписки создаётся `POST /users/@me/channels`
+        (`recipient_id`) и запоминается: Discord возвращает тот же канал,
+        но лишний запрос на каждую тревогу — чужая квота впустую.
+        """
+        channel = self._dm.get(str(user_id))
+        if not channel:
+            result = await self.request("POST", "/users/@me/channels",
+                                        {"recipient_id": str(user_id)})
+            channel = str((result or {}).get("id") or "")
+            if not channel:
+                return False
+            self._dm[str(user_id)] = channel
+        return await self.send(channel, OutboundMessage(text=text))
+
     async def send(self, chat_id: str, message: OutboundMessage) -> bool:
         ok = True
         for body in payloads(message):
@@ -312,8 +335,17 @@ class DiscordTransport:
         if not self.application_id:
             log.warning("Discord: не узнал id приложения — слеш-команды не заданы")
             return
-        body = [{"name": name, "description": description[:100], "type": 1}
-                for name, description in commands]
+        body = []
+        for item in commands:
+            name, description = item[0], item[1]
+            command: dict[str, Any] = {"name": name, "description": description[:100], "type": 1}
+            if len(item) > 2 and item[2]:
+                # (имя, описание, обязателен) → параметр-строка.
+                command["options"] = [
+                    {"type": 3, "name": option, "description": text[:100],
+                     "required": bool(required)}
+                    for option, text, required in item[2]]
+            body.append(command)
         await self.request("PUT", f"/applications/{self.application_id}/commands", body)
 
     def render(self, text: str) -> str:

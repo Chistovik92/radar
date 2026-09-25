@@ -359,7 +359,21 @@ async def cmd_panel(message: Message, role: str) -> None:
         await message.answer("⛔️ Панель доступна модераторам и выше.")
         return
 
-    await message.answer(_panel_text(role), reply_markup=back_kb())
+    text = _panel_text(role)
+    if features.enabled("web_panel"):
+        # Одноразовый код входа (5.7): запасной путь, когда виджет Telegram
+        # недоступен — панель по IP-адресу или домен не привязан у BotFather.
+        import asyncio
+
+        from .. import i18n, links, storage
+
+        uid = str(message.from_user.id)
+        user = storage.get_user(uid)
+        reply, issued = links.panel_code(uid, user, i18n.language_of(user))
+        if issued:
+            text += "\n\n" + esc(reply)
+            asyncio.get_running_loop().create_task(links.announce_panel(uid, links.TELEGRAM))
+    await message.answer(text, reply_markup=back_kb())
 
 
 def _panel_text(role: str) -> str:
@@ -395,7 +409,8 @@ def _panel_text(role: str) -> str:
 
     lines.append("")
     lines.append(
-        "Вход — кнопкой Telegram, паролей нет. Разделы зависят от роли: "
+        "Вход — кнопкой Telegram или одноразовым кодом из /panel (в любой "
+        "привязанной сети), паролей нет. Разделы зависят от роли: "
         "модератор видит источники и пользователей, администратор — ещё "
         "события, суперадминистратор — возможности, копии и журнал."
     )
