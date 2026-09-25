@@ -1299,17 +1299,25 @@ separate media (`MUSIC_DIR` or a mount).
 
 ---
 
-## 5.0 — VPN panels and selling access
+## 5.0 — VPN panels and selling access ⚠️ started: items 1 and 3
 
 An idea from September 2026. The largest block after the web panel, and
 the first where the bot takes money not for itself but for access to a
 separate service. Hence the number: this changes what the system is made
 of, not a function inside a finished block.
 
-Roadmap work is paused until the panel is finished (the 4.9.8.X releases),
-so what is written here is an intent, not a work plan.
+Panel polishing is finished, and roadmap work resumed with 4.9.9.
+5.0 delivers items 1 and 3 — the common layer over the panels and issuing
+to people already in the bot, without payments. Items 4 and 5 (plans and
+the payment layer) come in later releases.
 
 ### 1. One layer over three panels
+
+⚠️ Done in 5.0: `radar/vpnpanels.py` — `XuiPanel`, `PasarGuardPanel` and
+`RemnawavePanel` on `aiohttp`, sharing one interface and returning one
+`Account` record. Written against the panels' documentation; response
+parsing is pinned by offline tests (`tests/test_vpn.py`), not verified
+against live panels.
 
 **3x-ui**, **PasarGuard** and **Remnawave** are supported — not one after
 another, but through a single internal interface (`create_user`,
@@ -1354,6 +1362,12 @@ about Radar's roles and flags. So this is a transfer of **logic**, not of
 files: users, roles and subscriptions already exist here.
 
 ### 3. Issuing to people who are already in
+
+⚠️ Done in 5.0: the "🔐 VPN" section behind the `vpn` flag
+(`radar/vpn.py`, `radar/handlers/vpn.py`). A request goes to the admins
+with decision buttons, roles at or above `VPN_AUTO_ROLE` get access right
+away, and extending or re-issuing returns the same key. Not verified on
+a live server.
 
 The first step, and the only one that can be done without payments at all:
 a person already registered in the bot asks for access and gets it, by an

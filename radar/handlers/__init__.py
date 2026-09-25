@@ -38,6 +38,7 @@ from . import (
     sources,
     subscription,
     users,
+    vpn,
 )
 
 # Порядок прежний и важный: ассистент перехватывает любой оставшийся
@@ -45,7 +46,7 @@ from . import (
 PRIVATE_ROUTERS = (
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
-    linkcheck, music, digest, sos, chats,
+    linkcheck, music, digest, sos, chats, vpn,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
     subscription,

@@ -132,6 +132,42 @@ SETTINGS: tuple[Setting, ...] = (
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
 
+    # --- VPN (с 5.0) ---
+    Setting("VPN_PANEL", "VPN: панель",
+            "3xui, pasarguard или remnawave. Пусто — раздел VPN не работает.",
+            "VPN", secret=False),
+    Setting("VPN_PANEL_URL", "VPN: адрес панели",
+            "Вместе с секретным путём, если он есть: "
+            "https://example.ru:2053/secretpath.", "VPN", secret=False),
+    Setting("VPN_PANEL_TOKEN", "VPN: токен панели",
+            "3x-ui — Settings → Security, Remnawave — API Tokens, "
+            "PasarGuard — токен администратора. Для Remnawave обязателен.",
+            "VPN"),
+    Setting("VPN_PANEL_USER", "VPN: логин панели",
+            "Вместо токена — для 3x-ui и PasarGuard.", "VPN", secret=False),
+    Setting("VPN_PANEL_PASS", "VPN: пароль панели",
+            "Вместо токена — для 3x-ui и PasarGuard.", "VPN"),
+    Setting("VPN_XUI_INBOUND", "VPN: подключение 3x-ui",
+            "Номер входящего подключения (inbound), куда заводятся клиенты. "
+            "Протокол — vless, vmess или trojan.", "VPN", secret=False),
+    Setting("VPN_SUB_URL", "VPN: адрес подписки 3x-ui",
+            "Адрес службы подписки 3x-ui, например https://example.ru:2096/sub. "
+            "Другим панелям не нужен — они сообщают ссылку сами.",
+            "VPN", secret=False),
+    Setting("VPN_GROUPS", "VPN: группы или отряды",
+            "Через запятую: номера групп PasarGuard или uuid внутренних "
+            "отрядов Remnawave, куда попадают новые записи.",
+            "VPN", secret=False),
+    Setting("VPN_DAYS", "VPN: срок выдачи, дней",
+            "Срок новой записи и шаг продления. По умолчанию 30.",
+            "VPN", secret=False),
+    Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
+            "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
+    Setting("VPN_AUTO_ROLE", "VPN: выдача без заявки",
+            "С какой роли доступ выдаётся сразу: user, moderator, admin, "
+            "superadmin или none — только по заявкам. По умолчанию admin.",
+            "VPN", secret=False),
+
     # --- защита ---
     Setting("SAFE_BROWSING_API_KEY", "Google Safe Browsing",
             "Базы вредоносных сайтов для проверки ссылок (/check). "

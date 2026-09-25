@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v4.9.9.4 — автономный установщик.
+# Система «Радар» v5.0 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="4.9.9.4"
+VERSION="5.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=128
+FILE_COUNT=131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3240,6 +3240,17 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.0", [
+        "🔐 <b>Раздел VPN.</b> Доступ к VPN выдаётся прямо из бота через "
+        "панель 3x-ui, PasarGuard или Remnawave: человек отправляет "
+        "заявку, администрация решает кнопкой в письме, ссылка подписки "
+        "приходит в личку. Администрации доступ выдаётся сразу.",
+        "🔁 <b>Продление возвращает тот же ключ.</b> Срок сдвигается "
+        "у прежней записи — перенастраивать устройства не нужно.",
+        "⚙️ Возможность «VPN-доступ», по умолчанию выключена. Панель "
+        "задаётся в разделе ключей (VPN_PANEL, VPN_PANEL_URL, "
+        "VPN_PANEL_TOKEN). Платежей в этом выпуске нет.",
+    ]),
     ("4.9.9.4", [
         "📨 <b>Адаптер MAX переписан по настоящему API.</b> Прежний был "
         "набором догадок: угаданный адрес, угаданные имена полей, "
@@ -4935,7 +4946,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "4.9.9.4"
+__version__ = "5.0"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7072,6 +7083,14 @@ FLAGS: tuple[Flag, ...] = (
          "на проект, повтор возвращает прежний. Режим и условия задаются "
          "в разделе управления.",
          group="Партнёры", since="4.7", default=False),
+
+    # --- VPN ---
+    Flag("vpn", "VPN-доступ",
+         "Выдача доступа к VPN через панель 3x-ui, PasarGuard или "
+         "Remnawave: по заявке с решением администратора или сразу — "
+         "по роли. Без платежей. Панель задаётся в разделе ключей "
+         "(VPN_PANEL, VPN_PANEL_URL, VPN_PANEL_TOKEN).",
+         group="VPN", since="5.0", default=False),
 
     # --- администрирование ---
     Flag("web_panel", "Веб-панель",
@@ -10101,6 +10120,42 @@ SETTINGS: tuple[Setting, ...] = (
             "чтобы они не совпадали. Менять после запуска нельзя: "
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
+
+    # --- VPN (с 5.0) ---
+    Setting("VPN_PANEL", "VPN: панель",
+            "3xui, pasarguard или remnawave. Пусто — раздел VPN не работает.",
+            "VPN", secret=False),
+    Setting("VPN_PANEL_URL", "VPN: адрес панели",
+            "Вместе с секретным путём, если он есть: "
+            "https://example.ru:2053/secretpath.", "VPN", secret=False),
+    Setting("VPN_PANEL_TOKEN", "VPN: токен панели",
+            "3x-ui — Settings → Security, Remnawave — API Tokens, "
+            "PasarGuard — токен администратора. Для Remnawave обязателен.",
+            "VPN"),
+    Setting("VPN_PANEL_USER", "VPN: логин панели",
+            "Вместо токена — для 3x-ui и PasarGuard.", "VPN", secret=False),
+    Setting("VPN_PANEL_PASS", "VPN: пароль панели",
+            "Вместо токена — для 3x-ui и PasarGuard.", "VPN"),
+    Setting("VPN_XUI_INBOUND", "VPN: подключение 3x-ui",
+            "Номер входящего подключения (inbound), куда заводятся клиенты. "
+            "Протокол — vless, vmess или trojan.", "VPN", secret=False),
+    Setting("VPN_SUB_URL", "VPN: адрес подписки 3x-ui",
+            "Адрес службы подписки 3x-ui, например https://example.ru:2096/sub. "
+            "Другим панелям не нужен — они сообщают ссылку сами.",
+            "VPN", secret=False),
+    Setting("VPN_GROUPS", "VPN: группы или отряды",
+            "Через запятую: номера групп PasarGuard или uuid внутренних "
+            "отрядов Remnawave, куда попадают новые записи.",
+            "VPN", secret=False),
+    Setting("VPN_DAYS", "VPN: срок выдачи, дней",
+            "Срок новой записи и шаг продления. По умолчанию 30.",
+            "VPN", secret=False),
+    Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
+            "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
+    Setting("VPN_AUTO_ROLE", "VPN: выдача без заявки",
+            "С какой роли доступ выдаётся сразу: user, moderator, admin, "
+            "superadmin или none — только по заявкам. По умолчанию admin.",
+            "VPN", secret=False),
 
     # --- защита ---
     Setting("SAFE_BROWSING_API_KEY", "Google Safe Browsing",
@@ -13570,6 +13625,41 @@ EN_STRINGS: dict[str, str] = {
     "menu.sub_button": "💳 Subscription — unlimited checks",
     "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
     "help.cmd_music": "/music — music and playlists",
+
+    # --- VPN (5.0) ---
+    "menu.vpn": "🔐 VPN",
+    "vpn.title": "🔐 <b>VPN</b>",
+    "vpn.unavailable": "The administrator hasn't set this section up yet.",
+    "vpn.link_button": "📋 Subscription link",
+    "vpn.gone": "The account is missing from the panel — request access again.",
+    "vpn.ask_button": "📨 Request access",
+    "vpn.pending": "⏳ Your request has been sent and awaits an administrator.",
+    "vpn.can_get": "Access is granted right away — tap the button below.",
+    "vpn.get_button": "🔑 Get access",
+    "vpn.denied": "Your previous request was declined. You can send a new one.",
+    "vpn.intro": "VPN access is granted by an administrator. "
+                 "Send a request — the answer will arrive here.",
+    "vpn.sent": "Request sent.",
+    "vpn.link_title": "🔐 <b>Your subscription link</b>",
+    "vpn.setup_steps": "<b>How to connect:</b>\n"
+                       "1. Install a client that supports subscriptions: "
+                       "HydraVPN or v2rayNG on Android, Streisand or Happ "
+                       "on iPhone, Hiddify or v2rayN on a computer.\n"
+                       "2. Add the subscription using the link above — "
+                       "\"import from clipboard\" or \"add subscription\".\n"
+                       "3. Refresh the subscription and pick a server.\n\n"
+                       "The link is your key: don't forward it. The same "
+                       "link works on all of your devices.",
+    "vpn.hydra_button": "⬇️ HydraVPN for Android",
+    "vpn.no_access": "Access hasn't been granted.",
+    "vpn.denied_note": "🔐 Your VPN request was declined by an administrator.",
+    "vpn.until": "Valid until {until} ({left} days left)",
+    "vpn.forever": "Valid: no expiry",
+    "vpn.traffic": "Traffic: {used} of {limit}",
+    "vpn.traffic_free": "Traffic: {used}, unlimited",
+    "vpn.disabled": "⛔ Access is disabled",
+    "vpn.gb": "GB",
+    "vpn.mb": "MB",
 
     # --- RustDesk ---
     "menu.rustdesk": "🖥 RustDesk",
@@ -26849,6 +26939,9 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     if features.enabled("rustdesk"):
         extra.append(InlineKeyboardButton(text=label("menu.rustdesk", "🖥 RustDesk"),
                                           callback_data="rd:menu"))
+    if features.enabled("vpn"):
+        extra.append(InlineKeyboardButton(text=label("menu.vpn", "🔐 VPN"),
+                                          callback_data="vpn:menu"))
     if extra:
         # Кнопок бывает больше двух — режем по две, чтобы строка
         # не расползалась на весь экран телефона.
@@ -33270,8 +33363,1000 @@ async def control(action: str) -> tuple[bool, str]:
         return False, "; ".join(problems)
     return True, ""
 RADAR_FILE_97
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_98'
+"""Единый слой поверх VPN-панелей: 3x-ui, PasarGuard, Remnawave (с 5.0).
+
+Раздел продаж и выдачи не знает, какая панель стоит на сервере: он зовёт
+шесть действий — завести, найти, сдвинуть срок, сменить лимит трафика,
+выключить и включить — и получает одну и ту же запись `Account`. Смена
+панели на сервере — это смена `VPN_PANEL` в `.env`, а не переписывание
+раздела.
+
+**SDK не тянем.** У Remnawave есть официальный `remnawave-api`, но он
+приносит `httpx`, `pydantic`, `orjson` и ещё два пакета на машину, где
+весь бот живёт в 512 МБ. Нужные вызовы укладываются в `aiohttp`,
+который уже есть.
+
+**Ключи — не в журналах.** UUID клиента, ссылка подписки и токен панели
+в журнал не пишутся ни при успехе, ни при ошибке: в сообщение об ошибке
+идёт статус и текст панели, но не то, что мы ей отправили.
+
+⚠️ Клиенты написаны по документации панелей и не проверялись на живом
+сервере. Разбор ответов закреплён офлайн-тестами, но формат ответа
+панели меняется от выпуска к выпуску, и первая проверка — кнопка
+«Проверить панель» в разделе.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import secrets as pysecrets
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+log = logging.getLogger("radar.vpnpanels")
+
+TIMEOUT = 20
+GB = 1024 ** 3
+
+# Remnawave не принимает пользователя без срока: «бессрочно» у неё —
+# это дата далеко впереди. Всё, что дальше этого года, считаем бессрочным.
+FOREVER_YEAR = 2099
+
+# Имя учётной записи уходит в URL панели и в её интерфейс. Самое узкое
+# из трёх правил — у Remnawave: латиница, цифры, дефис и подчёркивание,
+# от 3 до 36 знаков.
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,36}$")
+
+
+class PanelError(Exception):
+    """Отказ панели, понятный человеку. Секретов в тексте нет."""
+
+
+@dataclass(frozen=True)
+class Account:
+    """Учётная запись в панели, одинаковая для всех трёх."""
+
+    name: str
+    enabled: bool
+    expire: int = 0            # unix-время окончания, 0 — бессрочно
+    traffic_limit: int = 0     # байты, 0 — без предела
+    traffic_used: int = 0      # байты
+    subscription_url: str = ""
+
+
+def valid_name(name: str) -> bool:
+    return bool(_NAME_RE.fullmatch(name or ""))
+
+
+def account_name(uid: str | int) -> str:
+    """Имя учётной записи для пользователя бота.
+
+    Выводится из ключа пользователя детерминированно: повторная выдача
+    находит ту же запись, а не заводит вторую. Недопустимые знаки
+    (двоеточие в ключах MAX) заменяются подчёркиванием.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", str(uid))
+    return f"radar_{cleaned}"[:36]
+
+
+# --------------------------------------------------------------------------
+#  Время: у каждой панели свой формат
+# --------------------------------------------------------------------------
+
+def to_iso(ts: int) -> str:
+    """unix-время → ISO 8601 в UTC. 0 — «бессрочно» в виде далёкой даты."""
+    if not ts:
+        return f"{FOREVER_YEAR}-12-31T00:00:00.000Z"
+    moment = datetime.fromtimestamp(int(ts), timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def parse_time(value: Any) -> int:
+    """Срок из ответа панели → unix-время; 0 — бессрочно или не указан.
+
+    Встречаются: секунды (Marzban-наследие), миллисекунды (3x-ui),
+    ISO-строка с «Z» или смещением (PasarGuard, Remnawave), None.
+    """
+    if value in (None, "", 0):
+        return 0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = int(value)
+        if number <= 0:
+            return 0
+        # Всё, что больше 10^11, — миллисекунды: в секундах это 5138 год.
+        return number // 1000 if number > 10 ** 11 else number
+    text = str(value).strip()
+    if text.lstrip("-").isdigit():
+        return parse_time(int(text))
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    if moment.year >= FOREVER_YEAR:
+        return 0
+    return int(moment.timestamp())
+
+
+def _int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+# --------------------------------------------------------------------------
+#  Общая часть
+# --------------------------------------------------------------------------
+
+class Panel:
+    """Общий интерфейс. Наследники задают разметку запросов и разбор ответов.
+
+    Каждое действие открывает свою сессию: вызовы редкие (их нажимает
+    человек), а долгоживущая сессия с куками панели — ещё одно состояние,
+    которое надо чинить после перезапуска панели.
+    """
+
+    kind = ""
+    title = ""
+
+    def __init__(self, url: str, *, token: str = "", user: str = "",
+                 password: str = "", groups: tuple[str, ...] = (),
+                 inbound: int = 0, sub_url: str = "") -> None:
+        self.url = (url or "").strip().rstrip("/")
+        self.token = (token or "").strip()
+        self.user = (user or "").strip()
+        self.password = password or ""
+        self.groups = tuple(item for item in groups if item)
+        self.inbound = int(inbound or 0)
+        self.sub_url = (sub_url or "").strip().rstrip("/")
+
+    # --- то, что обязаны задать наследники ---
+
+    async def create_user(self, name: str, expire: int, traffic: int) -> Account:
+        raise NotImplementedError
+
+    async def get_user(self, name: str) -> Account | None:
+        raise NotImplementedError
+
+    async def set_expiry(self, name: str, expire: int) -> None:
+        raise NotImplementedError
+
+    async def set_traffic(self, name: str, traffic: int) -> None:
+        raise NotImplementedError
+
+    async def disable(self, name: str) -> None:
+        raise NotImplementedError
+
+    async def enable(self, name: str) -> None:
+        raise NotImplementedError
+
+    async def check(self) -> str:
+        """Отвечает ли панель и принимает ли вход. Строка — для человека."""
+        raise NotImplementedError
+
+    def problems(self) -> list[str]:
+        """Чего не хватает в настройках. Пусто — можно обращаться."""
+        missing = []
+        if not self.url:
+            missing.append("VPN_PANEL_URL")
+        if not self.token and not (self.user and self.password):
+            missing.append("VPN_PANEL_TOKEN или VPN_PANEL_USER с VPN_PANEL_PASS")
+        return missing
+
+    async def subscription_url(self, name: str) -> str:
+        account = await self.get_user(name)
+        if account is None:
+            raise PanelError("Учётной записи в панели нет.")
+        if not account.subscription_url:
+            raise PanelError("Панель не сообщила ссылку подписки.")
+        return account.subscription_url
+
+    # --- обмен с панелью ---
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    async def _login(self, session: Any, headers: dict[str, str]) -> None:
+        """Вход по логину и паролю, если токена нет. По умолчанию не нужен."""
+
+    async def _call(self, method: str, path: str, *, body: Any = None,
+                    form: dict[str, str] | None = None,
+                    missing_ok: bool = False) -> Any:
+        """Запрос к панели. Возвращает разобранный JSON или None на 404
+        при `missing_ok`. Любая другая неудача — `PanelError`."""
+        import aiohttp
+
+        problems = self.problems()
+        if problems:
+            raise PanelError("Панель не настроена: " + ", ".join(problems) + ".")
+
+        url = f"{self.url}/{path.lstrip('/')}"
+        timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+        # unsafe=True: без него aiohttp не хранит куки, выданные адресом
+        # по IP, а 3x-ui внутри домашней сети открывают именно так.
+        jar = aiohttp.CookieJar(unsafe=True)
+        headers = self._headers()
+        try:
+            async with aiohttp.ClientSession(timeout=timeout,
+                                             cookie_jar=jar) as session:
+                await self._login(session, headers)
+                async with session.request(method, url, json=body, data=form,
+                                           headers=headers) as response:
+                    status = response.status
+                    text = await response.text()
+        except PanelError:
+            raise
+        except aiohttp.ClientError as exc:
+            log.warning("Панель %s недоступна: %s", self.kind, type(exc).__name__)
+            raise PanelError("Панель не отвечает — проверьте адрес и что она запущена.")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Сбой обращения к панели %s: %s", self.kind, type(exc).__name__)
+            raise PanelError("Обращение к панели не удалось.")
+
+        if status == 404 and missing_ok:
+            return None
+        if status in (401, 403):
+            raise PanelError("Панель не приняла вход: проверьте токен или пароль.")
+        payload: Any = None
+        if text:
+            try:
+                payload = json.loads(text)
+            except ValueError:
+                payload = None
+        if status >= 400:
+            raise PanelError(f"Панель ответила HTTP {status}: {_detail(payload)}")
+        if payload is None:
+            raise PanelError("Панель ответила не JSON — возможно, неверный адрес "
+                             "или путь панели.")
+        return payload
+
+
+def _detail(payload: Any) -> str:
+    """Текст ошибки из ответа панели, коротко."""
+    if isinstance(payload, dict):
+        for key in ("msg", "message", "detail", "error"):
+            value = payload.get(key)
+            if value:
+                return str(value)[:200]
+    return "без пояснения"
+
+
+# --------------------------------------------------------------------------
+#  3x-ui
+# --------------------------------------------------------------------------
+
+class XuiPanel(Panel):
+    """3x-ui: клиенты живут внутри входящего подключения (inbound).
+
+    Клиент задаётся целиком: чтобы сдвинуть срок, надо прочитать его
+    из настроек подключения, поменять поле и отправить весь объект
+    обратно — отдельного «продлить» у панели нет.
+    """
+
+    kind = "3xui"
+    title = "3x-ui"
+
+    # Протоколы, у которых клиент определяется одним полем. Shadowsocks
+    # не берём: у методов 2022 года пароль — ключ строгой длины, и выдать
+    # его вслепую, не зная метода подключения, значит выдать нерабочий.
+    _KEY_FIELD = {"vless": "id", "vmess": "id", "trojan": "password"}
+
+    def problems(self) -> list[str]:
+        missing = super().problems()
+        if self.inbound <= 0:
+            missing.append("VPN_XUI_INBOUND")
+        return missing
+
+    async def _login(self, session: Any, headers: dict[str, str]) -> None:
+        if self.token:
+            return
+        async with session.post(f"{self.url}/login", data={
+            "username": self.user, "password": self.password,
+        }) as response:
+            text = await response.text()
+        try:
+            ok = bool(json.loads(text).get("success"))
+        except (ValueError, AttributeError):
+            ok = False
+        if not ok:
+            raise PanelError("3x-ui не приняла логин или пароль.")
+
+    async def _api(self, method: str, path: str, **kwargs: Any) -> Any:
+        payload = await self._call(method, path, **kwargs)
+        if not isinstance(payload, dict) or not payload.get("success"):
+            raise PanelError(f"3x-ui отказала: {_detail(payload)}")
+        return payload.get("obj")
+
+    async def _inbound(self) -> tuple[str, list[dict[str, Any]]]:
+        """Протокол подключения и список его клиентов."""
+        obj = await self._api("GET", f"panel/api/inbounds/get/{self.inbound}")
+        if not isinstance(obj, dict):
+            raise PanelError("3x-ui не нашла подключение VPN_XUI_INBOUND.")
+        return str(obj.get("protocol") or ""), parse_xui_clients(obj.get("settings"))
+
+    async def _find(self, name: str) -> tuple[str, dict[str, Any] | None]:
+        protocol, clients = await self._inbound()
+        for client in clients:
+            if client.get("email") == name:
+                return protocol, client
+        return protocol, None
+
+    def _key_field(self, protocol: str) -> str:
+        field = self._KEY_FIELD.get(protocol)
+        if field is None:
+            raise PanelError(f"Протокол подключения «{protocol or '?'}» не поддерживается: "
+                             "нужен vless, vmess или trojan.")
+        return field
+
+    async def _update(self, protocol: str, client: dict[str, Any]) -> None:
+        key = client.get(self._key_field(protocol)) or ""
+        await self._api("POST", f"panel/api/inbounds/updateClient/{key}",
+                        body=xui_client_body(self.inbound, client))
+
+    async def create_user(self, name: str, expire: int, traffic: int) -> Account:
+        protocol, existing = await self._find(name)
+        if existing is not None:
+            raise PanelError("Такая учётная запись в панели уже есть.")
+        client = new_xui_client(name, protocol, self._key_field(protocol),
+                                expire, traffic)
+        await self._api("POST", "panel/api/inbounds/addClient",
+                        body=xui_client_body(self.inbound, client))
+        return xui_account(client, None, self.sub_url)
+
+    async def get_user(self, name: str) -> Account | None:
+        _, client = await self._find(name)
+        if client is None:
+            return None
+        traffic = await self._api(
+            "GET", f"panel/api/inbounds/getClientTraffics/{name}")
+        return xui_account(client, traffic if isinstance(traffic, dict) else None,
+                           self.sub_url)
+
+    async def _change(self, name: str, **fields: Any) -> None:
+        protocol, client = await self._find(name)
+        if client is None:
+            raise PanelError("Учётной записи в панели нет.")
+        client = dict(client)
+        client.update(fields)
+        await self._update(protocol, client)
+
+    async def set_expiry(self, name: str, expire: int) -> None:
+        await self._change(name, expiryTime=int(expire) * 1000 if expire else 0)
+
+    async def set_traffic(self, name: str, traffic: int) -> None:
+        await self._change(name, totalGB=int(traffic))
+
+    async def disable(self, name: str) -> None:
+        await self._change(name, enable=False)
+
+    async def enable(self, name: str) -> None:
+        await self._change(name, enable=True)
+
+    async def subscription_url(self, name: str) -> str:
+        if not self.sub_url:
+            raise PanelError("Не задан VPN_SUB_URL — адрес подписки 3x-ui, "
+                             "например https://example.ru:2096/sub.")
+        return await super().subscription_url(name)
+
+    async def check(self) -> str:
+        protocol, clients = await self._inbound()
+        self._key_field(protocol)
+        note = f"3x-ui отвечает, подключение {self.inbound}: {protocol}, клиентов {len(clients)}"
+        if not self.sub_url:
+            note += "; ⚠️ VPN_SUB_URL не задан — ссылку подписки выдать не получится"
+        return note
+
+
+def parse_xui_clients(settings: Any) -> list[dict[str, Any]]:
+    """Клиенты из поля settings подключения: там JSON строкой."""
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings or "{}")
+        except ValueError:
+            return []
+    if not isinstance(settings, dict):
+        return []
+    clients = settings.get("clients")
+    return [item for item in clients if isinstance(item, dict)] if isinstance(clients, list) else []
+
+
+def new_xui_client(name: str, protocol: str, key_field: str,
+                   expire: int, traffic: int) -> dict[str, Any]:
+    client: dict[str, Any] = {
+        "email": name,
+        "limitIp": 0,
+        # Поле названо totalGB, но хранит байты — так в самой 3x-ui.
+        "totalGB": int(traffic),
+        "expiryTime": int(expire) * 1000 if expire else 0,
+        "enable": True,
+        "tgId": "",
+        "subId": pysecrets.token_hex(8),
+        "reset": 0,
+    }
+    if key_field == "password":
+        client["password"] = pysecrets.token_urlsafe(18)
+    else:
+        client["id"] = str(uuid.uuid4())
+        if protocol == "vless":
+            client["flow"] = ""
+    return client
+
+
+def xui_client_body(inbound: int, client: dict[str, Any]) -> dict[str, Any]:
+    """Тело addClient и updateClient: клиенты — JSON строкой внутри JSON."""
+    return {"id": int(inbound), "settings": json.dumps({"clients": [client]})}
+
+
+def xui_account(client: dict[str, Any], traffic: dict[str, Any] | None,
+                sub_url: str) -> Account:
+    used = 0
+    if traffic:
+        used = _int(traffic.get("up")) + _int(traffic.get("down"))
+    sub_id = str(client.get("subId") or "")
+    return Account(
+        name=str(client.get("email") or ""),
+        enabled=bool(client.get("enable", True)),
+        expire=parse_time(client.get("expiryTime")),
+        traffic_limit=_int(client.get("totalGB")),
+        traffic_used=used,
+        subscription_url=f"{sub_url}/{sub_id}" if sub_url and sub_id else "",
+    )
+
+
+# --------------------------------------------------------------------------
+#  PasarGuard
+# --------------------------------------------------------------------------
+
+class PasarGuardPanel(Panel):
+    """PasarGuard (линия Marzban): пользователь по имени, доступ — группами."""
+
+    kind = "pasarguard"
+    title = "PasarGuard"
+
+    async def _login(self, session: Any, headers: dict[str, str]) -> None:
+        if self.token:
+            return
+        async with session.post(f"{self.url}/api/admin/token", data={
+            "username": self.user, "password": self.password,
+        }) as response:
+            text = await response.text()
+        try:
+            token = json.loads(text).get("access_token")
+        except (ValueError, AttributeError):
+            token = None
+        if not token:
+            raise PanelError("PasarGuard не приняла логин или пароль.")
+        headers["Authorization"] = f"Bearer {token}"
+
+    def _groups(self) -> list[int]:
+        ids = []
+        for item in self.groups:
+            if str(item).strip().isdigit():
+                ids.append(int(item))
+        return ids
+
+    async def create_user(self, name: str, expire: int, traffic: int) -> Account:
+        body = {
+            "username": name,
+            "status": "active",
+            "expire": to_iso(expire) if expire else None,
+            "data_limit": int(traffic),
+            "data_limit_reset_strategy": "no_reset",
+            "group_ids": self._groups(),
+            "proxy_settings": {},
+        }
+        return pasarguard_account(await self._call("POST", "api/user", body=body),
+                                  self.url)
+
+    async def get_user(self, name: str) -> Account | None:
+        payload = await self._call("GET", f"api/user/{name}", missing_ok=True)
+        return pasarguard_account(payload, self.url) if payload else None
+
+    async def _modify(self, name: str, body: dict[str, Any]) -> None:
+        await self._call("PUT", f"api/user/{name}", body=body)
+
+    async def set_expiry(self, name: str, expire: int) -> None:
+        await self._modify(name, {"expire": to_iso(expire) if expire else None})
+
+    async def set_traffic(self, name: str, traffic: int) -> None:
+        await self._modify(name, {"data_limit": int(traffic)})
+
+    async def disable(self, name: str) -> None:
+        await self._modify(name, {"status": "disabled"})
+
+    async def enable(self, name: str) -> None:
+        await self._modify(name, {"status": "active"})
+
+    async def check(self) -> str:
+        payload = await self._call("GET", "api/admin")
+        who = payload.get("username") if isinstance(payload, dict) else ""
+        note = f"PasarGuard отвечает, вход как {who or 'администратор'}"
+        if not self._groups():
+            note += "; ⚠️ VPN_GROUPS пуст — новым записям не назначатся группы"
+        return note
+
+
+def pasarguard_account(payload: Any, base_url: str) -> Account:
+    if not isinstance(payload, dict):
+        raise PanelError("PasarGuard ответила непонятно.")
+    link = str(payload.get("subscription_url") or "")
+    # Панель отдаёт путь без адреса, если в её настройках адрес
+    # подписки не задан: дописываем свой, иначе ссылка не откроется.
+    if link.startswith("/"):
+        link = f"{base_url}{link}"
+    return Account(
+        name=str(payload.get("username") or ""),
+        enabled=str(payload.get("status") or "").lower() in ("active", "on_hold"),
+        expire=parse_time(payload.get("expire")),
+        traffic_limit=_int(payload.get("data_limit")),
+        traffic_used=_int(payload.get("used_traffic")),
+        subscription_url=link,
+    )
+
+
+# --------------------------------------------------------------------------
+#  Remnawave
+# --------------------------------------------------------------------------
+
+class RemnawavePanel(Panel):
+    """Remnawave: пользователь — это uuid, доступ — внутренние «отряды»."""
+
+    kind = "remnawave"
+    title = "Remnawave"
+
+    def problems(self) -> list[str]:
+        missing = []
+        if not self.url:
+            missing.append("VPN_PANEL_URL")
+        # Входа по паролю у API Remnawave нет: только токен из раздела
+        # API Tokens.
+        if not self.token:
+            missing.append("VPN_PANEL_TOKEN")
+        return missing
+
+    def _headers(self) -> dict[str, str]:
+        headers = super()._headers()
+        # Бэкенд Remnawave, вызванный напрямую по HTTP внутри сети Docker,
+        # отказывает без этих заголовков: он ждёт, что стоит за обратным
+        # прокси с TLS.
+        headers["X-Forwarded-Proto"] = "https"
+        headers["X-Forwarded-For"] = "127.0.0.1"
+        return headers
+
+    @staticmethod
+    def _unwrap(payload: Any) -> Any:
+        return payload.get("response") if isinstance(payload, dict) else None
+
+    async def _raw(self, name: str) -> dict[str, Any] | None:
+        payload = await self._call("GET", f"api/users/by-username/{name}",
+                                   missing_ok=True)
+        user = self._unwrap(payload) if payload else None
+        return user if isinstance(user, dict) else None
+
+    async def _uuid(self, name: str) -> str:
+        user = await self._raw(name)
+        if not user or not user.get("uuid"):
+            raise PanelError("Учётной записи в панели нет.")
+        return str(user["uuid"])
+
+    async def create_user(self, name: str, expire: int, traffic: int) -> Account:
+        body = {
+            "username": name,
+            "status": "ACTIVE",
+            "expireAt": to_iso(expire),
+            "trafficLimitBytes": int(traffic),
+            "trafficLimitStrategy": "NO_RESET",
+            "activeInternalSquads": list(self.groups),
+        }
+        user = self._unwrap(await self._call("POST", "api/users", body=body))
+        return remnawave_account(user)
+
+    async def get_user(self, name: str) -> Account | None:
+        user = await self._raw(name)
+        return remnawave_account(user) if user else None
+
+    async def _patch(self, name: str, fields: dict[str, Any]) -> None:
+        body = {"uuid": await self._uuid(name)}
+        body.update(fields)
+        await self._call("PATCH", "api/users", body=body)
+
+    async def set_expiry(self, name: str, expire: int) -> None:
+        await self._patch(name, {"expireAt": to_iso(expire)})
+
+    async def set_traffic(self, name: str, traffic: int) -> None:
+        await self._patch(name, {"trafficLimitBytes": int(traffic)})
+
+    async def disable(self, name: str) -> None:
+        await self._call("POST", f"api/users/{await self._uuid(name)}/actions/disable")
+
+    async def enable(self, name: str) -> None:
+        await self._call("POST", f"api/users/{await self._uuid(name)}/actions/enable")
+
+    async def check(self) -> str:
+        await self._call("GET", "api/users?size=1&start=0")
+        note = "Remnawave отвечает, токен принят"
+        if not self.groups:
+            note += "; ⚠️ VPN_GROUPS пуст — новым записям не назначатся отряды"
+        return note
+
+
+def remnawave_account(user: Any) -> Account:
+    if not isinstance(user, dict):
+        raise PanelError("Remnawave ответила непонятно.")
+    # Израсходованный трафик в 2.x переехал во вложенный userTraffic;
+    # у ранних выпусков он лежит прямо в записи.
+    traffic = user.get("userTraffic")
+    used = traffic.get("usedTrafficBytes") if isinstance(traffic, dict) else None
+    if used is None:
+        used = user.get("usedTrafficBytes")
+    return Account(
+        name=str(user.get("username") or ""),
+        enabled=str(user.get("status") or "").upper() == "ACTIVE",
+        expire=parse_time(user.get("expireAt")),
+        traffic_limit=_int(user.get("trafficLimitBytes")),
+        traffic_used=_int(used),
+        subscription_url=str(user.get("subscriptionUrl") or ""),
+    )
+
+
+# --------------------------------------------------------------------------
+#  Выбор панели
+# --------------------------------------------------------------------------
+
+KINDS: dict[str, type[Panel]] = {
+    XuiPanel.kind: XuiPanel,
+    PasarGuardPanel.kind: PasarGuardPanel,
+    RemnawavePanel.kind: RemnawavePanel,
+}
+
+# Как люди пишут название панели в .env — не только как в коде.
+_ALIASES = {
+    "3x-ui": "3xui", "xui": "3xui", "x-ui": "3xui",
+    "pasar": "pasarguard", "pasar-guard": "pasarguard",
+    "remna": "remnawave",
+}
+
+
+def normalize_kind(value: str) -> str:
+    key = (value or "").strip().lower()
+    return _ALIASES.get(key, key)
+
+
+def build(kind: str, **options: Any) -> Panel | None:
+    """Клиент нужной панели или None, если название незнакомое."""
+    cls = KINDS.get(normalize_kind(kind))
+    return cls(**options) if cls else None
+RADAR_FILE_98
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
+cat > "radar/vpn.py" <<'RADAR_FILE_99'
+"""Выдача VPN-доступа уже авторизованным (с 5.0).
+
+Первый шаг блока 5.0 и единственный, который обходится без платежей:
+человек, который уже есть в боте, получает доступ по решению
+администратора или сразу — по роли. Платежи и тарифы придут следующими
+выпусками тем же слоем (`radar/vpnpanels.py`).
+
+Как устроено:
+
+* запись о выдаче хранится в служебной таблице (`meta`, ключ
+  `vpn_accounts`): состояние, имя в панели, кто и когда выдал. Ссылка
+  подписки в базу не пишется — она берётся у панели при показе, так
+  её не придётся отзывать из резервных копий;
+* продление возвращает **тот же** ключ: имя в панели выводится из ключа
+  пользователя, и повторная выдача находит прежнюю запись, а не заводит
+  новую — иначе человеку пришлось бы перенастраивать все устройства;
+* окончание срока отключает доступ силами самой панели — все три это
+  умеют; бот ничего по расписанию не опрашивает, и цикл оповещений
+  с панелями не пересекается вовсе.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Any
+
+from . import features, roles
+from .vpnpanels import GB, Account, Panel, PanelError, account_name, build
+
+log = logging.getLogger("radar.vpn")
+
+META_KEY = "vpn_accounts"
+DAY = 86400
+
+PENDING = "pending"
+ACTIVE = "active"
+DENIED = "denied"
+
+DEFAULT_DAYS = 30
+# «none» — выдача только по заявке, без исключений по роли.
+AUTO_ROLES = ("none",) + roles.ORDER
+
+# Записи читаются и пишутся целиком одной строкой meta. Два нажатия
+# подряд (одобрить одну заявку и тут же другую) иначе потеряли бы одно
+# из изменений.
+_lock = asyncio.Lock()
+
+
+def _setting(key: str) -> str:
+    from . import secrets
+
+    return str(secrets.get(key) or "").strip()
+
+
+def panel() -> Panel | None:
+    """Клиент панели из настроек или None, если VPN_PANEL не задан."""
+    groups = tuple(item.strip() for item in _setting("VPN_GROUPS").split(",")
+                   if item.strip())
+    inbound = _setting("VPN_XUI_INBOUND")
+    return build(
+        _setting("VPN_PANEL"),
+        url=_setting("VPN_PANEL_URL"),
+        token=_setting("VPN_PANEL_TOKEN"),
+        user=_setting("VPN_PANEL_USER"),
+        password=_setting("VPN_PANEL_PASS"),
+        groups=groups,
+        inbound=int(inbound) if inbound.isdigit() else 0,
+        sub_url=_setting("VPN_SUB_URL"),
+    )
+
+
+def ready() -> tuple[bool, str]:
+    """Можно ли выдавать. Вторым значением — причина отказа для человека."""
+    if not features.enabled("vpn"):
+        return False, "Раздел VPN выключен."
+    client = panel()
+    if client is None:
+        return False, ("Панель не выбрана: задайте VPN_PANEL — "
+                       "3xui, pasarguard или remnawave.")
+    problems = client.problems()
+    if problems:
+        return False, "Панель не настроена: " + ", ".join(problems) + "."
+    return True, ""
+
+
+def default_days() -> int:
+    value = _setting("VPN_DAYS")
+    return int(value) if value.isdigit() and int(value) > 0 else DEFAULT_DAYS
+
+
+def default_traffic() -> int:
+    """Предел трафика новой записи в байтах, 0 — без предела."""
+    value = _setting("VPN_TRAFFIC_GB")
+    return int(value) * GB if value.isdigit() else 0
+
+
+def auto_role() -> str:
+    """С какой роли доступ выдаётся без заявки. По умолчанию — администрации."""
+    value = _setting("VPN_AUTO_ROLE").lower()
+    return value if value in AUTO_ROLES else roles.ADMIN
+
+
+def issues_without_request(role: str | None) -> bool:
+    threshold = auto_role()
+    if threshold == "none":
+        return False
+    return roles.at_least(role, threshold)
+
+
+# --------------------------------------------------------------------------
+#  Записи о выдаче
+# --------------------------------------------------------------------------
+
+async def _load() -> dict[str, dict[str, Any]]:
+    from . import storage
+
+    value = await storage.meta_get(META_KEY, {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+async def _save(records: dict[str, dict[str, Any]]) -> None:
+    from . import storage
+
+    await storage.meta_set(META_KEY, records)
+
+
+async def records() -> dict[str, dict[str, Any]]:
+    return await _load()
+
+
+async def record(uid: str | int) -> dict[str, Any] | None:
+    return (await _load()).get(str(uid))
+
+
+async def _update(uid: str | int, **fields: Any) -> dict[str, Any]:
+    async with _lock:
+        stored = await _load()
+        entry = dict(stored.get(str(uid)) or {})
+        entry.update(fields)
+        stored[str(uid)] = entry
+        await _save(stored)
+        return entry
+
+
+async def pending() -> list[str]:
+    return [uid for uid, entry in (await _load()).items()
+            if entry.get("state") == PENDING]
+
+
+async def issued() -> list[str]:
+    return [uid for uid, entry in (await _load()).items()
+            if entry.get("state") == ACTIVE]
+
+
+# --------------------------------------------------------------------------
+#  Действия
+# --------------------------------------------------------------------------
+
+async def request(uid: str | int) -> str:
+    """Заявка на доступ. Возвращает состояние после неё."""
+    current = await record(uid)
+    if current and current.get("state") in (ACTIVE, PENDING):
+        return str(current["state"])
+    await _update(uid, state=PENDING, requested=int(time.time()))
+    log.info("Заявка на VPN от %s", uid)
+    return PENDING
+
+
+async def forget(uid: str | int) -> None:
+    """Убирает запись о выдаче — когда в панели её больше нет."""
+    async with _lock:
+        stored = await _load()
+        if stored.pop(str(uid), None) is not None:
+            await _save(stored)
+
+
+async def deny(uid: str | int, by: str | int) -> None:
+    await _update(uid, state=DENIED, decided=int(time.time()), by=str(by))
+    log.info("Заявка на VPN от %s отклонена (%s)", uid, by)
+
+
+def _client() -> Panel:
+    ok, reason = ready()
+    if not ok:
+        raise PanelError(reason)
+    client = panel()
+    assert client is not None  # ready() это уже проверил
+    return client
+
+
+async def issue(uid: str | int, by: str | int, *, days: int | None = None
+                ) -> Account:
+    """Выдаёт доступ. Если запись в панели уже есть — возвращает её же.
+
+    Прежняя запись остаётся прежней: включается и, если срок истёк,
+    получает новый. Ключ при этом не меняется — устройства, где он уже
+    настроен, продолжают работать.
+    """
+    client = _client()
+    name = account_name(uid)
+    period = (days or default_days()) * DAY
+    now = int(time.time())
+
+    account = await client.get_user(name)
+    if account is None:
+        account = await client.create_user(name, now + period, default_traffic())
+    else:
+        if account.expire and account.expire < now:
+            await client.set_expiry(name, now + period)
+        if not account.enabled:
+            await client.enable(name)
+        account = await client.get_user(name) or account
+
+    await _update(uid, state=ACTIVE, name=name, panel=client.kind,
+                  issued=now, by=str(by))
+    log.info("VPN выдан %s (%s, решение %s)", uid, client.kind, by)
+    return account
+
+
+async def extend(uid: str | int, days: int) -> Account:
+    """Сдвигает срок на `days` дней от большего из «сейчас» и прежнего срока."""
+    client = _client()
+    name = account_name(uid)
+    account = await client.get_user(name)
+    if account is None:
+        raise PanelError("Учётной записи в панели нет — выдайте доступ заново.")
+    now = int(time.time())
+    if account.expire == 0:
+        # Бессрочную запись продлевать некуда: сдвиг превратил бы её
+        # в срочную, а это уже урезание, а не продление.
+        return account
+    await client.set_expiry(name, max(now, account.expire) + days * DAY)
+    if not account.enabled:
+        await client.enable(name)
+    log.info("VPN %s продлён на %s дн.", uid, days)
+    return await client.get_user(name) or account
+
+
+async def set_enabled(uid: str | int, value: bool) -> None:
+    client = _client()
+    name = account_name(uid)
+    if value:
+        await client.enable(name)
+    else:
+        await client.disable(name)
+    log.info("VPN %s: %s", uid, "включён" if value else "выключен")
+
+
+async def status(uid: str | int) -> Account | None:
+    return await _client().get_user(account_name(uid))
+
+
+async def subscription(uid: str | int) -> str:
+    return await _client().subscription_url(account_name(uid))
+
+
+async def check() -> tuple[bool, str]:
+    """Проверка панели для кнопки в разделе и для диагностики."""
+    try:
+        return True, await _client().check()
+    except PanelError as exc:
+        return False, str(exc)
+
+
+# --------------------------------------------------------------------------
+#  Показ
+# --------------------------------------------------------------------------
+
+def format_bytes(value: int, lang: str = "ru") -> str:
+    from . import i18n
+
+    if value >= GB:
+        return f"{value / GB:.1f} {i18n.t('vpn.gb', lang, 'ГБ')}"
+    return f"{value / 1024 ** 2:.0f} {i18n.t('vpn.mb', lang, 'МБ')}"
+
+
+def describe(account: Account, lang: str = "ru") -> str:
+    """Срок, трафик и состояние одной записью — для человека."""
+    from datetime import datetime, timezone
+
+    from . import i18n
+
+    lines = []
+    if account.expire:
+        until = datetime.fromtimestamp(account.expire, timezone.utc).strftime("%d.%m.%Y")
+        left = max(0, (account.expire - int(time.time())) // DAY)
+        lines.append(i18n.t("vpn.until", lang, "Срок: до {until} (осталось {left} дн.)")
+                     .format(until=until, left=left))
+    else:
+        lines.append(i18n.t("vpn.forever", lang, "Срок: бессрочно"))
+    used = format_bytes(account.traffic_used, lang)
+    if account.traffic_limit:
+        lines.append(i18n.t("vpn.traffic", lang, "Трафик: {used} из {limit}")
+                     .format(used=used, limit=format_bytes(account.traffic_limit, lang)))
+    else:
+        lines.append(i18n.t("vpn.traffic_free", lang, "Трафик: {used}, без предела")
+                     .format(used=used))
+    if not account.enabled:
+        lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
+    return "\n".join(lines)
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_98'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_100'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -33312,6 +34397,7 @@ from . import (
     sources,
     subscription,
     users,
+    vpn,
 )
 
 # Порядок прежний и важный: ассистент перехватывает любой оставшийся
@@ -33319,7 +34405,7 @@ from . import (
 PRIVATE_ROUTERS = (
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
-    linkcheck, music, digest, sos, chats,
+    linkcheck, music, digest, sos, chats, vpn,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
     subscription,
@@ -33386,9 +34472,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_98
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_101'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -33859,9 +34945,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_99
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_102'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -34027,9 +35113,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_100
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_103'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -34534,9 +35620,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_101
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_104'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -35037,9 +36123,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_102
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_105'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -35483,9 +36569,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_103
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_106'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -35632,9 +36718,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_104
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_107'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -35922,9 +37008,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_105
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_108'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -36171,9 +37257,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_106
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_109'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -36544,9 +37630,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_107
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_110'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -37121,9 +38207,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_108
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_109'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_111'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -37224,9 +38310,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_109
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_112'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -37316,9 +38402,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_110
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_113'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -37739,9 +38825,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_111
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_114'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -38927,9 +40013,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_112
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_113'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_115'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -39660,9 +40746,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_113
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_114'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_116'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -40186,9 +41272,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_114
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_115'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_117'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -40396,9 +41482,434 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_115
+RADAR_FILE_117
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_118'
+"""Раздел «VPN»: заявка, выдача, ссылка подписки, продление (с 5.0).
+
+Кто что видит:
+
+* любой пользователь — состояние своего доступа и ссылку подписки,
+  а без доступа — кнопку заявки;
+* роль не ниже `VPN_AUTO_ROLE` (по умолчанию администрация) получает
+  доступ сразу, без заявки;
+* администрация — заявки с кнопками «выдать»/«отказать», список
+  выданных с продлением и отключением, проверку панели.
+
+Ссылка подписки показывается только своему владельцу и в журнал
+не пишется: она и есть ключ.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+
+from .. import features, i18n, roles, storage, vpn
+from ..textutils import esc
+from ..tg import safe_edit, send_html
+from ..vpnpanels import PanelError
+
+log = logging.getLogger("radar.handlers.vpn")
+router = Router(name="vpn")
+
+HYDRA_URL = "https://github.com/Chistovik92/HydraVPN"
+
+VPN_SETUP_STEPS = (
+    "<b>Как подключить:</b>\n"
+    "1. Установите клиент с поддержкой подписок: HydraVPN или v2rayNG "
+    "на Android, Streisand или Happ на iPhone, Hiddify или v2rayN "
+    "на компьютере.\n"
+    "2. Добавьте подписку по ссылке выше — «импорт из буфера» "
+    "или «добавить подписку».\n"
+    "3. Обновите подписку и выберите сервер.\n\n"
+    "Ссылка — это ваш ключ: не пересылайте её. Одна и та же ссылка "
+    "работает на всех ваших устройствах."
+)
+
+
+def _button(text: str, data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=data)
+
+
+def _back(target: str = "vpn:menu", lang: str = i18n.DEFAULT) -> list[InlineKeyboardButton]:
+    return [_button(i18n.t("common.back", lang, "◀️ Назад"), target)]
+
+
+def _name_of(uid: str) -> str:
+    user = storage.get_user(uid) or {}
+    username = user.get("username")
+    return f"@{esc(username)}" if username else f"<code>{esc(uid)}</code>"
+
+
+def _label(uid: str) -> str:
+    """Подпись кнопки: без разметки, в отличие от `_name_of`."""
+    username = (storage.get_user(uid) or {}).get("username")
+    return f"@{username}" if username else uid
+
+
+async def _menu_view(uid: str, user: dict[str, Any], role: str
+                     ) -> tuple[str, InlineKeyboardMarkup]:
+    lang = i18n.language_of(user)
+    title = i18n.t("vpn.title", lang, "🔐 <b>VPN</b>")
+    rows: list[list[InlineKeyboardButton]] = []
+    lines = [title, ""]
+
+    ok, reason = vpn.ready()
+    entry = await vpn.record(uid) or {}
+    state = entry.get("state")
+
+    if not ok:
+        lines.append(i18n.t("vpn.unavailable", lang,
+                            "Раздел пока не настроен администратором."))
+        if roles.is_admin(role):
+            lines.append(f"\n<i>{esc(reason)}</i>")
+    elif state == vpn.ACTIVE:
+        try:
+            account = await vpn.status(uid)
+            failure = ""
+        except PanelError as exc:
+            account, failure = None, str(exc)
+        if account is not None:
+            lines.append(vpn.describe(account, lang))
+            rows.append([_button(i18n.t("vpn.link_button", lang,
+                                        "📋 Ссылка подписки"), "vpn:link")])
+        elif failure:
+            lines.append(f"⚠️ {esc(failure)}")
+        else:
+            # Запись удалили в самой панели. Забываем выдачу, иначе заявка
+            # упёрлась бы в «уже выдано» и кнопка ничего бы не делала.
+            await vpn.forget(uid)
+            lines.append(i18n.t("vpn.gone", lang,
+                                "Запись в панели не найдена — запросите доступ заново."))
+            if vpn.issues_without_request(role):
+                rows.append([_button(i18n.t("vpn.get_button", lang,
+                                            "🔑 Получить доступ"), "vpn:get")])
+            else:
+                rows.append([_button(i18n.t("vpn.ask_button", lang,
+                                            "📨 Запросить доступ"), "vpn:ask")])
+    elif state == vpn.PENDING:
+        lines.append(i18n.t("vpn.pending", lang,
+                            "⏳ Заявка отправлена и ждёт решения администратора."))
+    elif vpn.issues_without_request(role):
+        lines.append(i18n.t("vpn.can_get", lang,
+                            "Доступ выдаётся сразу — нажмите кнопку ниже."))
+        rows.append([_button(i18n.t("vpn.get_button", lang,
+                                    "🔑 Получить доступ"), "vpn:get")])
+    else:
+        if state == vpn.DENIED:
+            lines.append(i18n.t("vpn.denied", lang,
+                                "Прежняя заявка была отклонена. Можно подать новую."))
+        else:
+            lines.append(i18n.t("vpn.intro", lang,
+                                "Доступ к VPN выдаёт администратор. "
+                                "Отправьте заявку — ответ придёт сюда же."))
+        rows.append([_button(i18n.t("vpn.ask_button", lang,
+                                    "📨 Запросить доступ"), "vpn:ask")])
+
+    if roles.is_admin(role):
+        waiting = len(await vpn.pending())
+        rows.append([
+            _button(f"📨 Заявки ({waiting})", "vpn:reqs"),
+            _button("👥 Выданные", "vpn:list"),
+        ])
+        rows.append([_button("🩺 Проверить панель", "vpn:check")])
+
+    rows.append([_button(i18n.t("menu.home", lang, "🏠 В главное меню"), "menu:main")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _enabled_or_alert() -> bool:
+    return features.enabled("vpn")
+
+
+@router.callback_query(F.data == "vpn:menu")
+async def menu_vpn(call: CallbackQuery, user: dict, role: str) -> None:
+    if not _enabled_or_alert():
+        await call.answer("Раздел выключен.", show_alert=True)
+        return
+    await call.answer()
+    text, markup = await _menu_view(str(call.from_user.id), user, role)
+    await safe_edit(call, text, markup)
+
+
+async def _notify_admins(uid: str) -> None:
+    """Заявка — администрации, с кнопками решения прямо в письме."""
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        _button("✅ Выдать", f"vpn:ok:{uid}"),
+        _button("❌ Отказать", f"vpn:no:{uid}"),
+    ]])
+    text = f"🔐 Заявка на VPN от {_name_of(uid)}."
+    for admin_uid, record in list(storage.users().items()):
+        if not roles.is_admin(record.get("role")) or record.get("blocked"):
+            continue
+        try:
+            await send_html(admin_uid, text, markup)
+        except Exception:  # noqa: BLE001
+            log.warning("Заявка на VPN не доставлена администратору %s", admin_uid)
+
+
+@router.callback_query(F.data == "vpn:ask")
+async def ask_access(call: CallbackQuery, user: dict, role: str) -> None:
+    if not _enabled_or_alert():
+        await call.answer("Раздел выключен.", show_alert=True)
+        return
+    ok, reason = vpn.ready()
+    if not ok:
+        await call.answer(reason, show_alert=True)
+        return
+    uid = str(call.from_user.id)
+    before = (await vpn.record(uid) or {}).get("state")
+    state = await vpn.request(uid)
+    lang = i18n.language_of(user)
+    await call.answer(i18n.t("vpn.sent", lang, "Заявка отправлена."))
+    if state == vpn.PENDING and before != vpn.PENDING:
+        await _notify_admins(uid)
+    text, markup = await _menu_view(uid, user, role)
+    await safe_edit(call, text, markup)
+
+
+async def _link_text(uid: str, lang: str) -> str:
+    link = await vpn.subscription(uid)
+    return (
+        f"{i18n.t('vpn.link_title', lang, '🔐 <b>Ваша ссылка подписки</b>')}\n\n"
+        f"<code>{esc(link)}</code>\n\n"
+        f"{i18n.t('vpn.setup_steps', lang, VPN_SETUP_STEPS)}"
+    )
+
+
+def _link_markup(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=i18n.t("vpn.hydra_button", lang,
+                                          "⬇️ HydraVPN для Android"),
+                              url=HYDRA_URL)],
+        _back("vpn:menu", lang),
+    ])
+
+
+@router.callback_query(F.data == "vpn:get")
+async def get_access(call: CallbackQuery, user: dict, role: str) -> None:
+    if not _enabled_or_alert():
+        await call.answer("Раздел выключен.", show_alert=True)
+        return
+    if not vpn.issues_without_request(role):
+        await call.answer("Доступ выдаётся по заявке.", show_alert=True)
+        return
+    uid = str(call.from_user.id)
+    lang = i18n.language_of(user)
+    await call.answer("Выдаю…")
+    try:
+        await vpn.issue(uid, uid)
+        text = await _link_text(uid, lang)
+    except PanelError as exc:
+        await safe_edit(call, f"❌ {esc(str(exc))}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back("vpn:menu", lang)]))
+        return
+    await safe_edit(call, text, _link_markup(lang))
+
+
+@router.callback_query(F.data == "vpn:link")
+async def show_link(call: CallbackQuery, user: dict) -> None:
+    if not _enabled_or_alert():
+        await call.answer("Раздел выключен.", show_alert=True)
+        return
+    uid = str(call.from_user.id)
+    lang = i18n.language_of(user)
+    entry = await vpn.record(uid) or {}
+    if entry.get("state") != vpn.ACTIVE:
+        await call.answer(i18n.t("vpn.no_access", lang, "Доступ не выдан."),
+                          show_alert=True)
+        return
+    try:
+        text = await _link_text(uid, lang)
+    except PanelError as exc:
+        await call.answer(str(exc), show_alert=True)
+        return
+    await call.answer()
+    await safe_edit(call, text, _link_markup(lang))
+
+
+# --------------------------------------------------------------------------
+#  Администрация
+# --------------------------------------------------------------------------
+
+async def _admin_only(call: CallbackQuery, role: str) -> bool:
+    if not roles.is_admin(role):
+        await call.answer("Только для администрации.", show_alert=True)
+        return False
+    if not _enabled_or_alert():
+        await call.answer("Раздел выключен.", show_alert=True)
+        return False
+    return True
+
+
+@router.callback_query(F.data == "vpn:reqs")
+async def list_requests(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    await call.answer()
+    waiting = await vpn.pending()
+    rows = [[
+        _button(f"✅ {_label(uid)}", f"vpn:ok:{uid}"),
+        _button("❌", f"vpn:no:{uid}"),
+    ] for uid in waiting[:30]]
+    rows.append(_back())
+    text = ("📨 <b>Заявки на VPN</b>\n\n"
+            + ("✅ — выдать, ❌ — отказать." if waiting else "Заявок нет."))
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("vpn:ok:"))
+async def approve(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    uid = call.data.split(":", 2)[2]
+    entry = await vpn.record(uid) or {}
+    if entry.get("state") == vpn.ACTIVE:
+        await call.answer("Уже выдано.", show_alert=True)
+        return
+    await call.answer("Выдаю…")
+    try:
+        await vpn.issue(uid, call.from_user.id)
+    except PanelError as exc:
+        await safe_edit(call, f"❌ Выдать не удалось: {esc(str(exc))}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back("vpn:reqs")]))
+        return
+
+    lang = i18n.language_of(storage.get_user(uid))
+    try:
+        text = await _link_text(uid, lang)
+        delivered = await send_html(uid, text, _link_markup(lang))
+    except PanelError as exc:
+        delivered = False
+        log.warning("Ссылка для %s не получена: %s", uid, exc)
+    note = "Ссылка отправлена." if delivered else (
+        "Ссылку отправить не удалось — человек увидит её в разделе VPN.")
+    await safe_edit(call, f"✅ Доступ выдан: {_name_of(uid)}. {note}",
+                    InlineKeyboardMarkup(inline_keyboard=[_back("vpn:reqs")]))
+
+
+@router.callback_query(F.data.startswith("vpn:no:"))
+async def reject(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    uid = call.data.split(":", 2)[2]
+    entry = await vpn.record(uid) or {}
+    if entry.get("state") != vpn.PENDING:
+        await call.answer("Заявки уже нет.", show_alert=True)
+        return
+    await vpn.deny(uid, call.from_user.id)
+    await call.answer("Отклонено.")
+    lang = i18n.language_of(storage.get_user(uid))
+    try:
+        await send_html(uid, i18n.t("vpn.denied_note", lang,
+                                    "🔐 Заявка на VPN отклонена администратором."))
+    except Exception:  # noqa: BLE001
+        log.debug("Отказ по VPN не доставлен %s", uid)
+    await safe_edit(call, f"❌ Заявка {_name_of(uid)} отклонена.",
+                    InlineKeyboardMarkup(inline_keyboard=[_back("vpn:reqs")]))
+
+
+@router.callback_query(F.data == "vpn:list")
+async def list_issued(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    await call.answer()
+    people = await vpn.issued()
+    rows = []
+    for uid in people[:40]:
+        rows.append([_button(_label(uid), f"vpn:u:{uid}")])
+    rows.append(_back())
+    text = f"👥 <b>Выданный VPN</b>: {len(people)}"
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def _card(call: CallbackQuery, uid: str, note: str = "") -> None:
+    try:
+        account = await vpn.status(uid)
+    except PanelError as exc:
+        account = None
+        note = note or f"⚠️ {esc(str(exc))}"
+    lines = [f"🔐 <b>VPN</b>: {_name_of(uid)}"]
+    if account is not None:
+        lines.append(vpn.describe(account))
+    elif not note:
+        lines.append("Записи в панели нет.")
+    if note:
+        lines.append("")
+        lines.append(note)
+
+    days = vpn.default_days()
+    rows = [[_button(f"➕ {days} дн.", f"vpn:ext:{uid}")]]
+    if account is not None:
+        if account.enabled:
+            rows.append([_button("⛔ Отключить", f"vpn:off:{uid}")])
+        else:
+            rows.append([_button("✅ Включить", f"vpn:on:{uid}")])
+    rows.append(_back("vpn:list"))
+    await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("vpn:u:"))
+async def show_card(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    await call.answer()
+    await _card(call, call.data.split(":", 2)[2])
+
+
+@router.callback_query(F.data.startswith("vpn:ext:"))
+async def extend_access(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    uid = call.data.split(":", 2)[2]
+    days = vpn.default_days()
+    await call.answer("Продлеваю…")
+    try:
+        account = await vpn.extend(uid, days)
+    except PanelError as exc:
+        await _card(call, uid, f"❌ {esc(str(exc))}")
+        return
+    note = (f"✅ Продлено на {days} дн." if account.expire
+            else "Запись бессрочная — продлевать нечего.")
+    await _card(call, uid, note)
+
+
+@router.callback_query(F.data.startswith("vpn:off:") | F.data.startswith("vpn:on:"))
+async def toggle_access(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    _, action, uid = call.data.split(":", 2)
+    value = action == "on"
+    await call.answer()
+    try:
+        await vpn.set_enabled(uid, value)
+    except PanelError as exc:
+        await _card(call, uid, f"❌ {esc(str(exc))}")
+        return
+    await _card(call, uid, "✅ Включено." if value else "⛔ Отключено.")
+
+
+@router.callback_query(F.data == "vpn:check")
+async def check_panel(call: CallbackQuery, role: str) -> None:
+    if not await _admin_only(call, role):
+        return
+    await call.answer("Проверяю…")
+    ok, note = await vpn.check()
+    text = f"{'✅' if ok else '❌'} {esc(note)}"
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[_back()]))
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_116'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_119'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -40811,9 +42322,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_116
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_117'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_120'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -41076,9 +42587,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_117
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_118'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_121'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -41228,9 +42739,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_118
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_119'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_122'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -41698,9 +43209,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_119
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_120'
+cat > "radar/cookies.py" <<'RADAR_FILE_123'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -41831,9 +43342,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_120
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_121'
+cat > "radar/music.py" <<'RADAR_FILE_124'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -42628,9 +44139,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_121
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_125'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -43244,9 +44755,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_122
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_123'
+cat > "multitool/__init__.py" <<'RADAR_FILE_126'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -43272,9 +44783,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_123'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_123
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_124'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_127'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -43307,9 +44818,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_124'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_124
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_125'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_128'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -43716,9 +45227,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_125
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_126'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_129'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -44202,9 +45713,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_126
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_127'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_130'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -44444,7 +45955,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_127
+RADAR_FILE_130
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
