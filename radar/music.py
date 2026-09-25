@@ -767,7 +767,16 @@ def disk_report(paths: list[str]) -> str:
             usage = shutil.disk_usage(path or ".")
         except OSError:
             continue
-        key = f"{usage.total}:{usage.free}"
+        # Диск опознаётся по номеру устройства. До 5.8 ключом было
+        # «размер:свободно», а свободное место меняется между двумя
+        # вызовами, если на диск в это время пишут, — и один диск
+        # попадал в письмо дважды (так упал CI на PR 5.8).
+        try:
+            import os
+
+            key = f"dev:{os.stat(path or '.').st_dev}"
+        except OSError:
+            key = f"size:{usage.total}"
         if key in seen:
             continue
         seen[key] = path
