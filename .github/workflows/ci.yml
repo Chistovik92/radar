@@ -65,6 +65,10 @@ jobs:
       - name: Discord по WebSocket
         run: python tools/discord_http_check.py
 
+      # ВКонтакте и зеркало тревог по HTTP: эмулятор API и Long Poll.
+      - name: ВКонтакте по HTTP
+        run: python tools/vk_http_check.py
+
       - name: Порядок функций в install.sh
         run: python tools/lint_shellorder.py
 

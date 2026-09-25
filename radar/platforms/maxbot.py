@@ -38,9 +38,10 @@ ABOUT = (
     "Следит за городскими угрозами и авариями ЖКХ по вашим адресам: "
     "читает каналы служб и ленты СМИ, разбирает сообщения и присылает "
     "только то, что касается ваших локаций.\n\n"
-    "<b>Здесь, в MAX, бот пока только отвечает.</b> Локации, оповещения, "
-    "погода и всё остальное живут в Telegram-боте — адаптер MAX написан, "
-    "но ещё не проверен в работе.\n\n"
+    "<b>Здесь, в MAX, приходят копии тревог.</b> Локации и настройки "
+    "живут в Telegram-боте: нажмите там «🔗 Привязать ВК или MAX» "
+    "и пришлите сюда шестизначный код. Адаптер MAX написан, но ещё "
+    "не проверен в работе.\n\n"
     "<i>Система не заменяет официальные каналы оповещения.</i>"
 )
 
@@ -127,6 +128,17 @@ async def reply(event: InboundEvent, transport) -> None:
     if event.kind is EventKind.CALLBACK and event.args:
         # Сначала гасим «часики» у нажатой кнопки, потом отвечаем.
         await transport.answer_callback(event.args)
+
+    # Код привязки к Telegram (5.6): с ним MAX начинает получать копии
+    # тревог по адресам привязанного человека.
+    if event.kind in (EventKind.MESSAGE, EventKind.COMMAND):
+        from .. import links
+
+        linked = await links.handle_text("max", event.identity.external_id,
+                                         event.text or f"/{event.command}")
+        if linked:
+            await transport.send(event.chat_id, OutboundMessage(text=linked))
+            return
 
     message = answer_for(event, await telegram_username())
     if not message.text:

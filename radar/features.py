@@ -231,6 +231,11 @@ FLAGS: tuple[Flag, ...] = (
     # --- платформы ---
     Flag("platform_max", "Мессенджер MAX", "Работа бота в MAX параллельно с Telegram.",
          group="Платформы", since="4.2", default=False),
+    Flag("platform_vk", "ВКонтакте как мессенджер",
+         "Бот сообщества ВК: принимает код привязки из Telegram и получает "
+         "копии тревог по адресам привязанного человека. Нужны VK_BOT_TOKEN "
+         "и VK_BOT_GROUP_ID, Long Poll в сообществе должен быть включён.",
+         group="Платформы", since="5.6", default=False),
     Flag("platform_discord", "Discord",
          "Канал сообщества в Discord: слеш-команды, суточная сводка событий "
          "и статус мониторинга. Оповещений по адресам в Discord нет — "

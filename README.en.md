@@ -1,4 +1,4 @@
-# Radar v5.5
+# Radar v5.6
 
 [Русская версия](README.md)
 
@@ -728,6 +728,31 @@ source; the transport is exercised over a real WebSocket against an
 emulator (`tools/discord_http_check.py`, a CI step). It has never talked
 to real Discord. Setup is in section 15 of
 [docs/API_SETUP.md](docs/API_SETUP.md).
+
+### VK and alert copies (since 5.6) ⚠️ not verified in operation
+
+Feature flag `platform_vk`, off by default. The VK community bot runs on
+the Bots Long Poll API — no inbound address needed.
+
+**Linking.** In Telegram: "⚙️ Alerts" → "🔗 Link VK or MAX" (or `/link`)
+— the bot gives a six-digit code valid for 10 minutes. The code is sent
+to the bot in VK or in MAX, and from then on **alerts for the person's
+addresses arrive there too** — a copy of what arrived in Telegram.
+Addresses and settings stay in Telegram: geography is confirmed there,
+so the rule "no alert without confirmed geography" holds.
+
+- the copy is sent by a background task: Telegram does not wait for it,
+  and a VK or MAX failure neither delays nor breaks the alert loop;
+- only Telegram, where the addresses are, issues the code: nobody can
+  route someone else's alerts to themselves by knowing a VK id;
+  brute force is limited to five wrong codes per 10 minutes;
+- `/unlink` in VK or MAX, or the button in Telegram, removes the link.
+
+Viber and WhatsApp are not connected: since 2024 Viber bots require a
+contract and €115 a month plus a fee per message, and since July 2025
+WhatsApp charges for every template message and requires Meta business
+verification — details in the [roadmap](docs/ROADMAP.en.md). VK setup is
+in section 16 of [docs/API_SETUP.md](docs/API_SETUP.md).
 
 ## Language
 

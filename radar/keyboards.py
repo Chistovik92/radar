@@ -332,6 +332,12 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
                      f"{quiet_summary(user, lang)}",
                 callback_data="set:quiet",
             )])
+        # Привязка ВК и MAX (5.6): копии тревог туда, где человек тоже бывает.
+        if features.enabled("platform_vk") or features.enabled("platform_max"):
+            rows.append([InlineKeyboardButton(
+                text=label("link.button", "🔗 Привязать ВК или MAX"),
+                callback_data="lnk:menu",
+            )])
         # Часовой пояс стоит рядом с погодой и тихими часами не случайно:
         # он задаёт смысл обоим. «Погода в 8:00» без пояса — восемь утра
         # у сервера, а не у человека.

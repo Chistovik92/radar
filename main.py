@@ -30,6 +30,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.6", [
+        "🔗 <b>Тревоги — ещё и во ВКонтакте и MAX.</b> В настройках "
+        "оповещений кнопка «Привязать ВК или MAX»: бот даёт код, его "
+        "отправляют боту во ВКонтакте или MAX — и тревоги по вашим адресам "
+        "приходят и туда. Адреса по-прежнему задаются здесь.",
+        "💬 Бот сообщества ВКонтакте — возможность «ВКонтакте как "
+        "мессенджер», по умолчанию выключена.",
+        "ℹ️ Viber и WhatsApp пока не подключаются: обе площадки стали "
+        "платными для ботов — подробности в дорожной карте.",
+    ]),
     ("5.5", [
         "💬 <b>Discord.</b> Канал сообщества: суточная сводка событий "
         "по категориям и сообщения о смене статуса мониторинга, "
@@ -1674,12 +1684,35 @@ async def main() -> None:
         max_transport = MaxTransport()
         if max_transport.configured:
             spawn(max_transport.start(), "max")
+            # Копии тревог привязанным (5.6). Импорт здесь: блок ВК ниже
+            # импортирует mirror ещё раз, это дёшево и не зависит от порядка.
+            from radar import mirror as max_mirror
+
+            max_mirror.register("max", max_transport.send_text)
             log.info("Адаптер MAX запущен")
         else:
             log.warning(
                 "Мессенджер MAX включён флагом, но MAX_BOT_TOKEN пуст — "
                 "адаптер не запускается"
             )
+
+    # ВКонтакте как мессенджер (5.6): привязка к Telegram и копии тревог.
+    from radar import mirror
+
+    if features.enabled("platform_vk"):
+        from radar import secrets as vk_secrets
+        from radar.platforms import vkbot
+        from radar.platforms.vk import VkTransport
+
+        vk_transport = VkTransport(vk_secrets.get("VK_BOT_TOKEN"),
+                                   vk_secrets.get("VK_BOT_GROUP_ID"), vkbot.reply)
+        if vk_transport.configured:
+            mirror.register("vk", vk_transport.send_text)
+            spawn(vk_transport.start(), "vk")
+            log.info("Адаптер ВКонтакте запущен")
+        else:
+            log.warning("ВКонтакте включён флагом, но VK_BOT_TOKEN или "
+                        "VK_BOT_GROUP_ID не заданы — адаптер не запускается")
 
     # Discord (с 5.5): канал сообщества — сводки и статус, не оповещения.
     # Своя задача, как у MAX: сбой Discord не касается Telegram и тревог.

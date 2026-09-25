@@ -22,6 +22,7 @@ from . import (
     group,
     history,
     language,
+    linking,
     linkcheck,
     locations,
     logs,
@@ -46,7 +47,7 @@ from . import (
 PRIVATE_ROUTERS = (
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
-    linkcheck, music, digest, sos, chats, vpn,
+    linkcheck, music, digest, sos, chats, vpn, linking,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
     subscription,

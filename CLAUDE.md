@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 5.5, она же выложена на GitHub.
+Текущая версия — 5.6, она же выложена на GitHub.
 
 ## Общение
 
@@ -28,6 +28,7 @@ python3 tools/lint_release.py           # версия поднята везде
 python3 tools/lint_manifest.py          # новые модули попали в манифест установщика
 python3 tools/vpn_http_check.py         # VPN-клиенты по HTTP (нужен aiohttp)
 python3 tools/discord_http_check.py     # адаптер Discord по WebSocket (нужен aiohttp)
+python3 tools/vk_http_check.py          # ВК и зеркало тревог по HTTP (нужен aiohttp)
 ```
 
 `vpn_http_check.py` добавлен в 5.0.1: офлайн-тесты подменяют обмен
@@ -37,6 +38,8 @@ python3 tools/discord_http_check.py     # адаптер Discord по WebSocket 
 `aiohttp` (`pip install aiohttp`); в CI он ставится отдельным шагом.
 `discord_http_check.py` (5.5) — то же для Discord: эмулятор Gateway
 и REST, вход, сердцебиение, слеш-команда, RESUME, 429 и код 4004.
+`vk_http_check.py` (5.6) — ВКонтакте: Long Poll с кодами сбоя, привязка
+кодом из Telegram и копия тревоги через зеркало.
 
 `lint_manifest.py` добавлен в 4.8.4.5: модуль `radar/timezones.py`
 из 4.8.4.4 не попал в `MANIFEST`, и установщик не разворачивал его
