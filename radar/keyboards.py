@@ -90,6 +90,9 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     if features.enabled("rustdesk"):
         extra.append(InlineKeyboardButton(text=label("menu.rustdesk", "🖥 RustDesk"),
                                           callback_data="rd:menu"))
+    if features.enabled("vpn"):
+        extra.append(InlineKeyboardButton(text=label("menu.vpn", "🔐 VPN"),
+                                          callback_data="vpn:menu"))
     if extra:
         # Кнопок бывает больше двух — режем по две, чтобы строка
         # не расползалась на весь экран телефона.

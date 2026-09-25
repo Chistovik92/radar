@@ -92,6 +92,41 @@ EN_STRINGS: dict[str, str] = {
     "help.cmd_linkcheck": "/check &lt;link&gt; — check a link for scam signs",
     "help.cmd_music": "/music — music and playlists",
 
+    # --- VPN (5.0) ---
+    "menu.vpn": "🔐 VPN",
+    "vpn.title": "🔐 <b>VPN</b>",
+    "vpn.unavailable": "The administrator hasn't set this section up yet.",
+    "vpn.link_button": "📋 Subscription link",
+    "vpn.gone": "The account is missing from the panel — request access again.",
+    "vpn.ask_button": "📨 Request access",
+    "vpn.pending": "⏳ Your request has been sent and awaits an administrator.",
+    "vpn.can_get": "Access is granted right away — tap the button below.",
+    "vpn.get_button": "🔑 Get access",
+    "vpn.denied": "Your previous request was declined. You can send a new one.",
+    "vpn.intro": "VPN access is granted by an administrator. "
+                 "Send a request — the answer will arrive here.",
+    "vpn.sent": "Request sent.",
+    "vpn.link_title": "🔐 <b>Your subscription link</b>",
+    "vpn.setup_steps": "<b>How to connect:</b>\n"
+                       "1. Install a client that supports subscriptions: "
+                       "HydraVPN or v2rayNG on Android, Streisand or Happ "
+                       "on iPhone, Hiddify or v2rayN on a computer.\n"
+                       "2. Add the subscription using the link above — "
+                       "\"import from clipboard\" or \"add subscription\".\n"
+                       "3. Refresh the subscription and pick a server.\n\n"
+                       "The link is your key: don't forward it. The same "
+                       "link works on all of your devices.",
+    "vpn.hydra_button": "⬇️ HydraVPN for Android",
+    "vpn.no_access": "Access hasn't been granted.",
+    "vpn.denied_note": "🔐 Your VPN request was declined by an administrator.",
+    "vpn.until": "Valid until {until} ({left} days left)",
+    "vpn.forever": "Valid: no expiry",
+    "vpn.traffic": "Traffic: {used} of {limit}",
+    "vpn.traffic_free": "Traffic: {used}, unlimited",
+    "vpn.disabled": "⛔ Access is disabled",
+    "vpn.gb": "GB",
+    "vpn.mb": "MB",
+
     # --- RustDesk ---
     "menu.rustdesk": "🖥 RustDesk",
     "rustdesk.title": "🖥 <b>RustDesk</b>",

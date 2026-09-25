@@ -1,4 +1,4 @@
-# Radar v4.9.9.4
+# Radar v5.0
 
 [Русская версия](README.md)
 
@@ -350,6 +350,38 @@ steps and a download link. The same three things (address and key,
 connections, control) are in the web panel too — the "RustDesk" page
 under Overview, superadmin only. Deployment details and `.env`
 variables are in [docs/API_SETUP.md](docs/API_SETUP.md).
+
+## VPN (since 5.0) ⚠️ not verified against live panels
+
+Issuing VPN access from the bot — feature flag `vpn`, off by default.
+Three panels are supported through one internal layer
+(`radar/vpnpanels.py`): **3x-ui**, **PasarGuard** and **Remnawave**.
+Switching panels on the server means changing `VPN_PANEL`, not rewriting
+the section. No panel SDKs are used: everything runs on `aiohttp`,
+which is already there.
+
+What it looks like in the bot:
+
+- a person opens "🔐 VPN" and sends a request; admins get a message with
+  "✅ Grant" and "❌ Decline" buttons;
+- once approved, the subscription link arrives in the private chat, and
+  the section shows the expiry date and traffic used;
+- roles at or above `VPN_AUTO_ROLE` (admins by default) get access right
+  away, without a request;
+- admins see the requests and the list of granted accounts, extend the
+  term by `VPN_DAYS` days, disable and re-enable access, and check the
+  panel.
+
+Extending and re-issuing return **the same key**: the account name in the
+panel is derived from the user's id, so the existing account is found
+rather than created anew. Expiry is enforced by the panel itself — the
+bot polls nothing on a schedule, and the alert loop never touches the
+panels.
+
+The subscription link is not stored in the database; neither it, nor the
+UUID, nor the panel token ever reaches the logs. There are no payments
+in 5.0 — selling by plans comes in later releases. Setup is in the "VPN"
+section of [docs/API_SETUP.md](docs/API_SETUP.md).
 
 ## Large files by link
 

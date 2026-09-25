@@ -1,0 +1,78 @@
+name: Release
+
+# Выпуск после зелёного CI на main (с 5.0). Код в main без релиза ломает
+# `install.sh --versions`: установщик берёт список версий из релизов.
+# Раньше тег и релиз ставились руками, и выпуски терялись.
+#
+# Версия — из radar/__init__.py. Если тег vX.Y уже есть, ничего не
+# делается: повторный пуш в main без смены номера релиз не плодит.
+# Текст — tools/release_notes.py: docs/releases/<версия>.md или RELEASES.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Только после успешного CI именно пуша в main, а не PR из форка.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Версия и проверка, что её ещё нет
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(python tools/release_notes.py version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git fetch --tags --force --quiet
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Релиз v$version уже есть — выпускать нечего"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Тег, поставленный руками без релиза, не мешает: релиз
+          # создаётся на нём. Номер сверяется только с остальными.
+          python tools/release_notes.py newer $(git tag -l 'v*' | grep -vx "v$version")
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - name: Проверка согласованности номера
+        if: steps.ver.outputs.skip == '0'
+        run: python tools/lint_release.py
+
+      - name: Тег и релиз
+        if: steps.ver.outputs.skip == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          python tools/release_notes.py body > "$RUNNER_TEMP/notes.md"
+          title="$(python tools/release_notes.py title)"
+          gh release create "v$VERSION" \
+            --target "$SHA" \
+            --title "$title" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest
