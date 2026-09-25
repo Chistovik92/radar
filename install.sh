@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.7.1 — автономный установщик.
+# Система «Радар» v5.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.7.1"
+VERSION="5.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3240,6 +3240,13 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.8", [
+        "🔗 <b>VPN: клиенты из панелей — к аккаунтам.</b> «Клиенты панелей» "
+        "находит записи, заведённые руками или другим ботом, по Telegram-id "
+        "и привязывает их к людям. Ключ, срок и трафик не меняются, продление "
+        "работает с этой же записью.",
+        "✋ Остальных клиентов можно привязать вручную из карточки человека.",
+    ]),
     ("5.7.1", [
         "📰 Новостная подборка больше не пропадает, если бот был занят или "
         "перезапускался в назначенное время: она приходит с опозданием, "
@@ -5054,7 +5061,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.7.1"
+__version__ = "5.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -36047,6 +36054,35 @@ def valid_name(name: str) -> bool:
     return bool(_NAME_RE.fullmatch(name or ""))
 
 
+@dataclass(frozen=True)
+class PanelClient:
+    """Клиент из списка панели — для привязки уже заведённых записей (5.7.2).
+
+    `ref` — то, по чему панель находит запись в дальнейших вызовах: имя
+    (email у 3x-ui), а у Hiddify — uuid, у Outline — id ключа: их чужие
+    записи по имени не находятся. `telegram` — Telegram-id из поля самой
+    панели (3x-ui `tgId`, Remnawave `telegramId`, Hiddify `telegram_id`),
+    `notes` — где ещё его могли записать: имя, email, комментарий.
+    """
+
+    ref: str
+    title: str
+    telegram: str = ""
+    notes: tuple[str, ...] = ()
+    account: Account | None = None
+
+
+# Сколько клиентов читать из одной панели. Список нужен суперадминистратору
+# для привязки, а не для выгрузки: больше — значит, что-то не так с запросом.
+LIST_LIMIT = 5000
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _tg(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text.isdigit() and text != "0" else ""
+
+
 def account_name(uid: str | int) -> str:
     """Имя учётной записи для пользователя бота.
 
@@ -36196,6 +36232,10 @@ class Panel:
 
     async def set_devices(self, name: str, devices: int) -> None:
         raise PanelError(f"{self.title} не ограничивает число устройств.")
+
+    async def list_clients(self) -> list[PanelClient]:
+        """Все клиенты панели — для привязки заведённых не ботом (5.7.2)."""
+        raise PanelError(f"{self.title} не отдаёт список клиентов.")
 
     def problems(self) -> list[str]:
         """Чего не хватает в настройках. Пусто — можно обращаться."""
@@ -36530,6 +36570,17 @@ class XuiPanel(Panel):
                              "https://example.ru:2096/sub.")
         return await super().subscription_url(name)
 
+    async def list_clients(self) -> list[PanelClient]:
+        # Клиенты подключения из его настроек — так же, как считает их
+        # check() в обеих ветках; `tgId` 3x-ui и x-ui хранят прямо в клиенте.
+        _, clients = await self._inbound()
+        return [PanelClient(
+            ref=str(client.get("email") or ""), title=str(client.get("email") or ""),
+            telegram=_tg(client.get("tgId")),
+            notes=(str(client.get("email") or ""), str(client.get("comment") or "")),
+            account=xui_account(client, None, self.sub_url),
+        ) for client in clients[:LIST_LIMIT] if client.get("email")]
+
     async def check(self) -> str:
         protocol, clients = await self._inbound()
         generation = await self._gen()
@@ -36736,6 +36787,15 @@ class SuiPanel(Panel):
                              "https://example.ru:2096/sub.")
         return await super().subscription_url(name)
 
+    async def list_clients(self) -> list[PanelClient]:
+        obj = await self._api("GET", "clients")
+        rows = obj.get("clients") if isinstance(obj, dict) else None
+        return [PanelClient(
+            ref=str(item.get("name") or ""), title=str(item.get("name") or ""),
+            notes=(str(item.get("name") or ""), str(item.get("desc") or "")),
+            account=sui_account(item, self.sub_url),
+        ) for item in (rows or [])[:LIST_LIMIT] if isinstance(item, dict) and item.get("name")]
+
     async def check(self) -> str:
         obj = await self._api("GET", "clients")
         count = len((obj or {}).get("clients") or []) if isinstance(obj, dict) else 0
@@ -36860,6 +36920,25 @@ class MarzbanPanel(Panel):
     async def enable(self, name: str) -> None:
         await self._modify(name, {"status": "active"})
 
+    def _client(self, user: dict[str, Any]) -> PanelClient:
+        name = str(user.get("username") or "")
+        return PanelClient(ref=name, title=name, notes=(name, str(user.get("note") or "")),
+                           account=marzban_account(user, self.url))
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /api/users?offset&limit` → {users, total} — Marzban
+        # и PasarGuard (app/routers/user.py).
+        found: list[PanelClient] = []
+        while len(found) < LIST_LIMIT:
+            payload = await self._call("GET", f"api/users?offset={len(found)}&limit=500")
+            rows = payload.get("users") if isinstance(payload, dict) else None
+            if not rows:
+                break
+            found += [self._client(row) for row in rows if isinstance(row, dict)]
+            if len(rows) < 500:
+                break
+        return found
+
     async def check(self) -> str:
         payload = await self._call("GET", self.admin_path)
         who = payload.get("username") if isinstance(payload, dict) else ""
@@ -36977,6 +37056,26 @@ class MarzneshinPanel(MarzbanPanel):
     async def enable(self, name: str) -> None:
         await self._call("POST", f"api/users/{name}/enable")
 
+    def _client(self, user: dict[str, Any]) -> PanelClient:
+        name = str(user.get("username") or "")
+        return PanelClient(ref=name, title=name, notes=(name, str(user.get("note") or "")),
+                           account=marzneshin_account(user, self.url))
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /api/users?page&size` → страница fastapi-pagination {items}.
+        found: list[PanelClient] = []
+        page = 1
+        while len(found) < LIST_LIMIT:
+            payload = await self._call("GET", f"api/users?page={page}&size=100")
+            rows = payload.get("items") if isinstance(payload, dict) else None
+            if not rows:
+                break
+            found += [self._client(row) for row in rows if isinstance(row, dict)]
+            if len(rows) < 100:
+                break
+            page += 1
+        return found
+
     async def check(self) -> str:
         note = await super().check()
         if not self._services():
@@ -37092,6 +37191,28 @@ class RemnawavePanel(Panel):
     async def enable(self, name: str) -> None:
         await self._call("POST", f"api/users/{await self._ref(name)}/actions/enable")
 
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /api/users?start&size` (size ≤ 1000) → {response: {users, total}}.
+        found: list[PanelClient] = []
+        while len(found) < LIST_LIMIT:
+            payload = self._unwrap(await self._call(
+                "GET", f"api/users?start={len(found)}&size=500"))
+            rows = payload.get("users") if isinstance(payload, dict) else None
+            if not rows:
+                break
+            for user in rows:
+                if not isinstance(user, dict):
+                    continue
+                name = str(user.get("username") or "")
+                found.append(PanelClient(
+                    ref=name, title=name, telegram=_tg(user.get("telegramId")),
+                    notes=(name, str(user.get("email") or ""),
+                           str(user.get("description") or "")),
+                    account=remnawave_account(user)))
+            if len(rows) < 500:
+                break
+        return found
+
     async def check(self) -> str:
         # Запрос несуществующего имени: 404 значит «вход принят, записи
         # нет», 401 — токен не тот. Прав на статистику у токена может
@@ -37176,7 +37297,10 @@ class HiddifyPanel(Panel):
         return round(traffic / GB, 3) if traffic else float(UNLIMITED_GB)
 
     def _path(self, name: str = "") -> str:
-        suffix = f"{self.user_uuid(name)}/" if name else ""
+        # Привязанная чужая запись хранится своим uuid (5.7.2): из имени
+        # его не вывести. Имя бота («radar_…») на uuid не похоже никогда.
+        ident = name if _UUID_RE.match(name or "") else self.user_uuid(name)
+        suffix = f"{ident}/" if name else ""
         return f"api/v2/admin/user/{suffix}"
 
     async def create_user(self, name: str, expire: int, traffic: int) -> Account:
@@ -37212,6 +37336,21 @@ class HiddifyPanel(Panel):
             raise PanelError("Не задан адрес клиентской страницы Hiddify, "
                              "например https://example.ru/<client_proxy_path>.")
         return await super().subscription_url(name)
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET api/v2/admin/user/` — список целиком (users_api.py).
+        payload = await self._call("GET", self._path())
+        found = []
+        for user in (payload if isinstance(payload, list) else [])[:LIST_LIMIT]:
+            if not isinstance(user, dict) or not user.get("uuid"):
+                continue
+            name = str(user.get("name") or "")
+            found.append(PanelClient(
+                ref=str(user["uuid"]), title=name or str(user["uuid"]),
+                telegram=_tg(user.get("telegram_id")),
+                notes=(name, str(user.get("comment") or "")),
+                account=hiddify_account(user, self.sub_url)))
+        return found
 
     async def check(self) -> str:
         payload = await self._call("GET", "api/v2/admin/me/")
@@ -37315,6 +37454,19 @@ class OutlinePanel(Panel):
 
     async def enable(self, name: str) -> None:
         await self._call("DELETE", f"access-keys/{name}/data-limit")
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /access-keys` → {accessKeys: [...]}; ключ находится по id.
+        payload = await self._call("GET", "access-keys")
+        keys = payload.get("accessKeys") if isinstance(payload, dict) else None
+        found = []
+        for key in (keys or [])[:LIST_LIMIT]:
+            if not isinstance(key, dict) or key.get("id") in (None, ""):
+                continue
+            name = str(key.get("name") or "")
+            found.append(PanelClient(ref=str(key["id"]), title=name or f"ключ {key['id']}",
+                                     notes=(name,), account=outline_account(key, 0)))
+        return found
 
     async def check(self) -> str:
         payload = await self._call("GET", "server")
@@ -37425,6 +37577,14 @@ class WgEasyPanel(Panel):
         if not code:
             raise PanelError("wg-easy не выдала одноразовую ссылку.")
         return f"{self.url}/cnf/{code}"
+
+    async def list_clients(self) -> list[PanelClient]:
+        payload = await self._call("GET", "api/client")
+        return [PanelClient(ref=str(item.get("name") or ""), title=str(item.get("name") or ""),
+                            notes=(str(item.get("name") or ""),),
+                            account=wgeasy_account(item, ""))
+                for item in (payload if isinstance(payload, list) else [])[:LIST_LIMIT]
+                if isinstance(item, dict) and item.get("name")]
 
     async def check(self) -> str:
         payload = await self._call("GET", "api/client")
@@ -37851,13 +38011,30 @@ async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: 
     к большему из «сейчас» и прежнего окончания, предел трафика ставится
     по тарифу.
     """
-    name = account_name(uid)
+    # Имя в панели: привязанная чужая запись (5.7.2) — её собственное,
+    # иначе выведенное из ключа человека.
+    current = (await record(uid) or {}).get("panels", {})
+
+    def name_on(target: Slot) -> str:
+        stored = current.get(target.key) or {}
+        if stored.get("name") and not _stale(target, stored):
+            return str(stored["name"])
+        return account_name(uid)
+
+    used_names: dict[str, str] = {}
 
     async def one(target: Slot) -> Account:
         client = target.client
+        name = name_on(target)
         now = int(time.time())
         expire = now + period if client.supports_expiry else 0
         account = await client.get_user(name)
+        if account is None and name != account_name(uid):
+            # Привязанную запись удалили в самой панели: заводим свою,
+            # под именем бота, а не под чужим идентификатором.
+            name = account_name(uid)
+            account = await client.get_user(name)
+        used_names[target.key] = name
         if account is None:
             created = await client.create_user(name, expire, traffic)
             if not (devices and client.supports_devices):
@@ -37895,9 +38072,13 @@ async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: 
         panels = entry.setdefault("panels", {})
         for key, result in results.items():
             if isinstance(result, Account):
-                panels[key] = {"name": name, "kind": fingerprints[key].client.kind,
+                previous = panels.get(key) or {}
+                panels[key] = {"name": used_names.get(key) or name_on(fingerprints[key]),
+                               "kind": fingerprints[key].client.kind,
                                "fp": fingerprints[key].fingerprint,
                                "issued": now, "by": str(by)}
+                if previous.get("adopted") and previous.get("name") == panels[key]["name"]:
+                    panels[key]["adopted"] = True
         if panels:
             entry["state"] = ACTIVE
             entry["decided"] = now
@@ -37919,13 +38100,12 @@ async def _on_issued(uid: str | int, keys: list[str] | None,
     entry = await record(uid) or {}
     panels = entry.get("panels", {})
     targets = [item for item in _pick(keys) if item.key in panels]
-    name = account_name(uid)
 
     async def one(target: Slot) -> Any:
         if _stale(target, panels[target.key]):
             raise PanelError("Панель в этом слоте заменена после выдачи — "
                              "выдайте доступ заново.")
-        return await action(target, name)
+        return await action(target, str(panels[target.key].get("name") or account_name(uid)))
 
     return await _each(targets, one)
 
@@ -38000,6 +38180,149 @@ async def revoke(uid: str | int, key: str, role: str | None) -> None:
     failure = results.get(str(key))
     if isinstance(failure, PanelError):
         raise PanelError(f"Выдача забыта, но панель не ответила: {failure}")
+
+
+#  Привязка уже заведённых в панелях клиентов (5.7.2)
+#
+#  До 5.7.2 бот знал только записи, которые завёл сам («radar_<id>»).
+#  Клиенты, заведённые руками или другим ботом (vpn-bot-3xui и подобные
+#  пишут Telegram-id в `tgId`, email или комментарий), к аккаунту не
+#  относились: человек их не видел, продление заводило вторую запись.
+#  Теперь суперадминистратор привязывает их — по найденным совпадениям
+#  или вручную. Привязка ничего в панели не меняет: запись остаётся
+#  прежней, с прежним ключом, сроком и трафиком.
+
+@dataclass(frozen=True)
+class Match:
+    """Предложение привязки: клиент панели и человек, чей Telegram-id в нём."""
+
+    uid: str
+    key: str
+    ref: str
+    title: str
+    reason: str
+
+
+def _mentions(text: str, uid: str) -> bool:
+    import re
+
+    return bool(uid) and re.search(rf"(?<!\d){re.escape(uid)}(?!\d)", text or "") is not None
+
+
+def match_reason(client: Any, uid: str) -> str:
+    """Почему клиент панели похож на человека `uid`. Пусто — не похож.
+
+    Короткие числа не сопоставляются: «12345» в комментарии скорее
+    номер заказа, чем Telegram-id. Id из собственного поля панели
+    (`tgId` и подобных) — точное совпадение, ему верим сильнее.
+    """
+    if not uid.isdigit() or len(uid) < 6:
+        return ""
+    if client.telegram and client.telegram == uid:
+        return "Telegram-id в поле панели"
+    for note in client.notes:
+        if _mentions(note, uid):
+            return "Telegram-id в имени или комментарии"
+    return ""
+
+
+async def _bound(stored: dict[str, dict[str, Any]]) -> dict[tuple[str, str], str]:
+    """Уже занятые записи: (слот, имя в панели) → чей аккаунт."""
+    taken = {}
+    for owner, entry in stored.items():
+        for key, info in (entry.get("panels") or {}).items():
+            if info.get("name"):
+                taken[(str(key), str(info["name"]))] = owner
+    return taken
+
+
+async def clients(key: str, role: str | None) -> list[Any]:
+    """Клиенты одной панели, ещё ни к кому не привязанные."""
+    _require(role)
+    target = next(iter(_pick([key])), None)
+    if target is None:
+        raise PanelError("Такой панели нет.")
+    result = (await _each([target], lambda item: item.client.list_clients()))[target.key]
+    if isinstance(result, PanelError):
+        raise result
+    taken = await _bound(await _load())
+    return [item for item in result if (target.key, item.ref) not in taken]
+
+
+async def matches(role: str | None) -> tuple[list[Match], dict[str, str]]:
+    """Совпадения по всем панелям: клиенты, где записан Telegram-id
+    зарегистрированного в боте человека. Второе значение — отказы панелей."""
+    from . import storage
+    from .identity import is_telegram
+
+    _require(role)
+    people = [uid for uid in storage.users() if is_telegram(uid)]
+    stored = await _load()
+    taken = await _bound(stored)
+    results = await _each(slots(), lambda item: item.client.list_clients())
+    found: list[Match] = []
+    errors: dict[str, str] = {}
+    for key, result in results.items():
+        if isinstance(result, PanelError):
+            errors[key] = str(result)
+            continue
+        for client in result:
+            if (key, client.ref) in taken:
+                continue
+            for uid in people:
+                if key in ((stored.get(uid) or {}).get("panels") or {}):
+                    continue   # на этой панели у человека уже есть выдача
+                reason = match_reason(client, uid)
+                if reason:
+                    found.append(Match(uid, key, client.ref, client.title, reason))
+    return found, errors
+
+
+async def bind(uid: str | int, key: str, ref: str, by: str | int,
+               role: str | None) -> Account:
+    """Привязать существующую запись панели к человеку. В панели не меняется ничего."""
+    _require(role)
+    target = next(iter(_pick([key])), None)
+    if target is None:
+        raise PanelError("Такой панели нет.")
+    stored = await _load()
+    owner = (await _bound(stored)).get((target.key, str(ref)))
+    if owner and owner != str(uid):
+        raise PanelError("Эта запись уже привязана к другому человеку.")
+    if target.key in ((stored.get(str(uid)) or {}).get("panels") or {}) and owner != str(uid):
+        raise PanelError("На этой панели у человека уже есть доступ — сначала отзовите его.")
+    result = (await _each([target], lambda item: item.client.get_user(str(ref))))[target.key]
+    if isinstance(result, PanelError):
+        raise result
+    if result is None:
+        raise PanelError("Такой записи в панели нет.")
+    now = int(time.time())
+
+    def change(entry: dict[str, Any]) -> None:
+        entry.setdefault("panels", {})[target.key] = {
+            "name": str(ref), "kind": target.client.kind, "fp": target.fingerprint,
+            "issued": now, "by": str(by), "adopted": True}
+        entry["state"] = ACTIVE
+        entry["decided"] = now
+        entry["by"] = str(by)
+
+    await _edit(uid, change)
+    log.info("VPN %s: привязана существующая запись на слоте %s (%s)", uid, target.key, by)
+    return result
+
+
+async def forget(uid: str | int, key: str, role: str | None) -> None:
+    """Снять привязку, не трогая запись в панели (в отличие от `revoke`,
+    который её выключает): для ошибочной привязки чужого клиента."""
+    _require(role)
+
+    def change(entry: dict[str, Any]) -> None:
+        entry.get("panels", {}).pop(str(key), None)
+        if not entry.get("panels") and entry.get("state") == ACTIVE:
+            entry["state"] = ""
+
+    await _edit(uid, change)
+    log.info("VPN %s: привязка на слоте %s снята без изменений в панели", uid, key)
 
 
 async def statuses(uid: str | int) -> dict[str, Any]:
@@ -46047,6 +46370,7 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
             _button("🔑 Выдать себе", f"vpn:rv:{uid}:0"),
             _button("🩺 Проверить панели", "vpn:check"),
         ])
+        rows.append([_button("🔗 Клиенты панелей", "vpn:adopt")])
         if features.enabled("vpn_sales"):
             rows.append([_button("🧾 Заказы", "vpn:orders")])
 
@@ -46225,6 +46549,7 @@ async def review(call: CallbackQuery, role: str) -> None:
         rows.append([_button(f"✅ Выдать ({chosen})", f"vpn:go:{uid}:{mask}")])
     if entry.get("state") == vpn.PENDING:
         rows.append([_button("❌ Отказать", f"vpn:no:{uid}")])
+    rows.append([_button("🔗 Привязать клиента панели", f"vpn:mb:{uid}")])
     rows.append(_back("vpn:reqs"))
 
     days = vpn.default_days()
@@ -46313,6 +46638,7 @@ async def list_issued(call: CallbackQuery, role: str) -> None:
 
 async def _card(call: CallbackQuery, uid: str, note: str = "") -> None:
     results = await vpn.statuses(uid)
+    panels = ((await vpn.record(uid)) or {}).get("panels") or {}
     lines = [f"🔐 <b>VPN</b>: {_name_of(uid)}"]
     lines.extend(_status_lines(results, "ru") if results else ["\nНичего не выдано."])
     if note:
@@ -46335,8 +46661,11 @@ async def _card(call: CallbackQuery, uid: str, note: str = "") -> None:
         else:
             row.append(_button("⛔ Выкл.", f"vpn:off:{key}:{uid}"))
         row.append(_button("🗑", f"vpn:rm:{key}:{uid}"))
+        if (panels.get(key) or {}).get("adopted"):
+            row.append(_button("↩️", f"vpn:fg:{key}:{uid}"))
         rows.append(row)
     rows.append([_button("➕ Выдать на другие панели", f"vpn:rv:{uid}:0")])
+    rows.append([_button("🔗 Привязать клиента панели", f"vpn:mb:{uid}")])
     rows.append(_back("vpn:list"))
     await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -46412,6 +46741,163 @@ async def check_panels(call: CallbackQuery, role: str) -> None:
     if len(lines) == 1:
         lines.append("\nНи одна панель не настроена.")
     await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=[_back()]))
+
+
+# --------------------------------------------------------------------------
+#  Привязка клиентов, заведённых в панелях не ботом (5.7.2)
+# --------------------------------------------------------------------------
+
+# Найденное держится в памяти по суперадминистратору: имя записи в панели
+# в данные кнопки не помещается (64 байта), поэтому кнопка несёт номер.
+_found: dict[str, list[Any]] = {}
+PAGE = 20
+
+
+def _adopt_rows(admin: str) -> list[list[InlineKeyboardButton]]:
+    known = _titles()
+    rows = []
+    for index, match in enumerate(_found.get(admin, [])[:PAGE]):
+        where = _short(known[match.key].title, 12) if match.key in known else f"#{match.key}"
+        rows.append([_button(f"✅ {_short(_label(match.uid), 16)} ← "
+                             f"{_short(match.title, 16)} · {where}", f"vpn:ad:{index}")])
+    if len(_found.get(admin, [])) > 1:
+        rows.append([_button("✅ Привязать все", "vpn:adall")])
+    rows.append(_back())
+    return rows
+
+
+def _adopt_text(admin: str, errors: dict[str, str] | None = None, note: str = "") -> str:
+    found = _found.get(admin, [])
+    lines = ["🔗 <b>Клиенты панелей</b>",
+             "",
+             "Записи, заведённые в панелях руками или другим ботом, в которых "
+             "записан Telegram-id человека из бота (поле Telegram-id, имя, email "
+             "или комментарий). Привязка в панели ничего не меняет: ключ, срок "
+             "и трафик остаются прежними."]
+    if found:
+        lines.append("")
+        for match in found[:PAGE]:
+            lines.append(f"• {_name_of(match.uid)} ← <code>{esc(match.title)}</code> "
+                         f"({esc(match.reason)})")
+        if len(found) > PAGE:
+            lines.append(f"…и ещё {len(found) - PAGE}: привяжите эти — список обновится.")
+    else:
+        lines.append("\nСовпадений нет. Остальных клиентов можно привязать вручную: "
+                     "карточка человека → «🔗 Привязать клиента панели».")
+    known = _titles()
+    for key, reason in (errors or {}).items():
+        title = known[key].title if key in known else f"#{key}"
+        lines.append(f"\n❌ {esc(title)}: {esc(reason)}")
+    if note:
+        lines.append("\n" + note)
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data == "vpn:adopt")
+async def find_clients(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    await call.answer("Читаю панели…")
+    admin = str(call.from_user.id)
+    try:
+        found, errors = await vpn.matches(role)
+    except PanelError as exc:
+        await safe_edit(call, f"❌ {esc(str(exc))}", InlineKeyboardMarkup(inline_keyboard=[_back()]))
+        return
+    _found[admin] = found
+    await safe_edit(call, _adopt_text(admin, errors),
+                    InlineKeyboardMarkup(inline_keyboard=_adopt_rows(admin)))
+
+
+async def _bind(match: Any, admin: str, role: str) -> str:
+    try:
+        await vpn.bind(match.uid, match.key, match.ref, admin, role)
+    except PanelError as exc:
+        return f"❌ {_name_of(match.uid)}: {esc(str(exc))}"
+    return f"✅ {_name_of(match.uid)} ← <code>{esc(match.title)}</code>"
+
+
+@router.callback_query(F.data.startswith("vpn:ad:") | (F.data == "vpn:adall"))
+async def adopt(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    admin = str(call.from_user.id)
+    found = _found.get(admin, [])
+    if call.data == "vpn:adall":
+        chosen = list(found)
+    else:
+        index = int(call.data.split(":", 2)[2])
+        chosen = [found[index]] if 0 <= index < len(found) else []
+    if not chosen:
+        await call.answer("Список устарел — найдите заново.", show_alert=True)
+        return
+    await call.answer("Привязываю…")
+    notes = [await _bind(match, admin, role) for match in chosen]
+    _found[admin] = [match for match in found if match not in chosen]
+    await safe_edit(call, _adopt_text(admin, note="\n".join(notes)),
+                    InlineKeyboardMarkup(inline_keyboard=_adopt_rows(admin)))
+
+
+@router.callback_query(F.data.startswith("vpn:mb:"))
+async def manual_slots(call: CallbackQuery, role: str) -> None:
+    """Ручная привязка: сначала панель."""
+    if not await _decider_only(call, role):
+        return
+    uid = call.data.split(":", 2)[2]
+    await call.answer()
+    rows = [[_button(_short(target.title, 30), f"vpn:mbs:{target.key}:{uid}:0")]
+            for target in vpn.slots()]
+    rows.append(_back(f"vpn:u:{uid}"))
+    await safe_edit(call, f"🔗 <b>Привязать клиента панели</b>: {_name_of(uid)}\n\n"
+                          "Выберите панель — покажу её клиентов, ещё ни к кому "
+                          "не привязанных.", InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("vpn:mbs:"))
+async def manual_clients(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, _, key, uid, raw = call.data.split(":", 4)
+    offset = int(raw) if raw.isdigit() else 0
+    admin = str(call.from_user.id)
+    await call.answer("Читаю панель…")
+    try:
+        free = await vpn.clients(key, role)
+    except PanelError as exc:
+        await safe_edit(call, f"❌ {esc(str(exc))}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back(f"vpn:mb:{uid}")]))
+        return
+    page = free[offset:offset + PAGE]
+    _found[admin] = [vpn.Match(uid, key, item.ref, item.title, "выбран вручную")
+                     for item in page]
+    rows = [[_button(_short(item.title, 40), f"vpn:ad:{index}")]
+            for index, item in enumerate(page)]
+    nav = []
+    if offset:
+        nav.append(_button("◀️", f"vpn:mbs:{key}:{uid}:{max(0, offset - PAGE)}"))
+    if offset + PAGE < len(free):
+        nav.append(_button("▶️", f"vpn:mbs:{key}:{uid}:{offset + PAGE}"))
+    if nav:
+        rows.append(nav)
+    rows.append(_back(f"vpn:mb:{uid}"))
+    text = (f"🔗 <b>Клиенты панели</b> для {_name_of(uid)}: свободных {len(free)}"
+            + (f", показаны {offset + 1}–{offset + len(page)}" if page else "")
+            + ".\nНажмите нужного — он будет привязан, в панели ничего не изменится.")
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("vpn:fg:"))
+async def forget_binding(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, _, key, uid = call.data.split(":", 3)
+    await call.answer()
+    try:
+        await vpn.forget(uid, key, role)
+        note = "↩️ Привязка снята, запись в панели не тронута."
+    except PanelError as exc:
+        note = f"⚠️ {esc(str(exc))}"
+    await _card(call, uid, note)
 
 
 # --------------------------------------------------------------------------

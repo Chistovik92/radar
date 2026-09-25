@@ -318,12 +318,25 @@ def marzban_app(flavor: str) -> web.Application:
     async def admin(request: web.Request) -> web.Response:
         return web.json_response({"username": USER})
 
+    async def listing(request: web.Request) -> web.Response:
+        # Marzban и PasarGuard: offset/limit → {users, total};
+        # Marzneshin: fastapi-pagination page/size → {items, total, page, size}.
+        rows = [json.loads(view(user).text) for user in users.values()]
+        if flavor == "marzneshin":
+            page, size = int(request.query.get("page", 1)), int(request.query.get("size", 50))
+            chunk = rows[(page - 1) * size:page * size]
+            return web.json_response({"items": chunk, "total": len(rows), "page": page,
+                                      "size": size})
+        offset, limit = int(request.query.get("offset", 0)), int(request.query.get("limit", 100))
+        return web.json_response({"users": rows[offset:offset + limit], "total": len(rows)})
+
     app = web.Application()
     app.router.add_post("/api/admins/token" if flavor == "marzneshin" else "/api/admin/token",
                         token)
     app.router.add_get("/api/admins/current" if flavor == "marzneshin" else "/api/admin",
                        guard(admin))
     app.router.add_post(base, guard(create))
+    app.router.add_get("/api/users", guard(listing))
     app.router.add_get(base + "/{name}", guard(get))
     app.router.add_put(base + "/{name}", guard(modify))
     if flavor == "marzneshin":
@@ -380,8 +393,17 @@ def remnawave_app() -> web.Application:
                 return wrap(user)
         return web.json_response({"message": "User not found"}, status=404)
 
+    async def listing(request: web.Request) -> web.Response:
+        start, size = int(request.query.get("start", 0)), int(request.query.get("size", 25))
+        if size > 1000:
+            return web.json_response({"message": "Size must be less than 1000"}, status=400)
+        rows = [json.loads(wrap(user).text)["response"] for user in users.values()]
+        return web.json_response({"response": {"users": rows[start:start + size],
+                                               "total": len(rows)}})
+
     app = web.Application()
     app.router.add_post("/api/users", guard(create))
+    app.router.add_get("/api/users", guard(listing))
     app.router.add_patch("/api/users", guard(patch))
     app.router.add_get("/api/users/by-username/{name}", guard(by_name))
     app.router.add_post("/api/users/{id}/actions/{act}", guard(action))
@@ -421,8 +443,12 @@ def hiddify_app() -> web.Application:
         user.update(await request.json())
         return web.json_response(user)
 
+    async def listing(request: web.Request) -> web.Response:
+        return web.json_response(list(users.values()))
+
     app = web.Application()
     app.router.add_get(prefix + "/me/", guard(me))
+    app.router.add_get(prefix + "/user/", guard(listing))
     app.router.add_post(prefix + "/user/", guard(create))
     app.router.add_get(prefix + "/user/{uuid}/", guard(get))
     app.router.add_patch(prefix + "/user/{uuid}/", guard(patch))
@@ -464,8 +490,12 @@ def outline_app() -> web.Application:
     async def transfer(request: web.Request) -> web.Response:
         return web.json_response({"bytesTransferredByUserId": {k: 4096 for k in keys}})
 
+    async def listing(request: web.Request) -> web.Response:
+        return web.json_response({"accessKeys": list(keys.values())})
+
     app = web.Application()
     app.router.add_get(prefix + "/server", server)
+    app.router.add_get(prefix + "/access-keys", listing)
     app.router.add_put(prefix + "/access-keys/{id}", put_key)
     app.router.add_get(prefix + "/access-keys/{id}", get_key)
     app.router.add_put(prefix + "/access-keys/{id}/data-limit", limit)
@@ -676,6 +706,88 @@ async def run_issue(panels: dict[str, vpnpanels.Panel]) -> tuple[bool, str]:
                   f"выдача вернула те же ключи, продление, отзыв — в порядке")
 
 
+async def run_adopt(panels: dict[str, vpnpanels.Panel]) -> tuple[bool, str]:
+    """Привязка клиентов, заведённых не ботом (5.7.2): список из каждой
+    панели, совпадение по Telegram-id в имени, привязка, продление и отзыв
+    по чужому имени — без второй записи."""
+    usable = [panel for title, panel in panels.items() if "чужой" not in title]
+    fresh = [type(p)(p.url, token=p.token, user=p.user, password=p.password,
+                     groups=p.groups, inbound=p.inbound, sub_url=p.sub_url, cert=p.cert)
+             for p in usable]
+    slots = [vpn.Slot(index + 1, p.title, p) for index, p in enumerate(fresh)]
+    uid = "4242424242"
+    foreign = f"oldbot_{uid}"
+    meta: dict[str, Any] = {}
+
+    async def meta_get(key, default=None):
+        return json.loads(json.dumps(meta.get(key, default)))
+
+    async def meta_set(key, value):
+        meta[key] = json.loads(json.dumps(value))
+
+    import radar
+    import types
+
+    storage = types.ModuleType("radar.storage")
+    storage.meta_get = meta_get
+    storage.meta_set = meta_set
+    storage.users = lambda: {uid: {"role": "user"}, "555": {"role": "user"}}
+
+    # Записи «другого бота»: заведены прямо в панелях, не через radar/vpn.py.
+    for panel in fresh:
+        async with panel:
+            if await panel.get_user(foreign) is None:
+                await panel.create_user(foreign, int(time.time()) + 10 * vpn.DAY, 0)
+
+    features.set_local("vpn", True)
+    with mock.patch.object(vpn, "SLOTS", len(slots)), \
+            mock.patch.object(vpn, "slots", lambda: slots), \
+            mock.patch.object(vpn, "_setting", lambda key: ""), \
+            mock.patch.dict(sys.modules, {"radar.storage": storage}), \
+            mock.patch.object(radar, "storage", storage, create=True):
+        try:
+            await vpn.matches("admin")
+            return False, "администратор увидел список — так быть не должно"
+        except vpnpanels.PanelError:
+            pass
+        found, errors = await vpn.matches("superadmin")
+        if errors:
+            return False, f"список не прочитан: {errors}"
+        mine = {match.key: match for match in found if match.uid == uid}
+        missing = [slot.client.title for slot in slots if slot.key not in mine]
+        if missing:
+            return False, f"совпадение не найдено на: {missing}"
+        for match in mine.values():
+            await vpn.bind(uid, match.key, match.ref, "1", "superadmin")
+        again, _ = await vpn.matches("superadmin")
+        if any(match.uid == uid for match in again):
+            return False, "привязанные записи снова предложены"
+        statuses = await vpn.statuses(uid)
+        wrong = {k: v for k, v in statuses.items()
+                 if not isinstance(v, vpnpanels.Account) or v.name not in (foreign, "")}
+        if wrong:
+            return False, f"состояние не по привязанной записи: {wrong}"
+        before = {k: v.expire for k, v in statuses.items()}
+        await vpn.issue(uid, [s.key for s in slots], "1", "superadmin")
+        for slot in slots:
+            if slot.client.supports_expiry:
+                await vpn.extend(uid, slot.key, 5, "superadmin")
+        after = await vpn.statuses(uid)
+        for slot in slots:
+            async with slot.client:
+                if await slot.client.get_user(vpnpanels.account_name(uid)) is not None:
+                    return False, f"{slot.client.title}: заведена вторая запись"
+            if slot.client.supports_expiry and after[slot.key].expire <= before[slot.key]:
+                return False, f"{slot.client.title}: продление не дошло до чужой записи"
+        await vpn.forget(uid, slots[0].key, "superadmin")
+        async with slots[0].client:
+            kept = await slots[0].client.get_user(foreign)
+        if kept is None or not kept.enabled:
+            return False, "снятие привязки тронуло запись в панели"
+    return True, (f"{len(slots)} панелей: чужие записи найдены по Telegram-id, привязаны, "
+                  f"продлены без второй записи, привязка снята без изменений в панели")
+
+
 def cryptopay_app(state: dict[str, Any]) -> web.Application:
     """Crypto Pay API: GET с параметрами, токен в Crypto-Pay-API-Token.
 
@@ -789,6 +901,7 @@ async def main() -> int:
         try:
             results = await run_panels(panels)
             issue_ok, issue_note = await run_issue(panels)
+            adopt_ok, adopt_note = await run_adopt(panels)
             sale_ok, sale_note = await run_sale(panels)
         finally:
             for runner in runners:
@@ -808,6 +921,8 @@ async def main() -> int:
     failures += 0 if issue_ok else 1
     print(f"  {'✅' if sale_ok else '❌'} radar/vpnsales.py: {sale_note}")
     failures += 0 if sale_ok else 1
+    print(f"  {'✅' if adopt_ok else '❌'} привязка клиентов панелей: {adopt_note}")
+    failures += 0 if adopt_ok else 1
     print("\nЭто проверка по эмуляторам, написанным по исходникам панелей, "
           "а не по настоящим панелям.")
     return 1 if failures else 0

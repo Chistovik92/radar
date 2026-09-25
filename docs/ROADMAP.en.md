@@ -1504,6 +1504,32 @@ the price of being wrong here is not a commission but the bot.
    author runs. Terms of use and the right to refuse service are part of
    the section, not a footnote.
 
+### 7. Binding clients created outside the bot
+
+⚠️ Done in 5.8 at the author's request: join the account with the data
+already in the panels. Before 5.8 the bot knew only the records it had
+created itself (`radar_<id>`): clients created by hand or by another bot
+did not belong to any account — the person did not see them, and issuing
+created a second record next to the first.
+
+* All ten panel kinds return their client list (`list_clients`); the list
+  formats were checked against the panels' source code.
+* "🔗 Panel clients" for the superadmin searches every panel for records
+  holding the Telegram id of a person known to the bot: the panel's own
+  field (`tgId` in 3x-ui and x-ui, `telegramId` in Remnawave,
+  `telegram_id` in Hiddify) or the name, email or comment. The number is
+  matched as a whole; anything shorter than six digits is not matched.
+* Binding happens only after confirmation and changes nothing in the
+  panel: the key, expiry and traffic stay as they were. From then on
+  extending, disabling and paid plans work with that record instead of
+  creating a new one. The superadmin binds other clients by hand from the
+  person's card; "↩️" removes the binding without touching the panel.
+* Hiddify and Outline find foreign records not by name but by uuid and
+  key id — and those are what is stored.
+
+`tools/vpn_http_check.py` walks this path on emulators of every panel.
+Not verified against live panels.
+
 ---
 
 ## 5.5 — Discord ⚠️ code written

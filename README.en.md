@@ -1,4 +1,4 @@
-# Radar v5.7.1
+# Radar v5.8
 
 [Русская версия](README.md)
 
@@ -401,6 +401,16 @@ Links are not stored in the database; neither they, nor UUIDs, nor tokens
 ever reach the logs. No payments. Setup is in the "VPN" section of
 [docs/API_SETUP.md](docs/API_SETUP.md).
 
+**Clients created outside the bot (since 5.8).** "🔗 Panel clients"
+searches every panel for records holding the Telegram id of a person known
+to the bot — in the panel's own field (`tgId`, `telegramId`,
+`telegram_id`), the name, email or comment — and offers to bind them to
+the account. Binding changes nothing in the panel: the key, expiry and
+traffic stay the same, and extending and paid plans then work with that
+record instead of creating a second one. The superadmin binds other
+clients by hand from the person's card; "↩️" removes the binding without
+touching the panel.
+
 ### Selling by plan (since 5.0.2) ⚠️ not verified with real payments
 
 Feature flag `vpn_sales`, off by default — only the superadmin turns
@@ -703,11 +713,11 @@ token is set with `MAX_BOT_TOKEN`, the address with `MAX_API_URL`.
 only to verified Russian legal entities, and without a token neither the
 address, nor the field names, nor the response shapes can be checked.
 
-What the bot can do in MAX right now: `/start`, `/help`, `/status` and an
-honest answer to everything else. **No alerts are sent from there:**
-locations, roles and the subscription are tied to the Telegram account, and
-without a confirmed address no alert is sent. The full core is not ported
-to MAX until the platform has been checked by at least one live request.
+Since 5.7 MAX is a full sign-in to the shared account: an address is set
+with `/address` or a geolocation (saved after confirmation), alerts for it
+arrive here, and `/link` links MAX with Telegram, VK and Discord — see
+"One account in every network" below. Categories, quiet hours, weather and
+subscriptions are configured in the Telegram bot.
 
 ### Discord (since 5.5) ⚠️ not verified in operation
 
