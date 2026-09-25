@@ -137,8 +137,46 @@ def version_at(sha: str, root: Path = ROOT) -> str:
     return ""
 
 
-def pending(tags: list[str], root: Path = ROOT, depth: int = 300) -> list[tuple[str, str]]:
-    """Версии в истории HEAD, которых ещё нет среди тегов: [(версия, коммит)].
+def released_tags() -> list[str] | None:
+    """Теги, у которых уже есть релиз на GitHub. None — узнать нечем.
+
+    Сверяться нужно с релизами, а не с тегами: тег без релиза (например,
+    поставленный автором руками) установщик не видит, и такой версии
+    для него нет.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if not os.environ.get("GH_TOKEN") or shutil.which("gh") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["gh", "release", "list", "--limit", "200", "--json", "tagName",
+             "--jq", ".[].tagName"],
+            cwd=ROOT, check=True, capture_output=True, text=True)
+    except Exception:  # noqa: BLE001
+        return None
+    return result.stdout.split()
+
+
+def workflows_differ(sha: str, root: Path = ROOT) -> bool:
+    """Отличаются ли .github/workflows на коммите от HEAD.
+
+    Встроенный GITHUB_TOKEN не может создать ссылку (тег) на такой коммит:
+    для GitHub это «изменение workflow», а права `workflows` у токена нет.
+    Именно так в 5.6 упал выпуск v5.5 — HTTP 403 «Resource not accessible
+    by integration».
+    """
+    import subprocess
+
+    return subprocess.run(["git", "diff", "--quiet", sha, "HEAD", "--", ".github/workflows"],
+                          cwd=root).returncode != 0
+
+
+def pending(tags: list[str], root: Path = ROOT, depth: int = 300,
+            released: list[str] | None = None) -> list[tuple[str, str]]:
+    """Версии в истории HEAD без релиза: [(версия, коммит)].
 
     Нужна затем, чтобы два выпуска, слитые одним PR, получили по релизу
     каждый — и каждый на СВОЁМ коде. Коммит версии — самый новый коммит
@@ -146,14 +184,26 @@ def pending(tags: list[str], root: Path = ROOT, depth: int = 300) -> list[tuple[
     предыдущей — её собственный коммит внутри ветки. Берутся только версии
     больше всех выпущенных: выпуск назад не должен стать «последним».
     Порядок — по возрастанию, последний в списке и есть текущий.
+
+    `tags` — существующие теги, `released` — теги с релизом (если известны;
+    иначе выпущенными считаются все теги). Версия с тегом, но без релиза,
+    выпускается на своём теге. Версия без тега на коммите, где workflow
+    отличается от HEAD, пропускается с подсказкой: тег туда токен workflow
+    поставить не может (см. `workflows_differ`), а автор может — одной
+    командой.
     """
-    known = set()
-    for tag in tags:
-        try:
-            known.add(parse(tag))
-        except ValueError:
-            continue
-    ceiling = max(known) if known else ()
+    def numbers(items: list[str]) -> set[tuple[int, ...]]:
+        found = set()
+        for item in items:
+            try:
+                found.add(parse(item))
+            except ValueError:
+                continue
+        return found
+
+    done = numbers(released if released is not None else tags)
+    tagged = {tag.lstrip("v"): tag for tag in tags}
+    ceiling = max(done) if done else ()
     found: dict[str, str] = {}
     for sha in _git("rev-list", "--topo-order", f"--max-count={depth}", "HEAD",
                     root=root).split():
@@ -164,10 +214,22 @@ def pending(tags: list[str], root: Path = ROOT, depth: int = 300) -> list[tuple[
             number = parse(version)
         except ValueError:
             continue
-        if number in known or number <= ceiling:
+        if number in done or number <= ceiling:
             continue
         found[version] = sha
-    return sorted(found.items(), key=lambda item: parse(item[0]))
+
+    result = []
+    for version, sha in sorted(found.items(), key=lambda item: parse(item[0])):
+        if version in tagged:
+            sha = _git("rev-list", "-n", "1", tagged[version], root=root).strip() or sha
+        elif workflows_differ(sha, root):
+            print(f"v{version}: тег на {sha[:7]} встроенный токен поставить не может — "
+                  f"workflow на этом коммите отличается от main. Один раз вручную: "
+                  f"git tag v{version} {sha} && git push origin v{version} — "
+                  f"релиз выйдет при следующем запуске Release.", file=sys.stderr)
+            continue
+        result.append((version, sha))
+    return result
 
 
 def main(argv: list[str]) -> int:
@@ -183,7 +245,7 @@ def main(argv: list[str]) -> int:
     elif command == "body":
         sys.stdout.write(notes(rest[0] if rest else version)[1])
     elif command == "pending":
-        for item, sha in pending(rest):
+        for item, sha in pending(rest, released=released_tags()):
             print(item, sha)
     elif command == "newer":
         if not is_newer(version, rest):

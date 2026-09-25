@@ -115,6 +115,33 @@ class Pending(unittest.TestCase):
                          [("5.6", self.shas["5.6"])])
         self.assertEqual(release_notes.pending(["v5.6"], root=self.tmp), [])
 
+    def _change_workflow_between_versions(self):
+        """5.5 со старым workflow, 5.6 — с новым, как в реальном выпуске."""
+        self.run_git("checkout", "-q", self.shas["5.0.2"])
+        self.run_git("checkout", "-q", "-b", "wf")
+        for version, content in (("5.5", "old"), ("5.6", "new")):
+            (self.tmp / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+            (self.tmp / ".github" / "workflows" / "ci.yml").write_text(content, encoding="utf-8")
+            (self.tmp / "radar" / "__init__.py").write_text(
+                f'__version__ = "{version}"\n', encoding="utf-8")
+            self.run_git("add", "-A")
+            self.run_git("commit", "-q", "-m", version)
+            self.shas[version] = self.run_git("rev-parse", "HEAD").strip()
+
+    def test_older_commit_with_other_workflow_is_skipped(self):
+        """GITHUB_TOKEN не ставит тег туда, где workflow отличается от HEAD."""
+        self._change_workflow_between_versions()
+        result = release_notes.pending(["v5.0.2"], root=self.tmp)
+        self.assertEqual(result, [("5.6", self.shas["5.6"])])
+
+    def test_tag_without_release_is_released(self):
+        """Тег поставлен руками, релиза нет — выпускается на этом теге."""
+        self._change_workflow_between_versions()
+        self.run_git("tag", "v5.5", self.shas["5.5"])
+        result = release_notes.pending(["v5.0.2", "v5.5"], root=self.tmp,
+                                       released=["v5.0.2"])
+        self.assertEqual(result, [("5.5", self.shas["5.5"]), ("5.6", self.shas["5.6"])])
+
     def test_title_for_older_version(self):
         (self.tmp / "docs" / "releases").mkdir(parents=True)
         (self.tmp / "docs" / "releases" / "5.5.md").write_text("# v5.5 — старый\n\nТекст\n",
