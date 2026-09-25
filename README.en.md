@@ -1,4 +1,4 @@
-# Radar v5.0.1
+# Radar v5.0.2
 
 [Русская версия](README.md)
 
@@ -400,6 +400,36 @@ touches the panels.
 Links are not stored in the database; neither they, nor UUIDs, nor tokens
 ever reach the logs. No payments. Setup is in the "VPN" section of
 [docs/API_SETUP.md](docs/API_SETUP.md).
+
+### Selling by plan (since 5.0.2) ⚠️ not verified with real payments
+
+Feature flag `vpn_sales`, off by default — only the superadmin turns
+sales on. Plans are a `VPN_PLANS` line in the keys section:
+`days:trafficGB:devices:price` separated by semicolons, e.g.
+`30:0:3:199; 90:0:3:499` (0 means no limit). Currency is `VPN_CURRENCY`,
+RUB by default; the panels sold on are `VPN_PLAN_SLOTS`.
+
+Payment goes through a swappable provider (`PAY_PROVIDER`):
+
+- **manual** — the bot takes no money: the person pays as described in
+  `PAY_MANUAL_NOTE`, and the superadmin confirms the payment with a
+  button. Works without registering anywhere;
+- **cryptopay** — Crypto Pay (@CryptoBot): an invoice inside Telegram,
+  paid in crypto; the bot checks the invoice state when the person taps
+  "I've paid". No merchant registration needed.
+
+A payment extends **the same** key and adds the days to what is left.
+Tapping "I've paid" twice never grants access twice. If a panel does not
+respond, the order stays paid and the superadmin gets a "Retry" button.
+The device limit is enforced on 3x-ui, x-ui (`limitIp`) and Remnawave
+(`hwidDeviceLimit`); the other panels have none.
+
+The code does not check Crypto Pay's fees, limits or withdrawal terms —
+look them up in @CryptoBot itself before turning sales on. Telegram Stars
+are not used for selling VPN: they are meant for digital goods inside
+Telegram. Income is taxable whatever the channel — that is the author's
+decision, not the code's. Threat alerts are unaffected: they are always
+free.
 
 **How to verify on your server:**
 

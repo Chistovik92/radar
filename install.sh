@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.0.1 — автономный установщик.
+# Система «Радар» v5.0.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.0.1"
+VERSION="5.0.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2796,7 +2796,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=131
+FILE_COUNT=133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3240,6 +3240,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.0.2", [
+        "💳 <b>Продажа VPN по тарифам.</b> Тарифы задаются в разделе "
+        "ключей (VPN_PLANS), оплата — через Crypto Pay или "
+        "с подтверждением суперадминистратора. Возможность «Продажа VPN», "
+        "по умолчанию выключена.",
+        "🔁 <b>Оплата продлевает тот же ключ</b> и прибавляет дни "
+        "к оставшимся. Двойное «Я оплатил» не выдаёт доступ дважды.",
+        "🛡 Бесплатно доступ по-прежнему выдаёт только суперадминистратор. "
+        "Оповещения об угрозах бесплатны всегда.",
+    ]),
     ("5.0.1", [
         "🔐 <b>Несколько VPN-панелей сразу.</b> До шести панелей разных "
         "видов: 3x-ui, x-ui, s-ui, Marzban, PasarGuard, Marzneshin, "
@@ -4958,7 +4968,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.0.1"
+__version__ = "5.0.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7103,6 +7113,12 @@ FLAGS: tuple[Flag, ...] = (
          "Outline, wg-easy. Только по решению суперадминистратора, без "
          "платежей. Панели задаются слотами в разделе ключей (VPN 1 … VPN 6).",
          group="VPN", since="5.0", default=False),
+    Flag("vpn_sales", "Продажа VPN",
+         "Покупка доступа к VPN по тарифам (VPN_PLANS): оплата через "
+         "Crypto Pay или с подтверждением суперадминистратора. Продление "
+         "возвращает тот же ключ. Оповещения этим не затрагиваются — "
+         "они бесплатны всегда.",
+         group="VPN", since="5.0.2", default=False),
 
     # --- администрирование ---
     Flag("web_panel", "Веб-панель",
@@ -10139,6 +10155,36 @@ SETTINGS: tuple[Setting, ...] = (
             "VPN", secret=False),
     Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
             "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
+
+    # --- продажа VPN и оплата (с 5.0.2) ---
+    Setting("VPN_PLANS", "VPN: тарифы",
+            "«дни:трафикГБ:устройства:цена» через точку с запятой, например "
+            "30:0:3:199; 90:0:3:499. Трафик и устройства 0 — без предела.",
+            "Продажа VPN", secret=False),
+    Setting("VPN_CURRENCY", "VPN: валюта цен",
+            "Код валюты, по умолчанию RUB. Crypto Pay пересчитает в криптовалюту сам.",
+            "Продажа VPN", secret=False),
+    Setting("VPN_PLAN_SLOTS", "VPN: панели для продажи",
+            "Номера слотов через запятую, например 1,2. Пусто — все настроенные.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_PROVIDER", "Оплата: провайдер",
+            "manual — оплату подтверждает суперадминистратор кнопкой; "
+            "cryptopay — Crypto Pay (@CryptoBot). Пусто — manual.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_MANUAL_NOTE", "Оплата: как платить (вручную)",
+            "Текст для покупателя при ручном подтверждении: куда и как "
+            "перевести оплату. Показывается под заказом.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_CRYPTOPAY_TOKEN", "Crypto Pay: токен",
+            "Из @CryptoBot → Crypto Pay → Create App. Комиссию и условия "
+            "вывода проверьте там же до включения продаж.",
+            "Продажа VPN", where="@CryptoBot → Crypto Pay"),
+    Setting("PAY_CRYPTOPAY_TESTNET", "Crypto Pay: тестовая сеть",
+            "1 — счета в тестовой сети (@CryptoTestnetBot), деньги ненастоящие.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_CRYPTOPAY_ASSETS", "Crypto Pay: принимаемые монеты",
+            "Через запятую, например USDT,TON. Пусто — все, что разрешит Crypto Pay.",
+            "Продажа VPN", secret=False),
 
     # --- защита ---
     Setting("SAFE_BROWSING_API_KEY", "Google Safe Browsing",
@@ -13709,6 +13755,18 @@ EN_STRINGS: dict[str, str] = {
     "vpn.traffic": "Traffic: {used} of {limit}",
     "vpn.traffic_free": "Traffic: {used}, unlimited",
     "vpn.disabled": "⛔ Access is disabled",
+    "vpn.buy_button": "💳 Buy access",
+    "vpn.plans_title": "💳 <b>VPN plans</b>\n\nRenewal keeps the same key "
+                       "and adds the days to what you have left.",
+    "vpn.order_title": "🧾 <b>Order</b> <code>{id}</code>",
+    "vpn.order_pay": "Pay the invoice with the button below, then tap \"I've paid\".",
+    "vpn.pay_button": "💳 Pay",
+    "vpn.paid_button": "✅ I've paid",
+    "vpn.order_manual": "Payment is confirmed by an administrator. Access will "
+                        "arrive here right after confirmation.",
+    "vpn.cancel_order": "✖️ Cancel order",
+    "vpn.order_done": "✅ Payment received, access is open.",
+    "vpn.not_paid": "The payment hasn't arrived yet. Try again in a minute.",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 
@@ -33647,6 +33705,9 @@ class Panel:
     # Что панель умеет. Раздел не предлагает того, чего нет.
     supports_expiry = True
     supports_traffic = True
+    # Предел устройств: у 3x-ui это limitIp, у Remnawave — hwidDeviceLimit;
+    # у остальных панелей его нет, и тариф там его не обещает.
+    supports_devices = False
     # Что получает человек: подписку, готовый ключ или файл настроек.
     link_kind = "subscription"
 
@@ -33688,6 +33749,9 @@ class Panel:
     async def check(self) -> str:
         """Отвечает ли панель и принимает ли вход. Строка — для человека."""
         raise NotImplementedError
+
+    async def set_devices(self, name: str, devices: int) -> None:
+        raise PanelError(f"{self.title} не ограничивает число устройств.")
 
     def problems(self) -> list[str]:
         """Чего не хватает в настройках. Пусто — можно обращаться."""
@@ -33841,6 +33905,7 @@ class XuiPanel(Panel):
 
     kind = "3xui"
     title = "3x-ui"
+    supports_devices = True
     api_root = "panel/api"
     tokens_allowed = True
 
@@ -34003,6 +34068,11 @@ class XuiPanel(Panel):
 
     async def set_traffic(self, name: str, traffic: int) -> None:
         await self._change(name, {"totalGB": int(traffic)})
+
+    async def set_devices(self, name: str, devices: int) -> None:
+        # limitIp — число одновременных адресов; ближайшее к «устройствам»,
+        # что есть у 3x-ui и x-ui.
+        await self._change(name, {"limitIp": int(devices)})
 
     async def disable(self, name: str) -> None:
         await self._change(name, {"enable": False})
@@ -34500,6 +34570,7 @@ class RemnawavePanel(Panel):
 
     kind = "remnawave"
     title = "Remnawave"
+    supports_devices = True
 
     def problems(self) -> list[str]:
         missing = [] if self.url else ["адрес"]
@@ -34567,6 +34638,9 @@ class RemnawavePanel(Panel):
 
     async def set_traffic(self, name: str, traffic: int) -> None:
         await self._patch(name, {"trafficLimitBytes": int(traffic)})
+
+    async def set_devices(self, name: str, devices: int) -> None:
+        await self._patch(name, {"hwidDeviceLimit": int(devices) or None})
 
     async def disable(self, name: str) -> None:
         await self._call("POST", f"api/users/{await self._ref(name)}/actions/disable")
@@ -35298,9 +35372,42 @@ async def issue(uid: str | int, keys: list[str], by: str | int, role: str | None
     if not targets:
         raise PanelError("Не выбрано ни одной панели.")
 
+    return await _grant(uid, targets, by, period=(days or default_days()) * DAY,
+                        traffic=default_traffic(), renew=False)
+
+
+async def grant_paid(uid: str | int, keys: list[str], order_id: str, *,
+                     days: int, traffic: int, devices: int = 0) -> dict[str, Any]:
+    """Выдача по оплаченному заказу — без решения суперадминистратора.
+
+    Зовёт её только `radar/vpnsales.py` и только для заказа, оплату
+    которого подтвердил провайдер или суперадминистратор: решение
+    о продажах он принял, включив их и задав тарифы. Бесплатного
+    доступа этот путь не даёт — только оплаченный срок.
+
+    В отличие от ручной выдачи срок **прибавляется** к оставшемуся:
+    купивший продление не теряет дни, которые у него ещё были.
+    """
+    ok, reason = ready()
+    if not ok:
+        raise PanelError(reason)
+    targets = _pick(keys)
+    if not targets:
+        raise PanelError("Панели тарифа не настроены.")
+    return await _grant(uid, targets, f"order:{order_id}", period=days * DAY,
+                        traffic=traffic, devices=devices, renew=True)
+
+
+async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: int,
+                 traffic: int, devices: int = 0, renew: bool) -> dict[str, Any]:
+    """Общая часть выдачи: завести или вернуть прежнюю запись на каждой панели.
+
+    `renew=False` — ручная выдача: истёкший срок начинается заново,
+    действующий не трогается. `renew=True` — оплата: срок прибавляется
+    к большему из «сейчас» и прежнего окончания, предел трафика ставится
+    по тарифу.
+    """
     name = account_name(uid)
-    period = (days or default_days()) * DAY
-    traffic = default_traffic()
 
     async def one(target: Slot) -> Account:
         client = target.client
@@ -35308,11 +35415,23 @@ async def issue(uid: str | int, keys: list[str], by: str | int, role: str | None
         expire = now + period if client.supports_expiry else 0
         account = await client.get_user(name)
         if account is None:
-            return await client.create_user(name, expire, traffic)
-        if client.supports_expiry and account.expire and account.expire < now:
-            await client.set_expiry(name, expire)
-        if not account.enabled:
-            await client.enable(name)
+            created = await client.create_user(name, expire, traffic)
+            if not (devices and client.supports_devices):
+                return created
+            await client.set_devices(name, devices)
+            return await client.get_user(name) or created
+        else:
+            if client.supports_expiry and account.expire:
+                if renew:
+                    await client.set_expiry(name, max(now, account.expire) + period)
+                elif account.expire < now:
+                    await client.set_expiry(name, expire)
+            if renew and traffic and client.supports_traffic:
+                await client.set_traffic(name, traffic)
+            if not account.enabled:
+                await client.enable(name)
+        if devices and client.supports_devices:
+            await client.set_devices(name, devices)
         return await client.get_user(name) or account
 
     results = await _each(targets, one)
@@ -35333,7 +35452,7 @@ async def issue(uid: str | int, keys: list[str], by: str | int, role: str | None
 
     await _edit(uid, change)
     done = [key for key, result in results.items() if isinstance(result, Account)]
-    log.info("VPN %s: выдано на слотах %s (решение %s)", uid, done or "—", by)
+    log.info("VPN %s: выдано на слотах %s (%s)", uid, done or "—", by)
     return results
 
 
@@ -35558,8 +35677,551 @@ def describe(account: Account, lang: str = "ru") -> str:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
 RADAR_FILE_99
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
+cat > "radar/payments.py" <<'RADAR_FILE_100'
+"""Платёжный слой со сменным провайдером (с 5.0.2).
+
+Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
+Интерфейс один — выставить счёт и узнать его состояние, — а провайдер
+выбирается настройкой `PAY_PROVIDER` и меняется, не трогая продажи.
+
+Провайдеры:
+
+* **manual** — денег бот не принимает вовсе. Человек платит так, как
+  договорился с суперадминистратором, а тот подтверждает оплату кнопкой.
+  Работает без регистрации где-либо и остаётся запасным путём всегда;
+* **cryptopay** — Crypto Pay API (@CryptoBot): счёт создаётся запросом,
+  человек платит внутри Telegram, бот узнаёт об оплате, спросив состояние
+  счёта. Регистрации продавца не требует — ровно поэтому он первый
+  в дорожной карте. Формат сверен с исходниками клиента `aiocryptopay`
+  (официальная документация help.crypt.bot из среды разработки
+  недоступна): `GET /api/createInvoice` и `/api/getInvoices` с заголовком
+  `Crypto-Pay-API-Token`, ответ `{"ok": true, "result": …}`, ссылка
+  на оплату — `bot_invoice_url`, состояния счёта — active, paid, expired.
+
+⚠️ **Чего код не проверяет и проверить не может**: комиссию Crypto Pay,
+лимиты и условия вывода. Они менялись, и вписывать их по памяти карта
+запрещает; смотреть — в самом @CryptoBot до включения продаж.
+
+Webhook Crypto Pay (`verify_signature`) подготовлен, но не подключён:
+бот работает опросом Telegram, а своего входящего адреса у него нет.
+Оплата подтверждается кнопкой «Я оплатил» — бот спрашивает состояние
+счёта у провайдера сам. Токен провайдера в журнал не пишется.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import logging
+import secrets as pysecrets
+from dataclasses import dataclass
+from typing import Any
+
+log = logging.getLogger("radar.payments")
+
+TIMEOUT = 20
+
+ACTIVE = "active"
+PAID = "paid"
+EXPIRED = "expired"
+
+MAINNET = "https://pay.crypt.bot"
+TESTNET = "https://testnet-pay.crypt.bot"
+
+
+class PaymentError(Exception):
+    """Отказ провайдера, понятный человеку. Токенов в тексте нет."""
+
+
+@dataclass(frozen=True)
+class Invoice:
+    """Счёт у провайдера."""
+
+    id: str
+    url: str            # куда идти платить; пусто у ручного провайдера
+    amount: float
+    currency: str
+    status: str = ACTIVE
+
+
+class Provider:
+    """Общий интерфейс провайдера."""
+
+    kind = ""
+    title = ""
+    # Подтверждает ли оплату человек (суперадминистратор), а не провайдер.
+    manual = False
+
+    def problems(self) -> list[str]:
+        return []
+
+    async def create_invoice(self, amount: float, currency: str, description: str,
+                             payload: str, expires_in: int = 3600) -> Invoice:
+        raise NotImplementedError
+
+    async def status(self, invoice_id: str) -> str:
+        raise NotImplementedError
+
+
+class ManualProvider(Provider):
+    """Оплату подтверждает суперадминистратор. Счёт — только номер заказа."""
+
+    kind = "manual"
+    title = "подтверждение суперадминистратором"
+    manual = True
+
+    async def create_invoice(self, amount: float, currency: str, description: str,
+                             payload: str, expires_in: int = 3600) -> Invoice:
+        return Invoice(pysecrets.token_hex(6), "", amount, currency)
+
+    async def status(self, invoice_id: str) -> str:
+        # Состояние ручного счёта знает только заказ: его меняет кнопка
+        # суперадминистратора, а не провайдер.
+        return ACTIVE
+
+
+class CryptoPayProvider(Provider):
+    """Crypto Pay API (@CryptoBot, он же @send)."""
+
+    kind = "cryptopay"
+    title = "Crypto Pay (@CryptoBot)"
+
+    def __init__(self, token: str, *, testnet: bool = False,
+                 assets: str = "") -> None:
+        self.token = (token or "").strip()
+        self.base = TESTNET if testnet else MAINNET
+        self.assets = ",".join(item.strip().upper() for item in (assets or "").split(",")
+                               if item.strip())
+
+    def problems(self) -> list[str]:
+        return [] if self.token else ["токен Crypto Pay (PAY_CRYPTOPAY_TOKEN)"]
+
+    async def _call(self, method: str, params: dict[str, Any]) -> Any:
+        import aiohttp
+
+        if self.problems():
+            raise PaymentError("Crypto Pay не настроен: " + ", ".join(self.problems()) + ".")
+        clean = {key: value for key, value in params.items() if value not in (None, "")}
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+            ) as session:
+                async with session.get(f"{self.base}/api/{method}", params=clean,
+                                       headers={"Crypto-Pay-API-Token": self.token}) as response:
+                    text = await response.text()
+        except aiohttp.ClientError as exc:
+            log.warning("Crypto Pay недоступен: %s", type(exc).__name__)
+            raise PaymentError("Crypto Pay не отвечает — попробуйте позже.")
+        return parse_response(text)
+
+    async def create_invoice(self, amount: float, currency: str, description: str,
+                             payload: str, expires_in: int = 3600) -> Invoice:
+        result = await self._call("createInvoice", {
+            "currency_type": "fiat",
+            "fiat": currency.upper(),
+            "amount": f"{float(amount):.2f}",
+            "accepted_assets": self.assets,
+            "description": description[:1024],
+            "payload": payload[:4096],
+            "expires_in": int(expires_in),
+        })
+        return invoice_from(result, currency)
+
+    async def status(self, invoice_id: str) -> str:
+        result = await self._call("getInvoices", {"invoice_ids": str(invoice_id)})
+        items = result.get("items") if isinstance(result, dict) else result
+        for item in items or []:
+            if str(item.get("invoice_id")) == str(invoice_id):
+                return str(item.get("status") or ACTIVE)
+        raise PaymentError("Crypto Pay не нашёл счёт.")
+
+
+def parse_response(text: str) -> Any:
+    """Ответ Crypto Pay: {"ok": true, "result": …} или {"ok": false, "error": …}."""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        raise PaymentError("Crypto Pay ответил не JSON.")
+    if not isinstance(payload, dict):
+        raise PaymentError("Crypto Pay ответил непонятно.")
+    if not payload.get("ok"):
+        error = payload.get("error") or {}
+        name = error.get("name") if isinstance(error, dict) else str(error)
+        raise PaymentError(f"Crypto Pay отказал: {name or 'без пояснения'}.")
+    return payload.get("result")
+
+
+def invoice_from(result: Any, currency: str) -> Invoice:
+    if not isinstance(result, dict) or not result.get("invoice_id"):
+        raise PaymentError("Crypto Pay не вернул счёт.")
+    url = (result.get("bot_invoice_url") or result.get("mini_app_invoice_url")
+           or result.get("pay_url") or "")
+    return Invoice(str(result["invoice_id"]), str(url),
+                   float(result.get("amount") or 0), currency,
+                   str(result.get("status") or ACTIVE))
+
+
+def verify_signature(token: str, body: bytes, signature: str) -> bool:
+    """Подпись webhook Crypto Pay: HMAC-SHA256 тела, ключ — SHA-256 токена."""
+    key = hashlib.sha256((token or "").encode()).digest()
+    expected = hmac.new(key, body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, (signature or "").strip())
+
+
+def _setting(key: str) -> str:
+    from . import secrets
+
+    return str(secrets.get(key) or "").strip()
+
+
+def provider() -> Provider:
+    """Провайдер из настроек. Незнакомое или пустое имя — ручной."""
+    kind = _setting("PAY_PROVIDER").lower()
+    if kind == "cryptopay":
+        return CryptoPayProvider(_setting("PAY_CRYPTOPAY_TOKEN"),
+                                 testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
+                                 assets=_setting("PAY_CRYPTOPAY_ASSETS"))
+    return ManualProvider()
+RADAR_FILE_100
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
+cat > "radar/vpnsales.py" <<'RADAR_FILE_101'
+"""Продажа VPN-доступа по тарифам (с 5.0.2).
+
+Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
+цены задаёт суперадминистратор строкой `VPN_PLANS` в разделе ключей,
+как уже задаются цены подписки на подборки. Оплата открывает доступ,
+окончание срока его отключает силами панели, продление возвращает
+**тот же** ключ и прибавляет дни к оставшимся.
+
+Кто решает. Бесплатно доступ по-прежнему выдаёт только суперадминистратор
+(`radar/vpn.py`). Продажи — его же решение, принятое заранее: они
+работают только при включённой возможности `vpn_sales` и заданных
+тарифах. С ручным провайдером каждую оплату подтверждает он сам.
+
+Заказ проходит состояния:
+
+    new → paid → done
+               ↘ failed   (оплачено, но выдать не удалось — повтор кнопкой)
+    new → expired | cancelled
+
+Переход `new → paid` делается под замком и один раз: два нажатия
+«Я оплатил» подряд не выдадут доступ дважды и не продлят его на два
+срока. Ссылки и токены в заказ не пишутся.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import secrets as pysecrets
+import time
+from dataclasses import asdict, dataclass
+from typing import Any
+
+from . import features, payments, vpn
+from .vpnpanels import GB, Account, PanelError
+
+log = logging.getLogger("radar.vpnsales")
+
+META_KEY = "vpn_orders"
+DEFAULT_CURRENCY = "RUB"
+# Неоплаченный счёт живёт сутки: дольше держать цену, которую
+# суперадминистратор мог уже поменять, незачем.
+ORDER_TTL = 86400
+
+NEW = "new"
+PAID = "paid"
+DONE = "done"
+FAILED = "failed"
+EXPIRED = "expired"
+CANCELLED = "cancelled"
+
+_lock = asyncio.Lock()
+
+_PLAN_RE = re.compile(r"^\s*(\d+)\s*:\s*(\d+)\s*:\s*(\d+)\s*:\s*(\d+(?:[.,]\d{1,2})?)\s*$")
+
+
+class SaleError(Exception):
+    """Отказ продажи, понятный человеку."""
+
+
+@dataclass(frozen=True)
+class Plan:
+    """Тариф: срок, трафик (0 — без предела), устройства (0 — без предела), цена."""
+
+    days: int
+    traffic_gb: int
+    devices: int
+    price: float
+
+    def title(self, currency: str) -> str:
+        parts = [f"{self.days} дн."]
+        parts.append(f"{self.traffic_gb} ГБ" if self.traffic_gb else "без предела трафика")
+        if self.devices:
+            parts.append(f"до {self.devices} устр.")
+        return f"{', '.join(parts)} — {format_price(self.price)} {currency}"
+
+
+def format_price(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _setting(key: str) -> str:
+    from . import secrets
+
+    return str(secrets.get(key) or "").strip()
+
+
+def parse_plans(raw: str) -> list[Plan]:
+    """«дни:трафикГБ:устройства:цена» через точку с запятой.
+
+    Негодные куски пропускаются, а не роняют весь список: опечатка
+    в одном тарифе не должна снимать с продажи остальные.
+    """
+    plans = []
+    for chunk in (raw or "").split(";"):
+        match = _PLAN_RE.match(chunk)
+        if not match:
+            continue
+        days, traffic, devices = (int(match.group(n)) for n in (1, 2, 3))
+        price = float(match.group(4).replace(",", "."))
+        if days <= 0 or price <= 0:
+            continue
+        plans.append(Plan(days, traffic, devices, price))
+    return plans
+
+
+def plans() -> list[Plan]:
+    return parse_plans(_setting("VPN_PLANS"))
+
+
+def currency() -> str:
+    return (_setting("VPN_CURRENCY") or DEFAULT_CURRENCY).upper()
+
+
+def sale_slots() -> list[str]:
+    """На каких панелях продаётся доступ. Пусто в настройке — на всех."""
+    configured = [item.key for item in vpn.slots()]
+    wanted = [item.strip() for item in _setting("VPN_PLAN_SLOTS").split(",") if item.strip()]
+    return [key for key in configured if not wanted or key in wanted]
+
+
+def ready() -> tuple[bool, str]:
+    if not features.enabled("vpn_sales"):
+        return False, "Продажа VPN выключена."
+    ok, reason = vpn.ready()
+    if not ok:
+        return False, reason
+    if not plans():
+        return False, "Тарифы не заданы: VPN_PLANS в разделе ключей."
+    if not sale_slots():
+        return False, "Ни одна панель не выбрана для продажи (VPN_PLAN_SLOTS)."
+    problems = payments.provider().problems()
+    if problems:
+        return False, "Оплата не настроена: " + ", ".join(problems) + "."
+    return True, ""
+
+
+# --------------------------------------------------------------------------
+#  Заказы
+# --------------------------------------------------------------------------
+
+async def _load() -> dict[str, dict[str, Any]]:
+    from . import storage
+
+    value = await storage.meta_get(META_KEY, {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+async def _save(orders: dict[str, dict[str, Any]]) -> None:
+    from . import storage
+
+    await storage.meta_set(META_KEY, orders)
+
+
+def _expired(order: dict[str, Any], now: float | None = None) -> bool:
+    return (order.get("status") == NEW
+            and (now or time.time()) - int(order.get("created") or 0) > ORDER_TTL)
+
+
+async def order(order_id: str) -> dict[str, Any] | None:
+    found = (await _load()).get(order_id)
+    if found and _expired(found):
+        found = dict(found, status=EXPIRED)
+    return found
+
+
+async def orders_of(uid: str | int) -> list[dict[str, Any]]:
+    now = time.time()
+    rows = [dict(item, status=EXPIRED) if _expired(item, now) else item
+            for item in (await _load()).values() if item.get("uid") == str(uid)]
+    return sorted(rows, key=lambda item: -int(item.get("created") or 0))
+
+
+async def recent(limit: int = 20) -> list[dict[str, Any]]:
+    now = time.time()
+    rows = [dict(item, status=EXPIRED) if _expired(item, now) else item
+            for item in (await _load()).values()]
+    return sorted(rows, key=lambda item: -int(item.get("created") or 0))[:limit]
+
+
+async def create(uid: str | int, index: int) -> dict[str, Any]:
+    """Заказ по тарифу с номером `index` в текущем списке.
+
+    Номер тарифа приходит из кнопки, а кнопку подделать легко, — поэтому
+    тариф берётся из списка на сервере, а цена запоминается в заказе:
+    сменит суперадминистратор цены, пока человек платит, — заплаченное
+    всё равно соответствует тому, что было показано.
+    """
+    ok, reason = ready()
+    if not ok:
+        raise SaleError(reason)
+    available = plans()
+    if not 0 <= index < len(available):
+        raise SaleError("Такого тарифа нет.")
+    plan = available[index]
+    provider = payments.provider()
+    order_id = pysecrets.token_hex(5)
+    try:
+        invoice = await provider.create_invoice(
+            plan.price, currency(), f"VPN: {plan.title(currency())}", f"vpn:{order_id}",
+            expires_in=ORDER_TTL,
+        )
+    except payments.PaymentError as exc:
+        raise SaleError(str(exc))
+
+    now = int(time.time())
+    entry = {
+        "id": order_id, "uid": str(uid), "plan": asdict(plan), "slots": sale_slots(),
+        "provider": provider.kind, "invoice": invoice.id, "url": invoice.url,
+        "amount": plan.price, "currency": currency(), "status": NEW,
+        "created": now, "updated": now,
+    }
+    async with _lock:
+        stored = await _load()
+        stored[order_id] = entry
+        await _save(stored)
+    log.info("VPN: заказ %s от %s, %s %s, %s", order_id, uid, plan.price,
+             currency(), provider.kind)
+    return entry
+
+
+async def _move(order_id: str, allowed: tuple[str, ...], status: str,
+                **fields: Any) -> dict[str, Any] | None:
+    """Смена состояния, только если текущее — из `allowed`. Под замком."""
+    async with _lock:
+        stored = await _load()
+        entry = stored.get(order_id)
+        if entry is None or entry.get("status") not in allowed or (
+                NEW in allowed and entry.get("status") == NEW and _expired(entry)):
+            return None
+        entry = dict(entry, status=status, updated=int(time.time()), **fields)
+        stored[order_id] = entry
+        await _save(stored)
+        return entry
+
+
+async def _fulfil(entry: dict[str, Any]) -> dict[str, Any]:
+    """Выдача по оплаченному заказу. Вызывается ровно один раз на заказ."""
+    plan = entry["plan"]
+    try:
+        results = await vpn.grant_paid(
+            entry["uid"], entry["slots"], entry["id"], days=int(plan["days"]),
+            traffic=int(plan["traffic_gb"]) * GB, devices=int(plan["devices"]),
+        )
+        granted = [key for key, value in results.items() if isinstance(value, Account)]
+        errors = {key: str(value) for key, value in results.items()
+                  if isinstance(value, PanelError)}
+    except PanelError as exc:
+        granted, errors = [], {"*": str(exc)}
+    status = DONE if granted else FAILED
+    final = await _move(entry["id"], (PAID,), status, granted=granted, errors=errors)
+    log.info("VPN: заказ %s — %s (панели %s)", entry["id"], status, granted or "—")
+    return final or dict(entry, status=status, granted=granted, errors=errors)
+
+
+async def check(order_id: str, uid: str | int) -> dict[str, Any]:
+    """«Я оплатил»: спросить провайдера и, если оплачено, выдать доступ."""
+    entry = await order(order_id)
+    if entry is None or entry.get("uid") != str(uid):
+        raise SaleError("Заказ не найден.")
+    if entry["status"] != NEW:
+        return entry
+    provider = payments.provider()
+    if provider.kind != entry.get("provider"):
+        raise SaleError("Способ оплаты сменился — оформите заказ заново.")
+    if provider.manual:
+        return entry
+    try:
+        status = await provider.status(entry["invoice"])
+    except payments.PaymentError as exc:
+        raise SaleError(str(exc))
+    if status == payments.EXPIRED:
+        return await _move(order_id, (NEW,), EXPIRED) or dict(entry, status=EXPIRED)
+    if status != payments.PAID:
+        return entry
+    moved = await _move(order_id, (NEW,), PAID, paid=int(time.time()))
+    if moved is None:
+        # Кто-то успел раньше — второе нажатие ничего не выдаёт.
+        return await order(order_id) or entry
+    return await _fulfil(moved)
+
+
+async def confirm(order_id: str, role: str | None, by: str | int) -> dict[str, Any]:
+    """Ручное подтверждение оплаты — только суперадминистратор."""
+    if not vpn.can_decide(role):
+        raise SaleError("Подтверждать оплату может только суперадминистратор.")
+    moved = await _move(order_id, (NEW,), PAID, paid=int(time.time()), confirmed_by=str(by))
+    if moved is None:
+        entry = await order(order_id)
+        if entry is None:
+            raise SaleError("Заказ не найден.")
+        raise SaleError(f"Заказ уже не ждёт оплаты: {entry['status']}.")
+    return await _fulfil(moved)
+
+
+async def retry(order_id: str, role: str | None) -> dict[str, Any]:
+    """Повторить выдачу по оплаченному заказу, где она не удалась."""
+    if not vpn.can_decide(role):
+        raise SaleError("Повторять выдачу может только суперадминистратор.")
+    moved = await _move(order_id, (FAILED,), PAID)
+    if moved is None:
+        raise SaleError("Повторять нечего: заказ не в состоянии «не выдано».")
+    return await _fulfil(moved)
+
+
+async def cancel(order_id: str, uid: str | int, role: str | None) -> dict[str, Any]:
+    entry = await order(order_id)
+    if entry is None or (entry.get("uid") != str(uid) and not vpn.can_decide(role)):
+        raise SaleError("Заказ не найден.")
+    moved = await _move(order_id, (NEW,), CANCELLED)
+    if moved is None:
+        raise SaleError("Отменить можно только неоплаченный заказ.")
+    return moved
+
+
+STATUS_TITLES = {
+    NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
+    FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
+}
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_102'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -35675,9 +36337,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_100
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_101'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_103'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -36148,9 +36810,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_101
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_104'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -36316,9 +36978,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_102
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_105'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -36823,9 +37485,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_103
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_104'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_106'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -37326,9 +37988,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_104
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_105'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_107'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -37772,9 +38434,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_105
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_106'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_108'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -37921,9 +38583,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_106
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_109'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -38211,9 +38873,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_107
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_110'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -38460,9 +39122,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_108
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_109'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_111'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -38833,9 +39495,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_109
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_112'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -39410,9 +40072,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_110
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_113'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -39513,9 +40175,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_111
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_114'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -39605,9 +40267,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_112
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_113'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_115'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -40028,9 +40690,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_113
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_114'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_116'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -41216,9 +41878,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_114
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_115'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_117'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -41949,9 +42611,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_115
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_116'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_118'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -42475,9 +43137,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_116
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_117'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_119'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -42685,9 +43347,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_117
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_118'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_120'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -42721,7 +43383,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from .. import features, i18n, roles, storage, vpn
+from .. import features, i18n, payments, roles, storage, vpn, vpnsales
 from ..textutils import esc
 from ..tg import safe_edit, send_html
 from ..vpnpanels import Account, PanelError
@@ -42847,6 +43509,10 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
             rows.append([_button(i18n.t("vpn.ask_button", lang,
                                         "📨 Запросить доступ"), "vpn:ask")])
 
+    if ok and vpnsales.ready()[0]:
+        rows.insert(0, [_button(i18n.t("vpn.buy_button", lang, "💳 Купить доступ"),
+                                "vpn:buy")])
+
     if vpn.can_decide(role):
         waiting = len(await vpn.pending())
         rows.append([
@@ -42857,6 +43523,8 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
             _button("🔑 Выдать себе", f"vpn:rv:{uid}:0"),
             _button("🩺 Проверить панели", "vpn:check"),
         ])
+        if features.enabled("vpn_sales"):
+            rows.append([_button("🧾 Заказы", "vpn:orders")])
 
     rows.append([_button(i18n.t("menu.home", lang, "🏠 В главное меню"), "menu:main")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
@@ -43220,9 +43888,228 @@ async def check_panels(call: CallbackQuery, role: str) -> None:
     if len(lines) == 1:
         lines.append("\nНи одна панель не настроена.")
     await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=[_back()]))
-RADAR_FILE_118
+
+
+# --------------------------------------------------------------------------
+#  Продажа по тарифам (с 5.0.2)
+# --------------------------------------------------------------------------
+
+def _plan_price(entry: dict[str, Any]) -> str:
+    return f"{vpnsales.format_price(float(entry['amount']))} {esc(entry['currency'])}"
+
+
+def _order_line(entry: dict[str, Any]) -> str:
+    plan = vpnsales.Plan(**entry["plan"])
+    status = vpnsales.STATUS_TITLES.get(entry["status"], entry["status"])
+    return (f"<code>{esc(entry['id'])}</code> · {_name_of(entry['uid'])} · "
+            f"{esc(plan.title(entry['currency']))} · <i>{esc(status)}</i>")
+
+
+@router.callback_query(F.data == "vpn:buy")
+async def show_plans(call: CallbackQuery, user: dict) -> None:
+    lang = i18n.language_of(user)
+    ok, reason = vpnsales.ready()
+    if not ok:
+        await call.answer(reason, show_alert=True)
+        return
+    await call.answer()
+    unit = vpnsales.currency()
+    rows = [[_button(plan.title(unit), f"vpn:plan:{index}")]
+            for index, plan in enumerate(vpnsales.plans())]
+    rows.append(_back("vpn:menu", lang))
+    text = i18n.t("vpn.plans_title", lang,
+                  "💳 <b>Тарифы VPN</b>\n\nПродление возвращает тот же ключ "
+                  "и прибавляет дни к оставшимся.")
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def _notify_deciders(text: str, markup: InlineKeyboardMarkup | None = None) -> None:
+    for target, record in list(storage.users().items()):
+        if not vpn.can_decide(record.get("role")) or record.get("blocked"):
+            continue
+        try:
+            await send_html(target, text, markup)
+        except Exception:  # noqa: BLE001
+            log.warning("Сообщение о заказе VPN не доставлено %s", target)
+
+
+@router.callback_query(F.data.startswith("vpn:plan:"))
+async def buy_plan(call: CallbackQuery, user: dict) -> None:
+    lang = i18n.language_of(user)
+    raw = call.data.split(":", 2)[2]
+    uid = str(call.from_user.id)
+    try:
+        entry = await vpnsales.create(uid, int(raw) if raw.isdigit() else -1)
+    except vpnsales.SaleError as exc:
+        await call.answer(str(exc), show_alert=True)
+        return
+    await call.answer()
+    plan = vpnsales.Plan(**entry["plan"])
+    order_id = entry["id"]
+    lines = [i18n.t("vpn.order_title", lang, "🧾 <b>Заказ</b> <code>{id}</code>")
+             .format(id=esc(order_id)),
+             esc(plan.title(entry["currency"]))]
+    rows = []
+    if entry["url"]:
+        lines.append("")
+        lines.append(i18n.t("vpn.order_pay", lang,
+                            "Оплатите счёт по кнопке ниже, затем нажмите «Я оплатил»."))
+        rows.append([InlineKeyboardButton(
+            text=i18n.t("vpn.pay_button", lang, "💳 Оплатить"), url=entry["url"])])
+        rows.append([_button(i18n.t("vpn.paid_button", lang, "✅ Я оплатил"),
+                             f"vpn:chk:{order_id}")])
+    else:
+        note = payments_note()
+        lines.append("")
+        lines.append(i18n.t("vpn.order_manual", lang,
+                            "Оплату подтверждает администратор. Доступ придёт "
+                            "сюда сразу после подтверждения."))
+        if note:
+            lines.append(f"\n{esc(note)}")
+        await _notify_deciders(
+            f"🧾 Заказ VPN {_order_line(entry)}\nПодтвердите, когда оплата поступит.",
+            InlineKeyboardMarkup(inline_keyboard=[[
+                _button("✅ Оплата получена", f"vpn:cfm:{order_id}"),
+                _button("✖️ Отменить", f"vpn:cnl:{order_id}"),
+            ]]))
+    rows.append([_button(i18n.t("vpn.cancel_order", lang, "✖️ Отменить заказ"),
+                         f"vpn:cnl:{order_id}")])
+    rows.append(_back("vpn:menu", lang))
+    await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+def payments_note() -> str:
+    """Как платить при ручном подтверждении — текст суперадминистратора."""
+    from .. import secrets
+
+    return str(secrets.get("PAY_MANUAL_NOTE") or "").strip()
+
+
+async def _deliver(entry: dict[str, Any]) -> bool:
+    """Ссылки по выполненному заказу — покупателю в личку."""
+    uid = entry["uid"]
+    lang = i18n.language_of(storage.get_user(uid))
+    parts = []
+    for key in entry.get("granted") or []:
+        try:
+            parts.append(await _link_text(uid, key, lang))
+        except PanelError as exc:
+            log.warning("Ссылка по заказу %s (слот %s) не получена: %s",
+                        entry["id"], key, exc)
+    if not parts:
+        return False
+    head = i18n.t("vpn.order_done", lang, "✅ Оплата получена, доступ открыт.")
+    return await send_html(uid, head + "\n\n" + "\n\n———\n\n".join(parts),
+                           _link_markup(lang))
+
+
+async def _report_failure(entry: dict[str, Any]) -> None:
+    errors = "; ".join(f"{key}: {value}" for key, value in (entry.get("errors") or {}).items())
+    await _notify_deciders(
+        f"⚠️ Заказ VPN оплачен, но выдать не удалось: {_order_line(entry)}\n"
+        f"{esc(errors)}",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            _button("🔁 Повторить выдачу", f"vpn:rty:{entry['id']}")]]))
+
+
+async def _settle(entry: dict[str, Any]) -> str:
+    """Что сказать после оплаты: выдано, не выдано или ещё ждём."""
+    if entry["status"] == vpnsales.DONE:
+        delivered = await _deliver(entry)
+        return "✅ Доступ открыт." + ("" if delivered else
+                                     " Ссылки — в разделе VPN.")
+    if entry["status"] == vpnsales.FAILED:
+        await _report_failure(entry)
+        return ("⚠️ Оплата получена, но выдать доступ пока не удалось. "
+                "Администратор уведомлён и повторит выдачу.")
+    return vpnsales.STATUS_TITLES.get(entry["status"], entry["status"])
+
+
+@router.callback_query(F.data.startswith("vpn:chk:"))
+async def check_order(call: CallbackQuery, user: dict) -> None:
+    lang = i18n.language_of(user)
+    order_id = call.data.split(":", 2)[2]
+    try:
+        entry = await vpnsales.check(order_id, call.from_user.id)
+    except vpnsales.SaleError as exc:
+        await call.answer(str(exc), show_alert=True)
+        return
+    if entry["status"] == vpnsales.NEW:
+        await call.answer(i18n.t("vpn.not_paid", lang,
+                                 "Оплата ещё не поступила. Попробуйте через минуту."),
+                          show_alert=True)
+        return
+    await call.answer()
+    note = await _settle(entry) if entry["status"] in (vpnsales.DONE, vpnsales.FAILED) \
+        else vpnsales.STATUS_TITLES.get(entry["status"], entry["status"])
+    await safe_edit(call, f"🧾 <code>{esc(order_id)}</code>: {esc(note)}",
+                    InlineKeyboardMarkup(inline_keyboard=[_back("vpn:menu", lang)]))
+
+
+@router.callback_query(F.data.startswith("vpn:cnl:"))
+async def cancel_order(call: CallbackQuery, role: str) -> None:
+    order_id = call.data.split(":", 2)[2]
+    try:
+        await vpnsales.cancel(order_id, call.from_user.id, role)
+    except vpnsales.SaleError as exc:
+        await call.answer(str(exc), show_alert=True)
+        return
+    await call.answer("Заказ отменён.")
+    await safe_edit(call, f"✖️ Заказ <code>{esc(order_id)}</code> отменён.",
+                    InlineKeyboardMarkup(inline_keyboard=[_back()]))
+
+
+@router.callback_query(F.data.startswith("vpn:cfm:") | F.data.startswith("vpn:rty:"))
+async def confirm_order(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, action, order_id = call.data.split(":", 2)
+    await call.answer("Выдаю…")
+    try:
+        if action == "cfm":
+            entry = await vpnsales.confirm(order_id, role, call.from_user.id)
+        else:
+            entry = await vpnsales.retry(order_id, role)
+    except vpnsales.SaleError as exc:
+        await safe_edit(call, f"❌ {esc(str(exc))}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back("vpn:orders")]))
+        return
+    if entry["status"] == vpnsales.DONE:
+        delivered = await _deliver(entry)
+        note = "✅ Выдано." + (" Ссылки отправлены." if delivered
+                              else " Ссылки отправить не удалось — они в разделе VPN.")
+    else:
+        errors = "; ".join(f"{k}: {v}" for k, v in (entry.get("errors") or {}).items())
+        note = f"⚠️ Выдать не удалось: {esc(errors)}"
+    rows = []
+    if entry["status"] == vpnsales.FAILED:
+        rows.append([_button("🔁 Повторить выдачу", f"vpn:rty:{order_id}")])
+    rows.append(_back("vpn:orders"))
+    await safe_edit(call, f"{_order_line(entry)}\n\n{note}",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "vpn:orders")
+async def list_orders(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    await call.answer()
+    entries = await vpnsales.recent(15)
+    rows = []
+    for entry in entries:
+        if entry["status"] == vpnsales.NEW and entry.get("provider") == payments.ManualProvider.kind:
+            rows.append([_button(f"✅ Оплачен {entry['id']}", f"vpn:cfm:{entry['id']}")])
+        elif entry["status"] == vpnsales.FAILED:
+            rows.append([_button(f"🔁 Повторить {entry['id']}", f"vpn:rty:{entry['id']}")])
+    rows.append(_back())
+    body = "\n".join(_order_line(entry) for entry in entries) or "Заказов нет."
+    ok, reason = vpnsales.ready()
+    state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
+    await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_119'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_121'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -43635,9 +44522,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_119
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_120'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_122'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -43900,9 +44787,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_120
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_121'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_123'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -44052,9 +44939,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_121
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_124'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -44522,9 +45409,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_122
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_123'
+cat > "radar/cookies.py" <<'RADAR_FILE_125'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -44655,9 +45542,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_123
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_124'
+cat > "radar/music.py" <<'RADAR_FILE_126'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -45452,9 +46339,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_124
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_127'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -46068,9 +46955,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_125
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_126'
+cat > "multitool/__init__.py" <<'RADAR_FILE_128'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -46096,9 +46983,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_126'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_126
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_127'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_129'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -46131,9 +47018,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_127'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_127
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_128'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_130'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -46540,9 +47427,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_128
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_129'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_131'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -47026,9 +47913,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_129
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_130'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_132'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -47268,7 +48155,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_130
+RADAR_FILE_132
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

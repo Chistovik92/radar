@@ -139,6 +139,36 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
             "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
 
+    # --- продажа VPN и оплата (с 5.0.2) ---
+    Setting("VPN_PLANS", "VPN: тарифы",
+            "«дни:трафикГБ:устройства:цена» через точку с запятой, например "
+            "30:0:3:199; 90:0:3:499. Трафик и устройства 0 — без предела.",
+            "Продажа VPN", secret=False),
+    Setting("VPN_CURRENCY", "VPN: валюта цен",
+            "Код валюты, по умолчанию RUB. Crypto Pay пересчитает в криптовалюту сам.",
+            "Продажа VPN", secret=False),
+    Setting("VPN_PLAN_SLOTS", "VPN: панели для продажи",
+            "Номера слотов через запятую, например 1,2. Пусто — все настроенные.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_PROVIDER", "Оплата: провайдер",
+            "manual — оплату подтверждает суперадминистратор кнопкой; "
+            "cryptopay — Crypto Pay (@CryptoBot). Пусто — manual.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_MANUAL_NOTE", "Оплата: как платить (вручную)",
+            "Текст для покупателя при ручном подтверждении: куда и как "
+            "перевести оплату. Показывается под заказом.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_CRYPTOPAY_TOKEN", "Crypto Pay: токен",
+            "Из @CryptoBot → Crypto Pay → Create App. Комиссию и условия "
+            "вывода проверьте там же до включения продаж.",
+            "Продажа VPN", where="@CryptoBot → Crypto Pay"),
+    Setting("PAY_CRYPTOPAY_TESTNET", "Crypto Pay: тестовая сеть",
+            "1 — счета в тестовой сети (@CryptoTestnetBot), деньги ненастоящие.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_CRYPTOPAY_ASSETS", "Crypto Pay: принимаемые монеты",
+            "Через запятую, например USDT,TON. Пусто — все, что разрешит Crypto Pay.",
+            "Продажа VPN", secret=False),
+
     # --- защита ---
     Setting("SAFE_BROWSING_API_KEY", "Google Safe Browsing",
             "Базы вредоносных сайтов для проверки ссылок (/check). "
