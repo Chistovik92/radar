@@ -100,8 +100,6 @@ EN_STRINGS: dict[str, str] = {
     "vpn.gone": "The account is missing from the panel — request access again.",
     "vpn.ask_button": "📨 Request access",
     "vpn.pending": "⏳ Your request has been sent and awaits an administrator.",
-    "vpn.can_get": "Access is granted right away — tap the button below.",
-    "vpn.get_button": "🔑 Get access",
     "vpn.denied": "Your previous request was declined. You can send a new one.",
     "vpn.intro": "VPN access is granted by an administrator. "
                  "Send a request — the answer will arrive here.",
@@ -116,6 +114,20 @@ EN_STRINGS: dict[str, str] = {
                        "3. Refresh the subscription and pick a server.\n\n"
                        "The link is your key: don't forward it. The same "
                        "link works on all of your devices.",
+    "vpn.key_title": "🔐 <b>Your key</b>",
+    "vpn.config_title": "🔐 <b>Your settings link</b>",
+    "vpn.key_steps": "<b>How to connect:</b>\n"
+                     "1. Install Outline Client or any Shadowsocks client.\n"
+                     "2. Copy the key above and add it to the client.\n\n"
+                     "The key is your access: don't forward it.",
+    "vpn.config_steps": "<b>How to connect:</b>\n"
+                        "1. Install WireGuard (or AmneziaWG).\n"
+                        "2. Open the link above and download the settings "
+                        "file — the link is <b>one-time</b>, it won't open "
+                        "a second time.\n"
+                        "3. Import the file into the app.\n\n"
+                        "Need it again? Tap the button once more and the "
+                        "bot will issue a new link.",
     "vpn.hydra_button": "⬇️ HydraVPN for Android",
     "vpn.no_access": "Access hasn't been granted.",
     "vpn.denied_note": "🔐 Your VPN request was declined by an administrator.",

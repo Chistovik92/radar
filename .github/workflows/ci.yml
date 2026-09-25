@@ -53,6 +53,14 @@ jobs:
       - name: Подпись автора на месте
         run: python tools/stamp_headers.py --check
 
+      # Клиенты VPN-панелей по настоящему HTTP: эмуляторы десяти панелей
+      # на 127.0.0.1, все клиенты разом. Нужен настоящий aiohttp — тесты
+      # выше идут на заглушках и транспорт не проверяют.
+      - name: VPN-клиенты по HTTP
+        run: |
+          python -m pip install --quiet aiohttp
+          python tools/vpn_http_check.py
+
       - name: Порядок функций в install.sh
         run: python tools/lint_shellorder.py
 

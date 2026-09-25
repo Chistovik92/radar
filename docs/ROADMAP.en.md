@@ -1303,7 +1303,7 @@ separate media (`MUSIC_DIR` or a mount).
 
 ---
 
-## 5.0 — VPN panels and selling access ⚠️ started: items 1 and 3
+## 5.0 — VPN panels and selling access ⚠️ started: items 1 and 3 (5.0, 5.0.1)
 
 An idea from September 2026. The largest block after the web panel, and
 the first where the bot takes money not for itself but for access to a
@@ -1312,8 +1312,9 @@ of, not a function inside a finished block.
 
 Panel polishing is finished, and roadmap work resumed with 4.9.9.
 5.0 delivers items 1 and 3 — the common layer over the panels and issuing
-to people already in the bot, without payments. Items 4 and 5 (plans and
-the payment layer) come in later releases.
+to people already in the bot, without payments. 5.0.1 adds several panels
+at once, ten kinds, and issuing only by the superadmin's decision. Items 4
+and 5 (plans and the payment layer) come in later releases.
 
 ### 1. One layer over three panels
 
@@ -1322,6 +1323,26 @@ the payment layer) come in later releases.
 `Account` record. Written against the panels' documentation; response
 parsing is pinned by offline tests (`tests/test_vpn.py`), not verified
 against live panels.
+
+⚠️ Extended in 5.0.1 — **ten panels, several at once**: 3x-ui (2.x and
+3.x), x-ui (alireza0), s-ui, Marzban, PasarGuard, Marzneshin, Remnawave,
+Hiddify, Outline, wg-easy. Up to six slots (`VPN1_*` … `VPN6_*`) of
+different kinds; requests to different panels run in parallel, and one
+failing does not affect the others. The clients were checked not against
+documentation but against the panels' source code, and that check found
+three bugs in 5.0: 3x-ui 3.x removed `addClient`/`updateClient` (a client
+is now its own entity, `/panel/api/clients/...`, and password login needs
+a CSRF token), PasarGuard expects the API key in `X-Api-Key` and `0` for
+"no expiry" on modify, and Remnawave updates an account by `username` or
+`id`, not by `uuid`. The transport — cookies, CSRF, headers, certificate
+pinning — is exercised over real HTTP against panel emulators
+(`tools/vpn_http_check.py`, a CI step). The clients have never talked to
+a live panel; the first such check is `python -m radar vpn selftest --yes`
+on the server.
+
+Deliberately unsupported: **AmneziaVPN** — managed over SSH, no HTTP API
+for keys; **bare Xray or sing-box** — they keep no users and need a panel
+on top.
 
 **3x-ui**, **PasarGuard** and **Remnawave** are supported — not one after
 another, but through a single internal interface (`create_user`,
@@ -1372,6 +1393,12 @@ files: users, roles and subscriptions already exist here.
 with decision buttons, roles at or above `VPN_AUTO_ROLE` get access right
 away, and extending or re-issuing returns the same key. Not verified on
 a live server.
+
+⚠️ Changed in 5.0.1 by the author's decision: **issuing is fully controlled
+by the superadmin**. Role-based issuing is gone, `VPN_AUTO_ROLE` removed;
+only the superadmin sees and decides requests and picks which panels to
+issue on. The role check lives in the issuing logic itself, not only on
+the buttons. Revoking per panel and checking all panels at once were added.
 
 The first step, and the only one that can be done without payments at all:
 a person already registered in the bot asks for access and gets it, by an

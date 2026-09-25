@@ -1,4 +1,4 @@
-# Radar v5.0
+# Radar v5.0.1
 
 [Русская версия](README.md)
 
@@ -354,34 +354,66 @@ variables are in [docs/API_SETUP.md](docs/API_SETUP.md).
 ## VPN (since 5.0) ⚠️ not verified against live panels
 
 Issuing VPN access from the bot — feature flag `vpn`, off by default.
-Three panels are supported through one internal layer
-(`radar/vpnpanels.py`): **3x-ui**, **PasarGuard** and **Remnawave**.
-Switching panels on the server means changing `VPN_PANEL`, not rewriting
-the section. No panel SDKs are used: everything runs on `aiohttp`,
-which is already there.
+Since 5.0.1 there can be **several panels at once, including different
+kinds**: up to six slots (`VPN1_*` … `VPN6_*`), each with its own kind,
+address and credentials. Ten panels are supported through one internal
+layer (`radar/vpnpanels.py`):
 
-What it looks like in the bot:
+| Panel | Login | What the person gets |
+|---|---|---|
+| **3x-ui** 2.x and 3.x | API token or username/password (with CSRF in 3.x) | a subscription |
+| **x-ui** (alireza0) | username/password | a subscription |
+| **s-ui** | API token | a subscription |
+| **Marzban** | token or username/password | a subscription |
+| **PasarGuard** | API key or username/password | a subscription |
+| **Marzneshin** | token or username/password | a subscription |
+| **Remnawave** | API token | a subscription |
+| **Hiddify** | API key (the admin's uuid) | a connection page |
+| **Outline** | apiUrl + certificate fingerprint | an `ss://` key, no expiry |
+| **wg-easy** | username/password | a one-time link to a WireGuard file, no traffic limit |
 
-- a person opens "🔐 VPN" and sends a request; admins get a message with
-  "✅ Grant" and "❌ Decline" buttons;
-- once approved, the subscription link arrives in the private chat, and
-  the section shows the expiry date and traffic used;
-- roles at or above `VPN_AUTO_ROLE` (admins by default) get access right
-  away, without a request;
-- admins see the requests and the list of granted accounts, extend the
-  term by `VPN_DAYS` days, disable and re-enable access, and check the
-  panel.
+Deliberately unsupported: AmneziaVPN (managed over SSH only, no HTTP API
+for keys) and bare Xray or sing-box without a panel (they keep no users).
 
-Extending and re-issuing return **the same key**: the account name in the
-panel is derived from the user's id, so the existing account is found
-rather than created anew. Expiry is enforced by the panel itself — the
-bot polls nothing on a schedule, and the alert loop never touches the
-panels.
+**Issuing is fully controlled by the superadmin.** Nobody gets access
+without their decision, admins included:
 
-The subscription link is not stored in the database; neither it, nor the
-UUID, nor the panel token ever reaches the logs. There are no payments
-in 5.0 — selling by plans comes in later releases. Setup is in the "VPN"
-section of [docs/API_SETUP.md](docs/API_SETUP.md).
+- a person opens "🔐 VPN" and sends a request — only the superadmin is
+  notified;
+- the superadmin ticks the panels to issue on and taps "Grant" — the
+  links arrive in the person's private chat, one per panel;
+- the section shows requests, granted access per panel, extending by
+  `VPN_DAYS` days, disabling, revoking and checking all panels at once.
+
+The role check is not only on the buttons but in the issuing logic itself:
+a call made on behalf of anyone but the superadmin is refused.
+
+Requests to different panels run **in parallel**, and one panel failing
+neither delays nor breaks the others: issuing on three panels with one
+of them down grants on two and says plainly what happened to the third.
+
+Extending and re-issuing return **the same key**: the account name in
+the panel is derived from the user's id. Expiry is enforced by the panel
+itself — the bot polls nothing on a schedule, and the alert loop never
+touches the panels.
+
+Links are not stored in the database; neither they, nor UUIDs, nor tokens
+ever reach the logs. No payments. Setup is in the "VPN" section of
+[docs/API_SETUP.md](docs/API_SETUP.md).
+
+**How to verify on your server:**
+
+```bash
+python -m radar vpn check            # every panel: reachable, login accepted
+python -m radar vpn selftest --yes   # full cycle on a radar_selftest account
+```
+
+`selftest` creates a `radar_selftest` account in each panel, verifies
+expiry, disabling, enabling and the link against the panel's replies, and
+leaves the account disabled. The clients were checked against the panels'
+source code and run over HTTP against emulators of them
+(`tools/vpn_http_check.py`, a CI step), but they have never talked to a
+real panel — `selftest` is that first check.
 
 ## Large files by link
 
