@@ -24,7 +24,7 @@ from aiogram.exceptions import (
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import config
+from . import config, identity
 from .textutils import split_text, strip_tags
 
 log = logging.getLogger("radar.tg")
@@ -85,7 +85,16 @@ async def send_html(
     и вызывающая сторона вправе повторить в следующем цикле. Ценой этого
     может стать повтор первого куска у длинного сообщения, разбитого
     на части: дубль лучше потерянной тревоги.
+
+    С 5.7 профиль может жить и без Telegram — под ключом `vk:…`, `max:…`
+    или `discord:…`. Такой ключ уходит адаптеру своей сети (кнопки там
+    не передаются): любая рассылка по списку пользователей доставляет
+    и им, а не падает на `int("vk:5")`.
     """
+    if not identity.is_telegram(chat_id):
+        from . import mirror
+
+        return await mirror.send_external(str(chat_id), text)
     chunks = split_text(text)
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == len(chunks) - 1 else None

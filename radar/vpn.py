@@ -383,7 +383,16 @@ async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: 
                 elif account.expire < now:
                     await client.set_expiry(name, expire)
             if renew and traffic and client.supports_traffic:
-                await client.set_traffic(name, traffic)
+                # Предел в панелях — на весь расход, а не на период: до 5.6.2
+                # продление ставило его равным тарифу, и потративший 45 ГБ
+                # из 50 получал за новые 50 ГБ всего пять. Теперь тариф
+                # прибавляется к израсходованному, а неистраченный остаток
+                # действующего срока сохраняется — как и дни.
+                used = max(0, account.traffic_used)
+                left = 0
+                if account.traffic_limit and (not account.expire or account.expire > now):
+                    left = max(0, account.traffic_limit - used)
+                await client.set_traffic(name, used + left + traffic)
             if not account.enabled:
                 await client.enable(name)
         if devices and client.supports_devices:

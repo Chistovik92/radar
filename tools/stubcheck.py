@@ -284,7 +284,7 @@ def main() -> int:
         "radar.handlers.sources", "radar.handlers.users", "radar.handlers.features", "radar.handlers.logs", "radar.handlers.sos", "radar.handlers.media", "radar.handlers.settings_admin", "radar.handlers.network", "radar.handlers.digest", "radar.handlers.perf", "radar.handlers.shortlink", "radar.handlers.partners", "radar.handlers.history", "radar.handlers.language", "radar.handlers.assistant",         "radar.handlers.linkcheck", "radar.handlers.subscription", "radar.filedrop", "radar.redeem", "radar.sourceedit", "radar.agents", "radar.timezones", "radar.cookies", "radar.music", "radar.handlers.music",
         "radar.platforms", "radar.platforms.base", "radar.platforms.max",
         "radar.platforms.discord", "radar.platforms.discordbot",
-        "radar.platforms.vk", "radar.platforms.vkbot", "radar.links", "radar.mirror",
+        "radar.platforms.vk", "radar.platforms.vkbot", "radar.platforms.textbot", "radar.links", "radar.mirror",
         "radar.handlers.linking",
         "radar.dockerapi", "radar.rustdesk", "radar.handlers.rustdesk",
         "radar.vpnpanels", "radar.vpn", "radar.payments", "radar.vpnsales",

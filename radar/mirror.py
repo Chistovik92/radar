@@ -1,4 +1,4 @@
-"""Дублирование тревог на привязанные площадки (с 5.6).
+"""Доставка в сети кроме Telegram и копии тревог (с 5.6).
 
 Тревога, уже доставленная в Telegram, уходит копией на аккаунты ВК и MAX,
 привязанные к этому человеку (`radar/links.py`). География подтверждена
@@ -67,6 +67,27 @@ async def _send_all(uid: str, text: str) -> None:
                 log.warning("Зеркало: копия тревоги в %s не доставлена", platform)
         except Exception:  # noqa: BLE001
             log.warning("Зеркало: сбой отправки в %s", platform, exc_info=True)
+
+
+async def send_external(key: str, text: str) -> bool:
+    """Отправить в сеть, отличную от Telegram, по ключу `vk:…`/`max:…`/`discord:…`.
+
+    С 5.7 так получают тревоги и сводки люди без Telegram: их профиль
+    хранится под ключом своей сети. Площадка не запущена — False, как
+    и любая недоставка: вызывающий повторит в следующем цикле.
+    """
+    from .identity import parse
+
+    target = parse(key)
+    sender = _senders.get(target.platform)
+    if sender is None:
+        log.debug("Доставка в %s: адаптер не запущен", target.platform)
+        return False
+    try:
+        return bool(await sender(target.external_id, text))
+    except Exception:  # noqa: BLE001
+        log.warning("Доставка в %s не удалась", target.platform, exc_info=True)
+        return False
 
 
 def alert(uid: str | int, text: str) -> None:

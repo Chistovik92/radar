@@ -1564,6 +1564,43 @@ rewrite.
    contract; the code would then follow the same path as VK.
 ---
 
+## 5.7 — one account in every network ⚠️ code written
+
+The author's request of September 2026: the same person should sign in
+through different networks and remain one person. In 5.6 this was only
+half done: VK and MAX were linked to Telegram and received copies, but
+addresses lived only in Telegram, Discord could not be linked at all,
+and without Telegram the bot was useless.
+
+1. **One profile, equal sign-ins.** Addresses, settings, role and
+   subscription belong to the person; Telegram, VK, MAX and Discord are
+   ways to sign in. If the account has Telegram, the profile is stored
+   under its key: the whole Telegram interface, where a person's key is
+   their Telegram id, works unchanged. Without Telegram the account that
+   issued the code stays the main one. `radar/links.py`.
+2. **Linking both ways, with merging.** Any network issues a code, any
+   other network accepts it, and the link is made only after "yes": the
+   code links addresses too, and a planted code would give someone else's
+   account access to them. Two profiles' addresses are merged without
+   duplicates, the role stays with the main profile. Every network of the
+   account is told about a new link, and `/unlink` works from any of them.
+3. **You can start outside Telegram.** VK and MAX: `/address` and a
+   geolocation with the found address confirmed, `/addresses`, `/remove`,
+   `/lang` (`radar/platforms/textbot.py`). Discord: the same commands as
+   slash commands with replies visible only to the author, alerts in DMs.
+   Category settings, quiet hours and subscriptions remain Telegram-only:
+   a second implementation of every screen over a text chat would cost
+   more than it gives.
+4. **Web panel sign-in by code.** `/panel` in any network of the account
+   gives a moderator a one-time code valid for 5 minutes. This also closes
+   an old gap: by IP address the Telegram widget does not work at all,
+   while the code does.
+
+Not verified with live VK, MAX and Discord — only by tests and emulators
+(`tools/vk_http_check.py`, `tools/discord_http_check.py`).
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2
@@ -1572,8 +1609,9 @@ rewrite.
    that repeats a guess does not catch the mistake, it legitimises it. The
    code now follows the dev.max.ru description:
 
-   - base `https://platform-api.max.ru` (the `botapi.max.ru` domain was
-     retired in October 2025), the token goes in the `Authorization` header
+   - base `https://platform-api2.max.ru` (the `botapi.max.ru` domain was
+     retired in October 2025; the official SDKs mark `platform-api.max.ru`
+     as deprecated — the docs were corrected in 5.6.2), the token goes in the `Authorization` header
      **without** "Bearer": passing it in the query string no longer works;
    - `GET /updates` with `marker`, `limit`, `timeout`; the marker is taken
      from the response rather than computed as "last + 1" — that very
@@ -1605,12 +1643,14 @@ rewrite.
      Russian legal entities. Without a token not a single request can be
      made — neither the address, nor the field names, nor the response
      shape can be checked;
-   - **the callback answer shape.** `POST /answers` is documented, but the
-     set of body fields (`notification` versus `message`) is described
-     ambiguously;
-   - **the method for bot commands:** the documentation mentions both
-     `PATCH /me` and `PATCH /me/commands`. The code tries the first and
-     falls back to the second on a 404;
+   - ~~**the callback answer shape.**~~ ✅ checked in 5.6.2 against the
+     official SDKs (Go and TypeScript): both fields are optional —
+     `notification` (a pop-up text) and `message` (replaces the message);
+     the code sends the former;
+   - ~~**the method for bot commands.**~~ ✅ in 5.6.2: the official SDKs
+     send `PATCH /me/commands` and mark `PATCH /me` as deprecated. Before
+     5.6.2 the code tried them in the reverse order; now `/me` is the
+     fallback on a 404;
    - **which HTML tags MAX understands.** The list taken is narrow, with a
      fallback to plain text on the first refusal;
    - **the webhook.** The documentation calls long polling a development

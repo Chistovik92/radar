@@ -1,19 +1,11 @@
-"""Ответчик ВКонтакте (с 5.6): привязка к Telegram и копии тревог.
+"""Ответчик ВКонтакте (5.6; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
 
-Что умеет бот в ВК:
-
-* принять код привязки из Telegram-бота и с этого момента получать копии
-  тревог по адресам привязанного человека (`radar/mirror.py`);
-* `/unlink` — снять привязку;
-* `/status` — работает ли мониторинг; на всё остальное — справка.
-
-Адреса, подписки и настройки здесь не задаются намеренно: они живут
-в Telegram-аккаунте, и вторая их реализация поверх другого API стоила бы
-дороже, чем даёт. ВК — второй канал доставки для того, кто уже настроил
-бота, и единственный способ получать тревоги тем, у кого Telegram
-работает с перебоями.
+С 5.7 начать можно прямо здесь: адреса задаются командой `/address` или
+геопозицией, тревоги по ним приходят сюда. Привязка к Telegram, MAX
+и Discord — общим кодом (`radar/links.py`). Сама логика ответов общая
+с MAX — `radar/platforms/textbot.py`.
 """
 
 # --------------------------------------------------------------------------
@@ -27,22 +19,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .. import links
+from . import textbot
 from .base import EventKind, InboundEvent, OutboundMessage
 
 log = logging.getLogger("radar.platform.vkbot")
 
-DISCLAIMER = "Система не заменяет официальные каналы оповещения."
-
-ABOUT = (
-    "Система «Радар» следит за городскими угрозами и авариями ЖКХ "
-    "по вашим адресам.\n\n"
-    "Здесь, во ВКонтакте, приходят копии тревог. Адреса задаются "
-    "в Telegram-боте; чтобы связать аккаунты, нажмите там «🔗 Привязать "
-    "ВК или MAX» и пришлите сюда шестизначный код.\n\n"
-    "/status — работает ли мониторинг\n/unlink — отвязать аккаунт\n\n"
-    + DISCLAIMER
-)
+DISCLAIMER = textbot.DISCLAIMER
 
 
 def _setting(key: str) -> str:
@@ -59,23 +41,16 @@ def enabled() -> bool:
 
 
 def status_text() -> str:
-    from .. import monitor
-
-    healthy, silent = monitor.alive()
-    if healthy:
-        return "✅ Мониторинг работает."
-    return f"🚨 Мониторинг молчит около {max(1, silent // 60)} мин. Администрация уведомлена."
+    return textbot.status_text()
 
 
 async def answer(event: InboundEvent) -> str:
     """Текст ответа. Отделён от сети — проверяется офлайн."""
-    external = event.identity.external_id
-    linked = await links.handle_text("vk", external, event.text)
-    if linked:
-        return linked
-    if event.kind is EventKind.COMMAND and event.command == "status":
-        return status_text() + "\n\n" + DISCLAIMER
-    return ABOUT
+    location = None
+    if event.kind is EventKind.LOCATION and event.latitude is not None:
+        location = (event.latitude, event.longitude)
+    return await textbot.answer("vk", event.identity.external_id, event.text,
+                                location=location)
 
 
 async def reply(event: InboundEvent, transport: Any) -> None:

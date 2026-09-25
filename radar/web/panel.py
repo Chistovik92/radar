@@ -1557,8 +1557,14 @@ def _login_page(bot_username: str, message: str = "",
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
 <p class="muted">Версия {html.escape(config.VERSION)}</p>
-<p class="muted">Вход через Telegram. Доступ — с роли администратора.</p>
-{warning}{widget}{hint}
+<p class="muted">Вход через Telegram или по коду из бота. Доступ — с роли модератора.</p>
+{warning}{widget}
+<form method="post" action="/login/code" style="margin-top:18px">
+<p class="muted">Или код из бота в любой сети — команда <code>/panel</code>
+(Telegram, ВКонтакте, MAX, Discord):</p>
+<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12"
+ placeholder="8 цифр" required> <button type="submit">Войти</button>
+</form>{hint}
 </div></body></html>"""
 
 
@@ -2551,6 +2557,33 @@ async def create_app() -> Any:
         )
         raise response
 
+    async def authenticate_code(request):
+        """Вход по одноразовому коду, выданному ботом по /panel (5.7)."""
+        form = await request.post()
+        if config.WEB_HTTPS:
+            address = request.headers.get("X-Forwarded-For",
+                                          request.remote or "").split(",")[0].strip()
+        else:
+            address = request.remote or ""
+
+        def role_lookup(key: str) -> str:
+            user = storage.get_user(key)
+            return user.get("role", "") if user else ""
+
+        session, reason = auth.authenticate_code(str(form.get("code") or ""),
+                                                 role_lookup, address)
+        if session is None:
+            audit.record("—", "неудачный вход по коду", reason)
+            raise web.HTTPFound(f"/login?error={reason}")
+        audit.record(session.user_key, "вход в панель по коду", session.role)
+        response = web.HTTPFound("/")
+        response.set_cookie(
+            auth.SESSION_COOKIE, session.token,
+            max_age=auth.SESSION_TTL, httponly=True, samesite="Lax",
+            secure=config.WEB_HTTPS,
+        )
+        raise response
+
     async def logout(request):
         token = request.cookies.get(auth.SESSION_COOKIE, "")
         session = auth.session_by_token(token)
@@ -3375,6 +3408,7 @@ async def create_app() -> Any:
     application.add_routes([
         web.get("/login", login),
         web.get("/auth", authenticate),
+        web.post("/login/code", authenticate_code),
         web.get("/logout", logout),
         web.get("/", overview),
         web.get("/users", users_page),

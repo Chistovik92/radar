@@ -184,6 +184,60 @@ def authenticate(
     return session, ""
 
 
+#  Вход по одноразовому коду из бота (5.7)
+#
+#  Виджет Telegram — не единственный путь: у общего аккаунта вход может
+#  быть из ВК, MAX или Discord, а Telegram бывает недоступен. Бот в любой
+#  сети выдаёт по `/panel` код на пять минут для основного ключа профиля;
+#  код одноразовый, перебор ограничен тем же счётчиком попыток с адреса,
+#  что и у виджета (десять за десять минут на восемь цифр).
+
+LOGIN_CODE_TTL = 300
+_login_codes: dict[str, tuple[str, float]] = {}
+
+
+def issue_login_code(user_key: str, now: float | None = None) -> str:
+    moment = now if now is not None else time.time()
+    for code in [code for code, (_, until) in _login_codes.items() if until < moment]:
+        _login_codes.pop(code, None)
+    for code in [code for code, (owner, _) in _login_codes.items() if owner == str(user_key)]:
+        _login_codes.pop(code, None)
+    while True:
+        code = f"{secrets_module.randbelow(10 ** 8):08d}"
+        if code not in _login_codes:
+            break
+    _login_codes[code] = (str(user_key), moment + LOGIN_CODE_TTL)
+    return code
+
+
+def authenticate_code(code: str, role_lookup, address: str = "",
+                      now: float | None = None) -> tuple[Session | None, str]:
+    """Вход по коду из бота. Возвращает (сессия, причина отказа)."""
+    moment = now if now is not None else time.time()
+    if address and rate_limited(address):
+        return None, "слишком много попыток, подождите"
+    entry = _login_codes.pop("".join(ch for ch in (code or "") if ch.isdigit()), None)
+    if entry is None or entry[1] < moment:
+        if address:
+            note_failure(address)
+        return None, "код не подошёл или устарел"
+    user_key = entry[0]
+    role = role_lookup(user_key)
+    from .. import roles as role_module
+
+    if not role or not role_module.is_moderator(role):
+        return None, "нужны права модератора или выше"
+    if address:
+        clear_failures(address)
+
+    global _role_lookup
+    _role_lookup = role_lookup
+    session = Session(token=secrets_module.token_urlsafe(32), user_key=user_key, role=role)
+    _sessions[session.token] = session
+    log.info("Веб-панель: вход по коду %s (%s)", user_key, role)
+    return session, ""
+
+
 def session_by_token(token: str) -> Session | None:
     """Сессия по токену. Роль перечитывается, а не берётся из снимка.
 

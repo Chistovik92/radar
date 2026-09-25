@@ -18,6 +18,7 @@ from aiogram.types import (
 )
 
 from . import config, features, i18n, roles, timezones
+from .identity import cb_key
 from .matching import CATEGORY_ICONS, CATEGORY_TITLES
 
 def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarkup:
@@ -288,7 +289,7 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
         return i18n.t(key, lang, russian)
 
     settings = user.get("settings") or {}
-    suffix = f":{target}" if target else ""
+    suffix = f":{cb_key(target)}" if target else ""
     rows: list[list[InlineKeyboardButton]] = []
     keys = list(CATEGORY_TITLES)
     for index in range(0, len(keys), 2):
@@ -332,10 +333,11 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
                      f"{quiet_summary(user, lang)}",
                 callback_data="set:quiet",
             )])
-        # Привязка ВК и MAX (5.6): копии тревог туда, где человек тоже бывает.
-        if features.enabled("platform_vk") or features.enabled("platform_max"):
+        # Привязка других сетей (5.6, общий аккаунт — 5.7).
+        if any(features.enabled(flag) for flag in
+               ("platform_vk", "platform_max", "platform_discord")):
             rows.append([InlineKeyboardButton(
-                text=label("link.button", "🔗 Привязать ВК или MAX"),
+                text=label("link.button", "🔗 Привязка других сетей"),
                 callback_data="lnk:menu",
             )])
         # Часовой пояс стоит рядом с погодой и тихими часами не случайно:
@@ -350,7 +352,7 @@ def settings_menu(user: dict[str, Any], target: str = "") -> InlineKeyboardMarku
             text=label("menu.home", "🏠 В главное меню"), callback_data="menu:main")])
     else:
         rows.append(
-            [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{target}")]
+            [InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{cb_key(target)}")]
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -439,8 +441,8 @@ def weather_format_menu(lang: str = "ru") -> InlineKeyboardMarkup:
 
 def weather_menu(target: str = "", lang: str = "ru") -> InlineKeyboardMarkup:
     """Меню режима погоды. target — чужой пользователь (правит администрация)."""
-    suffix = f":{target}" if target else ""
-    back = f"usr:card:{target}" if target else "menu:settings"
+    suffix = f":{cb_key(target)}" if target else ""
+    back = f"usr:card:{cb_key(target)}" if target else "menu:settings"
 
     def label(key: str, russian: str) -> str:
         return i18n.t(key, lang, russian)
@@ -478,7 +480,7 @@ def weather_menu(target: str = "", lang: str = "ru") -> InlineKeyboardMarkup:
 
 def locations_menu(locations: Sequence[dict[str, Any]], owner: str = "") -> InlineKeyboardMarkup:
     """Список локаций с кнопками удаления. owner — чужой пользователь (для модератора)."""
-    suffix = f":{owner}" if owner else ""
+    suffix = f":{cb_key(owner)}" if owner else ""
     rows = [
         [
             InlineKeyboardButton(
@@ -490,9 +492,9 @@ def locations_menu(locations: Sequence[dict[str, Any]], owner: str = "") -> Inli
     ]
     if owner:
         rows.append(
-            [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{owner}")]
+            [InlineKeyboardButton(text="➕ Добавить локацию", callback_data=f"usr:addloc:{cb_key(owner)}")]
         )
-        rows.append([InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{owner}")])
+        rows.append([InlineKeyboardButton(text="◀️ К пользователю", callback_data=f"usr:card:{cb_key(owner)}")])
     else:
         rows.append(
             [
@@ -541,14 +543,14 @@ def user_card(target: str, target_role: str, actor_role: str,
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(text=label("ucard.locs", "📍 Локации"),
-                                 callback_data=f"usr:locs:{target}"),
+                                 callback_data=f"usr:locs:{cb_key(target)}"),
             InlineKeyboardButton(text=label("ucard.alerts", "⚙️ Оповещения"),
-                                 callback_data=f"usr:sets:{target}"),
+                                 callback_data=f"usr:sets:{cb_key(target)}"),
         ],
         [InlineKeyboardButton(text=label("ucard.add_loc", "➕ Добавить локацию"),
-                              callback_data=f"usr:addloc:{target}")],
+                              callback_data=f"usr:addloc:{cb_key(target)}")],
         [InlineKeyboardButton(text=label("ucard.weather", "🌤 Погода пользователя"),
-                              callback_data=f"usr:wth:{target}")],
+                              callback_data=f"usr:wth:{cb_key(target)}")],
     ]
     assignable = [
         role for role in roles.assignable_roles(actor_role)
@@ -559,7 +561,7 @@ def user_card(target: str, target_role: str, actor_role: str,
             [
                 InlineKeyboardButton(
                     text=f"→ {roles.title(role, lang)}",
-                    callback_data=f"usr:role:{target}:{role}"
+                    callback_data=f"usr:role:{cb_key(target)}:{role}"
                 )
                 for role in assignable
             ]
@@ -567,7 +569,7 @@ def user_card(target: str, target_role: str, actor_role: str,
     if roles.can_delete_user(actor_role, target_role):
         rows.append(
             [InlineKeyboardButton(text=label("ucard.delete", "🔨 Удалить пользователя"),
-                                  callback_data=f"usr:del:{target}")]
+                                  callback_data=f"usr:del:{cb_key(target)}")]
         )
     rows.append([InlineKeyboardButton(text=label("ucard.back", "◀️ К списку"),
                                       callback_data="usr:list:0")])
@@ -583,7 +585,7 @@ def users_page(
         [
             InlineKeyboardButton(
                 text=f"{roles.title(role, lang).split()[0]} {uid} · {count} {short}",
-                callback_data=f"usr:card:{uid}",
+                callback_data=f"usr:card:{cb_key(uid)}",
             )
         ]
         for uid, role, count in items
@@ -607,13 +609,13 @@ def geocode_choices(results: list[dict[str, str]], target: str,
         [
             InlineKeyboardButton(
                 text=f"{index + 1}. {item['name'][:45]}",
-                callback_data=f"usr:pickloc:{target}:{index}",
+                callback_data=f"usr:pickloc:{cb_key(target)}:{index}",
             )
         ]
         for index, item in enumerate(results)
     ]
     rows.append([InlineKeyboardButton(text=i18n.t("common.cancel_x", lang, "❌ Отмена"),
-                                      callback_data=f"usr:card:{target}")])
+                                      callback_data=f"usr:card:{cb_key(target)}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

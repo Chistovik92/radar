@@ -172,9 +172,38 @@ class ResponderTests(unittest.TestCase):
         self.assertIn("Telegram", answer.text)
         self.assertIn("не заменяет официальные каналы", answer.text)
 
-    def test_unknown_command_answered(self):
-        answer = maxbot.answer_for(self._event(EventKind.COMMAND, "vpn"))
-        self.assertIn("/help", answer.text)
+    def test_commands_and_places_go_to_textbot(self):
+        """С 5.7 MAX — полноценный вход: команды, текст и геопозиция уходят
+        общему ответчику, приветствие остаётся своим."""
+        from unittest import mock
+
+        from radar.platforms import textbot
+
+        seen = []
+
+        async def fake_answer(platform, external_id, text="", *, location=None):
+            seen.append((platform, external_id, text, location))
+            return "ответ & <тег>"
+
+        class Transport:
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, chat_id, message):
+                self.sent.append(message.text)
+                return True
+
+        transport = Transport()
+        event = self._event(EventKind.COMMAND, "address")
+        event.args = "Тверская 1"
+        place = self._event(EventKind.LOCATION)
+        place.latitude, place.longitude = 55.7, 37.6
+        with mock.patch.object(textbot, "answer", fake_answer):
+            run(maxbot.reply(event, transport))
+            run(maxbot.reply(place, transport))
+        self.assertEqual(seen[0], ("max", "1", "/address Тверская 1", None))
+        self.assertEqual(seen[1][3], (55.7, 37.6))
+        self.assertEqual(transport.sent[0], "ответ &amp; &lt;тег&gt;", "MAX получает HTML")
 
     def test_any_message_gets_help(self):
         answer = maxbot.answer_for(self._event(EventKind.MESSAGE, text="привет"))
@@ -228,6 +257,34 @@ class SendTests(unittest.TestCase):
     def test_not_configured_sends_nothing(self):
         adapter = MaxTransport(token="", base_url="https://example.invalid")
         self.assertFalse(run(adapter.send("1", OutboundMessage(text="x"))))
+
+    def test_commands_go_to_me_commands_first(self):
+        """Официальные SDK MAX (Go, TypeScript) шлют PATCH /me/commands;
+        PATCH /me у них устаревший и остаётся запасным на 404 (5.6.2)."""
+        adapter = transport()
+        paths: list[str] = []
+
+        async def fake_request(method, path, *, params=None, payload=None):
+            paths.append(f"{method} {path}")
+            return (404, {}) if path == "me/commands" and len(paths) == 1 else (200, {})
+
+        adapter._request = fake_request
+        run(adapter.set_commands([("start", "начать")]))
+        self.assertEqual(paths, ["PATCH me/commands", "PATCH me"])
+        paths.clear()
+
+        async def ok_request(method, path, *, params=None, payload=None):
+            paths.append(f"{method} {path}")
+            return 200, {}
+
+        adapter._request = ok_request
+        run(adapter.set_commands([("start", "начать")]))
+        self.assertEqual(paths, ["PATCH me/commands"])
+
+    def test_default_base_is_platform_api2(self):
+        from radar import config
+
+        self.assertEqual(config.MAX_API_URL, "https://platform-api2.max.ru")
 
 
 class MarkerTests(unittest.TestCase):

@@ -698,9 +698,16 @@ async def check_order(call: CallbackQuery, user: dict) -> None:
 async def cancel_order(call: CallbackQuery, role: str) -> None:
     order_id = call.data.split(":", 2)[2]
     try:
-        await vpnsales.cancel(order_id, call.from_user.id, role)
+        entry = await vpnsales.cancel(order_id, call.from_user.id, role)
     except vpnsales.SaleError as exc:
         await call.answer(str(exc), show_alert=True)
+        return
+    if entry["status"] != vpnsales.CANCELLED:
+        # Счёт оказался оплачен — вместо отмены прошла выдача (5.6.2).
+        await call.answer()
+        note = await _settle(entry)
+        await safe_edit(call, f"🧾 <code>{esc(order_id)}</code>: {esc(note)}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back()]))
         return
     await call.answer("Заказ отменён.")
     await safe_edit(call, f"✖️ Заказ <code>{esc(order_id)}</code> отменён.",

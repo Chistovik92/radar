@@ -9,9 +9,11 @@
 2. `groups.getLongPollServer` → Long Poll с `act=a_check`;
 3. коды сбоя: 1 — новый `ts` из ответа, 2 — новый ключ при прежнем `ts`,
    3 — сервер заново;
-4. сквозной путь: код из Telegram → сообщение боту в ВК → привязка →
-   тревога в Telegram → копия в ВК через `messages.send`;
-5. ошибка 5 (неверный ключ) → адаптер останавливается.
+4. сквозной путь: код из Telegram → сообщение боту в ВК → «да» →
+   общий аккаунт → тревога в Telegram → копия в ВК через `messages.send`;
+5. адрес из ВК (5.7): `/address` → подтверждение → адрес в общем профиле
+   (геокодер подменён: Nominatim — не предмет этой проверки);
+6. ошибка 5 (неверный ключ) → адаптер останавливается.
 
 Проверка согласованности с прочитанным кодом vkbottle и транспорта —
 не проверка настоящего ВКонтакте.
@@ -121,7 +123,7 @@ def message(from_id: int, text: str) -> dict[str, Any]:
 
 async def main() -> int:
     from radar import links, mirror
-    from radar.platforms import vk, vkbot
+    from radar.platforms import textbot, vk, vkbot
 
     emulator = Emulator()
     runner = web.AppRunner(emulator.app())
@@ -140,22 +142,51 @@ async def main() -> int:
 
     import radar
 
+    users: dict[str, Any] = {}
+
+    async def save(uid=None):
+        return None
+
+    async def drop_user(uid):
+        users.pop(str(uid), None)
+
+    def register(uid, username=""):
+        users[str(uid)] = {"role": "user", "locs": [], "settings": {}, "lang": ""}
+        return users[str(uid)]
+
+    def new_location(name, lat, lon, **extra):
+        return dict(extra, id=f"l{len(users)}", name=name, lat=lat, lon=lon)
+
     storage = types.ModuleType("radar.storage")
     storage.meta_get = meta_get
     storage.meta_set = meta_set
+    storage.users = lambda: users
+    storage.get_user = lambda uid: users.get(str(uid))
+    storage.register = register
+    storage.save = save
+    storage.drop_user = drop_user
+    storage.new_location = new_location
+
+    async def geocode(query, hint):
+        return [{"name": "Тверская, 1", "lat": "55.757", "lon": "37.613",
+                 "street": "Тверская", "house": "1", "city": "Москва",
+                 "district": "", "region": ""}]
 
     checks: list[tuple[str, bool, str]] = []
     transport = vk.VkTransport(TOKEN, "123", vkbot.reply)
     with mock.patch.object(vk, "API", emulator.base + "/method"), \
             mock.patch.object(vk, "WAIT", 1), \
             mock.patch.dict(sys.modules, {"radar.storage": storage}), \
-            mock.patch.object(radar, "storage", storage, create=True):
+            mock.patch.object(radar, "storage", storage, create=True), \
+            mock.patch.object(textbot, "_geocode_text", geocode):
         mirror.register("vk", transport.send_text)
         task = asyncio.ensure_future(transport.start())
         try:
+            register("100")
             code = links.new_code("100")
             await emulator.queue.put(message(555, "привет"))
             await emulator.queue.put(message(555, code))
+            await emulator.queue.put(message(555, "да"))
             for _ in range(60):
                 if await links.owner_of("vk", "555"):
                     break
@@ -164,13 +195,22 @@ async def main() -> int:
             checks.append(("коды сбоя Long Poll 1, 2, 3 пережиты",
                            not emulator.failures and emulator.servers >= 3,
                            f"серверов запрошено: {emulator.servers}"))
-            checks.append(("код из Telegram привязал аккаунт ВК", owner == "100",
-                           f"владелец: {owner or '—'}"))
+            checks.append(("код из Telegram и «да» связали аккаунты", owner == "100",
+                           f"основной профиль: {owner or '—'}"))
             replies = [item["message"] for item in emulator.sent]
-            checks.append(("ответчик ответил справкой и подтверждением",
-                           len(replies) >= 2 and "Telegram" in replies[0]
-                           and "привязан" in replies[1],
+            checks.append(("ответчик: справка, вопрос о связи, подтверждение",
+                           len(replies) >= 3 and "/address" in replies[0]
+                           and "«да»" in replies[1] and "связаны" in replies[2],
                            f"ответов: {len(replies)}"))
+            await emulator.queue.put(message(555, "/address Тверская 1, Москва"))
+            await emulator.queue.put(message(555, "да"))
+            for _ in range(60):
+                if users["100"]["locs"]:
+                    break
+                await asyncio.sleep(0.1)
+            checks.append(("адрес из ВК лёг в общий профиль после «да»",
+                           len(users["100"]["locs"]) == 1,
+                           f"адресов в профиле: {len(users['100']['locs'])}"))
             before = len(emulator.sent)
             mirror.alert("100", "🚨 <b>Тревога</b> по адресу <a href=\"https://map\">ул. Ленина</a>")
             mirror.alert("200", "чужая тревога")

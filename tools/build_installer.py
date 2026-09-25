@@ -91,6 +91,7 @@ MANIFEST = [
     "radar/platforms/discordbot.py",
     "radar/platforms/vk.py",
     "radar/platforms/vkbot.py",
+    "radar/platforms/textbot.py",
     "radar/links.py",
     "radar/mirror.py",
     "radar/handlers/linking.py",

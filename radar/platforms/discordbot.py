@@ -33,6 +33,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from ..textutils import esc
 from .base import Button, EventKind, InboundEvent, OutboundMessage
 
 log = logging.getLogger("radar.platform.discordbot")
@@ -44,9 +45,10 @@ ABOUT = (
     "Следит за городскими угрозами и авариями ЖКХ: читает каналы служб "
     "и ленты СМИ, разбирает сообщения и присылает оповещения по адресам "
     "тех, кто их задал.\n\n"
-    "<b>Здесь, в Discord, — сводки и статус системы.</b> Оповещения "
-    "по адресам живут в Telegram-боте: без подтверждённого адреса тревога "
-    "не отправляется.\n\n" + DISCLAIMER
+    "<b>Здесь, в Discord, — сводки и статус системы.</b> Тревоги по своим "
+    "адресам можно получать в личные сообщения: /address — добавить адрес, "
+    "/link — связать с аккаунтом в Telegram, ВК или MAX. Без подтверждённого "
+    "адреса тревога не отправляется.\n\n" + DISCLAIMER
 )
 
 HELP = (
@@ -54,6 +56,8 @@ HELP = (
     "/about — что это такое\n"
     "/status — работает ли мониторинг\n"
     "/summary — сводка за сутки\n"
+    "/address — добавить адрес, /addresses — мои адреса, /remove — удалить\n"
+    "/link — общий аккаунт с Telegram, ВК, MAX; /unlink — отвязать\n"
     "/help — этот список"
 )
 
@@ -62,7 +66,17 @@ COMMANDS = (
     ("status", "Работает ли мониторинг"),
     ("summary", "Сводка событий за сутки"),
     ("help", "Список команд"),
+    # Общий аккаунт (5.7): ответы видит только сам человек.
+    ("address", "Добавить адрес для тревог", [("query", "Улица, дом, город", True)]),
+    ("addresses", "Мои адреса"),
+    ("remove", "Удалить адрес", [("number", "Номер из /addresses", True)]),
+    ("link", "Связать с Telegram, ВК или MAX", [("code", "Код из другой сети", False)]),
+    ("unlink", "Отвязать этот аккаунт от остальных"),
 )
+
+# Команды общего аккаунта: личное, поэтому ответ видит только автор.
+PERSONAL = ("address", "addresses", "remove", "link", "unlink")
+YES_ID, NO_ID = "txt:yes", "txt:no"
 
 SUMMARY_META = "discord_summary_date"
 CHECK_EVERY = 60
@@ -113,7 +127,7 @@ def summary_text(counts: dict[str, int], moment: datetime) -> str:
             lines.append(f"✅ Отбоев: {clear}")
     lines.append("")
     lines.append("Это сводка о прошедшем, а не тревога. Оповещения по адресам "
-                 "приходят в Telegram-боте.")
+                 "приходят лично тем, кто их задал.")
     lines.append(DISCLAIMER)
     return "\n".join(lines)
 
@@ -157,6 +171,10 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     """
     from .maxbot import telegram_username
 
+    if (event.kind is EventKind.COMMAND and event.command in PERSONAL) or (
+            event.kind is EventKind.CALLBACK and event.payload in (YES_ID, NO_ID)):
+        await personal(event, transport)
+        return
     healthy, silent = _status()
     status = status_text(healthy, silent)
     if event.kind is EventKind.COMMAND and event.command == "summary":
@@ -168,8 +186,34 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     await transport.respond(event, message, ephemeral=event.command == "help")
 
 
+async def personal(event: InboundEvent, transport: Any) -> None:
+    """Адреса и привязка — общий ответчик `textbot`, ответ виден только автору.
+
+    Discord не читает текст сообщений (намерение Message Content не
+    запрашивается), поэтому «да»/«нет» здесь — кнопки.
+    """
+    from .. import links
+    from . import textbot
+
+    user_id = event.identity.external_id
+    if event.kind is EventKind.CALLBACK:
+        text = "да" if event.payload == YES_ID else "нет"
+    else:
+        text = event.text
+    answer = await textbot.answer("discord", user_id, text)
+    keyboard: list[list[Button]] = []
+    if links.pending_for("discord", user_id) or textbot.pending_for("discord", user_id):
+        keyboard = [[Button(text="Да", payload=YES_ID), Button(text="Нет", payload=NO_ID)]]
+    await transport.respond(event, OutboundMessage(text=esc(answer), keyboard=keyboard),
+                            update=event.kind is EventKind.CALLBACK, ephemeral=True)
+
+
 async def run(transport: Any) -> None:
     """Всё, что делает Discord: команды, Gateway и публикации в канал."""
+    from .. import mirror
+
+    # Тревоги общего аккаунта — в личные сообщения (5.7).
+    mirror.register("discord", transport.send_text)
     try:
         await transport.set_commands(COMMANDS)
     except Exception:  # noqa: BLE001
