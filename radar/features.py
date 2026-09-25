@@ -246,10 +246,10 @@ FLAGS: tuple[Flag, ...] = (
 
     # --- VPN ---
     Flag("vpn", "VPN-доступ",
-         "Выдача доступа к VPN через панель 3x-ui, PasarGuard или "
-         "Remnawave: по заявке с решением администратора или сразу — "
-         "по роли. Без платежей. Панель задаётся в разделе ключей "
-         "(VPN_PANEL, VPN_PANEL_URL, VPN_PANEL_TOKEN).",
+         "Выдача доступа к VPN через одну или несколько панелей: 3x-ui, "
+         "x-ui, s-ui, Marzban, PasarGuard, Marzneshin, Remnawave, Hiddify, "
+         "Outline, wg-easy. Только по решению суперадминистратора, без "
+         "платежей. Панели задаются слотами в разделе ключей (VPN 1 … VPN 6).",
          group="VPN", since="5.0", default=False),
 
     # --- администрирование ---

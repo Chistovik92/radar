@@ -132,41 +132,12 @@ SETTINGS: tuple[Setting, ...] = (
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
 
-    # --- VPN (с 5.0) ---
-    Setting("VPN_PANEL", "VPN: панель",
-            "3xui, pasarguard или remnawave. Пусто — раздел VPN не работает.",
-            "VPN", secret=False),
-    Setting("VPN_PANEL_URL", "VPN: адрес панели",
-            "Вместе с секретным путём, если он есть: "
-            "https://example.ru:2053/secretpath.", "VPN", secret=False),
-    Setting("VPN_PANEL_TOKEN", "VPN: токен панели",
-            "3x-ui — Settings → Security, Remnawave — API Tokens, "
-            "PasarGuard — токен администратора. Для Remnawave обязателен.",
-            "VPN"),
-    Setting("VPN_PANEL_USER", "VPN: логин панели",
-            "Вместо токена — для 3x-ui и PasarGuard.", "VPN", secret=False),
-    Setting("VPN_PANEL_PASS", "VPN: пароль панели",
-            "Вместо токена — для 3x-ui и PasarGuard.", "VPN"),
-    Setting("VPN_XUI_INBOUND", "VPN: подключение 3x-ui",
-            "Номер входящего подключения (inbound), куда заводятся клиенты. "
-            "Протокол — vless, vmess или trojan.", "VPN", secret=False),
-    Setting("VPN_SUB_URL", "VPN: адрес подписки 3x-ui",
-            "Адрес службы подписки 3x-ui, например https://example.ru:2096/sub. "
-            "Другим панелям не нужен — они сообщают ссылку сами.",
-            "VPN", secret=False),
-    Setting("VPN_GROUPS", "VPN: группы или отряды",
-            "Через запятую: номера групп PasarGuard или uuid внутренних "
-            "отрядов Remnawave, куда попадают новые записи.",
-            "VPN", secret=False),
+    # --- VPN: общее для всех панелей (с 5.0) ---
     Setting("VPN_DAYS", "VPN: срок выдачи, дней",
             "Срок новой записи и шаг продления. По умолчанию 30.",
             "VPN", secret=False),
     Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
             "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
-    Setting("VPN_AUTO_ROLE", "VPN: выдача без заявки",
-            "С какой роли доступ выдаётся сразу: user, moderator, admin, "
-            "superadmin или none — только по заявкам. По умолчанию admin.",
-            "VPN", secret=False),
 
     # --- защита ---
     Setting("SAFE_BROWSING_API_KEY", "Google Safe Browsing",
@@ -234,13 +205,69 @@ def _agent_settings(slots: int) -> tuple[Setting, ...]:
     return tuple(built)
 
 
+# --------------------------------------------------------------------------
+#  Слоты VPN-панелей (с 5.0.1)
+# --------------------------------------------------------------------------
+#
+# Панелей может быть несколько и разных, поэтому — слоты по образцу своих
+# агентов: у каждого своя группа в разделе ключей. Смысловая часть —
+# в radar/vpn.py, здесь только имена и подписи.
+
+VPN_SLOTS = 6
+
+
+def _vpn_settings(slots: int) -> tuple[Setting, ...]:
+    built: list[Setting] = []
+    for slot in range(1, slots + 1):
+        group = f"VPN {slot}"
+        prefix = f"VPN{slot}_"
+        built.extend((
+            Setting(prefix + "KIND", f"VPN {slot}: вид панели",
+                    "3xui, xui, sui, marzban, pasarguard, marzneshin, remnawave, "
+                    "hiddify, outline или wgeasy. Пусто — слот не используется.",
+                    group, secret=False),
+            Setting(prefix + "TITLE", f"VPN {slot}: название",
+                    "Как панель подписана для людей, например «Нидерланды».",
+                    group, secret=False),
+            Setting(prefix + "URL", f"VPN {slot}: адрес панели",
+                    "Вместе с секретным путём, если он есть. Для Outline — "
+                    "apiUrl целиком, для Hiddify — с путём администратора.",
+                    group, secret=False),
+            Setting(prefix + "TOKEN", f"VPN {slot}: токен",
+                    "Токен или ключ API панели. Для Hiddify — uuid "
+                    "администратора, для s-ui — токен из «Настройки → API».",
+                    group),
+            Setting(prefix + "USER", f"VPN {slot}: логин",
+                    "Вместо токена — там, где панель это позволяет.",
+                    group, secret=False),
+            Setting(prefix + "PASS", f"VPN {slot}: пароль",
+                    "Вместо токена — там, где панель это позволяет.", group),
+            Setting(prefix + "INBOUND", f"VPN {slot}: подключение",
+                    "Для 3x-ui и x-ui: номер входящего подключения (inbound).",
+                    group, secret=False),
+            Setting(prefix + "SUB_URL", f"VPN {slot}: адрес подписки",
+                    "Для 3x-ui, x-ui и s-ui — адрес службы подписки, для Hiddify — "
+                    "клиентский путь. Остальные панели сообщают ссылку сами.",
+                    group, secret=False),
+            Setting(prefix + "GROUPS", f"VPN {slot}: группы",
+                    "Через запятую: группы PasarGuard, сервисы Marzneshin, отряды "
+                    "Remnawave, подключения s-ui или протоколы Marzban.",
+                    group, secret=False),
+            Setting(prefix + "CERT", f"VPN {slot}: отпечаток сертификата",
+                    "SHA-256 сертификата для панели на самоподписанном — "
+                    "для Outline обязателен (certSha256).",
+                    group, secret=False),
+        ))
+    return tuple(built)
+
+
 # Бот показывает первые пять слотов: в переписке длинный список неудобен,
 # а пяти сервисов хватает с запасом. Панель заводит агентов без этого
 # ограничения — там у неё своя вкладка, и слоты сверх пятого правятся
 # в ней. Разделение осознанное: перечень настроек собирается один раз при
 # старте, и «показывать всё, что заведено» означало бы либо перечитывать
 # .env на каждый показ, либо врать до перезапуска.
-SETTINGS = SETTINGS + _agent_settings(AGENT_SLOTS)
+SETTINGS = SETTINGS + _agent_settings(AGENT_SLOTS) + _vpn_settings(VPN_SLOTS)
 
 BY_KEY = {item.key: item for item in SETTINGS}
 GROUPS: tuple[str, ...] = tuple(dict.fromkeys(item.group for item in SETTINGS))

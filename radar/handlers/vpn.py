@@ -1,16 +1,20 @@
-"""Раздел «VPN»: заявка, выдача, ссылка подписки, продление (с 5.0).
+"""Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
-Кто что видит:
+Кто что видит (с 5.0.1):
 
-* любой пользователь — состояние своего доступа и ссылку подписки,
-  а без доступа — кнопку заявки;
-* роль не ниже `VPN_AUTO_ROLE` (по умолчанию администрация) получает
-  доступ сразу, без заявки;
-* администрация — заявки с кнопками «выдать»/«отказать», список
-  выданных с продлением и отключением, проверку панели.
+* любой пользователь — свои доступы по каждой панели, ссылку для каждой
+  и кнопку заявки. Сам себе он ничего не выдаёт: доступа без решения
+  суперадминистратора не бывает;
+* суперадминистратор — заявки (письмо приходит только ему), выбор
+  панелей при выдаче, список выданных с продлением, отключением
+  и отзывом по каждой панели, проверку всех панелей разом.
 
-Ссылка подписки показывается только своему владельцу и в журнал
-не пишется: она и есть ключ.
+Администраторы и модераторы управлять выдачей не могут: это решение
+вынесено на одного человека намеренно — доступ к VPN бесплатный
+только по его воле. Проверка роли стоит и здесь, и в `radar/vpn.py`.
+
+Ссылки показываются только своему владельцу и в журнал не пишутся:
+ссылка и есть ключ.
 """
 
 # --------------------------------------------------------------------------
@@ -30,7 +34,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .. import features, i18n, roles, storage, vpn
 from ..textutils import esc
 from ..tg import safe_edit, send_html
-from ..vpnpanels import PanelError
+from ..vpnpanels import Account, PanelError
 
 log = logging.getLogger("radar.handlers.vpn")
 router = Router(name="vpn")
@@ -49,6 +53,25 @@ VPN_SETUP_STEPS = (
     "работает на всех ваших устройствах."
 )
 
+VPN_KEY_STEPS = (
+    "<b>Как подключить:</b>\n"
+    "1. Установите Outline Client или любой клиент Shadowsocks.\n"
+    "2. Скопируйте ключ выше и добавьте его в клиент.\n\n"
+    "Ключ — это ваш доступ: не пересылайте его."
+)
+
+VPN_CONFIG_STEPS = (
+    "<b>Как подключить:</b>\n"
+    "1. Установите WireGuard (или AmneziaWG).\n"
+    "2. Откройте ссылку выше и скачайте файл настроек — ссылка "
+    "<b>одноразовая</b>, второй раз она не откроется.\n"
+    "3. Импортируйте файл в приложение.\n\n"
+    "Нужна ещё раз — нажмите кнопку снова, бот выпустит новую ссылку."
+)
+
+DISABLED_TEXT = "Раздел выключен."
+SUPERADMIN_ONLY = "Только для суперадминистратора."
+
 
 def _button(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
@@ -59,8 +82,7 @@ def _back(target: str = "vpn:menu", lang: str = i18n.DEFAULT) -> list[InlineKeyb
 
 
 def _name_of(uid: str) -> str:
-    user = storage.get_user(uid) or {}
-    username = user.get("username")
+    username = (storage.get_user(uid) or {}).get("username")
     return f"@{esc(username)}" if username else f"<code>{esc(uid)}</code>"
 
 
@@ -70,111 +92,116 @@ def _label(uid: str) -> str:
     return f"@{username}" if username else uid
 
 
+def _titles() -> dict[str, vpn.Slot]:
+    return {item.key: item for item in vpn.slots()}
+
+
+def _short(title: str, limit: int = 18) -> str:
+    return title if len(title) <= limit else title[:limit - 1] + "…"
+
+
+def _status_lines(results: dict[str, Any], lang: str) -> list[str]:
+    """Состояние по каждой панели: название, затем срок и трафик."""
+    known = _titles()
+    lines: list[str] = []
+    for key, result in sorted(results.items(), key=lambda item: int(item[0])):
+        title = esc(known[key].title) if key in known else f"#{key}"
+        lines.append(f"\n<b>{title}</b>")
+        if isinstance(result, Account):
+            lines.append(vpn.describe(result, lang))
+        elif isinstance(result, PanelError):
+            lines.append(f"⚠️ {esc(str(result))}")
+        else:
+            lines.append(i18n.t("vpn.gone", lang,
+                                "Запись в панели не найдена — запросите доступ заново."))
+    return lines
+
+
 async def _menu_view(uid: str, user: dict[str, Any], role: str
                      ) -> tuple[str, InlineKeyboardMarkup]:
     lang = i18n.language_of(user)
-    title = i18n.t("vpn.title", lang, "🔐 <b>VPN</b>")
+    lines = [i18n.t("vpn.title", lang, "🔐 <b>VPN</b>")]
     rows: list[list[InlineKeyboardButton]] = []
-    lines = [title, ""]
 
     ok, reason = vpn.ready()
     entry = await vpn.record(uid) or {}
     state = entry.get("state")
 
     if not ok:
+        lines.append("")
         lines.append(i18n.t("vpn.unavailable", lang,
                             "Раздел пока не настроен администратором."))
-        if roles.is_admin(role):
+        if vpn.can_decide(role):
             lines.append(f"\n<i>{esc(reason)}</i>")
-    elif state == vpn.ACTIVE:
-        try:
-            account = await vpn.status(uid)
-            failure = ""
-        except PanelError as exc:
-            account, failure = None, str(exc)
-        if account is not None:
-            lines.append(vpn.describe(account, lang))
-            rows.append([_button(i18n.t("vpn.link_button", lang,
-                                        "📋 Ссылка подписки"), "vpn:link")])
-        elif failure:
-            lines.append(f"⚠️ {esc(failure)}")
-        else:
-            # Запись удалили в самой панели. Забываем выдачу, иначе заявка
-            # упёрлась бы в «уже выдано» и кнопка ничего бы не делала.
-            await vpn.forget(uid)
-            lines.append(i18n.t("vpn.gone", lang,
-                                "Запись в панели не найдена — запросите доступ заново."))
-            if vpn.issues_without_request(role):
-                rows.append([_button(i18n.t("vpn.get_button", lang,
-                                            "🔑 Получить доступ"), "vpn:get")])
-            else:
-                rows.append([_button(i18n.t("vpn.ask_button", lang,
-                                            "📨 Запросить доступ"), "vpn:ask")])
-    elif state == vpn.PENDING:
-        lines.append(i18n.t("vpn.pending", lang,
-                            "⏳ Заявка отправлена и ждёт решения администратора."))
-    elif vpn.issues_without_request(role):
-        lines.append(i18n.t("vpn.can_get", lang,
-                            "Доступ выдаётся сразу — нажмите кнопку ниже."))
-        rows.append([_button(i18n.t("vpn.get_button", lang,
-                                    "🔑 Получить доступ"), "vpn:get")])
     else:
-        if state == vpn.DENIED:
-            lines.append(i18n.t("vpn.denied", lang,
-                                "Прежняя заявка была отклонена. Можно подать новую."))
+        if vpn.issued_slots(entry):
+            results = await vpn.statuses(uid)
+            lines.extend(_status_lines(results, lang))
+            known = _titles()
+            for key, result in sorted(results.items(), key=lambda item: int(item[0])):
+                if isinstance(result, Account) and key in known:
+                    rows.append([_button(f"📋 {_short(known[key].title, 30)}",
+                                         f"vpn:l:{key}")])
+        lines.append("")
+        if state == vpn.PENDING:
+            lines.append(i18n.t("vpn.pending", lang,
+                                "⏳ Заявка отправлена и ждёт решения администратора."))
         else:
-            lines.append(i18n.t("vpn.intro", lang,
-                                "Доступ к VPN выдаёт администратор. "
-                                "Отправьте заявку — ответ придёт сюда же."))
-        rows.append([_button(i18n.t("vpn.ask_button", lang,
-                                    "📨 Запросить доступ"), "vpn:ask")])
+            if state == vpn.DENIED:
+                lines.append(i18n.t("vpn.denied", lang,
+                                    "Прежняя заявка была отклонена. Можно подать новую."))
+            elif not vpn.issued_slots(entry):
+                lines.append(i18n.t("vpn.intro", lang,
+                                    "Доступ к VPN выдаёт администратор. "
+                                    "Отправьте заявку — ответ придёт сюда же."))
+            rows.append([_button(i18n.t("vpn.ask_button", lang,
+                                        "📨 Запросить доступ"), "vpn:ask")])
 
-    if roles.is_admin(role):
+    if vpn.can_decide(role):
         waiting = len(await vpn.pending())
         rows.append([
             _button(f"📨 Заявки ({waiting})", "vpn:reqs"),
             _button("👥 Выданные", "vpn:list"),
         ])
-        rows.append([_button("🩺 Проверить панель", "vpn:check")])
+        rows.append([
+            _button("🔑 Выдать себе", f"vpn:rv:{uid}:0"),
+            _button("🩺 Проверить панели", "vpn:check"),
+        ])
 
     rows.append([_button(i18n.t("menu.home", lang, "🏠 В главное меню"), "menu:main")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _enabled_or_alert() -> bool:
-    return features.enabled("vpn")
-
-
 @router.callback_query(F.data == "vpn:menu")
 async def menu_vpn(call: CallbackQuery, user: dict, role: str) -> None:
-    if not _enabled_or_alert():
-        await call.answer("Раздел выключен.", show_alert=True)
+    if not features.enabled("vpn"):
+        await call.answer(DISABLED_TEXT, show_alert=True)
         return
     await call.answer()
     text, markup = await _menu_view(str(call.from_user.id), user, role)
     await safe_edit(call, text, markup)
 
 
-async def _notify_admins(uid: str) -> None:
-    """Заявка — администрации, с кнопками решения прямо в письме."""
+async def _notify_superadmins(uid: str) -> None:
+    """Заявка — только суперадминистратору: решение за ним одним."""
     markup = InlineKeyboardMarkup(inline_keyboard=[[
-        _button("✅ Выдать", f"vpn:ok:{uid}"),
+        _button("🔍 Рассмотреть", f"vpn:rv:{uid}:0"),
         _button("❌ Отказать", f"vpn:no:{uid}"),
     ]])
     text = f"🔐 Заявка на VPN от {_name_of(uid)}."
-    for admin_uid, record in list(storage.users().items()):
-        if not roles.is_admin(record.get("role")) or record.get("blocked"):
+    for target, record in list(storage.users().items()):
+        if not vpn.can_decide(record.get("role")) or record.get("blocked"):
             continue
         try:
-            await send_html(admin_uid, text, markup)
+            await send_html(target, text, markup)
         except Exception:  # noqa: BLE001
-            log.warning("Заявка на VPN не доставлена администратору %s", admin_uid)
+            log.warning("Заявка на VPN не доставлена суперадминистратору %s", target)
 
 
 @router.callback_query(F.data == "vpn:ask")
 async def ask_access(call: CallbackQuery, user: dict, role: str) -> None:
-    if not _enabled_or_alert():
-        await call.answer("Раздел выключен.", show_alert=True)
+    if not features.enabled("vpn"):
+        await call.answer(DISABLED_TEXT, show_alert=True)
         return
     ok, reason = vpn.ready()
     if not ok:
@@ -186,17 +213,33 @@ async def ask_access(call: CallbackQuery, user: dict, role: str) -> None:
     lang = i18n.language_of(user)
     await call.answer(i18n.t("vpn.sent", lang, "Заявка отправлена."))
     if state == vpn.PENDING and before != vpn.PENDING:
-        await _notify_admins(uid)
+        await _notify_superadmins(uid)
     text, markup = await _menu_view(uid, user, role)
     await safe_edit(call, text, markup)
 
 
-async def _link_text(uid: str, lang: str) -> str:
-    link = await vpn.subscription(uid)
+def _steps(link_kind: str, lang: str) -> str:
+    if link_kind == "key":
+        return i18n.t("vpn.key_steps", lang, VPN_KEY_STEPS)
+    if link_kind == "config":
+        return i18n.t("vpn.config_steps", lang, VPN_CONFIG_STEPS)
+    return i18n.t("vpn.setup_steps", lang, VPN_SETUP_STEPS)
+
+
+async def _link_text(uid: str, key: str, lang: str) -> str:
+    target = _titles().get(key)
+    if target is None:
+        raise PanelError("Панель больше не настроена.")
+    link = await vpn.subscription(uid, key)
+    heading = {
+        "key": i18n.t("vpn.key_title", lang, "🔐 <b>Ваш ключ</b>"),
+        "config": i18n.t("vpn.config_title", lang, "🔐 <b>Ваша ссылка на настройки</b>"),
+    }.get(target.client.link_kind,
+          i18n.t("vpn.link_title", lang, "🔐 <b>Ваша ссылка подписки</b>"))
     return (
-        f"{i18n.t('vpn.link_title', lang, '🔐 <b>Ваша ссылка подписки</b>')}\n\n"
+        f"{heading} — {esc(target.title)}\n\n"
         f"<code>{esc(link)}</code>\n\n"
-        f"{i18n.t('vpn.setup_steps', lang, VPN_SETUP_STEPS)}"
+        f"{_steps(target.client.link_kind, lang)}"
     )
 
 
@@ -209,41 +252,20 @@ def _link_markup(lang: str) -> InlineKeyboardMarkup:
     ])
 
 
-@router.callback_query(F.data == "vpn:get")
-async def get_access(call: CallbackQuery, user: dict, role: str) -> None:
-    if not _enabled_or_alert():
-        await call.answer("Раздел выключен.", show_alert=True)
-        return
-    if not vpn.issues_without_request(role):
-        await call.answer("Доступ выдаётся по заявке.", show_alert=True)
-        return
-    uid = str(call.from_user.id)
-    lang = i18n.language_of(user)
-    await call.answer("Выдаю…")
-    try:
-        await vpn.issue(uid, uid)
-        text = await _link_text(uid, lang)
-    except PanelError as exc:
-        await safe_edit(call, f"❌ {esc(str(exc))}",
-                        InlineKeyboardMarkup(inline_keyboard=[_back("vpn:menu", lang)]))
-        return
-    await safe_edit(call, text, _link_markup(lang))
-
-
-@router.callback_query(F.data == "vpn:link")
+@router.callback_query(F.data.startswith("vpn:l:"))
 async def show_link(call: CallbackQuery, user: dict) -> None:
-    if not _enabled_or_alert():
-        await call.answer("Раздел выключен.", show_alert=True)
+    if not features.enabled("vpn"):
+        await call.answer(DISABLED_TEXT, show_alert=True)
         return
     uid = str(call.from_user.id)
+    key = call.data.split(":", 2)[2]
     lang = i18n.language_of(user)
-    entry = await vpn.record(uid) or {}
-    if entry.get("state") != vpn.ACTIVE:
+    if key not in vpn.issued_slots(await vpn.record(uid)):
         await call.answer(i18n.t("vpn.no_access", lang, "Доступ не выдан."),
                           show_alert=True)
         return
     try:
-        text = await _link_text(uid, lang)
+        text = await _link_text(uid, key, lang)
     except PanelError as exc:
         await call.answer(str(exc), show_alert=True)
         return
@@ -252,75 +274,138 @@ async def show_link(call: CallbackQuery, user: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-#  Администрация
+#  Суперадминистратор
 # --------------------------------------------------------------------------
 
-async def _admin_only(call: CallbackQuery, role: str) -> bool:
-    if not roles.is_admin(role):
-        await call.answer("Только для администрации.", show_alert=True)
+async def _decider_only(call: CallbackQuery, role: str) -> bool:
+    if not vpn.can_decide(role):
+        await call.answer(SUPERADMIN_ONLY, show_alert=True)
         return False
-    if not _enabled_or_alert():
-        await call.answer("Раздел выключен.", show_alert=True)
+    if not features.enabled("vpn"):
+        await call.answer(DISABLED_TEXT, show_alert=True)
         return False
     return True
 
 
+def _keys_of(mask: int) -> list[str]:
+    return [str(number) for number in range(1, vpn.SLOTS + 1) if mask & (1 << (number - 1))]
+
+
+def _parse_mask(value: str) -> int:
+    return int(value) if value.isdigit() and int(value) < (1 << vpn.SLOTS) else 0
+
+
 @router.callback_query(F.data == "vpn:reqs")
 async def list_requests(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+    if not await _decider_only(call, role):
         return
     await call.answer()
     waiting = await vpn.pending()
     rows = [[
-        _button(f"✅ {_label(uid)}", f"vpn:ok:{uid}"),
+        _button(f"🔍 {_label(uid)}", f"vpn:rv:{uid}:0"),
         _button("❌", f"vpn:no:{uid}"),
     ] for uid in waiting[:30]]
     rows.append(_back())
     text = ("📨 <b>Заявки на VPN</b>\n\n"
-            + ("✅ — выдать, ❌ — отказать." if waiting else "Заявок нет."))
+            + ("🔍 — выбрать панели и выдать, ❌ — отказать." if waiting else "Заявок нет."))
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@router.callback_query(F.data.startswith("vpn:ok:"))
-async def approve(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+@router.callback_query(F.data.startswith("vpn:rv:"))
+async def review(call: CallbackQuery, role: str) -> None:
+    """Выбор панелей для выдачи: отметки хранятся в самой кнопке маской."""
+    if not await _decider_only(call, role):
         return
-    uid = call.data.split(":", 2)[2]
+    _, _, uid, raw = call.data.split(":", 3)
+    mask = _parse_mask(raw)
+    available = vpn.slots()
     entry = await vpn.record(uid) or {}
-    if entry.get("state") == vpn.ACTIVE:
-        await call.answer("Уже выдано.", show_alert=True)
+    have = set(vpn.issued_slots(entry))
+    await call.answer()
+
+    if not available:
+        ok, reason = vpn.ready()
+        await safe_edit(call, f"❌ {esc(reason)}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back()]))
         return
+
+    rows = []
+    for target in available:
+        bit = 1 << (target.number - 1)
+        mark = "☑️" if mask & bit else "⬜️"
+        note = " · уже выдано" if target.key in have else ""
+        rows.append([_button(f"{mark} {_short(target.title, 28)}{note}",
+                             f"vpn:rv:{uid}:{mask ^ bit}")])
+    every = sum(1 << (target.number - 1) for target in available)
+    rows.append([_button("☑️ Все панели", f"vpn:rv:{uid}:{every}")])
+    chosen = len(_keys_of(mask))
+    if chosen:
+        rows.append([_button(f"✅ Выдать ({chosen})", f"vpn:go:{uid}:{mask}")])
+    if entry.get("state") == vpn.PENDING:
+        rows.append([_button("❌ Отказать", f"vpn:no:{uid}")])
+    rows.append(_back("vpn:reqs"))
+
+    days = vpn.default_days()
+    text = (f"🔐 <b>Выдача VPN</b>: {_name_of(uid)}\n\n"
+            f"Отметьте панели. Срок — {days} дн., повторная выдача "
+            f"возвращает прежний ключ.")
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("vpn:go:"))
+async def approve(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, _, uid, raw = call.data.split(":", 3)
+    keys = _keys_of(_parse_mask(raw))
     await call.answer("Выдаю…")
     try:
-        await vpn.issue(uid, call.from_user.id)
+        results = await vpn.issue(uid, keys, call.from_user.id, role)
     except PanelError as exc:
         await safe_edit(call, f"❌ Выдать не удалось: {esc(str(exc))}",
                         InlineKeyboardMarkup(inline_keyboard=[_back("vpn:reqs")]))
         return
 
-    lang = i18n.language_of(storage.get_user(uid))
-    try:
-        text = await _link_text(uid, lang)
-        delivered = await send_html(uid, text, _link_markup(lang))
-    except PanelError as exc:
-        delivered = False
-        log.warning("Ссылка для %s не получена: %s", uid, exc)
-    note = "Ссылка отправлена." if delivered else (
-        "Ссылку отправить не удалось — человек увидит её в разделе VPN.")
-    await safe_edit(call, f"✅ Доступ выдан: {_name_of(uid)}. {note}",
+    known = _titles()
+    report = []
+    granted = []
+    for key, result in sorted(results.items(), key=lambda item: int(item[0])):
+        title = esc(known[key].title) if key in known else f"#{key}"
+        if isinstance(result, Account):
+            granted.append(key)
+            report.append(f"✅ {title}")
+        else:
+            report.append(f"❌ {title}: {esc(str(result))}")
+
+    delivered = False
+    if granted:
+        lang = i18n.language_of(storage.get_user(uid))
+        parts = []
+        for key in granted:
+            try:
+                parts.append(await _link_text(uid, key, lang))
+            except PanelError as exc:
+                log.warning("Ссылка для %s (слот %s) не получена: %s", uid, key, exc)
+        if parts:
+            delivered = await send_html(uid, "\n\n———\n\n".join(parts), _link_markup(lang))
+    note = ""
+    if granted:
+        note = ("\n\nСсылки отправлены." if delivered else
+                "\n\nСсылки отправить не удалось — человек увидит их в разделе VPN.")
+    await safe_edit(call, f"🔐 Выдача для {_name_of(uid)}:\n" + "\n".join(report) + note,
                     InlineKeyboardMarkup(inline_keyboard=[_back("vpn:reqs")]))
 
 
 @router.callback_query(F.data.startswith("vpn:no:"))
 async def reject(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+    if not await _decider_only(call, role):
         return
     uid = call.data.split(":", 2)[2]
     entry = await vpn.record(uid) or {}
     if entry.get("state") != vpn.PENDING:
         await call.answer("Заявки уже нет.", show_alert=True)
         return
-    await vpn.deny(uid, call.from_user.id)
+    await vpn.deny(uid, call.from_user.id, role)
     await call.answer("Отклонено.")
     lang = i18n.language_of(storage.get_user(uid))
     try:
@@ -334,47 +419,49 @@ async def reject(call: CallbackQuery, role: str) -> None:
 
 @router.callback_query(F.data == "vpn:list")
 async def list_issued(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+    if not await _decider_only(call, role):
         return
     await call.answer()
     people = await vpn.issued()
-    rows = []
-    for uid in people[:40]:
-        rows.append([_button(_label(uid), f"vpn:u:{uid}")])
+    rows = [[_button(_label(uid), f"vpn:u:{uid}")] for uid in people[:40]]
     rows.append(_back())
     text = f"👥 <b>Выданный VPN</b>: {len(people)}"
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 async def _card(call: CallbackQuery, uid: str, note: str = "") -> None:
-    try:
-        account = await vpn.status(uid)
-    except PanelError as exc:
-        account = None
-        note = note or f"⚠️ {esc(str(exc))}"
+    results = await vpn.statuses(uid)
     lines = [f"🔐 <b>VPN</b>: {_name_of(uid)}"]
-    if account is not None:
-        lines.append(vpn.describe(account))
-    elif not note:
-        lines.append("Записи в панели нет.")
+    lines.extend(_status_lines(results, "ru") if results else ["\nНичего не выдано."])
     if note:
         lines.append("")
         lines.append(note)
 
+    known = _titles()
     days = vpn.default_days()
-    rows = [[_button(f"➕ {days} дн.", f"vpn:ext:{uid}")]]
-    if account is not None:
-        if account.enabled:
-            rows.append([_button("⛔ Отключить", f"vpn:off:{uid}")])
+    rows = []
+    for key, result in sorted(results.items(), key=lambda item: int(item[0])):
+        target = known.get(key)
+        if target is None:
+            continue
+        row = []
+        if target.client.supports_expiry:
+            row.append(_button(f"➕{days}д · {_short(target.title, 14)}",
+                               f"vpn:ext:{key}:{uid}"))
+        if isinstance(result, Account) and not result.enabled:
+            row.append(_button("✅ Вкл.", f"vpn:on:{key}:{uid}"))
         else:
-            rows.append([_button("✅ Включить", f"vpn:on:{uid}")])
+            row.append(_button("⛔ Выкл.", f"vpn:off:{key}:{uid}"))
+        row.append(_button("🗑", f"vpn:rm:{key}:{uid}"))
+        rows.append(row)
+    rows.append([_button("➕ Выдать на другие панели", f"vpn:rv:{uid}:0")])
     rows.append(_back("vpn:list"))
     await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("vpn:u:"))
 async def show_card(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+    if not await _decider_only(call, role):
         return
     await call.answer()
     await _card(call, call.data.split(":", 2)[2])
@@ -382,13 +469,13 @@ async def show_card(call: CallbackQuery, role: str) -> None:
 
 @router.callback_query(F.data.startswith("vpn:ext:"))
 async def extend_access(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+    if not await _decider_only(call, role):
         return
-    uid = call.data.split(":", 2)[2]
+    _, _, key, uid = call.data.split(":", 3)
     days = vpn.default_days()
     await call.answer("Продлеваю…")
     try:
-        account = await vpn.extend(uid, days)
+        account = await vpn.extend(uid, key, days, role)
     except PanelError as exc:
         await _card(call, uid, f"❌ {esc(str(exc))}")
         return
@@ -399,24 +486,47 @@ async def extend_access(call: CallbackQuery, role: str) -> None:
 
 @router.callback_query(F.data.startswith("vpn:off:") | F.data.startswith("vpn:on:"))
 async def toggle_access(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+    if not await _decider_only(call, role):
         return
-    _, action, uid = call.data.split(":", 2)
+    _, action, key, uid = call.data.split(":", 3)
     value = action == "on"
     await call.answer()
     try:
-        await vpn.set_enabled(uid, value)
+        await vpn.set_enabled(uid, key, value, role)
     except PanelError as exc:
         await _card(call, uid, f"❌ {esc(str(exc))}")
         return
     await _card(call, uid, "✅ Включено." if value else "⛔ Отключено.")
 
 
+@router.callback_query(F.data.startswith("vpn:rm:"))
+async def revoke_access(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, _, key, uid = call.data.split(":", 3)
+    await call.answer()
+    try:
+        await vpn.revoke(uid, key, role)
+        note = "🗑 Доступ отозван: запись в панели выключена, выдача забыта."
+    except PanelError as exc:
+        note = f"⚠️ {esc(str(exc))}"
+    await _card(call, uid, note)
+
+
 @router.callback_query(F.data == "vpn:check")
-async def check_panel(call: CallbackQuery, role: str) -> None:
-    if not await _admin_only(call, role):
+async def check_panels(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
         return
     await call.answer("Проверяю…")
-    ok, note = await vpn.check()
-    text = f"{'✅' if ok else '❌'} {esc(note)}"
-    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[_back()]))
+    known = _titles()
+    results = await vpn.check_all()
+    lines = ["🩺 <b>Панели VPN</b>"]
+    for key, (ok, note) in sorted(results.items(), key=lambda item: int(item[0])):
+        title = esc(known[key].title) if key in known else f"#{key}"
+        lines.append(f"\n{'✅' if ok else '❌'} <b>{title}</b>\n{esc(note)}")
+    wrong = vpn.unknown_kinds()
+    if wrong:
+        lines.append("\n⚠️ Незнакомый вид панели: " + esc(", ".join(wrong)))
+    if len(lines) == 1:
+        lines.append("\nНи одна панель не настроена.")
+    await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=[_back()]))

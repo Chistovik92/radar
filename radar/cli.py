@@ -363,6 +363,39 @@ def cmd_rustdesk(args) -> int:
     return OK if ok else FAILED
 
 
+# --------------------------------------------------------------------------
+#  VPN (с 5.0.1)
+# --------------------------------------------------------------------------
+
+def cmd_vpn(args) -> int:
+    """Проверка VPN-панелей на сервере — живая, в отличие от тестов.
+
+    `check` только читает. `selftest` пишет в панели: заводит на каждой
+    запись radar_selftest, проходит полный круг и оставляет её выключенной.
+    Поэтому он — только с --yes.
+    """
+    from . import vpn
+
+    if not vpn.slots():
+        wrong = vpn.unknown_kinds()
+        print("Незнакомый вид панели: " + ", ".join(wrong) if wrong
+              else "Ни одна панель не настроена (VPN1_KIND …).", file=sys.stderr)
+        return FAILED
+    if args.action == "selftest" and not args.yes:
+        print("selftest заведёт в каждой панели запись radar_selftest и оставит "
+              "её выключенной. Повторите с --yes.", file=sys.stderr)
+        return NEEDS_YES
+
+    titles = {item.key: f"{item.title} ({item.client.kind})" for item in vpn.slots()}
+    runner = vpn.check_all if args.action == "check" else vpn.selftest_all
+    results = asyncio.run(runner())
+    payload = {titles.get(key, key): {"ok": ok, "note": note}
+               for key, (ok, note) in sorted(results.items(), key=lambda i: int(i[0]))}
+    _out(payload, args.json, lambda d: [
+        print(f"{'OK  ' if v['ok'] else 'FAIL'} {k}: {v['note']}") for k, v in d.items()])
+    return OK if all(ok for ok, _ in results.values()) else FAILED
+
+
 def cmd_doctor(args) -> int:
     from . import doctor
 
@@ -452,6 +485,12 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["info", "connections", "start", "stop", "restart"])
     rd.add_argument("--yes", action="store_true")
     rd.set_defaults(func=cmd_rustdesk)
+
+    vpn_cmd = subparsers.add_parser("vpn", help="VPN-панели: проверка и полный круг",
+                                    parents=[common])
+    vpn_cmd.add_argument("action", choices=["check", "selftest"])
+    vpn_cmd.add_argument("--yes", action="store_true")
+    vpn_cmd.set_defaults(func=cmd_vpn)
 
     doc = subparsers.add_parser("doctor", help="диагностика", parents=[common])
     doc.add_argument("--quick", action="store_true")
