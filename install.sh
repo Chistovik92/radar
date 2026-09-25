@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.6 — автономный установщик.
+# Система «Радар» v5.6.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.6"
+VERSION="5.6.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3240,6 +3240,11 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.6.1", [
+        "🛠 Исправлен автоматический выпуск: версии 5.5 и 5.6 не попали "
+        "в список релизов, и установщик их не видел. Теперь выпуск, "
+        "который не удалось пометить, не останавливает остальные.",
+    ]),
     ("5.6", [
         "🔗 <b>Тревоги — ещё и во ВКонтакте и MAX.</b> В настройках "
         "оповещений кнопка «Привязать ВК или MAX»: бот даёт код, его "
@@ -5025,7 +5030,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.6"
+__version__ = "5.6.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
