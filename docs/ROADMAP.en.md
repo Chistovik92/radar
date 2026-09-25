@@ -49,7 +49,11 @@ Three rules that are not worked around:
    no tag — has already happened (4.6.5 and 4.7.3.2 shipped without one)
    and it breaks `install.sh --versions`: the installer builds its list
    from releases, and a version that is not there does not exist as far as
-   it is concerned.
+   it is concerned. Since 5.0 the tag and the release are created by GitHub Actions
+   (`.github/workflows/release.yml`) after green CI on `main`, when that
+   number has not been released yet; the text comes from
+   `docs/releases/<version>.md`, or from `RELEASES` in `main.py` if there
+   is no such file.
 3. **The number is updated everywhere at once:** `radar/__init__.py`,
    `README.md`, `README.en.md`, `docs/STATUS.md` (the version history row)
    and, if the plan changes, `docs/ROADMAP.md` together with
