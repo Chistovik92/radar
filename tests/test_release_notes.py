@@ -40,8 +40,9 @@ class CurrentTree(unittest.TestCase):
         path = os.path.join(ROOT, ".github", "workflows", "release.yml")
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
-        for command in ("version", "title", "body", "newer"):
+        for command in ("pending", "title", "body"):
             self.assertIn(f"release_notes.py {command}", text)
+        self.assertIn("--target \"$sha\"", text)
         self.assertIn("conclusion == 'success'", text)
 
 
@@ -74,6 +75,51 @@ class Fallback(unittest.TestCase):
     def test_no_text_is_an_error(self):
         with self.assertRaises(SystemExit):
             release_notes.notes("9.2", self.tmp)
+
+
+class Pending(unittest.TestCase):
+    """Два выпуска в одной ветке — по релизу на каждый, на своём коммите."""
+
+    def setUp(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("git") is None:
+            self.skipTest("нет git")
+        self.tmp = Path(tempfile.mkdtemp(prefix="radar-git-"))
+        self.run_git = lambda *args: subprocess.run(
+            ["git", *args], cwd=self.tmp, check=True, capture_output=True, text=True).stdout
+        self.run_git("init", "-q")
+        self.run_git("config", "user.email", "t@example.com")
+        self.run_git("config", "user.name", "t")
+        (self.tmp / "radar").mkdir()
+        self.shas = {}
+        for version in ("5.0.2", "5.5", "5.6"):
+            (self.tmp / "radar" / "__init__.py").write_text(
+                f'__version__ = "{version}"\n', encoding="utf-8")
+            self.run_git("add", "-A")
+            self.run_git("commit", "-q", "-m", version)
+            self.shas[version] = self.run_git("rev-parse", "HEAD").strip()
+        # Правка после выпуска без смены номера — релиз должен встать на неё.
+        (self.tmp / "note.txt").write_text("x", encoding="utf-8")
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "после 5.6")
+        self.shas["5.6"] = self.run_git("rev-parse", "HEAD").strip()
+
+    def test_each_version_on_its_commit(self):
+        result = release_notes.pending(["v5.0.2"], root=self.tmp)
+        self.assertEqual(result, [("5.5", self.shas["5.5"]), ("5.6", self.shas["5.6"])])
+
+    def test_nothing_older_than_released(self):
+        self.assertEqual(release_notes.pending(["v5.5"], root=self.tmp),
+                         [("5.6", self.shas["5.6"])])
+        self.assertEqual(release_notes.pending(["v5.6"], root=self.tmp), [])
+
+    def test_title_for_older_version(self):
+        (self.tmp / "docs" / "releases").mkdir(parents=True)
+        (self.tmp / "docs" / "releases" / "5.5.md").write_text("# v5.5 — старый\n\nТекст\n",
+                                                                encoding="utf-8")
+        self.assertEqual(release_notes.notes("5.5", self.tmp)[0], "v5.5 — старый")
 
 
 class Ordering(unittest.TestCase):
