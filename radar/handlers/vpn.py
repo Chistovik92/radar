@@ -31,7 +31,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from .. import features, i18n, roles, storage, vpn
+from .. import features, i18n, payments, roles, storage, vpn, vpnsales
 from ..textutils import esc
 from ..tg import safe_edit, send_html
 from ..vpnpanels import Account, PanelError
@@ -157,6 +157,10 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
             rows.append([_button(i18n.t("vpn.ask_button", lang,
                                         "📨 Запросить доступ"), "vpn:ask")])
 
+    if ok and vpnsales.ready()[0]:
+        rows.insert(0, [_button(i18n.t("vpn.buy_button", lang, "💳 Купить доступ"),
+                                "vpn:buy")])
+
     if vpn.can_decide(role):
         waiting = len(await vpn.pending())
         rows.append([
@@ -167,6 +171,8 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
             _button("🔑 Выдать себе", f"vpn:rv:{uid}:0"),
             _button("🩺 Проверить панели", "vpn:check"),
         ])
+        if features.enabled("vpn_sales"):
+            rows.append([_button("🧾 Заказы", "vpn:orders")])
 
     rows.append([_button(i18n.t("menu.home", lang, "🏠 В главное меню"), "menu:main")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
@@ -530,3 +536,222 @@ async def check_panels(call: CallbackQuery, role: str) -> None:
     if len(lines) == 1:
         lines.append("\nНи одна панель не настроена.")
     await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=[_back()]))
+
+
+# --------------------------------------------------------------------------
+#  Продажа по тарифам (с 5.0.2)
+# --------------------------------------------------------------------------
+
+def _plan_price(entry: dict[str, Any]) -> str:
+    return f"{vpnsales.format_price(float(entry['amount']))} {esc(entry['currency'])}"
+
+
+def _order_line(entry: dict[str, Any]) -> str:
+    plan = vpnsales.Plan(**entry["plan"])
+    status = vpnsales.STATUS_TITLES.get(entry["status"], entry["status"])
+    return (f"<code>{esc(entry['id'])}</code> · {_name_of(entry['uid'])} · "
+            f"{esc(plan.title(entry['currency']))} · <i>{esc(status)}</i>")
+
+
+@router.callback_query(F.data == "vpn:buy")
+async def show_plans(call: CallbackQuery, user: dict) -> None:
+    lang = i18n.language_of(user)
+    ok, reason = vpnsales.ready()
+    if not ok:
+        await call.answer(reason, show_alert=True)
+        return
+    await call.answer()
+    unit = vpnsales.currency()
+    rows = [[_button(plan.title(unit), f"vpn:plan:{index}")]
+            for index, plan in enumerate(vpnsales.plans())]
+    rows.append(_back("vpn:menu", lang))
+    text = i18n.t("vpn.plans_title", lang,
+                  "💳 <b>Тарифы VPN</b>\n\nПродление возвращает тот же ключ "
+                  "и прибавляет дни к оставшимся.")
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def _notify_deciders(text: str, markup: InlineKeyboardMarkup | None = None) -> None:
+    for target, record in list(storage.users().items()):
+        if not vpn.can_decide(record.get("role")) or record.get("blocked"):
+            continue
+        try:
+            await send_html(target, text, markup)
+        except Exception:  # noqa: BLE001
+            log.warning("Сообщение о заказе VPN не доставлено %s", target)
+
+
+@router.callback_query(F.data.startswith("vpn:plan:"))
+async def buy_plan(call: CallbackQuery, user: dict) -> None:
+    lang = i18n.language_of(user)
+    raw = call.data.split(":", 2)[2]
+    uid = str(call.from_user.id)
+    try:
+        entry = await vpnsales.create(uid, int(raw) if raw.isdigit() else -1)
+    except vpnsales.SaleError as exc:
+        await call.answer(str(exc), show_alert=True)
+        return
+    await call.answer()
+    plan = vpnsales.Plan(**entry["plan"])
+    order_id = entry["id"]
+    lines = [i18n.t("vpn.order_title", lang, "🧾 <b>Заказ</b> <code>{id}</code>")
+             .format(id=esc(order_id)),
+             esc(plan.title(entry["currency"]))]
+    rows = []
+    if entry["url"]:
+        lines.append("")
+        lines.append(i18n.t("vpn.order_pay", lang,
+                            "Оплатите счёт по кнопке ниже, затем нажмите «Я оплатил»."))
+        rows.append([InlineKeyboardButton(
+            text=i18n.t("vpn.pay_button", lang, "💳 Оплатить"), url=entry["url"])])
+        rows.append([_button(i18n.t("vpn.paid_button", lang, "✅ Я оплатил"),
+                             f"vpn:chk:{order_id}")])
+    else:
+        note = payments_note()
+        lines.append("")
+        lines.append(i18n.t("vpn.order_manual", lang,
+                            "Оплату подтверждает администратор. Доступ придёт "
+                            "сюда сразу после подтверждения."))
+        if note:
+            lines.append(f"\n{esc(note)}")
+        await _notify_deciders(
+            f"🧾 Заказ VPN {_order_line(entry)}\nПодтвердите, когда оплата поступит.",
+            InlineKeyboardMarkup(inline_keyboard=[[
+                _button("✅ Оплата получена", f"vpn:cfm:{order_id}"),
+                _button("✖️ Отменить", f"vpn:cnl:{order_id}"),
+            ]]))
+    rows.append([_button(i18n.t("vpn.cancel_order", lang, "✖️ Отменить заказ"),
+                         f"vpn:cnl:{order_id}")])
+    rows.append(_back("vpn:menu", lang))
+    await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+def payments_note() -> str:
+    """Как платить при ручном подтверждении — текст суперадминистратора."""
+    from .. import secrets
+
+    return str(secrets.get("PAY_MANUAL_NOTE") or "").strip()
+
+
+async def _deliver(entry: dict[str, Any]) -> bool:
+    """Ссылки по выполненному заказу — покупателю в личку."""
+    uid = entry["uid"]
+    lang = i18n.language_of(storage.get_user(uid))
+    parts = []
+    for key in entry.get("granted") or []:
+        try:
+            parts.append(await _link_text(uid, key, lang))
+        except PanelError as exc:
+            log.warning("Ссылка по заказу %s (слот %s) не получена: %s",
+                        entry["id"], key, exc)
+    if not parts:
+        return False
+    head = i18n.t("vpn.order_done", lang, "✅ Оплата получена, доступ открыт.")
+    return await send_html(uid, head + "\n\n" + "\n\n———\n\n".join(parts),
+                           _link_markup(lang))
+
+
+async def _report_failure(entry: dict[str, Any]) -> None:
+    errors = "; ".join(f"{key}: {value}" for key, value in (entry.get("errors") or {}).items())
+    await _notify_deciders(
+        f"⚠️ Заказ VPN оплачен, но выдать не удалось: {_order_line(entry)}\n"
+        f"{esc(errors)}",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            _button("🔁 Повторить выдачу", f"vpn:rty:{entry['id']}")]]))
+
+
+async def _settle(entry: dict[str, Any]) -> str:
+    """Что сказать после оплаты: выдано, не выдано или ещё ждём."""
+    if entry["status"] == vpnsales.DONE:
+        delivered = await _deliver(entry)
+        return "✅ Доступ открыт." + ("" if delivered else
+                                     " Ссылки — в разделе VPN.")
+    if entry["status"] == vpnsales.FAILED:
+        await _report_failure(entry)
+        return ("⚠️ Оплата получена, но выдать доступ пока не удалось. "
+                "Администратор уведомлён и повторит выдачу.")
+    return vpnsales.STATUS_TITLES.get(entry["status"], entry["status"])
+
+
+@router.callback_query(F.data.startswith("vpn:chk:"))
+async def check_order(call: CallbackQuery, user: dict) -> None:
+    lang = i18n.language_of(user)
+    order_id = call.data.split(":", 2)[2]
+    try:
+        entry = await vpnsales.check(order_id, call.from_user.id)
+    except vpnsales.SaleError as exc:
+        await call.answer(str(exc), show_alert=True)
+        return
+    if entry["status"] == vpnsales.NEW:
+        await call.answer(i18n.t("vpn.not_paid", lang,
+                                 "Оплата ещё не поступила. Попробуйте через минуту."),
+                          show_alert=True)
+        return
+    await call.answer()
+    note = await _settle(entry) if entry["status"] in (vpnsales.DONE, vpnsales.FAILED) \
+        else vpnsales.STATUS_TITLES.get(entry["status"], entry["status"])
+    await safe_edit(call, f"🧾 <code>{esc(order_id)}</code>: {esc(note)}",
+                    InlineKeyboardMarkup(inline_keyboard=[_back("vpn:menu", lang)]))
+
+
+@router.callback_query(F.data.startswith("vpn:cnl:"))
+async def cancel_order(call: CallbackQuery, role: str) -> None:
+    order_id = call.data.split(":", 2)[2]
+    try:
+        await vpnsales.cancel(order_id, call.from_user.id, role)
+    except vpnsales.SaleError as exc:
+        await call.answer(str(exc), show_alert=True)
+        return
+    await call.answer("Заказ отменён.")
+    await safe_edit(call, f"✖️ Заказ <code>{esc(order_id)}</code> отменён.",
+                    InlineKeyboardMarkup(inline_keyboard=[_back()]))
+
+
+@router.callback_query(F.data.startswith("vpn:cfm:") | F.data.startswith("vpn:rty:"))
+async def confirm_order(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, action, order_id = call.data.split(":", 2)
+    await call.answer("Выдаю…")
+    try:
+        if action == "cfm":
+            entry = await vpnsales.confirm(order_id, role, call.from_user.id)
+        else:
+            entry = await vpnsales.retry(order_id, role)
+    except vpnsales.SaleError as exc:
+        await safe_edit(call, f"❌ {esc(str(exc))}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back("vpn:orders")]))
+        return
+    if entry["status"] == vpnsales.DONE:
+        delivered = await _deliver(entry)
+        note = "✅ Выдано." + (" Ссылки отправлены." if delivered
+                              else " Ссылки отправить не удалось — они в разделе VPN.")
+    else:
+        errors = "; ".join(f"{k}: {v}" for k, v in (entry.get("errors") or {}).items())
+        note = f"⚠️ Выдать не удалось: {esc(errors)}"
+    rows = []
+    if entry["status"] == vpnsales.FAILED:
+        rows.append([_button("🔁 Повторить выдачу", f"vpn:rty:{order_id}")])
+    rows.append(_back("vpn:orders"))
+    await safe_edit(call, f"{_order_line(entry)}\n\n{note}",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "vpn:orders")
+async def list_orders(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    await call.answer()
+    entries = await vpnsales.recent(15)
+    rows = []
+    for entry in entries:
+        if entry["status"] == vpnsales.NEW and entry.get("provider") == payments.ManualProvider.kind:
+            rows.append([_button(f"✅ Оплачен {entry['id']}", f"vpn:cfm:{entry['id']}")])
+        elif entry["status"] == vpnsales.FAILED:
+            rows.append([_button(f"🔁 Повторить {entry['id']}", f"vpn:rty:{entry['id']}")])
+    rows.append(_back())
+    body = "\n".join(_order_line(entry) for entry in entries) or "Заказов нет."
+    ok, reason = vpnsales.ready()
+    state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
+    await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
+                    InlineKeyboardMarkup(inline_keyboard=rows))

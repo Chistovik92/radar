@@ -129,6 +129,8 @@ MANIFEST = [
     "radar/rustdesk.py",
     "radar/vpnpanels.py",
     "radar/vpn.py",
+    "radar/payments.py",
+    "radar/vpnsales.py",
     "radar/handlers/__init__.py",
     "radar/handlers/common.py",
     "radar/handlers/locations.py",

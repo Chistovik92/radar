@@ -190,6 +190,9 @@ class Panel:
     # Что панель умеет. Раздел не предлагает того, чего нет.
     supports_expiry = True
     supports_traffic = True
+    # Предел устройств: у 3x-ui это limitIp, у Remnawave — hwidDeviceLimit;
+    # у остальных панелей его нет, и тариф там его не обещает.
+    supports_devices = False
     # Что получает человек: подписку, готовый ключ или файл настроек.
     link_kind = "subscription"
 
@@ -231,6 +234,9 @@ class Panel:
     async def check(self) -> str:
         """Отвечает ли панель и принимает ли вход. Строка — для человека."""
         raise NotImplementedError
+
+    async def set_devices(self, name: str, devices: int) -> None:
+        raise PanelError(f"{self.title} не ограничивает число устройств.")
 
     def problems(self) -> list[str]:
         """Чего не хватает в настройках. Пусто — можно обращаться."""
@@ -384,6 +390,7 @@ class XuiPanel(Panel):
 
     kind = "3xui"
     title = "3x-ui"
+    supports_devices = True
     api_root = "panel/api"
     tokens_allowed = True
 
@@ -546,6 +553,11 @@ class XuiPanel(Panel):
 
     async def set_traffic(self, name: str, traffic: int) -> None:
         await self._change(name, {"totalGB": int(traffic)})
+
+    async def set_devices(self, name: str, devices: int) -> None:
+        # limitIp — число одновременных адресов; ближайшее к «устройствам»,
+        # что есть у 3x-ui и x-ui.
+        await self._change(name, {"limitIp": int(devices)})
 
     async def disable(self, name: str) -> None:
         await self._change(name, {"enable": False})
@@ -1043,6 +1055,7 @@ class RemnawavePanel(Panel):
 
     kind = "remnawave"
     title = "Remnawave"
+    supports_devices = True
 
     def problems(self) -> list[str]:
         missing = [] if self.url else ["адрес"]
@@ -1110,6 +1123,9 @@ class RemnawavePanel(Panel):
 
     async def set_traffic(self, name: str, traffic: int) -> None:
         await self._patch(name, {"trafficLimitBytes": int(traffic)})
+
+    async def set_devices(self, name: str, devices: int) -> None:
+        await self._patch(name, {"hwidDeviceLimit": int(devices) or None})
 
     async def disable(self, name: str) -> None:
         await self._call("POST", f"api/users/{await self._ref(name)}/actions/disable")

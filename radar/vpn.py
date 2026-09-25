@@ -328,9 +328,42 @@ async def issue(uid: str | int, keys: list[str], by: str | int, role: str | None
     if not targets:
         raise PanelError("Не выбрано ни одной панели.")
 
+    return await _grant(uid, targets, by, period=(days or default_days()) * DAY,
+                        traffic=default_traffic(), renew=False)
+
+
+async def grant_paid(uid: str | int, keys: list[str], order_id: str, *,
+                     days: int, traffic: int, devices: int = 0) -> dict[str, Any]:
+    """Выдача по оплаченному заказу — без решения суперадминистратора.
+
+    Зовёт её только `radar/vpnsales.py` и только для заказа, оплату
+    которого подтвердил провайдер или суперадминистратор: решение
+    о продажах он принял, включив их и задав тарифы. Бесплатного
+    доступа этот путь не даёт — только оплаченный срок.
+
+    В отличие от ручной выдачи срок **прибавляется** к оставшемуся:
+    купивший продление не теряет дни, которые у него ещё были.
+    """
+    ok, reason = ready()
+    if not ok:
+        raise PanelError(reason)
+    targets = _pick(keys)
+    if not targets:
+        raise PanelError("Панели тарифа не настроены.")
+    return await _grant(uid, targets, f"order:{order_id}", period=days * DAY,
+                        traffic=traffic, devices=devices, renew=True)
+
+
+async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: int,
+                 traffic: int, devices: int = 0, renew: bool) -> dict[str, Any]:
+    """Общая часть выдачи: завести или вернуть прежнюю запись на каждой панели.
+
+    `renew=False` — ручная выдача: истёкший срок начинается заново,
+    действующий не трогается. `renew=True` — оплата: срок прибавляется
+    к большему из «сейчас» и прежнего окончания, предел трафика ставится
+    по тарифу.
+    """
     name = account_name(uid)
-    period = (days or default_days()) * DAY
-    traffic = default_traffic()
 
     async def one(target: Slot) -> Account:
         client = target.client
@@ -338,11 +371,23 @@ async def issue(uid: str | int, keys: list[str], by: str | int, role: str | None
         expire = now + period if client.supports_expiry else 0
         account = await client.get_user(name)
         if account is None:
-            return await client.create_user(name, expire, traffic)
-        if client.supports_expiry and account.expire and account.expire < now:
-            await client.set_expiry(name, expire)
-        if not account.enabled:
-            await client.enable(name)
+            created = await client.create_user(name, expire, traffic)
+            if not (devices and client.supports_devices):
+                return created
+            await client.set_devices(name, devices)
+            return await client.get_user(name) or created
+        else:
+            if client.supports_expiry and account.expire:
+                if renew:
+                    await client.set_expiry(name, max(now, account.expire) + period)
+                elif account.expire < now:
+                    await client.set_expiry(name, expire)
+            if renew and traffic and client.supports_traffic:
+                await client.set_traffic(name, traffic)
+            if not account.enabled:
+                await client.enable(name)
+        if devices and client.supports_devices:
+            await client.set_devices(name, devices)
         return await client.get_user(name) or account
 
     results = await _each(targets, one)
@@ -363,7 +408,7 @@ async def issue(uid: str | int, keys: list[str], by: str | int, role: str | None
 
     await _edit(uid, change)
     done = [key for key, result in results.items() if isinstance(result, Account)]
-    log.info("VPN %s: выдано на слотах %s (решение %s)", uid, done or "—", by)
+    log.info("VPN %s: выдано на слотах %s (%s)", uid, done or "—", by)
     return results
 
 

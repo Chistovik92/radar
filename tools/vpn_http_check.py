@@ -676,12 +676,120 @@ async def run_issue(panels: dict[str, vpnpanels.Panel]) -> tuple[bool, str]:
                   f"выдача вернула те же ключи, продление, отзыв — в порядке")
 
 
+def cryptopay_app(state: dict[str, Any]) -> web.Application:
+    """Crypto Pay API: GET с параметрами, токен в Crypto-Pay-API-Token.
+
+    Формат — по исходникам клиента aiocryptopay: {"ok": true, "result": …},
+    ссылка на оплату — bot_invoice_url, состояния — active, paid, expired.
+    """
+    def guard(handler):
+        async def wrapped(request: web.Request) -> web.Response:
+            if request.headers.get("Crypto-Pay-API-Token") != TOKEN:
+                return web.json_response({"ok": False, "error": {"code": 401,
+                                                                 "name": "UNAUTHORIZED"}})
+            return await handler(request)
+        return wrapped
+
+    async def create(request: web.Request) -> web.Response:
+        query = request.query
+        if query.get("currency_type") != "fiat" or not query.get("fiat"):
+            return web.json_response({"ok": False, "error": {"name": "FIAT_REQUIRED"}})
+        invoice_id = len(state) + 1
+        state[invoice_id] = {"invoice_id": invoice_id, "status": "active",
+                             "amount": query["amount"], "payload": query.get("payload"),
+                             "bot_invoice_url": f"https://t.me/CryptoBot?start=IV{invoice_id}"}
+        return web.json_response({"ok": True, "result": state[invoice_id]})
+
+    async def invoices(request: web.Request) -> web.Response:
+        wanted = [int(item) for item in request.query.get("invoice_ids", "").split(",") if item]
+        return web.json_response({"ok": True, "result": {
+            "items": [state[item] for item in wanted if item in state]}})
+
+    app = web.Application()
+    app.router.add_get("/api/createInvoice", guard(create))
+    app.router.add_get("/api/getInvoices", guard(invoices))
+    return app
+
+
+async def run_sale(panels: dict[str, vpnpanels.Panel]) -> tuple[bool, str]:
+    """Покупка через Crypto Pay по HTTP: счёт → оплата → «Я оплатил» → выдача."""
+    from radar import payments, vpnsales
+
+    invoices: dict[int, dict[str, Any]] = {}
+    runner, url = await serve(cryptopay_app(invoices))
+    usable = [p for title, p in panels.items() if "чужой" not in title][:4]
+    fresh = [type(p)(p.url, token=p.token, user=p.user, password=p.password,
+                     groups=p.groups, inbound=p.inbound, sub_url=p.sub_url, cert=p.cert)
+             for p in usable]
+    slots = [vpn.Slot(index + 1, p.title, p) for index, p in enumerate(fresh)]
+    meta: dict[str, Any] = {}
+
+    async def meta_get(key, default=None):
+        return json.loads(json.dumps(meta.get(key, default)))
+
+    async def meta_set(key, value):
+        meta[key] = json.loads(json.dumps(value))
+
+    import radar
+    import types
+
+    storage = types.ModuleType("radar.storage")
+    storage.meta_get = meta_get
+    storage.meta_set = meta_set
+    provider = payments.CryptoPayProvider(TOKEN)
+    provider.base = url
+    values = {"VPN_PLANS": "30:0:2:199"}
+    features.set_local("vpn", True)
+    features.set_local("vpn_sales", True)
+    try:
+        with mock.patch.object(vpn, "slots", lambda: slots), \
+                mock.patch.object(vpn, "_setting", lambda key: ""), \
+                mock.patch.object(vpnsales, "_setting", lambda key: values.get(key, "")), \
+                mock.patch.object(payments, "provider", lambda: provider), \
+                mock.patch.dict(sys.modules, {"radar.storage": storage}), \
+                mock.patch.object(radar, "storage", storage, create=True):
+            order = await vpnsales.create("42", 0)
+            if not order["url"].startswith("https://t.me/CryptoBot"):
+                return False, f"нет ссылки на оплату: {order}"
+            unpaid = await vpnsales.check(order["id"], "42")
+            if unpaid["status"] != vpnsales.NEW:
+                return False, f"неоплаченный счёт выдал доступ: {unpaid['status']}"
+            invoices[int(order["invoice"])]["status"] = "paid"
+            done, again = await asyncio.gather(vpnsales.check(order["id"], "42"),
+                                               vpnsales.check(order["id"], "42"))
+            if done["status"] != vpnsales.DONE or len(done["granted"]) != len(slots):
+                return False, f"выдача по оплате: {done}"
+            # Второй заказ — продление: ключ тот же, дни прибавились.
+            first = {s.key: await s.client.get_user("radar_42") for s in slots}
+            renew = await vpnsales.create("42", 0)
+            invoices[int(renew["invoice"])]["status"] = "paid"
+            await vpnsales.check(renew["id"], "42")
+            for s in slots:
+                after = await s.client.get_user("radar_42")
+                if s.client.link_kind != "config" and \
+                        after.subscription_url != first[s.key].subscription_url:
+                    return False, f"{s.title}: продление сменило ключ"
+                if s.client.supports_expiry and after.expire - first[s.key].expire < 29 * 86400:
+                    return False, f"{s.title}: продление не прибавило дни"
+            provider.token = "wrong"
+            try:
+                await vpnsales.create("42", 0)
+                return False, "неверный токен Crypto Pay принят"
+            except vpnsales.SaleError:
+                pass
+    finally:
+        await runner.cleanup()
+    return True, (f"счёт Crypto Pay, двойное «Я оплатил» — одна выдача на {len(slots)} "
+                  f"панели, продление прибавило дни и сохранило ключи")
+
+
 async def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         runners, panels = await build_panels(tmp)
         try:
             results = await run_panels(panels)
             issue_ok, issue_note = await run_issue(panels)
+            sale_ok, sale_note = await run_sale(panels)
         finally:
             for runner in runners:
                 await runner.cleanup()
@@ -698,6 +806,8 @@ async def main() -> int:
         print(f"  {mark} {title}: {note}")
     print(f"\n  {'✅' if issue_ok else '❌'} radar/vpn.py: {issue_note}")
     failures += 0 if issue_ok else 1
+    print(f"  {'✅' if sale_ok else '❌'} radar/vpnsales.py: {sale_note}")
+    failures += 0 if sale_ok else 1
     print("\nЭто проверка по эмуляторам, написанным по исходникам панелей, "
           "а не по настоящим панелям.")
     return 1 if failures else 0

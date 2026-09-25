@@ -1303,7 +1303,7 @@ separate media (`MUSIC_DIR` or a mount).
 
 ---
 
-## 5.0 — VPN panels and selling access ⚠️ started: items 1 and 3 (5.0, 5.0.1)
+## 5.0 — VPN panels and selling access ⚠️ code written: items 1, 3, 4, 5 (5.0 — 5.0.2)
 
 An idea from September 2026. The largest block after the web panel, and
 the first where the bot takes money not for itself but for access to a
@@ -1313,8 +1313,9 @@ of, not a function inside a finished block.
 Panel polishing is finished, and roadmap work resumed with 4.9.9.
 5.0 delivers items 1 and 3 — the common layer over the panels and issuing
 to people already in the bot, without payments. 5.0.1 adds several panels
-at once, ten kinds, and issuing only by the superadmin's decision. Items 4
-and 5 (plans and the payment layer) come in later releases.
+at once, ten kinds, and issuing only by the superadmin's decision. 5.0.2
+delivers items 4 and 5: plans and a swappable payment layer. None of this
+has been verified against real panels or real payments.
 
 ### 1. One layer over three panels
 
@@ -1410,6 +1411,16 @@ question of money does not arise.
 
 ### 4. Selling to new users by plan
 
+⚠️ Done in 5.0.2: `radar/vpnsales.py`, the `vpn_sales` flag (off). Plans
+are a `VPN_PLANS` line ("days:trafficGB:devices:price"), like digest
+prices. A payment extends the same key and adds the days to what is
+left; an order moves "awaiting payment → paid → issued" exactly once
+under a lock, so tapping "I've paid" twice never grants access twice.
+If issuing fails, the order stays paid and the superadmin gets a retry
+button. The device limit is applied where the panel supports it: 3x-ui
+and x-ui (`limitIp`), Remnawave (`hwidDeviceLimit`). The sales path does
+not open free issuing: that remains the superadmin's alone.
+
 A plan is a period, a traffic limit and a number of devices; prices are set
 by the superadmin, as is already done for digest subscription prices.
 Payment opens a key, the end of the period disables it — but does not
@@ -1417,6 +1428,18 @@ delete it: renewal must return the same key, or the person has to
 reconfigure every device from scratch.
 
 ### 5. The payment question, honestly
+
+⚠️ Done in 5.0.2: `radar/payments.py` — a "create invoice / get its state"
+interface, the provider set by `PAY_PROVIDER`. Two providers: **manual**
+(the superadmin confirms the payment with a button — works without
+registering anywhere) and **cryptopay** (Crypto Pay API). The Crypto Pay
+format was checked against the source of the `aiocryptopay` client: the
+official documentation is unreachable from the development environment.
+Webhook signature checking is written but not wired — the bot has no
+inbound address; it checks the invoice when the person taps "I've paid".
+**Crypto Pay's fees, limits and withdrawal terms are still unverified** —
+that has to be done in @CryptoBot itself before turning sales on, exactly
+as this item requires.
 
 This has to be said plainly, because whether there is code to write depends
 on the answer.

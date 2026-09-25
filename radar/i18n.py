@@ -136,6 +136,18 @@ EN_STRINGS: dict[str, str] = {
     "vpn.traffic": "Traffic: {used} of {limit}",
     "vpn.traffic_free": "Traffic: {used}, unlimited",
     "vpn.disabled": "⛔ Access is disabled",
+    "vpn.buy_button": "💳 Buy access",
+    "vpn.plans_title": "💳 <b>VPN plans</b>\n\nRenewal keeps the same key "
+                       "and adds the days to what you have left.",
+    "vpn.order_title": "🧾 <b>Order</b> <code>{id}</code>",
+    "vpn.order_pay": "Pay the invoice with the button below, then tap \"I've paid\".",
+    "vpn.pay_button": "💳 Pay",
+    "vpn.paid_button": "✅ I've paid",
+    "vpn.order_manual": "Payment is confirmed by an administrator. Access will "
+                        "arrive here right after confirmation.",
+    "vpn.cancel_order": "✖️ Cancel order",
+    "vpn.order_done": "✅ Payment received, access is open.",
+    "vpn.not_paid": "The payment hasn't arrived yet. Try again in a minute.",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 
