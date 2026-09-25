@@ -177,6 +177,45 @@ EN_STRINGS: dict[str, str] = {
                    "Telegram bot settings.",
     "link.unlinked_net": "Unlinked: this account is no longer connected to the others.",
     "link.not_linked": "This account is not linked to anything.",
+    "text.about": "Radar watches city threats and utility outages at your addresses "
+                  "and sends only what concerns them.",
+    "text.has_addresses": "Addresses are set — alerts for them arrive here.",
+    "text.no_addresses": "No addresses yet. Add the first one: /address street, house, "
+                         "city — or send a geolocation.",
+    "text.commands": "/address street, house, city — add an address\n"
+                     "/addresses — my addresses, /remove N — delete\n"
+                     "/link — link with Telegram, VK, MAX or Discord\n"
+                     "/unlink — unlink this account\n"
+                     "/status — is monitoring running\n"
+                     "/panel — web panel sign-in code (moderators)\n"
+                     "/lang ru — по-русски",
+    "text.disclaimer": "The system does not replace official warning channels.",
+    "text.status_ok": "✅ Monitoring is running.",
+    "text.status_bad": "🚨 Monitoring has been silent for about {minutes} min. "
+                       "The administrators have been notified.",
+    "text.already": "ℹ️ This address is already saved: {name}.",
+    "text.confirm_address": "Found: {place}\nSave this address? Reply \"yes\" or \"no\". "
+                            "If it's wrong, be more specific: /address street, house, city.",
+    "text.limit": "❌ Address limit reached ({limit}).",
+    "text.saved": "🏠 Address saved: {name}. Alerts for it will arrive here.",
+    "text.no_street": "⚠️ The street was not determined — utility outage alerts for "
+                      "the address may be inaccurate.",
+    "text.empty": "No addresses yet. /address street, house, city",
+    "text.list": "Your addresses:",
+    "text.remove_hint": "Delete: /remove N",
+    "text.geo_failed": "Could not determine the address. Try again later.",
+    "text.not_saved": "OK, not saved.",
+    "text.not_found": "Address not found. Be more specific: street, house, city — or send "
+                      "a geolocation.",
+    "text.no_such": "No such number. /addresses — the list.",
+    "text.removed": "Deleted: {name}.",
+    "text.lang_set": "Reply language: English.",
+    "panel.off": "The web panel is turned off.",
+    "panel.denied": "The web panel is for moderators and above.",
+    "panel.code": "Web panel sign-in code: {code}\nOne-time, valid for 5 minutes. Enter it "
+                  "on the panel's sign-in page. If you didn't request it, do nothing.",
+    "panel.notice": "🔐 A web panel sign-in code was requested from {net}. If it wasn't "
+                    "you, unlink that network (/unlink).",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 

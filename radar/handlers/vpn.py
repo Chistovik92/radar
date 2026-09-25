@@ -31,7 +31,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from .. import features, i18n, payments, roles, storage, vpn, vpnsales
+from .. import features, i18n, payments, storage, vpn, vpnsales
 from ..textutils import esc
 from ..tg import safe_edit, send_html
 from ..vpnpanels import Account, PanelError
