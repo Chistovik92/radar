@@ -194,6 +194,16 @@ class MirrorTests(MetaMixin, unittest.TestCase):
         self.assertGreater(before.rfind("if await send_html(uid, text):"),
                            before.rfind("for text in outgoing:"))
 
+    def test_released_held_alerts_are_mirrored(self):
+        """Придержанное тихими часами после выхода уходит и на привязанные
+        площадки — до 5.6.2 копия не отправлялась вовсе."""
+        with open(os.path.join(ROOT, "radar", "monitor.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        body = source[source.index("async def release_held"):source.index("async def repeat_sos")]
+        self.assertIn("mirror.alert(uid, item.text)", body)
+        self.assertGreater(body.index("mirror.alert(uid, item.text)"),
+                           body.index("if not await send_html(uid, item.text):"))
+
 
 class VkParseTests(unittest.TestCase):
     def _update(self, **message):

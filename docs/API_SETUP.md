@@ -186,8 +186,8 @@ docker compose --profile media up -d
    СберБизнес ID. Публиковать ботов могут только юрлица, ИП и самозанятые РФ.
 3. Получите токен через `@MasterBot` командой `/create`.
 4. Впишите `MAX_BOT_TOKEN` в `.env`.
-5. Проверьте `MAX_API_URL`: в документации встречаются
-   `platform-api.max.ru` и `platform-api2.max.ru`.
+5. `MAX_API_URL` по умолчанию — `https://platform-api2.max.ru`: так
+   в официальных SDK MAX, а `platform-api.max.ru` там помечен устаревшим.
 
 Модерация занимает до 48 часов в рабочие дни. Для боевой работы MAX требует
 webhook — понадобится белый IP и HTTPS; long polling годится для проверки.

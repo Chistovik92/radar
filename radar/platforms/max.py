@@ -6,8 +6,9 @@
 код был набором догадок — угадывались и адрес, и имена полей, и формат
 кнопок. Теперь он повторяет документированный контракт:
 
-* база — `https://platform-api.max.ru` (домен `botapi.max.ru` закрыт
-  с октября 2025), адрес вынесен в `MAX_API_URL`;
+* база — `https://platform-api2.max.ru` (домен `botapi.max.ru` закрыт
+  с октября 2025, `platform-api.max.ru` официальные SDK помечают
+  устаревшим — с 5.6.2), адрес вынесен в `MAX_API_URL`;
 * токен — заголовком `Authorization`, **без** префикса `Bearer`; передача
   токеном в строке запроса больше не поддерживается;
 * `GET /updates` с `marker`, `limit`, `timeout`, `types`; ответ —
@@ -17,7 +18,7 @@
   `attachments`, `format`, `notify`;
 * `POST /answers?callback_id=…` — ответ на нажатие кнопки: без него
   у человека в интерфейсе остаётся «часики»;
-* `PATCH /me` — список команд бота;
+* `PATCH /me/commands` — список команд бота (как в официальных SDK);
 * предел 30 запросов в секунду — отсюда собственный ограничитель.
 
 **Чего адаптер намеренно НЕ делает.** Он не подключает MAX к ядру бота:
@@ -29,8 +30,9 @@
 
 **Что заведомо потребует уточнения на живом токене** — перечислено
 в `docs/ROADMAP.md`, раздел «6.0 — MAX». Коротко: точная форма ответа
-на callback, имя метода для команд бота (`PATCH /me` против
-`PATCH /me/commands`) и то, какие HTML-теги MAX действительно понимает.
+на callback и то, какие HTML-теги MAX действительно понимает. Адрес
+и метод команд сверены в 5.6.2 с официальными SDK
+(max-bot-api-client-go и -ts).
 """
 
 # --------------------------------------------------------------------------
@@ -348,17 +350,17 @@ class MaxTransport:
     async def set_commands(self, commands: Sequence[tuple[str, str]]) -> None:
         """Список команд бота.
 
-        Документация упоминает и `PATCH /me`, и `PATCH /me/commands`;
-        пробуем первый, при 404 — второй. Ошибка здесь не мешает работе:
-        команды — удобство, а не условие.
+        Официальные SDK (Go и TypeScript) шлют `PATCH /me/commands`,
+        а `PATCH /me` помечают устаревшим; он остаётся запасным на 404.
+        Ошибка здесь не мешает работе: команды — удобство, а не условие.
         """
         if not self.configured:
             return
         payload = {"commands": [{"name": name, "description": text}
                                 for name, text in commands]}
-        status, _body = await self._request("PATCH", "me", payload=payload)
+        status, _body = await self._request("PATCH", "me/commands", payload=payload)
         if status == 404:
-            await self._request("PATCH", "me/commands", payload=payload)
+            await self._request("PATCH", "me", payload=payload)
 
     async def whoami(self) -> dict[str, Any]:
         """Сведения о боте. Первый вызов, которым проверяется токен."""

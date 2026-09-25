@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.6.1 — автономный установщик.
+# Система «Радар» v5.6.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.6.1"
+VERSION="5.6.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3240,6 +3240,14 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.6.2", [
+        "💳 VPN: оплата в последнюю минуту больше не теряется, отмена "
+        "заказа гасит и сам счёт, а оплаченный заказ вместо отмены выдаётся.",
+        "📶 Продление с пределом трафика прибавляет купленные гигабайты "
+        "к уже потраченным, а не ставит предел заново.",
+        "🔗 Тревоги, придержанные тихими часами, тоже приходят во "
+        "ВКонтакте и MAX.",
+    ]),
     ("5.6.1", [
         "🛠 Исправлен автоматический выпуск: версии 5.5 и 5.6 не попали "
         "в список релизов, и установщик их не видел. Теперь выпуск, "
@@ -5030,7 +5038,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.6.1"
+__version__ = "5.6.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -13873,6 +13881,7 @@ EN_STRINGS: dict[str, str] = {
                  "or MAX. The code is valid for 10 minutes.",
     "link.get_code": "🔑 Get a code",
     "link.unlinked": "Unlinked.",
+    "link.unavailable": "Linking is not available right now.",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 
@@ -22972,8 +22981,9 @@ cat > "radar/platforms/max.py" <<'RADAR_FILE_59'
 код был набором догадок — угадывались и адрес, и имена полей, и формат
 кнопок. Теперь он повторяет документированный контракт:
 
-* база — `https://platform-api.max.ru` (домен `botapi.max.ru` закрыт
-  с октября 2025), адрес вынесен в `MAX_API_URL`;
+* база — `https://platform-api2.max.ru` (домен `botapi.max.ru` закрыт
+  с октября 2025, `platform-api.max.ru` официальные SDK помечают
+  устаревшим — с 5.6.2), адрес вынесен в `MAX_API_URL`;
 * токен — заголовком `Authorization`, **без** префикса `Bearer`; передача
   токеном в строке запроса больше не поддерживается;
 * `GET /updates` с `marker`, `limit`, `timeout`, `types`; ответ —
@@ -22983,7 +22993,7 @@ cat > "radar/platforms/max.py" <<'RADAR_FILE_59'
   `attachments`, `format`, `notify`;
 * `POST /answers?callback_id=…` — ответ на нажатие кнопки: без него
   у человека в интерфейсе остаётся «часики»;
-* `PATCH /me` — список команд бота;
+* `PATCH /me/commands` — список команд бота (как в официальных SDK);
 * предел 30 запросов в секунду — отсюда собственный ограничитель.
 
 **Чего адаптер намеренно НЕ делает.** Он не подключает MAX к ядру бота:
@@ -22995,8 +23005,9 @@ cat > "radar/platforms/max.py" <<'RADAR_FILE_59'
 
 **Что заведомо потребует уточнения на живом токене** — перечислено
 в `docs/ROADMAP.md`, раздел «6.0 — MAX». Коротко: точная форма ответа
-на callback, имя метода для команд бота (`PATCH /me` против
-`PATCH /me/commands`) и то, какие HTML-теги MAX действительно понимает.
+на callback и то, какие HTML-теги MAX действительно понимает. Адрес
+и метод команд сверены в 5.6.2 с официальными SDK
+(max-bot-api-client-go и -ts).
 """
 
 # --------------------------------------------------------------------------
@@ -23314,17 +23325,17 @@ class MaxTransport:
     async def set_commands(self, commands: Sequence[tuple[str, str]]) -> None:
         """Список команд бота.
 
-        Документация упоминает и `PATCH /me`, и `PATCH /me/commands`;
-        пробуем первый, при 404 — второй. Ошибка здесь не мешает работе:
-        команды — удобство, а не условие.
+        Официальные SDK (Go и TypeScript) шлют `PATCH /me/commands`,
+        а `PATCH /me` помечают устаревшим; он остаётся запасным на 404.
+        Ошибка здесь не мешает работе: команды — удобство, а не условие.
         """
         if not self.configured:
             return
         payload = {"commands": [{"name": name, "description": text}
                                 for name, text in commands]}
-        status, _body = await self._request("PATCH", "me", payload=payload)
+        status, _body = await self._request("PATCH", "me/commands", payload=payload)
         if status == 404:
-            await self._request("PATCH", "me/commands", payload=payload)
+            await self._request("PATCH", "me", payload=payload)
 
     async def whoami(self) -> dict[str, Any]:
         """Сведения о боте. Первый вызов, которым проверяется токен."""
@@ -24889,6 +24900,10 @@ def _available() -> list[str]:
     return platforms
 
 
+def _unavailable(user: dict) -> str:
+    return i18n.t("link.unavailable", i18n.language_of(user), "Привязка сейчас недоступна.")
+
+
 async def _view(uid: str, lang: str, code: str = "") -> tuple[str, InlineKeyboardMarkup]:
     current = await links.links_of(uid)
     lines = [i18n.t("link.title", lang, "🔗 <b>Привязка ВК и MAX</b>"), "",
@@ -24919,7 +24934,7 @@ async def _view(uid: str, lang: str, code: str = "") -> tuple[str, InlineKeyboar
 @router.callback_query(F.data == "lnk:menu")
 async def show(call: CallbackQuery, user: dict) -> None:
     if not _available():
-        await call.answer("Привязка сейчас недоступна.", show_alert=True)
+        await call.answer(_unavailable(user), show_alert=True)
         return
     await call.answer()
     text, markup = await _view(str(call.from_user.id), i18n.language_of(user))
@@ -24929,7 +24944,7 @@ async def show(call: CallbackQuery, user: dict) -> None:
 @router.callback_query(F.data == "lnk:code")
 async def give_code(call: CallbackQuery, user: dict) -> None:
     if not _available():
-        await call.answer("Привязка сейчас недоступна.", show_alert=True)
+        await call.answer(_unavailable(user), show_alert=True)
         return
     await call.answer()
     uid = str(call.from_user.id)
@@ -24949,7 +24964,7 @@ async def unlink(call: CallbackQuery, user: dict) -> None:
 @router.message(Command("link"))
 async def link_command(message: Message, user: dict) -> None:
     if not _available():
-        await message.answer("Привязка сейчас недоступна.")
+        await message.answer(_unavailable(user))
         return
     uid = str(message.from_user.id)
     text, markup = await _view(uid, i18n.language_of(user), links.new_code(uid))
@@ -29952,6 +29967,10 @@ async def release_held(now: datetime) -> None:
                 # Счётчик попыток не даёт этому длиться вечно.
                 quiet.hold(uid, item.text, created=item.created,
                            attempts=item.attempts + 1)
+            else:
+                # Копия на привязанные ВК и MAX — как у тревоги, ушедшей
+                # сразу. До 5.6.2 придержанное туда не доходило вовсе.
+                mirror.alert(uid, item.text)
             await asyncio.sleep(0.2)
     await save_held()
 
@@ -36977,7 +36996,16 @@ async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: 
                 elif account.expire < now:
                     await client.set_expiry(name, expire)
             if renew and traffic and client.supports_traffic:
-                await client.set_traffic(name, traffic)
+                # Предел в панелях — на весь расход, а не на период: до 5.6.2
+                # продление ставило его равным тарифу, и потративший 45 ГБ
+                # из 50 получал за новые 50 ГБ всего пять. Теперь тариф
+                # прибавляется к израсходованному, а неистраченный остаток
+                # действующего срока сохраняется — как и дни.
+                used = max(0, account.traffic_used)
+                left = 0
+                if account.traffic_limit and (not account.expire or account.expire > now):
+                    left = max(0, account.traffic_limit - used)
+                await client.set_traffic(name, used + left + traffic)
             if not account.enabled:
                 await client.enable(name)
         if devices and client.supports_devices:
@@ -37267,6 +37295,7 @@ Webhook Crypto Pay (`verify_signature`) подготовлен, но не под
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -37320,6 +37349,11 @@ class Provider:
     async def status(self, invoice_id: str) -> str:
         raise NotImplementedError
 
+    async def cancel(self, invoice_id: str) -> bool:
+        """Погасить счёт у провайдера, чтобы по нему нельзя было заплатить.
+        False — не вышло (счёт уже оплачен, провайдер недоступен)."""
+        return True
+
 
 class ManualProvider(Provider):
     """Оплату подтверждает суперадминистратор. Счёт — только номер заказа."""
@@ -37367,7 +37401,10 @@ class CryptoPayProvider(Provider):
                 async with session.get(f"{self.base}/api/{method}", params=clean,
                                        headers={"Crypto-Pay-API-Token": self.token}) as response:
                     text = await response.text()
-        except aiohttp.ClientError as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            # Общий предел времени aiohttp бросает asyncio.TimeoutError, а не
+            # ClientError: до 5.6.2 зависший Crypto Pay ронял обработчик
+            # вместо понятного «попробуйте позже».
             log.warning("Crypto Pay недоступен: %s", type(exc).__name__)
             raise PaymentError("Crypto Pay не отвечает — попробуйте позже.")
         return parse_response(text)
@@ -37392,6 +37429,14 @@ class CryptoPayProvider(Provider):
             if str(item.get("invoice_id")) == str(invoice_id):
                 return str(item.get("status") or ACTIVE)
         raise PaymentError("Crypto Pay не нашёл счёт.")
+
+    async def cancel(self, invoice_id: str) -> bool:
+        # `deleteInvoice` — как в aiocryptopay (`delete_invoice`).
+        try:
+            return bool(await self._call("deleteInvoice", {"invoice_id": str(invoice_id)}))
+        except PaymentError as exc:
+            log.warning("Crypto Pay: счёт не удалён: %s", exc)
+            return False
 
 
 def parse_response(text: str) -> Any:
@@ -37672,13 +37717,20 @@ async def create(uid: str | int, index: int) -> dict[str, Any]:
 
 
 async def _move(order_id: str, allowed: tuple[str, ...], status: str,
-                **fields: Any) -> dict[str, Any] | None:
-    """Смена состояния, только если текущее — из `allowed`. Под замком."""
+                *, paid_by_provider: bool = False, **fields: Any) -> dict[str, Any] | None:
+    """Смена состояния, только если текущее — из `allowed`. Под замком.
+
+    Истёкший по времени заказ не двигается — кроме случая, когда оплату
+    подтвердил провайдер (`paid_by_provider`): деньги уже получены,
+    и отказать в выдаче из-за того, что «Я оплатил» нажали через минуту
+    после конца суток, значило бы оставить человека без оплаченного.
+    """
     async with _lock:
         stored = await _load()
         entry = stored.get(order_id)
         if entry is None or entry.get("status") not in allowed or (
-                NEW in allowed and entry.get("status") == NEW and _expired(entry)):
+                NEW in allowed and entry.get("status") == NEW and _expired(entry)
+                and not paid_by_provider):
             return None
         entry = dict(entry, status=status, updated=int(time.time()), **fields)
         stored[order_id] = entry
@@ -37699,33 +37751,54 @@ async def _fulfil(entry: dict[str, Any]) -> dict[str, Any]:
                   if isinstance(value, PanelError)}
     except PanelError as exc:
         granted, errors = [], {"*": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        # Непредвиденный сбой не должен оставить заказ в «оплачен, выдаётся»
+        # навсегда: повтор выдачи разрешён только из «не выдано».
+        log.exception("VPN: сбой выдачи по заказу %s", entry["id"])
+        granted, errors = [], {"*": f"Сбой выдачи: {type(exc).__name__}"}
     status = DONE if granted else FAILED
     final = await _move(entry["id"], (PAID,), status, granted=granted, errors=errors)
     log.info("VPN: заказ %s — %s (панели %s)", entry["id"], status, granted or "—")
     return final or dict(entry, status=status, granted=granted, errors=errors)
 
 
+async def _provider_status(entry: dict[str, Any]) -> str:
+    """Состояние счёта у провайдера заказа. Пусто — спрашивать некого
+    (ручной провайдер) или провайдер сменился."""
+    provider = payments.provider()
+    if provider.kind != entry.get("provider") or provider.manual:
+        return ""
+    try:
+        return await provider.status(entry["invoice"])
+    except payments.PaymentError as exc:
+        raise SaleError(str(exc))
+
+
 async def check(order_id: str, uid: str | int) -> dict[str, Any]:
-    """«Я оплатил»: спросить провайдера и, если оплачено, выдать доступ."""
-    entry = await order(order_id)
-    if entry is None or entry.get("uid") != str(uid):
+    """«Я оплатил»: спросить провайдера и, если оплачено, выдать доступ.
+
+    Заказ, истёкший по времени, всё равно сверяется с провайдером: счёт
+    могли оплатить в последнюю минуту, а нажать кнопку — позже (до 5.6.2
+    такой человек оставался без оплаченного доступа).
+    """
+    raw = (await _load()).get(order_id)
+    if raw is None or raw.get("uid") != str(uid):
         raise SaleError("Заказ не найден.")
-    if entry["status"] != NEW:
+    entry = await order(order_id) or raw
+    if raw.get("status") != NEW:
         return entry
     provider = payments.provider()
-    if provider.kind != entry.get("provider"):
+    if provider.kind != raw.get("provider"):
         raise SaleError("Способ оплаты сменился — оформите заказ заново.")
     if provider.manual:
         return entry
-    try:
-        status = await provider.status(entry["invoice"])
-    except payments.PaymentError as exc:
-        raise SaleError(str(exc))
+    status = await _provider_status(raw)
     if status == payments.EXPIRED:
-        return await _move(order_id, (NEW,), EXPIRED) or dict(entry, status=EXPIRED)
+        return await _move(order_id, (NEW,), EXPIRED, paid_by_provider=True) \
+            or dict(entry, status=EXPIRED)
     if status != payments.PAID:
         return entry
-    moved = await _move(order_id, (NEW,), PAID, paid=int(time.time()))
+    moved = await _move(order_id, (NEW,), PAID, paid_by_provider=True, paid=int(time.time()))
     if moved is None:
         # Кто-то успел раньше — второе нажатие ничего не выдаёт.
         return await order(order_id) or entry
@@ -37759,6 +37832,18 @@ async def cancel(order_id: str, uid: str | int, role: str | None) -> dict[str, A
     entry = await order(order_id)
     if entry is None or (entry.get("uid") != str(uid) and not vpn.can_decide(role)):
         raise SaleError("Заказ не найден.")
+    # До 5.6.2 отмена гасила только заказ: счёт у провайдера оставался
+    # действующим, и оплата после отмены пропадала. Теперь счёт гасится
+    # у провайдера, а оплаченный — не отменяется, а выдаётся.
+    provider = payments.provider()
+    if (entry.get("status") == NEW and not provider.manual
+            and provider.kind == entry.get("provider")):
+        if await _provider_status(entry) == payments.PAID:
+            return await check(order_id, entry["uid"])
+        if not await provider.cancel(entry["invoice"]):
+            if await _provider_status(entry) == payments.PAID:
+                return await check(order_id, entry["uid"])
+            raise SaleError("Счёт не удалось отменить у провайдера — попробуйте позже.")
     moved = await _move(order_id, (NEW,), CANCELLED)
     if moved is None:
         raise SaleError("Отменить можно только неоплаченный заказ.")
@@ -45601,9 +45686,16 @@ async def check_order(call: CallbackQuery, user: dict) -> None:
 async def cancel_order(call: CallbackQuery, role: str) -> None:
     order_id = call.data.split(":", 2)[2]
     try:
-        await vpnsales.cancel(order_id, call.from_user.id, role)
+        entry = await vpnsales.cancel(order_id, call.from_user.id, role)
     except vpnsales.SaleError as exc:
         await call.answer(str(exc), show_alert=True)
+        return
+    if entry["status"] != vpnsales.CANCELLED:
+        # Счёт оказался оплачен — вместо отмены прошла выдача (5.6.2).
+        await call.answer()
+        note = await _settle(entry)
+        await safe_edit(call, f"🧾 <code>{esc(order_id)}</code>: {esc(note)}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back()]))
         return
     await call.answer("Заказ отменён.")
     await safe_edit(call, f"✖️ Заказ <code>{esc(order_id)}</code> отменён.",

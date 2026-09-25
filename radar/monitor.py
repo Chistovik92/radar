@@ -576,6 +576,10 @@ async def release_held(now: datetime) -> None:
                 # Счётчик попыток не даёт этому длиться вечно.
                 quiet.hold(uid, item.text, created=item.created,
                            attempts=item.attempts + 1)
+            else:
+                # Копия на привязанные ВК и MAX — как у тревоги, ушедшей
+                # сразу. До 5.6.2 придержанное туда не доходило вовсе.
+                mirror.alert(uid, item.text)
             await asyncio.sleep(0.2)
     await save_held()
 

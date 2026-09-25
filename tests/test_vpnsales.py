@@ -97,6 +97,48 @@ class CryptoPayTests(unittest.TestCase):
         with mock.patch.object(provider, "_call", fake):
             self.assertEqual(run(provider.status("7")), "paid")
 
+    def test_cancel_deletes_invoice(self):
+        provider = payments.CryptoPayProvider("tok")
+        seen = {}
+
+        async def fake(method, params):
+            seen.update(method=method, **params)
+            return True
+
+        with mock.patch.object(provider, "_call", fake):
+            self.assertTrue(run(provider.cancel("7")))
+        self.assertEqual((seen["method"], seen["invoice_id"]), ("deleteInvoice", "7"))
+
+        async def refuse(method, params):
+            raise payments.PaymentError("Crypto Pay отказал: INVOICE_NOT_FOUND.")
+
+        with mock.patch.object(provider, "_call", refuse):
+            self.assertFalse(run(provider.cancel("7")))
+
+    def test_timeout_is_payment_error(self):
+        """Общий предел времени aiohttp — asyncio.TimeoutError, не ClientError."""
+        provider = payments.CryptoPayProvider("tok")
+
+        class Hanging:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                raise asyncio.TimeoutError
+
+            async def __aexit__(self, *exc):
+                return False
+
+        import aiohttp
+
+        # Заглушка aiohttp из stubcheck даёт ClientError не-исключение.
+        with mock.patch.object(aiohttp, "ClientSession", Hanging), \
+                mock.patch.object(aiohttp, "ClientError", type("ClientError", (Exception,), {}),
+                                  create=True), \
+                mock.patch.object(aiohttp, "ClientTimeout", lambda **kwargs: None, create=True):
+            with self.assertRaises(payments.PaymentError):
+                run(provider.status("7"))
+
     def test_webhook_signature(self):
         body = b'{"update_type":"invoice_paid"}'
         key = hashlib.sha256(b"tok").digest()
@@ -132,6 +174,12 @@ class FakeProvider(payments.Provider):
     async def status(self, invoice_id):
         await asyncio.sleep(0.01)
         return self.invoices[invoice_id]
+
+    async def cancel(self, invoice_id):
+        if self.invoices[invoice_id] != payments.ACTIVE or getattr(self, "stuck", False):
+            return False
+        self.invoices[invoice_id] = "deleted"
+        return True
 
 
 class SalesBase(unittest.TestCase):
@@ -264,12 +312,20 @@ class OrderTests(SalesBase):
         self.provider.invoices[entry["invoice"]] = payments.EXPIRED
         self.assertEqual(run(vpnsales.check(entry["id"], "5"))["status"], vpnsales.EXPIRED)
 
-    def test_old_order_expires_by_time(self):
+    def test_old_unpaid_order_expires_by_time(self):
+        entry = run(vpnsales.create("5", 0))
+        self.meta[vpnsales.META_KEY][entry["id"]]["created"] -= vpnsales.ORDER_TTL + 1
+        self.assertEqual(run(vpnsales.check(entry["id"], "5"))["status"], vpnsales.EXPIRED)
+        self.assertEqual(self.panels["1"].created, 0)
+
+    def test_paid_at_last_minute_still_issued(self):
+        """Оплатил в последнюю минуту, «Я оплатил» нажал после конца суток:
+        провайдер подтверждает оплату — доступ выдаётся (до 5.6.2 — нет)."""
         entry = run(vpnsales.create("5", 0))
         self.meta[vpnsales.META_KEY][entry["id"]]["created"] -= vpnsales.ORDER_TTL + 1
         self.pay(entry)
-        self.assertEqual(run(vpnsales.check(entry["id"], "5"))["status"], vpnsales.EXPIRED)
-        self.assertEqual(self.panels["1"].created, 0)
+        self.assertEqual(run(vpnsales.check(entry["id"], "5"))["status"], vpnsales.DONE)
+        self.assertEqual(self.panels["1"].created, 1)
 
     def test_failure_then_retry_by_superadmin(self):
         for panel in self.panels.values():
@@ -298,8 +354,36 @@ class OrderTests(SalesBase):
             run(vpnsales.cancel(entry["id"], "6", "user"))
         self.assertEqual(run(vpnsales.cancel(entry["id"], "5", "user"))["status"],
                          vpnsales.CANCELLED)
-        self.pay(entry)
+        self.assertEqual(self.provider.invoices[entry["invoice"]], "deleted",
+                         "счёт погашен и у провайдера")
         self.assertEqual(run(vpnsales.check(entry["id"], "5"))["status"], vpnsales.CANCELLED)
+
+    def test_cancel_after_payment_issues_instead(self):
+        entry = run(vpnsales.create("5", 0))
+        self.pay(entry)
+        self.assertEqual(run(vpnsales.cancel(entry["id"], "5", "user"))["status"],
+                         vpnsales.DONE)
+        self.assertEqual(self.panels["1"].created, 1)
+
+    def test_cancel_refused_when_provider_keeps_invoice(self):
+        entry = run(vpnsales.create("5", 0))
+        self.provider.stuck = True
+        with self.assertRaises(vpnsales.SaleError):
+            run(vpnsales.cancel(entry["id"], "5", "user"))
+        self.assertEqual(run(vpnsales.order(entry["id"]))["status"], vpnsales.NEW)
+
+    def test_unexpected_grant_crash_marks_failed(self):
+        """Непредвиденный сбой выдачи — «не выдано» с повтором, а не вечное
+        «оплачен, выдаётся»."""
+        entry = run(vpnsales.create("5", 0))
+        self.pay(entry)
+
+        async def crash(*args, **kwargs):
+            raise KeyError("oops")
+
+        with mock.patch.object(vpn, "grant_paid", crash):
+            self.assertEqual(run(vpnsales.check(entry["id"], "5"))["status"], vpnsales.FAILED)
+        self.assertEqual(run(vpnsales.retry(entry["id"], "superadmin"))["status"], vpnsales.DONE)
 
     def test_no_links_or_tokens_in_orders(self):
         entry = run(vpnsales.create("5", 0))
@@ -351,6 +435,30 @@ class GrantPaidTests(SalesBase):
         run(vpn.grant_paid("5", ["1"], "o2", days=90, traffic=50 * vpnpanels.GB))
         self.assertEqual(seen[vpnpanels.account_name("5")], 50 * vpnpanels.GB)
         self.assertIsInstance(run(vpn.statuses("5"))["1"], Account)
+
+    def test_renewal_adds_traffic_to_used_and_left(self):
+        """Предел в панели — на весь расход: продление прибавляет тариф
+        к израсходованному и неистраченному остатку (5.6.2)."""
+        import dataclasses
+
+        seen = {}
+
+        async def set_traffic(name, traffic):
+            seen["limit"] = traffic
+
+        self.panels["1"].set_traffic = set_traffic
+        run(vpn.grant_paid("5", ["1"], "o1", days=30, traffic=50 * vpnpanels.GB))
+        name = vpnpanels.account_name("5")
+        users = self.panels["1"].users
+        users[name] = dataclasses.replace(users[name], traffic_used=45 * vpnpanels.GB)
+        run(vpn.grant_paid("5", ["1"], "o2", days=30, traffic=50 * vpnpanels.GB))
+        self.assertEqual(seen["limit"], 100 * vpnpanels.GB, "45 потрачено + 5 остаток + 50")
+        # Истёкший срок: остаток прошлого периода не переносится.
+        users[name] = dataclasses.replace(users[name], expire=int(time.time()) - 10,
+                                          traffic_limit=50 * vpnpanels.GB,
+                                          traffic_used=10 * vpnpanels.GB)
+        run(vpn.grant_paid("5", ["1"], "o3", days=30, traffic=50 * vpnpanels.GB))
+        self.assertEqual(seen["limit"], 60 * vpnpanels.GB)
 
 
 if __name__ == "__main__":

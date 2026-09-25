@@ -229,6 +229,34 @@ class SendTests(unittest.TestCase):
         adapter = MaxTransport(token="", base_url="https://example.invalid")
         self.assertFalse(run(adapter.send("1", OutboundMessage(text="x"))))
 
+    def test_commands_go_to_me_commands_first(self):
+        """Официальные SDK MAX (Go, TypeScript) шлют PATCH /me/commands;
+        PATCH /me у них устаревший и остаётся запасным на 404 (5.6.2)."""
+        adapter = transport()
+        paths: list[str] = []
+
+        async def fake_request(method, path, *, params=None, payload=None):
+            paths.append(f"{method} {path}")
+            return (404, {}) if path == "me/commands" and len(paths) == 1 else (200, {})
+
+        adapter._request = fake_request
+        run(adapter.set_commands([("start", "начать")]))
+        self.assertEqual(paths, ["PATCH me/commands", "PATCH me"])
+        paths.clear()
+
+        async def ok_request(method, path, *, params=None, payload=None):
+            paths.append(f"{method} {path}")
+            return 200, {}
+
+        adapter._request = ok_request
+        run(adapter.set_commands([("start", "начать")]))
+        self.assertEqual(paths, ["PATCH me/commands"])
+
+    def test_default_base_is_platform_api2(self):
+        from radar import config
+
+        self.assertEqual(config.MAX_API_URL, "https://platform-api2.max.ru")
+
 
 class MarkerTests(unittest.TestCase):
     """Маркер берётся из ответа, а не считается самостоятельно."""

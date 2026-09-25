@@ -36,6 +36,10 @@ def _available() -> list[str]:
     return platforms
 
 
+def _unavailable(user: dict) -> str:
+    return i18n.t("link.unavailable", i18n.language_of(user), "Привязка сейчас недоступна.")
+
+
 async def _view(uid: str, lang: str, code: str = "") -> tuple[str, InlineKeyboardMarkup]:
     current = await links.links_of(uid)
     lines = [i18n.t("link.title", lang, "🔗 <b>Привязка ВК и MAX</b>"), "",
@@ -66,7 +70,7 @@ async def _view(uid: str, lang: str, code: str = "") -> tuple[str, InlineKeyboar
 @router.callback_query(F.data == "lnk:menu")
 async def show(call: CallbackQuery, user: dict) -> None:
     if not _available():
-        await call.answer("Привязка сейчас недоступна.", show_alert=True)
+        await call.answer(_unavailable(user), show_alert=True)
         return
     await call.answer()
     text, markup = await _view(str(call.from_user.id), i18n.language_of(user))
@@ -76,7 +80,7 @@ async def show(call: CallbackQuery, user: dict) -> None:
 @router.callback_query(F.data == "lnk:code")
 async def give_code(call: CallbackQuery, user: dict) -> None:
     if not _available():
-        await call.answer("Привязка сейчас недоступна.", show_alert=True)
+        await call.answer(_unavailable(user), show_alert=True)
         return
     await call.answer()
     uid = str(call.from_user.id)
@@ -96,7 +100,7 @@ async def unlink(call: CallbackQuery, user: dict) -> None:
 @router.message(Command("link"))
 async def link_command(message: Message, user: dict) -> None:
     if not _available():
-        await message.answer("Привязка сейчас недоступна.")
+        await message.answer(_unavailable(user))
         return
     uid = str(message.from_user.id)
     text, markup = await _view(uid, i18n.language_of(user), links.new_code(uid))

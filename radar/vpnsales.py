@@ -227,13 +227,20 @@ async def create(uid: str | int, index: int) -> dict[str, Any]:
 
 
 async def _move(order_id: str, allowed: tuple[str, ...], status: str,
-                **fields: Any) -> dict[str, Any] | None:
-    """Смена состояния, только если текущее — из `allowed`. Под замком."""
+                *, paid_by_provider: bool = False, **fields: Any) -> dict[str, Any] | None:
+    """Смена состояния, только если текущее — из `allowed`. Под замком.
+
+    Истёкший по времени заказ не двигается — кроме случая, когда оплату
+    подтвердил провайдер (`paid_by_provider`): деньги уже получены,
+    и отказать в выдаче из-за того, что «Я оплатил» нажали через минуту
+    после конца суток, значило бы оставить человека без оплаченного.
+    """
     async with _lock:
         stored = await _load()
         entry = stored.get(order_id)
         if entry is None or entry.get("status") not in allowed or (
-                NEW in allowed and entry.get("status") == NEW and _expired(entry)):
+                NEW in allowed and entry.get("status") == NEW and _expired(entry)
+                and not paid_by_provider):
             return None
         entry = dict(entry, status=status, updated=int(time.time()), **fields)
         stored[order_id] = entry
@@ -254,33 +261,54 @@ async def _fulfil(entry: dict[str, Any]) -> dict[str, Any]:
                   if isinstance(value, PanelError)}
     except PanelError as exc:
         granted, errors = [], {"*": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        # Непредвиденный сбой не должен оставить заказ в «оплачен, выдаётся»
+        # навсегда: повтор выдачи разрешён только из «не выдано».
+        log.exception("VPN: сбой выдачи по заказу %s", entry["id"])
+        granted, errors = [], {"*": f"Сбой выдачи: {type(exc).__name__}"}
     status = DONE if granted else FAILED
     final = await _move(entry["id"], (PAID,), status, granted=granted, errors=errors)
     log.info("VPN: заказ %s — %s (панели %s)", entry["id"], status, granted or "—")
     return final or dict(entry, status=status, granted=granted, errors=errors)
 
 
+async def _provider_status(entry: dict[str, Any]) -> str:
+    """Состояние счёта у провайдера заказа. Пусто — спрашивать некого
+    (ручной провайдер) или провайдер сменился."""
+    provider = payments.provider()
+    if provider.kind != entry.get("provider") or provider.manual:
+        return ""
+    try:
+        return await provider.status(entry["invoice"])
+    except payments.PaymentError as exc:
+        raise SaleError(str(exc))
+
+
 async def check(order_id: str, uid: str | int) -> dict[str, Any]:
-    """«Я оплатил»: спросить провайдера и, если оплачено, выдать доступ."""
-    entry = await order(order_id)
-    if entry is None or entry.get("uid") != str(uid):
+    """«Я оплатил»: спросить провайдера и, если оплачено, выдать доступ.
+
+    Заказ, истёкший по времени, всё равно сверяется с провайдером: счёт
+    могли оплатить в последнюю минуту, а нажать кнопку — позже (до 5.6.2
+    такой человек оставался без оплаченного доступа).
+    """
+    raw = (await _load()).get(order_id)
+    if raw is None or raw.get("uid") != str(uid):
         raise SaleError("Заказ не найден.")
-    if entry["status"] != NEW:
+    entry = await order(order_id) or raw
+    if raw.get("status") != NEW:
         return entry
     provider = payments.provider()
-    if provider.kind != entry.get("provider"):
+    if provider.kind != raw.get("provider"):
         raise SaleError("Способ оплаты сменился — оформите заказ заново.")
     if provider.manual:
         return entry
-    try:
-        status = await provider.status(entry["invoice"])
-    except payments.PaymentError as exc:
-        raise SaleError(str(exc))
+    status = await _provider_status(raw)
     if status == payments.EXPIRED:
-        return await _move(order_id, (NEW,), EXPIRED) or dict(entry, status=EXPIRED)
+        return await _move(order_id, (NEW,), EXPIRED, paid_by_provider=True) \
+            or dict(entry, status=EXPIRED)
     if status != payments.PAID:
         return entry
-    moved = await _move(order_id, (NEW,), PAID, paid=int(time.time()))
+    moved = await _move(order_id, (NEW,), PAID, paid_by_provider=True, paid=int(time.time()))
     if moved is None:
         # Кто-то успел раньше — второе нажатие ничего не выдаёт.
         return await order(order_id) or entry
@@ -314,6 +342,18 @@ async def cancel(order_id: str, uid: str | int, role: str | None) -> dict[str, A
     entry = await order(order_id)
     if entry is None or (entry.get("uid") != str(uid) and not vpn.can_decide(role)):
         raise SaleError("Заказ не найден.")
+    # До 5.6.2 отмена гасила только заказ: счёт у провайдера оставался
+    # действующим, и оплата после отмены пропадала. Теперь счёт гасится
+    # у провайдера, а оплаченный — не отменяется, а выдаётся.
+    provider = payments.provider()
+    if (entry.get("status") == NEW and not provider.manual
+            and provider.kind == entry.get("provider")):
+        if await _provider_status(entry) == payments.PAID:
+            return await check(order_id, entry["uid"])
+        if not await provider.cancel(entry["invoice"]):
+            if await _provider_status(entry) == payments.PAID:
+                return await check(order_id, entry["uid"])
+            raise SaleError("Счёт не удалось отменить у провайдера — попробуйте позже.")
     moved = await _move(order_id, (NEW,), CANCELLED)
     if moved is None:
         raise SaleError("Отменить можно только неоплаченный заказ.")

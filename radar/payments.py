@@ -36,6 +36,7 @@ Webhook Crypto Pay (`verify_signature`) подготовлен, но не под
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -89,6 +90,11 @@ class Provider:
     async def status(self, invoice_id: str) -> str:
         raise NotImplementedError
 
+    async def cancel(self, invoice_id: str) -> bool:
+        """Погасить счёт у провайдера, чтобы по нему нельзя было заплатить.
+        False — не вышло (счёт уже оплачен, провайдер недоступен)."""
+        return True
+
 
 class ManualProvider(Provider):
     """Оплату подтверждает суперадминистратор. Счёт — только номер заказа."""
@@ -136,7 +142,10 @@ class CryptoPayProvider(Provider):
                 async with session.get(f"{self.base}/api/{method}", params=clean,
                                        headers={"Crypto-Pay-API-Token": self.token}) as response:
                     text = await response.text()
-        except aiohttp.ClientError as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            # Общий предел времени aiohttp бросает asyncio.TimeoutError, а не
+            # ClientError: до 5.6.2 зависший Crypto Pay ронял обработчик
+            # вместо понятного «попробуйте позже».
             log.warning("Crypto Pay недоступен: %s", type(exc).__name__)
             raise PaymentError("Crypto Pay не отвечает — попробуйте позже.")
         return parse_response(text)
@@ -161,6 +170,14 @@ class CryptoPayProvider(Provider):
             if str(item.get("invoice_id")) == str(invoice_id):
                 return str(item.get("status") or ACTIVE)
         raise PaymentError("Crypto Pay не нашёл счёт.")
+
+    async def cancel(self, invoice_id: str) -> bool:
+        # `deleteInvoice` — как в aiocryptopay (`delete_invoice`).
+        try:
+            return bool(await self._call("deleteInvoice", {"invoice_id": str(invoice_id)}))
+        except PaymentError as exc:
+            log.warning("Crypto Pay: счёт не удалён: %s", exc)
+            return False
 
 
 def parse_response(text: str) -> Any:

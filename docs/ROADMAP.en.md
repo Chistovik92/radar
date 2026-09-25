@@ -1572,8 +1572,9 @@ rewrite.
    that repeats a guess does not catch the mistake, it legitimises it. The
    code now follows the dev.max.ru description:
 
-   - base `https://platform-api.max.ru` (the `botapi.max.ru` domain was
-     retired in October 2025), the token goes in the `Authorization` header
+   - base `https://platform-api2.max.ru` (the `botapi.max.ru` domain was
+     retired in October 2025; the official SDKs mark `platform-api.max.ru`
+     as deprecated — the docs were corrected in 5.6.2), the token goes in the `Authorization` header
      **without** "Bearer": passing it in the query string no longer works;
    - `GET /updates` with `marker`, `limit`, `timeout`; the marker is taken
      from the response rather than computed as "last + 1" — that very
@@ -1605,12 +1606,14 @@ rewrite.
      Russian legal entities. Without a token not a single request can be
      made — neither the address, nor the field names, nor the response
      shape can be checked;
-   - **the callback answer shape.** `POST /answers` is documented, but the
-     set of body fields (`notification` versus `message`) is described
-     ambiguously;
-   - **the method for bot commands:** the documentation mentions both
-     `PATCH /me` and `PATCH /me/commands`. The code tries the first and
-     falls back to the second on a 404;
+   - ~~**the callback answer shape.**~~ ✅ checked in 5.6.2 against the
+     official SDKs (Go and TypeScript): both fields are optional —
+     `notification` (a pop-up text) and `message` (replaces the message);
+     the code sends the former;
+   - ~~**the method for bot commands.**~~ ✅ in 5.6.2: the official SDKs
+     send `PATCH /me/commands` and mark `PATCH /me` as deprecated. Before
+     5.6.2 the code tried them in the reverse order; now `/me` is the
+     fallback on a 404;
    - **which HTML tags MAX understands.** The list taken is narrow, with a
      fallback to plain text on the first refusal;
    - **the webhook.** The documentation calls long polling a development

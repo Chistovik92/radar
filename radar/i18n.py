@@ -158,6 +158,7 @@ EN_STRINGS: dict[str, str] = {
                  "or MAX. The code is valid for 10 minutes.",
     "link.get_code": "🔑 Get a code",
     "link.unlinked": "Unlinked.",
+    "link.unavailable": "Linking is not available right now.",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 
