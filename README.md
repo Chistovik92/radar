@@ -1,4 +1,4 @@
-# Система «Радар» v5.7.1
+# Система «Радар» v5.8
 
 [English version](README.en.md)
 
@@ -571,11 +571,11 @@ Privacy mode у @BotFather менять не нужно: администрат�
 выдают только верифицированным юрлицам РФ, а без токена нельзя проверить
 ни адрес, ни имена полей, ни формат ответов.
 
-Что бот умеет в MAX сейчас: `/start`, `/help`, `/status` и честный ответ
-на остальное. **Оповещения отсюда не рассылаются:** локации, роли
-и подписка привязаны к учётной записи Telegram, а без подтверждённого
-адреса тревога не отправляется. Полное ядро в MAX не переносится, пока
-площадка не проверена хотя бы одним живым запросом.
+С 5.7 MAX — полноценный вход в общий аккаунт: адрес задаётся командой
+`/address` или геопозицией (сохраняется после подтверждения), тревоги
+по нему приходят сюда, `/link` связывает MAX с Telegram, ВК и Discord —
+см. «Один аккаунт во всех сетях» ниже. Категории, тихие часы, погода
+и подписки настраиваются в Telegram-боте.
 
 ### Discord (с 5.5) ⚠️ не проверено в работе
 
@@ -754,7 +754,11 @@ radar/storage.py            рабочий набор в памяти повер
 radar/identity.py           платформо-независимая идентификация пользователя
 radar/features.py           переключатели возможностей
 radar/db/                   модели, подключение, репозиторий, импорт из JSON
-radar/platforms/            абстракция мессенджеров (Telegram, MAX)
+radar/platforms/            мессенджеры: MAX, ВКонтакте, Discord и общий ответчик textbot.py
+radar/links.py              общий аккаунт: привязка сетей кодом, слияние профилей
+radar/mirror.py             доставка в сети кроме Telegram и копии тревог
+radar/vpn.py, vpnpanels.py  VPN: десять видов панелей, несколько сразу
+radar/vpnsales.py           продажа VPN по тарифам; radar/payments.py — платёжный слой
 migrations/                 миграции Alembic
 radar/exporting.py          выгрузка и загрузка источников, совместимость форматов
 radar/ai.py                 Google Gemini: запросы, кэш анализов, ассистент
@@ -764,7 +768,7 @@ radar/weather.py            Open-Meteo
 radar/monitor.py            фоновый цикл и рассылка
 radar/keyboards.py          клавиатуры
 radar/handlers/             обработчики: меню, локации, настройки, источники, пользователи, ассистент
-tests/                      офлайн-тесты (164 шт., без сети и внешних пакетов)
+tests/                      офлайн-тесты (больше 1600, без сети и внешних пакетов)
 tools/build_installer.py    сборка install.sh из исходников
 tools/stubcheck.py          импорт всех модулей с заглушками зависимостей
 tools/lint_names.py         статическая сверка имён между модулями
@@ -780,14 +784,26 @@ python3 tools/build_installer.py
 ## Проверка
 
 ```bash
-python3 -m unittest discover -s tests -v   # 164 теста
+python3 -m unittest discover -s tests      # больше 1600 тестов, без сети
 python3 tools/stubcheck.py                 # импорт всех модулей
 python3 tools/lint_names.py                # сверка имён
 python3 tools/lint_undefined.py            # неопределённые имена
-python3 tools/lint_docker.py               # Dockerfile против .dockerignore
 python3 tools/lint_pyversion.py            # совместимость с Python из образа
+python3 tools/lint_docker.py               # Dockerfile против .dockerignore
+python3 tools/stamp_headers.py --check     # подпись автора
+python3 tools/build_installer.py           # пересборка install.sh
 bash -n install.sh                         # синтаксис установщика
+python3 tools/lint_shellorder.py           # вызов функции раньше определения
+python3 tools/lint_installer.py            # подстановки и словарь установщика
+python3 tools/lint_release.py              # номер версии поднят везде
+python3 tools/lint_manifest.py             # новые модули в манифесте установщика
+python3 tools/vpn_http_check.py            # VPN-панели по HTTP (нужен aiohttp)
+python3 tools/discord_http_check.py        # Discord по WebSocket (нужен aiohttp)
+python3 tools/vk_http_check.py             # ВКонтакте по HTTP (нужен aiohttp)
 ```
+
+Плюс каждый файл тестов по отдельности — полный список и причины
+каждой проверки в [CLAUDE.md](CLAUDE.md).
 
 ## Обновление с прежних версий
 
@@ -1256,6 +1272,15 @@ HTTP API для ключей у неё нет) и голый Xray или sing-bo
 Ссылки в базу не пишутся, в журнал не попадают ни они, ни UUID, ни токены.
 Платежей нет. Настройка — раздел «VPN» в
 [docs/API_SETUP.md](docs/API_SETUP.md).
+
+**Клиенты, заведённые не ботом (с 5.8).** «🔗 Клиенты панелей» ищет
+по всем панелям записи, где записан Telegram-id человека из бота — в поле
+самой панели (`tgId`, `telegramId`, `telegram_id`), имени, email или
+комментарии, — и предлагает привязать их к аккаунту. В панели привязка
+ничего не меняет: ключ, срок и трафик прежние, а продление и оплата
+дальше работают с этой записью, не заводя вторую. Остальных клиентов
+суперадминистратор привязывает вручную из карточки человека, «↩️»
+снимает привязку, не трогая панель.
 
 ### Продажа по тарифам (с 5.0.2) ⚠️ не проверено с настоящими платежами
 

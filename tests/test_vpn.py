@@ -554,6 +554,42 @@ class HiddifyTests(unittest.TestCase):
         self.assertEqual(account.expire, 0)
 
 
+class ListClientsTests(unittest.TestCase):
+    """Списки клиентов (5.7.2): поля Telegram-id и идентификаторы записей."""
+
+    def test_hiddify_uses_uuid_and_telegram_id(self):
+        panel = HiddifyPanel("https://h.example/adminpath", token="admin-uuid")
+        ident = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
+        rec, patch = patched(panel, {("GET", "api/v2/admin/user/"): [
+            {"uuid": ident, "name": "Иван", "telegram_id": 4242424242, "comment": "",
+             "package_days": 30, "usage_limit_GB": 10}]})
+        with patch:
+            clients = run(panel.list_clients())
+        self.assertEqual((clients[0].ref, clients[0].telegram), (ident, "4242424242"))
+        self.assertEqual(panel._path(ident), f"api/v2/admin/user/{ident}/",
+                         "привязанная запись находится по своему uuid")
+        self.assertNotEqual(panel._path("radar_1"), f"api/v2/admin/user/radar_1/")
+
+    def test_remnawave_pages(self):
+        panel = RemnawavePanel("https://r.example", token="t")
+        rows = [{"username": f"u{i}", "telegramId": 100000 + i, "status": "ACTIVE",
+                 "expireAt": "2030-01-01T00:00:00Z", "trafficLimitBytes": 0}
+                for i in range(3)]
+        rec, patch = patched(panel, {("GET", "api/users?start=0&size=500"):
+                                     {"response": {"users": rows, "total": 3}}})
+        with patch:
+            clients = run(panel.list_clients())
+        self.assertEqual([c.telegram for c in clients], ["100000", "100001", "100002"])
+
+    def test_outline_ref_is_key_id(self):
+        panel = OutlinePanel("https://1.2.3.4:1234/SeCrEt", cert=CERT)
+        rec, patch = patched(panel, {("GET", "access-keys"): {"accessKeys": [
+            {"id": "7", "name": "Мама 4242424242", "accessUrl": "ss://x"}]}})
+        with patch:
+            clients = run(panel.list_clients())
+        self.assertEqual((clients[0].ref, clients[0].title), ("7", "Мама 4242424242"))
+
+
 class OutlineTests(unittest.TestCase):
     def setUp(self):
         self.panel = OutlinePanel("https://1.2.3.4:1234/SeCrEt", cert=CERT)
@@ -679,6 +715,15 @@ class FakePanel(vpnpanels.Panel):
     async def check(self):
         await self._maybe()
         return f"{self.kind} ok"
+
+    async def list_clients(self):
+        await self._maybe()
+        return [vpnpanels.PanelClient(name, name, self.tg.get(name, ""),
+                                      (name, self.notes.get(name, "")), account)
+                for name, account in self.users.items()]
+
+    tg: dict = {}
+    notes: dict = {}
 
 
 class MultiPanelBase(unittest.TestCase):
@@ -847,6 +892,90 @@ class MultiPanelTests(MultiPanelBase):
         run(vpn.deny("1", "9", self.SUPER))
         self.assertEqual(run(vpn.record("1"))["state"], vpn.DENIED)
         self.assertEqual(run(vpn.request("1")), vpn.PENDING)
+
+
+class AdoptTests(MultiPanelBase):
+    """Привязка клиентов, заведённых в панелях не ботом (5.7.2)."""
+
+    UID = "4242424242"
+
+    def setUp(self):
+        super().setUp()
+        from radar import storage
+
+        self.users = mock.patch.object(storage, "users", lambda: {
+            self.UID: {"role": "user"}, "5550001": {"role": "user"}, "vk:4242424242": {}})
+        self.users.start()
+        for panel in self.panels.values():
+            panel.tg, panel.notes = {}, {}
+        far = int(time.time()) + 10 * vpn.DAY
+        self.panels["1"].users["old_client"] = Account("old_client", True, far, 0, 0, "https://x/1")
+        self.panels["1"].tg = {"old_client": self.UID}
+        self.panels["2"].users["user 4242424242"] = Account("user 4242424242", True, far, 0, 0, "")
+        self.panels["2"].users["order_42424242421"] = Account("order_42424242421", True, far, 0, 0, "")
+
+    def tearDown(self):
+        self.users.stop()
+        super().tearDown()
+
+    def test_match_reasons(self):
+        client = vpnpanels.PanelClient("a", "a", "", ("vpn_4242424242", ""))
+        self.assertTrue(vpn.match_reason(client, self.UID))
+        self.assertFalse(vpn.match_reason(
+            vpnpanels.PanelClient("a", "a", "", ("42424242421",)), self.UID),
+            "часть другого числа — не совпадение")
+        self.assertFalse(vpn.match_reason(
+            vpnpanels.PanelClient("a", "a", "", ("id 12345",)), "12345"),
+            "короткие числа не сопоставляются")
+        self.assertIn("поле", vpn.match_reason(
+            vpnpanels.PanelClient("a", "a", self.UID, ()), self.UID))
+
+    def test_find_bind_and_serve_by_own_name(self):
+        with self.assertRaises(PanelError):
+            run(vpn.matches("admin"))
+        found, errors = run(vpn.matches(self.SUPER))
+        self.assertEqual(errors, {})
+        self.assertEqual(sorted((m.key, m.ref, m.uid) for m in found),
+                         [("1", "old_client", self.UID), ("2", "user 4242424242", self.UID)])
+        for match in found:
+            run(vpn.bind(match.uid, match.key, match.ref, "9", self.SUPER))
+        self.assertEqual(run(vpn.matches(self.SUPER))[0], [], "привязанное не предлагается")
+        before = self.panels["1"].users["old_client"].expire
+        run(vpn.extend(self.UID, "1", 5, self.SUPER))
+        self.assertEqual(self.panels["1"].users["old_client"].expire, before + 5 * vpn.DAY)
+        run(vpn.issue(self.UID, ["1", "2"], "9", self.SUPER))
+        self.assertEqual((self.panels["1"].created, self.panels["2"].created), (0, 0),
+                         "выдача нашла привязанные записи, а не завела вторые")
+        statuses = run(vpn.statuses(self.UID))
+        self.assertEqual(statuses["1"].name, "old_client")
+
+    def test_bind_conflicts(self):
+        run(vpn.bind(self.UID, "1", "old_client", "9", self.SUPER))
+        with self.assertRaises(PanelError):
+            run(vpn.bind("5550001", "1", "old_client", "9", self.SUPER))
+        with self.assertRaises(PanelError):
+            run(vpn.bind(self.UID, "1", "nobody", "9", self.SUPER))
+        run(vpn.issue("5550001", ["2"], "9", self.SUPER))
+        with self.assertRaises(PanelError):
+            run(vpn.bind("5550001", "2", "user 4242424242", "9", self.SUPER))
+
+    def test_forget_leaves_panel_untouched(self):
+        run(vpn.bind(self.UID, "1", "old_client", "9", self.SUPER))
+        run(vpn.forget(self.UID, "1", self.SUPER))
+        self.assertTrue(self.panels["1"].users["old_client"].enabled)
+        self.assertEqual(vpn.issued_slots(run(vpn.record(self.UID))), [])
+
+    def test_deleted_bound_record_falls_back_to_own_name(self):
+        run(vpn.bind(self.UID, "1", "old_client", "9", self.SUPER))
+        del self.panels["1"].users["old_client"]
+        run(vpn.issue(self.UID, ["1"], "9", self.SUPER))
+        name = vpnpanels.account_name(self.UID)
+        self.assertIn(name, self.panels["1"].users)
+        self.assertEqual(run(vpn.record(self.UID))["panels"]["1"]["name"], name)
+
+    def test_clients_excludes_bound(self):
+        run(vpn.bind(self.UID, "1", "old_client", "9", self.SUPER))
+        self.assertEqual([c.ref for c in run(vpn.clients("1", self.SUPER))], [])
 
 
 class SelftestTests(MultiPanelBase):

@@ -363,13 +363,30 @@ async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: 
     к большему из «сейчас» и прежнего окончания, предел трафика ставится
     по тарифу.
     """
-    name = account_name(uid)
+    # Имя в панели: привязанная чужая запись (5.7.2) — её собственное,
+    # иначе выведенное из ключа человека.
+    current = (await record(uid) or {}).get("panels", {})
+
+    def name_on(target: Slot) -> str:
+        stored = current.get(target.key) or {}
+        if stored.get("name") and not _stale(target, stored):
+            return str(stored["name"])
+        return account_name(uid)
+
+    used_names: dict[str, str] = {}
 
     async def one(target: Slot) -> Account:
         client = target.client
+        name = name_on(target)
         now = int(time.time())
         expire = now + period if client.supports_expiry else 0
         account = await client.get_user(name)
+        if account is None and name != account_name(uid):
+            # Привязанную запись удалили в самой панели: заводим свою,
+            # под именем бота, а не под чужим идентификатором.
+            name = account_name(uid)
+            account = await client.get_user(name)
+        used_names[target.key] = name
         if account is None:
             created = await client.create_user(name, expire, traffic)
             if not (devices and client.supports_devices):
@@ -407,9 +424,13 @@ async def _grant(uid: str | int, targets: list[Slot], by: str | int, *, period: 
         panels = entry.setdefault("panels", {})
         for key, result in results.items():
             if isinstance(result, Account):
-                panels[key] = {"name": name, "kind": fingerprints[key].client.kind,
+                previous = panels.get(key) or {}
+                panels[key] = {"name": used_names.get(key) or name_on(fingerprints[key]),
+                               "kind": fingerprints[key].client.kind,
                                "fp": fingerprints[key].fingerprint,
                                "issued": now, "by": str(by)}
+                if previous.get("adopted") and previous.get("name") == panels[key]["name"]:
+                    panels[key]["adopted"] = True
         if panels:
             entry["state"] = ACTIVE
             entry["decided"] = now
@@ -431,13 +452,12 @@ async def _on_issued(uid: str | int, keys: list[str] | None,
     entry = await record(uid) or {}
     panels = entry.get("panels", {})
     targets = [item for item in _pick(keys) if item.key in panels]
-    name = account_name(uid)
 
     async def one(target: Slot) -> Any:
         if _stale(target, panels[target.key]):
             raise PanelError("Панель в этом слоте заменена после выдачи — "
                              "выдайте доступ заново.")
-        return await action(target, name)
+        return await action(target, str(panels[target.key].get("name") or account_name(uid)))
 
     return await _each(targets, one)
 
@@ -512,6 +532,149 @@ async def revoke(uid: str | int, key: str, role: str | None) -> None:
     failure = results.get(str(key))
     if isinstance(failure, PanelError):
         raise PanelError(f"Выдача забыта, но панель не ответила: {failure}")
+
+
+#  Привязка уже заведённых в панелях клиентов (5.7.2)
+#
+#  До 5.7.2 бот знал только записи, которые завёл сам («radar_<id>»).
+#  Клиенты, заведённые руками или другим ботом (vpn-bot-3xui и подобные
+#  пишут Telegram-id в `tgId`, email или комментарий), к аккаунту не
+#  относились: человек их не видел, продление заводило вторую запись.
+#  Теперь суперадминистратор привязывает их — по найденным совпадениям
+#  или вручную. Привязка ничего в панели не меняет: запись остаётся
+#  прежней, с прежним ключом, сроком и трафиком.
+
+@dataclass(frozen=True)
+class Match:
+    """Предложение привязки: клиент панели и человек, чей Telegram-id в нём."""
+
+    uid: str
+    key: str
+    ref: str
+    title: str
+    reason: str
+
+
+def _mentions(text: str, uid: str) -> bool:
+    import re
+
+    return bool(uid) and re.search(rf"(?<!\d){re.escape(uid)}(?!\d)", text or "") is not None
+
+
+def match_reason(client: Any, uid: str) -> str:
+    """Почему клиент панели похож на человека `uid`. Пусто — не похож.
+
+    Короткие числа не сопоставляются: «12345» в комментарии скорее
+    номер заказа, чем Telegram-id. Id из собственного поля панели
+    (`tgId` и подобных) — точное совпадение, ему верим сильнее.
+    """
+    if not uid.isdigit() or len(uid) < 6:
+        return ""
+    if client.telegram and client.telegram == uid:
+        return "Telegram-id в поле панели"
+    for note in client.notes:
+        if _mentions(note, uid):
+            return "Telegram-id в имени или комментарии"
+    return ""
+
+
+async def _bound(stored: dict[str, dict[str, Any]]) -> dict[tuple[str, str], str]:
+    """Уже занятые записи: (слот, имя в панели) → чей аккаунт."""
+    taken = {}
+    for owner, entry in stored.items():
+        for key, info in (entry.get("panels") or {}).items():
+            if info.get("name"):
+                taken[(str(key), str(info["name"]))] = owner
+    return taken
+
+
+async def clients(key: str, role: str | None) -> list[Any]:
+    """Клиенты одной панели, ещё ни к кому не привязанные."""
+    _require(role)
+    target = next(iter(_pick([key])), None)
+    if target is None:
+        raise PanelError("Такой панели нет.")
+    result = (await _each([target], lambda item: item.client.list_clients()))[target.key]
+    if isinstance(result, PanelError):
+        raise result
+    taken = await _bound(await _load())
+    return [item for item in result if (target.key, item.ref) not in taken]
+
+
+async def matches(role: str | None) -> tuple[list[Match], dict[str, str]]:
+    """Совпадения по всем панелям: клиенты, где записан Telegram-id
+    зарегистрированного в боте человека. Второе значение — отказы панелей."""
+    from . import storage
+    from .identity import is_telegram
+
+    _require(role)
+    people = [uid for uid in storage.users() if is_telegram(uid)]
+    stored = await _load()
+    taken = await _bound(stored)
+    results = await _each(slots(), lambda item: item.client.list_clients())
+    found: list[Match] = []
+    errors: dict[str, str] = {}
+    for key, result in results.items():
+        if isinstance(result, PanelError):
+            errors[key] = str(result)
+            continue
+        for client in result:
+            if (key, client.ref) in taken:
+                continue
+            for uid in people:
+                if key in ((stored.get(uid) or {}).get("panels") or {}):
+                    continue   # на этой панели у человека уже есть выдача
+                reason = match_reason(client, uid)
+                if reason:
+                    found.append(Match(uid, key, client.ref, client.title, reason))
+    return found, errors
+
+
+async def bind(uid: str | int, key: str, ref: str, by: str | int,
+               role: str | None) -> Account:
+    """Привязать существующую запись панели к человеку. В панели не меняется ничего."""
+    _require(role)
+    target = next(iter(_pick([key])), None)
+    if target is None:
+        raise PanelError("Такой панели нет.")
+    stored = await _load()
+    owner = (await _bound(stored)).get((target.key, str(ref)))
+    if owner and owner != str(uid):
+        raise PanelError("Эта запись уже привязана к другому человеку.")
+    if target.key in ((stored.get(str(uid)) or {}).get("panels") or {}) and owner != str(uid):
+        raise PanelError("На этой панели у человека уже есть доступ — сначала отзовите его.")
+    result = (await _each([target], lambda item: item.client.get_user(str(ref))))[target.key]
+    if isinstance(result, PanelError):
+        raise result
+    if result is None:
+        raise PanelError("Такой записи в панели нет.")
+    now = int(time.time())
+
+    def change(entry: dict[str, Any]) -> None:
+        entry.setdefault("panels", {})[target.key] = {
+            "name": str(ref), "kind": target.client.kind, "fp": target.fingerprint,
+            "issued": now, "by": str(by), "adopted": True}
+        entry["state"] = ACTIVE
+        entry["decided"] = now
+        entry["by"] = str(by)
+
+    await _edit(uid, change)
+    log.info("VPN %s: привязана существующая запись на слоте %s (%s)", uid, target.key, by)
+    return result
+
+
+async def forget(uid: str | int, key: str, role: str | None) -> None:
+    """Снять привязку, не трогая запись в панели (в отличие от `revoke`,
+    который её выключает): для ошибочной привязки чужого клиента."""
+    _require(role)
+
+    def change(entry: dict[str, Any]) -> None:
+        entry.get("panels", {}).pop(str(key), None)
+        if not entry.get("panels") and entry.get("state") == ACTIVE:
+            entry["state"] = ""
+
+    await _edit(uid, change)
+    log.info("VPN %s: привязка на слоте %s снята без изменений в панели", uid, key)
 
 
 async def statuses(uid: str | int) -> dict[str, Any]:

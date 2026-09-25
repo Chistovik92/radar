@@ -171,6 +171,7 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
             _button("🔑 Выдать себе", f"vpn:rv:{uid}:0"),
             _button("🩺 Проверить панели", "vpn:check"),
         ])
+        rows.append([_button("🔗 Клиенты панелей", "vpn:adopt")])
         if features.enabled("vpn_sales"):
             rows.append([_button("🧾 Заказы", "vpn:orders")])
 
@@ -349,6 +350,7 @@ async def review(call: CallbackQuery, role: str) -> None:
         rows.append([_button(f"✅ Выдать ({chosen})", f"vpn:go:{uid}:{mask}")])
     if entry.get("state") == vpn.PENDING:
         rows.append([_button("❌ Отказать", f"vpn:no:{uid}")])
+    rows.append([_button("🔗 Привязать клиента панели", f"vpn:mb:{uid}")])
     rows.append(_back("vpn:reqs"))
 
     days = vpn.default_days()
@@ -437,6 +439,7 @@ async def list_issued(call: CallbackQuery, role: str) -> None:
 
 async def _card(call: CallbackQuery, uid: str, note: str = "") -> None:
     results = await vpn.statuses(uid)
+    panels = ((await vpn.record(uid)) or {}).get("panels") or {}
     lines = [f"🔐 <b>VPN</b>: {_name_of(uid)}"]
     lines.extend(_status_lines(results, "ru") if results else ["\nНичего не выдано."])
     if note:
@@ -459,8 +462,11 @@ async def _card(call: CallbackQuery, uid: str, note: str = "") -> None:
         else:
             row.append(_button("⛔ Выкл.", f"vpn:off:{key}:{uid}"))
         row.append(_button("🗑", f"vpn:rm:{key}:{uid}"))
+        if (panels.get(key) or {}).get("adopted"):
+            row.append(_button("↩️", f"vpn:fg:{key}:{uid}"))
         rows.append(row)
     rows.append([_button("➕ Выдать на другие панели", f"vpn:rv:{uid}:0")])
+    rows.append([_button("🔗 Привязать клиента панели", f"vpn:mb:{uid}")])
     rows.append(_back("vpn:list"))
     await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -536,6 +542,163 @@ async def check_panels(call: CallbackQuery, role: str) -> None:
     if len(lines) == 1:
         lines.append("\nНи одна панель не настроена.")
     await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=[_back()]))
+
+
+# --------------------------------------------------------------------------
+#  Привязка клиентов, заведённых в панелях не ботом (5.7.2)
+# --------------------------------------------------------------------------
+
+# Найденное держится в памяти по суперадминистратору: имя записи в панели
+# в данные кнопки не помещается (64 байта), поэтому кнопка несёт номер.
+_found: dict[str, list[Any]] = {}
+PAGE = 20
+
+
+def _adopt_rows(admin: str) -> list[list[InlineKeyboardButton]]:
+    known = _titles()
+    rows = []
+    for index, match in enumerate(_found.get(admin, [])[:PAGE]):
+        where = _short(known[match.key].title, 12) if match.key in known else f"#{match.key}"
+        rows.append([_button(f"✅ {_short(_label(match.uid), 16)} ← "
+                             f"{_short(match.title, 16)} · {where}", f"vpn:ad:{index}")])
+    if len(_found.get(admin, [])) > 1:
+        rows.append([_button("✅ Привязать все", "vpn:adall")])
+    rows.append(_back())
+    return rows
+
+
+def _adopt_text(admin: str, errors: dict[str, str] | None = None, note: str = "") -> str:
+    found = _found.get(admin, [])
+    lines = ["🔗 <b>Клиенты панелей</b>",
+             "",
+             "Записи, заведённые в панелях руками или другим ботом, в которых "
+             "записан Telegram-id человека из бота (поле Telegram-id, имя, email "
+             "или комментарий). Привязка в панели ничего не меняет: ключ, срок "
+             "и трафик остаются прежними."]
+    if found:
+        lines.append("")
+        for match in found[:PAGE]:
+            lines.append(f"• {_name_of(match.uid)} ← <code>{esc(match.title)}</code> "
+                         f"({esc(match.reason)})")
+        if len(found) > PAGE:
+            lines.append(f"…и ещё {len(found) - PAGE}: привяжите эти — список обновится.")
+    else:
+        lines.append("\nСовпадений нет. Остальных клиентов можно привязать вручную: "
+                     "карточка человека → «🔗 Привязать клиента панели».")
+    known = _titles()
+    for key, reason in (errors or {}).items():
+        title = known[key].title if key in known else f"#{key}"
+        lines.append(f"\n❌ {esc(title)}: {esc(reason)}")
+    if note:
+        lines.append("\n" + note)
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data == "vpn:adopt")
+async def find_clients(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    await call.answer("Читаю панели…")
+    admin = str(call.from_user.id)
+    try:
+        found, errors = await vpn.matches(role)
+    except PanelError as exc:
+        await safe_edit(call, f"❌ {esc(str(exc))}", InlineKeyboardMarkup(inline_keyboard=[_back()]))
+        return
+    _found[admin] = found
+    await safe_edit(call, _adopt_text(admin, errors),
+                    InlineKeyboardMarkup(inline_keyboard=_adopt_rows(admin)))
+
+
+async def _bind(match: Any, admin: str, role: str) -> str:
+    try:
+        await vpn.bind(match.uid, match.key, match.ref, admin, role)
+    except PanelError as exc:
+        return f"❌ {_name_of(match.uid)}: {esc(str(exc))}"
+    return f"✅ {_name_of(match.uid)} ← <code>{esc(match.title)}</code>"
+
+
+@router.callback_query(F.data.startswith("vpn:ad:") | (F.data == "vpn:adall"))
+async def adopt(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    admin = str(call.from_user.id)
+    found = _found.get(admin, [])
+    if call.data == "vpn:adall":
+        chosen = list(found)
+    else:
+        index = int(call.data.split(":", 2)[2])
+        chosen = [found[index]] if 0 <= index < len(found) else []
+    if not chosen:
+        await call.answer("Список устарел — найдите заново.", show_alert=True)
+        return
+    await call.answer("Привязываю…")
+    notes = [await _bind(match, admin, role) for match in chosen]
+    _found[admin] = [match for match in found if match not in chosen]
+    await safe_edit(call, _adopt_text(admin, note="\n".join(notes)),
+                    InlineKeyboardMarkup(inline_keyboard=_adopt_rows(admin)))
+
+
+@router.callback_query(F.data.startswith("vpn:mb:"))
+async def manual_slots(call: CallbackQuery, role: str) -> None:
+    """Ручная привязка: сначала панель."""
+    if not await _decider_only(call, role):
+        return
+    uid = call.data.split(":", 2)[2]
+    await call.answer()
+    rows = [[_button(_short(target.title, 30), f"vpn:mbs:{target.key}:{uid}:0")]
+            for target in vpn.slots()]
+    rows.append(_back(f"vpn:u:{uid}"))
+    await safe_edit(call, f"🔗 <b>Привязать клиента панели</b>: {_name_of(uid)}\n\n"
+                          "Выберите панель — покажу её клиентов, ещё ни к кому "
+                          "не привязанных.", InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("vpn:mbs:"))
+async def manual_clients(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, _, key, uid, raw = call.data.split(":", 4)
+    offset = int(raw) if raw.isdigit() else 0
+    admin = str(call.from_user.id)
+    await call.answer("Читаю панель…")
+    try:
+        free = await vpn.clients(key, role)
+    except PanelError as exc:
+        await safe_edit(call, f"❌ {esc(str(exc))}",
+                        InlineKeyboardMarkup(inline_keyboard=[_back(f"vpn:mb:{uid}")]))
+        return
+    page = free[offset:offset + PAGE]
+    _found[admin] = [vpn.Match(uid, key, item.ref, item.title, "выбран вручную")
+                     for item in page]
+    rows = [[_button(_short(item.title, 40), f"vpn:ad:{index}")]
+            for index, item in enumerate(page)]
+    nav = []
+    if offset:
+        nav.append(_button("◀️", f"vpn:mbs:{key}:{uid}:{max(0, offset - PAGE)}"))
+    if offset + PAGE < len(free):
+        nav.append(_button("▶️", f"vpn:mbs:{key}:{uid}:{offset + PAGE}"))
+    if nav:
+        rows.append(nav)
+    rows.append(_back(f"vpn:mb:{uid}"))
+    text = (f"🔗 <b>Клиенты панели</b> для {_name_of(uid)}: свободных {len(free)}"
+            + (f", показаны {offset + 1}–{offset + len(page)}" if page else "")
+            + ".\nНажмите нужного — он будет привязан, в панели ничего не изменится.")
+    await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("vpn:fg:"))
+async def forget_binding(call: CallbackQuery, role: str) -> None:
+    if not await _decider_only(call, role):
+        return
+    _, _, key, uid = call.data.split(":", 3)
+    await call.answer()
+    try:
+        await vpn.forget(uid, key, role)
+        note = "↩️ Привязка снята, запись в панели не тронута."
+    except PanelError as exc:
+        note = f"⚠️ {esc(str(exc))}"
+    await _card(call, uid, note)
 
 
 # --------------------------------------------------------------------------

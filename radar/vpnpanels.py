@@ -88,6 +88,35 @@ def valid_name(name: str) -> bool:
     return bool(_NAME_RE.fullmatch(name or ""))
 
 
+@dataclass(frozen=True)
+class PanelClient:
+    """Клиент из списка панели — для привязки уже заведённых записей (5.7.2).
+
+    `ref` — то, по чему панель находит запись в дальнейших вызовах: имя
+    (email у 3x-ui), а у Hiddify — uuid, у Outline — id ключа: их чужие
+    записи по имени не находятся. `telegram` — Telegram-id из поля самой
+    панели (3x-ui `tgId`, Remnawave `telegramId`, Hiddify `telegram_id`),
+    `notes` — где ещё его могли записать: имя, email, комментарий.
+    """
+
+    ref: str
+    title: str
+    telegram: str = ""
+    notes: tuple[str, ...] = ()
+    account: Account | None = None
+
+
+# Сколько клиентов читать из одной панели. Список нужен суперадминистратору
+# для привязки, а не для выгрузки: больше — значит, что-то не так с запросом.
+LIST_LIMIT = 5000
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _tg(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text.isdigit() and text != "0" else ""
+
+
 def account_name(uid: str | int) -> str:
     """Имя учётной записи для пользователя бота.
 
@@ -237,6 +266,10 @@ class Panel:
 
     async def set_devices(self, name: str, devices: int) -> None:
         raise PanelError(f"{self.title} не ограничивает число устройств.")
+
+    async def list_clients(self) -> list[PanelClient]:
+        """Все клиенты панели — для привязки заведённых не ботом (5.7.2)."""
+        raise PanelError(f"{self.title} не отдаёт список клиентов.")
 
     def problems(self) -> list[str]:
         """Чего не хватает в настройках. Пусто — можно обращаться."""
@@ -571,6 +604,17 @@ class XuiPanel(Panel):
                              "https://example.ru:2096/sub.")
         return await super().subscription_url(name)
 
+    async def list_clients(self) -> list[PanelClient]:
+        # Клиенты подключения из его настроек — так же, как считает их
+        # check() в обеих ветках; `tgId` 3x-ui и x-ui хранят прямо в клиенте.
+        _, clients = await self._inbound()
+        return [PanelClient(
+            ref=str(client.get("email") or ""), title=str(client.get("email") or ""),
+            telegram=_tg(client.get("tgId")),
+            notes=(str(client.get("email") or ""), str(client.get("comment") or "")),
+            account=xui_account(client, None, self.sub_url),
+        ) for client in clients[:LIST_LIMIT] if client.get("email")]
+
     async def check(self) -> str:
         protocol, clients = await self._inbound()
         generation = await self._gen()
@@ -777,6 +821,15 @@ class SuiPanel(Panel):
                              "https://example.ru:2096/sub.")
         return await super().subscription_url(name)
 
+    async def list_clients(self) -> list[PanelClient]:
+        obj = await self._api("GET", "clients")
+        rows = obj.get("clients") if isinstance(obj, dict) else None
+        return [PanelClient(
+            ref=str(item.get("name") or ""), title=str(item.get("name") or ""),
+            notes=(str(item.get("name") or ""), str(item.get("desc") or "")),
+            account=sui_account(item, self.sub_url),
+        ) for item in (rows or [])[:LIST_LIMIT] if isinstance(item, dict) and item.get("name")]
+
     async def check(self) -> str:
         obj = await self._api("GET", "clients")
         count = len((obj or {}).get("clients") or []) if isinstance(obj, dict) else 0
@@ -901,6 +954,25 @@ class MarzbanPanel(Panel):
     async def enable(self, name: str) -> None:
         await self._modify(name, {"status": "active"})
 
+    def _client(self, user: dict[str, Any]) -> PanelClient:
+        name = str(user.get("username") or "")
+        return PanelClient(ref=name, title=name, notes=(name, str(user.get("note") or "")),
+                           account=marzban_account(user, self.url))
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /api/users?offset&limit` → {users, total} — Marzban
+        # и PasarGuard (app/routers/user.py).
+        found: list[PanelClient] = []
+        while len(found) < LIST_LIMIT:
+            payload = await self._call("GET", f"api/users?offset={len(found)}&limit=500")
+            rows = payload.get("users") if isinstance(payload, dict) else None
+            if not rows:
+                break
+            found += [self._client(row) for row in rows if isinstance(row, dict)]
+            if len(rows) < 500:
+                break
+        return found
+
     async def check(self) -> str:
         payload = await self._call("GET", self.admin_path)
         who = payload.get("username") if isinstance(payload, dict) else ""
@@ -1018,6 +1090,26 @@ class MarzneshinPanel(MarzbanPanel):
     async def enable(self, name: str) -> None:
         await self._call("POST", f"api/users/{name}/enable")
 
+    def _client(self, user: dict[str, Any]) -> PanelClient:
+        name = str(user.get("username") or "")
+        return PanelClient(ref=name, title=name, notes=(name, str(user.get("note") or "")),
+                           account=marzneshin_account(user, self.url))
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /api/users?page&size` → страница fastapi-pagination {items}.
+        found: list[PanelClient] = []
+        page = 1
+        while len(found) < LIST_LIMIT:
+            payload = await self._call("GET", f"api/users?page={page}&size=100")
+            rows = payload.get("items") if isinstance(payload, dict) else None
+            if not rows:
+                break
+            found += [self._client(row) for row in rows if isinstance(row, dict)]
+            if len(rows) < 100:
+                break
+            page += 1
+        return found
+
     async def check(self) -> str:
         note = await super().check()
         if not self._services():
@@ -1133,6 +1225,28 @@ class RemnawavePanel(Panel):
     async def enable(self, name: str) -> None:
         await self._call("POST", f"api/users/{await self._ref(name)}/actions/enable")
 
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /api/users?start&size` (size ≤ 1000) → {response: {users, total}}.
+        found: list[PanelClient] = []
+        while len(found) < LIST_LIMIT:
+            payload = self._unwrap(await self._call(
+                "GET", f"api/users?start={len(found)}&size=500"))
+            rows = payload.get("users") if isinstance(payload, dict) else None
+            if not rows:
+                break
+            for user in rows:
+                if not isinstance(user, dict):
+                    continue
+                name = str(user.get("username") or "")
+                found.append(PanelClient(
+                    ref=name, title=name, telegram=_tg(user.get("telegramId")),
+                    notes=(name, str(user.get("email") or ""),
+                           str(user.get("description") or "")),
+                    account=remnawave_account(user)))
+            if len(rows) < 500:
+                break
+        return found
+
     async def check(self) -> str:
         # Запрос несуществующего имени: 404 значит «вход принят, записи
         # нет», 401 — токен не тот. Прав на статистику у токена может
@@ -1217,7 +1331,10 @@ class HiddifyPanel(Panel):
         return round(traffic / GB, 3) if traffic else float(UNLIMITED_GB)
 
     def _path(self, name: str = "") -> str:
-        suffix = f"{self.user_uuid(name)}/" if name else ""
+        # Привязанная чужая запись хранится своим uuid (5.7.2): из имени
+        # его не вывести. Имя бота («radar_…») на uuid не похоже никогда.
+        ident = name if _UUID_RE.match(name or "") else self.user_uuid(name)
+        suffix = f"{ident}/" if name else ""
         return f"api/v2/admin/user/{suffix}"
 
     async def create_user(self, name: str, expire: int, traffic: int) -> Account:
@@ -1253,6 +1370,21 @@ class HiddifyPanel(Panel):
             raise PanelError("Не задан адрес клиентской страницы Hiddify, "
                              "например https://example.ru/<client_proxy_path>.")
         return await super().subscription_url(name)
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET api/v2/admin/user/` — список целиком (users_api.py).
+        payload = await self._call("GET", self._path())
+        found = []
+        for user in (payload if isinstance(payload, list) else [])[:LIST_LIMIT]:
+            if not isinstance(user, dict) or not user.get("uuid"):
+                continue
+            name = str(user.get("name") or "")
+            found.append(PanelClient(
+                ref=str(user["uuid"]), title=name or str(user["uuid"]),
+                telegram=_tg(user.get("telegram_id")),
+                notes=(name, str(user.get("comment") or "")),
+                account=hiddify_account(user, self.sub_url)))
+        return found
 
     async def check(self) -> str:
         payload = await self._call("GET", "api/v2/admin/me/")
@@ -1356,6 +1488,19 @@ class OutlinePanel(Panel):
 
     async def enable(self, name: str) -> None:
         await self._call("DELETE", f"access-keys/{name}/data-limit")
+
+    async def list_clients(self) -> list[PanelClient]:
+        # `GET /access-keys` → {accessKeys: [...]}; ключ находится по id.
+        payload = await self._call("GET", "access-keys")
+        keys = payload.get("accessKeys") if isinstance(payload, dict) else None
+        found = []
+        for key in (keys or [])[:LIST_LIMIT]:
+            if not isinstance(key, dict) or key.get("id") in (None, ""):
+                continue
+            name = str(key.get("name") or "")
+            found.append(PanelClient(ref=str(key["id"]), title=name or f"ключ {key['id']}",
+                                     notes=(name,), account=outline_account(key, 0)))
+        return found
 
     async def check(self) -> str:
         payload = await self._call("GET", "server")
@@ -1466,6 +1611,14 @@ class WgEasyPanel(Panel):
         if not code:
             raise PanelError("wg-easy не выдала одноразовую ссылку.")
         return f"{self.url}/cnf/{code}"
+
+    async def list_clients(self) -> list[PanelClient]:
+        payload = await self._call("GET", "api/client")
+        return [PanelClient(ref=str(item.get("name") or ""), title=str(item.get("name") or ""),
+                            notes=(str(item.get("name") or ""),),
+                            account=wgeasy_account(item, ""))
+                for item in (payload if isinstance(payload, list) else [])[:LIST_LIMIT]
+                if isinstance(item, dict) and item.get("name")]
 
     async def check(self) -> str:
         payload = await self._call("GET", "api/client")

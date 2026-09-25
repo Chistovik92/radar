@@ -237,6 +237,19 @@ class TestDiskReport(unittest.TestCase):
         two = music.disk_report([".", "."]).count("•")
         self.assertEqual(one, two)
 
+    def test_same_disk_with_changing_free_space(self):
+        """Свободное место меняется между вызовами (на диск пишут) — диск
+        всё равно один (до 5.8 он попадал в письмо дважды)."""
+        import shutil
+        from collections import namedtuple
+        from unittest import mock
+
+        Usage = namedtuple("Usage", "total used free")
+        answers = iter([Usage(100, 40, 60), Usage(100, 41, 59)])
+        with mock.patch.object(shutil, "disk_usage", lambda path: next(answers)):
+            report = music.disk_report([".", "."])
+        self.assertEqual(report.count("• ."), 1)
+
     def test_missing_path_skipped(self):
         report = music.disk_report(["Z:/нет/такого/пути", "."])
         self.assertIn("Диски", report)
