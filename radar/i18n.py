@@ -148,6 +148,16 @@ EN_STRINGS: dict[str, str] = {
     "vpn.cancel_order": "✖️ Cancel order",
     "vpn.order_done": "✅ Payment received, access is open.",
     "vpn.not_paid": "The payment hasn't arrived yet. Try again in a minute.",
+    "link.button": "🔗 Link VK or MAX",
+    "link.title": "🔗 <b>Link VK and MAX</b>",
+    "link.intro": "Alerts for your addresses will also arrive there — a copy "
+                  "of what arrives here. Addresses and settings stay in Telegram.",
+    "link.linked": "linked",
+    "link.unlink": "✖️ Unlink",
+    "link.code": "Your code: <code>{code}</code>\nSend it to the bot in VK "
+                 "or MAX. The code is valid for 10 minutes.",
+    "link.get_code": "🔑 Get a code",
+    "link.unlinked": "Unlinked.",
     "vpn.gb": "GB",
     "vpn.mb": "MB",
 

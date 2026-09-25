@@ -132,6 +132,28 @@ SETTINGS: tuple[Setting, ...] = (
             "уже разосланные ссылки перестанут открываться.",
             "Ссылки"),
 
+    # --- ВКонтакте как мессенджер (с 5.6) ---
+    Setting("VK_BOT_TOKEN", "ВК-бот: ключ сообщества",
+            "Управление сообществом → Работа с API → Ключи доступа, "
+            "право «сообщения сообщества». Не путать с VK_SERVICE_TOKEN "
+            "для чтения стен.", "ВК-бот", restart=True,
+            where="Управление сообществом → Работа с API"),
+    Setting("VK_BOT_GROUP_ID", "ВК-бот: id сообщества",
+            "Числовой id сообщества, например 123456789. В сообществе включите "
+            "«Сообщения» и Long Poll API с событием «Входящее сообщение».",
+            "ВК-бот", secret=False),
+
+    # --- Discord (с 5.5) ---
+    Setting("DISCORD_BOT_TOKEN", "Discord: токен бота",
+            "Developer Portal → приложение → Bot → Reset Token.", "Discord",
+            restart=True, where="discord.com/developers/applications"),
+    Setting("DISCORD_CHANNEL_ID", "Discord: канал сводок",
+            "Числовой id канала для суточной сводки и статуса мониторинга "
+            "(в Discord: режим разработчика → ПКМ по каналу → Copy ID).",
+            "Discord", secret=False),
+    Setting("DISCORD_SUMMARY_TIME", "Discord: время сводки",
+            "ЧЧ:ММ по времени сервера, по умолчанию 20:00.", "Discord", secret=False),
+
     # --- VPN: общее для всех панелей (с 5.0) ---
     Setting("VPN_DAYS", "VPN: срок выдачи, дней",
             "Срок новой записи и шаг продления. По умолчанию 30.",

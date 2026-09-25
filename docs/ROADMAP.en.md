@@ -1506,7 +1506,7 @@ the price of being wrong here is not a commission but the bot.
 
 ---
 
-## 5.5 — Discord
+## 5.5 — Discord ⚠️ code written
 
 The "other messengers" section is split per platform: they differ not in the
 amount of work but in what someone else's API allows at all. Putting them in
@@ -1528,9 +1528,21 @@ rewrite.
    The sensible use case is not address-based alerts but a community
    channel: summaries and system status.
 
+   ⚠️ Done in 5.5 exactly that way: `radar/platforms/discord.py` and
+   `discordbot.py`, the `platform_discord` flag (off). The adapter is on
+   `aiohttp`, without discord.py: REST and the Gateway with heartbeats,
+   RESUME and stopping on unrecoverable close codes; the protocol was
+   checked against the discord.py source. Slash commands `/about`,
+   `/status`, `/summary`, `/help`; a daily per-category summary to a
+   channel — no addresses, cities or text; messages when monitoring
+   status changes. The Message Content intent is not requested at all —
+   slash commands are enough. The transport is exercised over a real
+   WebSocket against an emulator (`tools/discord_http_check.py`, a CI
+   step). Not verified against real Discord.
+
 ---
 
-## 5.6 — Viber
+## 5.6 — Viber ❌ rejected in 5.6: bots became paid
 
 1. **Viber.** A public account is registered without a legal entity, and the
    Bot API works over a webhook — HTTPS arrived here in 4.7.5, so there is no
@@ -1541,6 +1553,15 @@ rewrite.
    has not is not allowed. For alerts that means the same order as SOS in
    Telegram: subscription first, alerts after.
 
+
+   ❌ **Rejected in 5.6 — the item's premise is out of date.** Since
+   5 February 2024 new Viber bots are created only by application and a
+   contract with Rakuten: €115 a month per bot plus a fee for every
+   delivered bot-initiated message — and alerts are exactly that. A free
+   bot for alerts that are always free cannot be built on those terms,
+   and without a contract there is no token to verify an adapter with.
+   Sources: [Bot commercial model](https://help.viber.com/hc/en-us/articles/15247629658525-Bot-commercial-model), [FAQ](https://help.viber.com/hc/en-us/articles/15383950711197-Rakuten-Viber-chatbot-commercial-model-FAQ). Revisit if the author decides to sign a
+   contract; the code would then follow the same path as VK.
 ---
 
 ## 6.0 — MAX ⚠️ written from the documentation
@@ -1599,6 +1620,10 @@ rewrite.
      MAX is not the same person as in Telegram, and therefore has no
      locations. That needs a decision about how to confirm the link, not
      more transport code.
+     ✅ Solved in 5.6 (`radar/links.py`): a one-time code is issued by
+     Telegram, where the person's addresses are, and entered in MAX or VK;
+     after linking, alerts are copied there (`radar/mirror.py`), and MAX
+     sends by `user_id`.
 
    The platform limit that will not change: **reading other people's public
    channels in MAX is impossible** — the API is bot-centric. MAX is a
@@ -1606,7 +1631,7 @@ rewrite.
 
 ---
 
-## 6.5 — WhatsApp, deliberately reduced
+## 6.5 — WhatsApp, deliberately reduced ⏸ deferred in 5.6
 
 1. **WhatsApp.** To be implemented, but in a knowingly limited form, and the
    limitation is stated out loud — that is the main point of this item.
@@ -1633,9 +1658,19 @@ rewrite.
    Needed: business verification with Meta, a phone number, approval of each
    template. None of those conditions is closed by writing code.
 
+
+   ⏸ **Deferred in 5.6.** The conditions listed above were confirmed and
+   became stricter: since 1 July 2025 Meta charges for **every** delivered
+   template message (digests outside the 24-hour window are templates),
+   and without Meta business verification there is a limit of 250
+   conversations a day. None of this is solved by code, and without a
+   verified account there is nothing to test an adapter against.
+   Sources: [Meta: pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/conversation-based-pricing), [access prerequisites](https://www.wati.io/en/blog/whatsapp-api-prerequisites/). For those who need a second alert
+   channel, 5.6 provides VK and MAX — free, and with alerts, not just
+   digests.
 ---
 
-## 7.0 — VKontakte and Odnoklassniki as messengers
+## 7.0 — VKontakte and Odnoklassniki as messengers ⚠️ VK — code written in 5.6
 
 1. **VKontakte as a messenger.** A proven path: the bot is attached to a
    community, the access key is issued in the "Working with API" section,
@@ -1644,6 +1679,14 @@ rewrite.
    almost one to one. Placed this far out deliberately: VK already works here
    **as a source** (4.3) and pays off daily, whereas VK as a messenger is a
    convenience for people who are not on Telegram.
+   ⚠️ Done in 5.6 — earlier than the roadmap placed it: Viber and
+   WhatsApp before it turned out to be paid, and VK became the only free
+   and verifiable platform. `radar/platforms/vk.py` — Long Poll with no
+   external address (format and failure codes checked against vkbottle),
+   `vkbot.py` — linking by a code from Telegram and alert copies.
+   Addresses and settings are not set in VK: it is a second delivery
+   channel for someone who set the bot up in Telegram. Not verified
+   against a live community.
 2. **Odnoklassniki.** Harder: the application is registered on apiok.ru, and
    confirmation plus a signature on every request are required. Both as a
    source (the `source_ok` flag was removed in 4.7.5 — there must be no

@@ -1,4 +1,4 @@
-# Radar v5.0.2
+# Radar v5.6
 
 [Русская версия](README.md)
 
@@ -708,6 +708,51 @@ honest answer to everything else. **No alerts are sent from there:**
 locations, roles and the subscription are tied to the Telegram account, and
 without a confirmed address no alert is sent. The full core is not ported
 to MAX until the platform has been checked by at least one live request.
+
+### Discord (since 5.5) ⚠️ not verified in operation
+
+Feature flag `platform_discord`, off by default. Discord here is a
+**community channel**, not address-based alerts: no alert goes out
+without confirmed geography, and addresses live in Telegram.
+
+- slash commands `/about`, `/status`, `/summary`, `/help`;
+- a daily summary in the `DISCORD_CHANNEL_ID` channel at
+  `DISCORD_SUMMARY_TIME` (20:00 by default): how many events there were
+  per category and how many all-clears — no addresses, cities or text;
+- a channel message when monitoring goes silent and when it recovers.
+
+The adapter is written on `aiohttp` without `discord.py`: REST and the
+Gateway (WebSocket) with heartbeats, session resume and the platform's
+limits respected. The protocol was checked against the `discord.py`
+source; the transport is exercised over a real WebSocket against an
+emulator (`tools/discord_http_check.py`, a CI step). It has never talked
+to real Discord. Setup is in section 15 of
+[docs/API_SETUP.md](docs/API_SETUP.md).
+
+### VK and alert copies (since 5.6) ⚠️ not verified in operation
+
+Feature flag `platform_vk`, off by default. The VK community bot runs on
+the Bots Long Poll API — no inbound address needed.
+
+**Linking.** In Telegram: "⚙️ Alerts" → "🔗 Link VK or MAX" (or `/link`)
+— the bot gives a six-digit code valid for 10 minutes. The code is sent
+to the bot in VK or in MAX, and from then on **alerts for the person's
+addresses arrive there too** — a copy of what arrived in Telegram.
+Addresses and settings stay in Telegram: geography is confirmed there,
+so the rule "no alert without confirmed geography" holds.
+
+- the copy is sent by a background task: Telegram does not wait for it,
+  and a VK or MAX failure neither delays nor breaks the alert loop;
+- only Telegram, where the addresses are, issues the code: nobody can
+  route someone else's alerts to themselves by knowing a VK id;
+  brute force is limited to five wrong codes per 10 minutes;
+- `/unlink` in VK or MAX, or the button in Telegram, removes the link.
+
+Viber and WhatsApp are not connected: since 2024 Viber bots require a
+contract and €115 a month plus a fee per message, and since July 2025
+WhatsApp charges for every template message and requires Meta business
+verification — details in the [roadmap](docs/ROADMAP.en.md). VK setup is
+in section 16 of [docs/API_SETUP.md](docs/API_SETUP.md).
 
 ## Language
 

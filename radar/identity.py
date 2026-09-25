@@ -21,11 +21,13 @@ from dataclasses import dataclass
 
 TELEGRAM = "telegram"
 MAX = "max"
-PLATFORMS = (TELEGRAM, MAX)
+DISCORD = "discord"
+VK = "vk"
+PLATFORMS = (TELEGRAM, MAX, DISCORD, VK)
 
 DEFAULT_PLATFORM = TELEGRAM
 
-TITLES = {TELEGRAM: "Telegram", MAX: "MAX"}
+TITLES = {TELEGRAM: "Telegram", MAX: "MAX", DISCORD: "Discord", VK: "ВКонтакте"}
 
 
 @dataclass(frozen=True)

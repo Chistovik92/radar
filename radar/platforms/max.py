@@ -289,7 +289,13 @@ class MaxTransport:
 
     # -- протокол Transport ----------------------------------------------
 
-    async def send(self, chat_id: str, message: OutboundMessage) -> bool:
+    async def send_text(self, user_id: str, text: str) -> bool:
+        """Копия тревоги привязанному человеку (5.6): адресат — пользователь,
+        а не чат, поэтому `?user_id=`, а не `?chat_id=`."""
+        return await self.send(user_id, OutboundMessage(text=text), by_user=True)
+
+    async def send(self, chat_id: str, message: OutboundMessage, *,
+                   by_user: bool = False) -> bool:
         """Отправка сообщения. False — не доставлено.
 
         При отказе из-за разметки повторяем то же сообщение чистым
@@ -310,8 +316,9 @@ class MaxTransport:
                 {"type": "inline_keyboard", "payload": {"buttons": keyboard}}
             ]
 
+        target = {"user_id" if by_user else "chat_id": chat_id}
         status, _payload = await self._request(
-            "POST", "messages", params={"chat_id": chat_id}, payload=body)
+            "POST", "messages", params=target, payload=body)
         if status == 200:
             return True
 
@@ -323,7 +330,7 @@ class MaxTransport:
             body.pop("format", None)
             body["text"] = self.plain(message.text)
             status, _payload = await self._request(
-                "POST", "messages", params={"chat_id": chat_id}, payload=body)
+                "POST", "messages", params=target, payload=body)
             return status == 200
         return False
 

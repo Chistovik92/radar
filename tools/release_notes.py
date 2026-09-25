@@ -20,6 +20,11 @@
     python3 tools/release_notes.py title
     python3 tools/release_notes.py body
     python3 tools/release_notes.py newer v4.9.9.4 v4.9.9.3 ...
+    python3 tools/release_notes.py pending $(git tag -l 'v*')
+    python3 tools/release_notes.py title 5.5
+
+`pending` печатает «версия коммит» для каждой версии из истории, у которой
+ещё нет тега: так два выпуска, слитые одним PR, получают по релизу.
 
 `newer` завершается с ошибкой, если текущая версия не больше самой
 старшей из переданных: номер только растёт, и выпуск назад не должен
@@ -111,6 +116,60 @@ def is_newer(version: str, tags: list[str]) -> bool:
     return not known or parse(version) > max(known)
 
 
+def _git(*args: str, root: Path = ROOT) -> str:
+    import subprocess
+
+    return subprocess.run(["git", *args], cwd=root, check=True,
+                          capture_output=True, text=True).stdout
+
+
+def version_at(sha: str, root: Path = ROOT) -> str:
+    """Версия из radar/__init__.py на данном коммите. Пусто — не прочитана."""
+    try:
+        source = _git("show", f"{sha}:radar/__init__.py", root=root)
+    except Exception:  # noqa: BLE001
+        return ""
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(target, "id", "") == "__version__" for target in node.targets
+        ):
+            return str(ast.literal_eval(node.value))
+    return ""
+
+
+def pending(tags: list[str], root: Path = ROOT, depth: int = 300) -> list[tuple[str, str]]:
+    """Версии в истории HEAD, которых ещё нет среди тегов: [(версия, коммит)].
+
+    Нужна затем, чтобы два выпуска, слитые одним PR, получили по релизу
+    каждый — и каждый на СВОЁМ коде. Коммит версии — самый новый коммит
+    истории, где `__version__` равен ей: для последней это слияние, для
+    предыдущей — её собственный коммит внутри ветки. Берутся только версии
+    больше всех выпущенных: выпуск назад не должен стать «последним».
+    Порядок — по возрастанию, последний в списке и есть текущий.
+    """
+    known = set()
+    for tag in tags:
+        try:
+            known.add(parse(tag))
+        except ValueError:
+            continue
+    ceiling = max(known) if known else ()
+    found: dict[str, str] = {}
+    for sha in _git("rev-list", "--topo-order", f"--max-count={depth}", "HEAD",
+                    root=root).split():
+        version = version_at(sha, root)
+        if not version or version in found:
+            continue
+        try:
+            number = parse(version)
+        except ValueError:
+            continue
+        if number in known or number <= ceiling:
+            continue
+        found[version] = sha
+    return sorted(found.items(), key=lambda item: parse(item[0]))
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
@@ -120,9 +179,12 @@ def main(argv: list[str]) -> int:
     if command == "version":
         print(version)
     elif command == "title":
-        print(notes(version)[0])
+        print(notes(rest[0] if rest else version)[0])
     elif command == "body":
-        sys.stdout.write(notes(version)[1])
+        sys.stdout.write(notes(rest[0] if rest else version)[1])
+    elif command == "pending":
+        for item, sha in pending(rest):
+            print(item, sha)
     elif command == "newer":
         if not is_newer(version, rest):
             print(f"v{version} не больше уже выпущенных — номер только растёт",

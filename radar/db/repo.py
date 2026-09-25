@@ -483,6 +483,27 @@ async def event_stats(days: int = 30) -> dict[str, int]:
     return {"events": int(events or 0), "deliveries": int(deliveries or 0)}
 
 
+async def event_breakdown(hours: int = 24) -> dict[str, int]:
+    """События за последние часы по категориям — для публичной сводки (5.5).
+
+    Считаются только категории и отбои: ни адресов, ни городов, ни текста.
+    Сводка уходит в общий канал, и ничего, что привязывает событие к месту,
+    ей не нужно.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    async with session() as active:
+        rows = (await active.execute(
+            select(Event.categories, Event.all_clear).where(Event.created_at >= since)
+        )).all()
+    counts: dict[str, int] = {"_total": len(rows), "_all_clear": 0}
+    for categories, all_clear in rows:
+        if all_clear:
+            counts["_all_clear"] += 1
+        for category in categories or []:
+            counts[str(category)] = counts.get(str(category), 0) + 1
+    return counts
+
+
 async def purge_old_events(days: int | None = None) -> int:
     """Чистка истории. Возвращает число удалённых событий."""
     keep = config.EVENT_RETENTION_DAYS if days is None else days

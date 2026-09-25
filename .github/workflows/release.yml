@@ -4,8 +4,8 @@ name: Release
 # `install.sh --versions`: установщик берёт список версий из релизов.
 # Раньше тег и релиз ставились руками, и выпуски терялись.
 #
-# Версия — из radar/__init__.py. Если тег vX.Y уже есть, ничего не
-# делается: повторный пуш в main без смены номера релиз не плодит.
+# Выпускается каждая версия истории без тега, на своём коммите (с 5.6),
+# старше всех выпущенных; повторный пуш без смены номера релиз не плодит.
 # Текст — tools/release_notes.py: docs/releases/<версия>.md или RELEASES.
 
 on:
@@ -40,39 +40,36 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Версия и проверка, что её ещё нет
-        id: ver
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version="$(python tools/release_notes.py version)"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          git fetch --tags --force --quiet
-          if gh release view "v$version" >/dev/null 2>&1; then
-            echo "Релиз v$version уже есть — выпускать нечего"
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Тег, поставленный руками без релиза, не мешает: релиз
-          # создаётся на нём. Номер сверяется только с остальными.
-          python tools/release_notes.py newer $(git tag -l 'v*' | grep -vx "v$version")
-          echo "skip=0" >> "$GITHUB_OUTPUT"
-
       - name: Проверка согласованности номера
-        if: steps.ver.outputs.skip == '0'
         run: python tools/lint_release.py
 
-      - name: Тег и релиз
-        if: steps.ver.outputs.skip == '0'
+      # Все версии истории без тега — по релизу на каждую, на её собственном
+      # коммите (с 5.6). Два выпуска, слитые одним PR, иначе теряли бы
+      # младший: тег ставился только на текущую версию.
+      - name: Теги и релизы
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.ver.outputs.version }}
-          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          python tools/release_notes.py body > "$RUNNER_TEMP/notes.md"
-          title="$(python tools/release_notes.py title)"
-          gh release create "v$VERSION" \
-            --target "$SHA" \
-            --title "$title" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            --latest
+          git fetch --tags --force --quiet
+          python tools/release_notes.py pending $(git tag -l 'v*') > "$RUNNER_TEMP/pending"
+          if [ ! -s "$RUNNER_TEMP/pending" ]; then
+            echo "Невыпущенных версий нет"
+            exit 0
+          fi
+          last="$(tail -n 1 "$RUNNER_TEMP/pending" | cut -d' ' -f1)"
+          while read -r version sha; do
+            if gh release view "v$version" >/dev/null 2>&1; then
+              echo "Релиз v$version уже есть — пропускаю"
+              continue
+            fi
+            python tools/release_notes.py body "$version" > "$RUNNER_TEMP/notes.md"
+            title="$(python tools/release_notes.py title "$version")"
+            latest="--latest=false"
+            [ "$version" = "$last" ] && latest="--latest"
+            gh release create "v$version" \
+              --target "$sha" \
+              --title "$title" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              "$latest"
+            echo "Выпущен v$version на $sha"
+          done < "$RUNNER_TEMP/pending"

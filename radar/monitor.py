@@ -39,6 +39,7 @@ from . import (
     sourcecheck,
     sources,
     media,
+    mirror,
     music,
     storage,
     timezones,
@@ -281,6 +282,9 @@ async def dispatch_user(
     for text in outgoing:
         if await send_html(uid, text):
             sent += 1
+            # Копия на привязанные ВК и MAX (5.6). Фоновой задачей: зеркало
+            # не задерживает Telegram и не может уронить цикл оповещений.
+            mirror.alert(uid, text)
             # Отдельно от общего счётчика: в «alerts» попадает и погода,
             # а метрике задержки нужны только оповещения о событиях.
             _stats["delivered"] += 1
