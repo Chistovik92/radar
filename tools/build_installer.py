@@ -76,6 +76,7 @@ MANIFEST = [
     "radar/db/engine.py",
     "radar/db/repo.py",
     "radar/db/importer.py",
+    "radar/db/transfer.py",
     "radar/doctor.py",
     "migrations/env.py",
     "migrations/script.py.mako",

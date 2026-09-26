@@ -64,6 +64,7 @@ BACKUP_PATH=""
 SKIP_UPDATES=false
 MIGRATE_OUT=false
 TARGET_VERSION=""
+DB_TRANSFER_FROM=""     # откуда переносить данные при смене базы (5.9)
 LIST_VERSIONS=false
 RESTORE_FROM=""
 RESTORE_AUTO=false
@@ -227,6 +228,11 @@ t() {                  # t <ключ> [подстановка]
             migrate_port_busy)   value="Port is already in use:" ;;
             action_title)        value="What are we doing?" ;;
             action_main)         value="Install the latest code (main) — default" ;;
+            db_transfer_ask)     value="Move the data from the current database into the new one?" ;;
+            db_transfer_skip)    value="Without the move the new database starts empty" ;;
+            db_transfer_run)     value="Moving the data:" ;;
+            db_transfer_done)    value="Data moved, row counts match" ;;
+            db_transfer_failed)  value="The data move failed (details in the log)" ;;
             newer_found)         value="This installer carries version" ;;
             newer_latest)        value="the newest release on GitHub is" ;;
             newer_ask)           value="Download and run the newest installer instead? [Y/n]" ;;
@@ -398,6 +404,11 @@ t() {                  # t <ключ> [подстановка]
             migrate_port_busy)   value="Порт уже занят:" ;;
             action_title)        value="Что делаем?" ;;
             action_main)         value="Поставить последний код (main) — по умолчанию" ;;
+            db_transfer_ask)     value="Перенести данные из прежней базы в новую?" ;;
+            db_transfer_skip)    value="Без переноса новая база начнёт с нуля" ;;
+            db_transfer_run)     value="Переношу данные:" ;;
+            db_transfer_done)    value="Данные перенесены, число строк сошлось" ;;
+            db_transfer_failed)  value="Перенос данных не удался (подробности в журнале)" ;;
             newer_found)         value="Этот установщик несёт версию" ;;
             newer_latest)        value="а последний выпуск на GitHub —" ;;
             newer_ask)           value="Скачать и запустить установщик последнего выпуска? [Y/n]" ;;
@@ -1439,13 +1450,22 @@ choose_database() {
             info "Данные будут перенесены заново из data/db.json"
         elif { [ "$current" = "sqlite" ] && [ "$has_sqlite" = true ]; } ||
              { [ "$current" = "postgres" ] && [ "$has_pg" = true ]; }; then
-            warn "Содержимое прежней базы в новую автоматически не переносится"
-            info "Старая база остаётся на диске — вернуть выбор можно тем же меню"
-            printf "  %s%s%s (y/N): " "$C_BOLD" "$(t db_switch_confirm)" "$C_RESET"
-            read -r confirm_db < /dev/tty || confirm_db="n"
-            case "${confirm_db:-n}" in
-                [Yy]*) : ;;
-                *) wanted="$current"; info "Оставляю прежнюю базу: $current" ;;
+            # С 5.9 данные переносятся: radar/db/transfer.py копирует все
+            # таблицы после сборки образа, до старта бота. Прежняя база
+            # остаётся на диске нетронутой — вернуть выбор можно тем же меню.
+            printf "  %s%s%s [Y/n]: " "$C_BOLD" "$(t db_transfer_ask)" "$C_RESET"
+            read -r confirm_db < /dev/tty || confirm_db="y"
+            case "${confirm_db:-y}" in
+                [Nn]*|[Нн]*)
+                    warn "$(t db_transfer_skip)"
+                    printf "  %s%s%s (y/N): " "$C_BOLD" "$(t db_switch_confirm)" "$C_RESET"
+                    read -r confirm_db < /dev/tty || confirm_db="n"
+                    case "${confirm_db:-n}" in
+                        [Yy]*) : ;;
+                        *) wanted="$current"; info "Оставляю прежнюю базу: $current" ;;
+                    esac
+                    ;;
+                *) DB_TRANSFER_FROM="$current" ;;
             esac
         fi
     fi
@@ -3639,6 +3659,50 @@ else
         # Молча продолжить нельзя — человек решит, что данные переехали.
         warn "В копии дамп PostgreSQL, а выбрана SQLite — залить нельзя"
         warn "Выберите PostgreSQL при установке либо переносите файл data/radar.db"
+    fi
+fi
+
+# Перенос данных при смене базы (5.9). Обе базы должны быть доступны
+# одновременно, поэтому PostgreSQL поднимается и тогда, когда уходят С него;
+# бот на это время остановлен — источник не должен меняться посреди копии.
+# Цель заменяется целиком: в томе PostgreSQL или файле SQLite могли остаться
+# данные прошлого выбора, и смешивать их с переносимыми нельзя. Прежний
+# файл SQLite перед заменой сохраняется рядом.
+if [ -n "${DB_TRANSFER_FROM:-}" ] && [ "$DB_TRANSFER_FROM" != "$DB_BACKEND_VALUE" ]; then
+    info "$(t db_transfer_run) $DB_TRANSFER_FROM → $DB_BACKEND_VALUE"
+    (cd "$APP_DIR" && run $COMPOSE stop radar) || true
+    TRANSFER_ARGS="$COMPOSE_ARGS"
+    if [ "$DB_BACKEND_VALUE" = "sqlite" ]; then
+        TRANSFER_ARGS="$COMPOSE_ARGS --profile postgres"
+        run_slow "Запуск PostgreSQL для переноса" $COMPOSE $TRANSFER_ARGS up -d postgres \
+            || warn "PostgreSQL не поднялся — перенос не выйдет"
+        for _ in $(seq 1 45); do
+            docker exec radar_db pg_isready -U radar >/dev/null 2>&1 && break
+            sleep 2
+        done
+        if [ -f "$APP_DIR/data/radar.db" ]; then
+            SQLITE_KEEP="$APP_DIR/data/radar.db.bak-$(date +%Y%m%d-%H%M%S)"
+            mv "$APP_DIR/data/radar.db" "$SQLITE_KEEP"
+            rm -f "$APP_DIR/data/radar.db-wal" "$APP_DIR/data/radar.db-shm"
+            info "Прежний файл SQLite сохранён: $(basename "$SQLITE_KEEP")"
+        fi
+    fi
+    TRANSFER_CODE=0
+    (cd "$APP_DIR" && run $COMPOSE $TRANSFER_ARGS run --rm --no-deps radar \
+        python -m radar.cli db copy --from "$DB_TRANSFER_FROM" --to "$DB_BACKEND_VALUE" \
+        --replace --yes) || TRANSFER_CODE=$?
+    if [ "$TRANSFER_CODE" -eq 0 ]; then
+        ok "$(t db_transfer_done)"
+    else
+        warn "$(t db_transfer_failed)"
+        if [ -n "${SQLITE_KEEP:-}" ] && [ -f "$SQLITE_KEEP" ]; then
+            mv -f "$SQLITE_KEEP" "$APP_DIR/data/radar.db"
+            info "Файл SQLite возвращён на место"
+        fi
+        die_or_rollback "Данные не перенесены — прежняя база не тронута, выберите её снова"
+    fi
+    if [ "$DB_BACKEND_VALUE" = "sqlite" ]; then
+        (cd "$APP_DIR" && run $COMPOSE $TRANSFER_ARGS stop postgres) || true
     fi
 fi
 

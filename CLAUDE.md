@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 5.8.1, она же выложена на GitHub.
+Текущая версия — 5.9, она же выложена на GitHub.
 
 ## Общение
 
@@ -29,7 +29,14 @@ python3 tools/lint_manifest.py          # новые модули попали �
 python3 tools/vpn_http_check.py         # VPN-клиенты по HTTP (нужен aiohttp)
 python3 tools/discord_http_check.py     # адаптер Discord по WebSocket (нужен aiohttp)
 python3 tools/vk_http_check.py          # ВК и зеркало тревог по HTTP (нужен aiohttp)
+python3 tools/db_transfer_check.py      # перенос SQLite ⇄ SQLite (PG_URL — и PostgreSQL)
 ```
+
+`db_transfer_check.py` (5.9) — перенос данных между базами на настоящих
+файлах SQLite, а с `PG_URL=postgresql+asyncpg://…` — и на PostgreSQL
+(в CI — сервис `postgres:16-alpine`): сверка строка в строку в обе
+стороны, счётчики, отказ в непустую базу. Нужны SQLAlchemy[asyncio]
+и aiosqlite; тесты выше идут на заглушках и базы не видят.
 
 `vpn_http_check.py` добавлен в 5.0.1: офлайн-тесты подменяют обмен
 с панелью и не видят транспорт — куки, CSRF, заголовки входа,
