@@ -8,6 +8,19 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    # Настоящий PostgreSQL для проверки переноса данных (5.9): тесты выше
+    # идут на заглушках и базы не видят вовсе.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: radar
+          POSTGRES_PASSWORD: radar
+          POSTGRES_DB: radar
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U radar"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@v5
 
@@ -68,6 +81,16 @@ jobs:
       # ВКонтакте и зеркало тревог по HTTP: эмулятор API и Long Poll.
       - name: ВКонтакте по HTTP
         run: python tools/vk_http_check.py
+
+      # Перенос данных SQLite ⇄ SQLite и SQLite ⇄ PostgreSQL на настоящих
+      # базах: сверка строка в строку, счётчики, отказ в непустую базу.
+      - name: Перенос данных SQLite ⇄ PostgreSQL
+        env:
+          PG_URL: postgresql+asyncpg://radar:radar@127.0.0.1:5432/radar
+        run: |
+          python -m pip install --quiet "SQLAlchemy[asyncio]>=2.0,<3" aiosqlite asyncpg
+          PG_URL= python tools/db_transfer_check.py
+          python tools/db_transfer_check.py
 
       - name: Порядок функций в install.sh
         run: python tools/lint_shellorder.py

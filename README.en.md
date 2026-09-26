@@ -1,4 +1,4 @@
-# Radar v5.8.1
+# Radar v5.9
 
 [Русская версия](README.md)
 
@@ -94,6 +94,29 @@ memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
 eighth of the memory but no more than 128 MB, so the database does not hit
 its own container limit. Values set by hand are left alone; without these
 lines the database starts with the old defaults.
+
+**Switching SQLite ⇄ PostgreSQL with the data (since 5.9).** When the
+database is changed, the installer offers to move the data and does it
+itself: it builds the image, brings PostgreSQL up (also when leaving it),
+stops the bot, copies every table and checks the row counts — and only
+then starts the bot on the new database. The old database stays on disk
+untouched: the SQLite file next to it as `radar.db.bak-<date>`, the
+PostgreSQL volume in place, so you can switch back with the same menu. If
+the move fails, the installer puts everything back. By hand, inside the
+container:
+
+```bash
+docker compose --profile postgres run --rm radar \
+    python -m radar.cli db copy --from sqlite --to postgres
+# back: --from postgres --to sqlite
+# a non-empty target is replaced only with --replace --yes
+```
+
+The move keeps keys and links between tables, converts JSON and dates
+between dialects, aligns PostgreSQL's counters and copes with a database
+from an older version without the new columns. Checked on real SQLite and
+PostgreSQL 16 in both directions: the contents match row for row
+(`tools/db_transfer_check.py`, a CI step with a PostgreSQL service).
 
 ## What it does
 

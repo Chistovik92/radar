@@ -200,6 +200,7 @@ def smoke_checks() -> list[str]:
         ("radar.db", "engine"),
         ("radar.db", "repo"),
         ("radar.db", "importer"),
+        ("radar.db", "transfer"),
         ("radar.db", "models"),
         ("radar.platforms", "base"),
     ):

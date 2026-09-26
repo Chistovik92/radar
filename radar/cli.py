@@ -222,6 +222,9 @@ def cmd_backup(args) -> int:
 def cmd_db(args) -> int:
     from . import config, dbcare
 
+    if args.action == "copy":
+        return _db_copy(args)
+
     if args.action == "size":
         # Тот же источник пути, что у самого dbcare.vacuum_sqlite.
         size = dbcare.measure_sqlite(config.DB_FILE)
@@ -239,6 +242,29 @@ def cmd_db(args) -> int:
     _out(payload, args.json, lambda d: print(
         f"{dbcare.format_size(d['before'])} → {dbcare.format_size(d['after'])}"
         f"  {d['note']}"))
+    return OK
+
+
+def _db_copy(args) -> int:
+    """Перенос данных между SQLite и PostgreSQL (5.9): `db copy --from sqlite
+    --to postgres` и обратно. Цель должна быть пустой; `--replace` заменяет
+    её содержимое и, как любое необратимое действие, требует `--yes`."""
+    from .db import transfer
+
+    if not args.source or not args.target:
+        print("Укажите --from и --to: sqlite или postgres.", file=sys.stderr)
+        return FAILED
+    if args.replace and not args.yes:
+        print("--replace сотрёт данные в целевой базе. Повторите с --yes.", file=sys.stderr)
+        return NEEDS_YES
+    try:
+        source, target = transfer.url_for(args.source), transfer.url_for(args.target)
+        copied = asyncio.run(transfer.copy(source, target, replace=args.replace))
+    except transfer.TransferError as exc:
+        print(f"Перенос не выполнен: {exc}", file=sys.stderr)
+        return FAILED
+    _out(copied, args.json, lambda d: print(
+        "Перенесено: " + ", ".join(f"{k} {v}" for k, v in d.items() if v)))
     return OK
 
 
@@ -460,8 +486,14 @@ def build_parser() -> argparse.ArgumentParser:
     backup_cmd.set_defaults(func=cmd_backup)
 
     db_cmd = subparsers.add_parser("db", help="обслуживание базы", parents=[common])
-    db_cmd.add_argument("action", choices=["size", "vacuum"])
+    db_cmd.add_argument("action", choices=["size", "vacuum", "copy"])
     db_cmd.add_argument("--yes", action="store_true")
+    db_cmd.add_argument("--from", dest="source", default="",
+                        help="откуда переносить: sqlite или postgres (db copy)")
+    db_cmd.add_argument("--to", dest="target", default="",
+                        help="куда переносить: sqlite или postgres (db copy)")
+    db_cmd.add_argument("--replace", action="store_true",
+                        help="заменить непустую целевую базу (с --yes)")
     db_cmd.set_defaults(func=cmd_db)
 
     links = subparsers.add_parser("links", help="короткие ссылки", parents=[common])
