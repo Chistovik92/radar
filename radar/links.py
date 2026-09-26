@@ -422,8 +422,14 @@ NOT_LINKED = "Этот аккаунт ни с чем не связан."
 async def announce(owner: str, platform: str) -> None:
     """Сообщить во все сети аккаунта о новой привязке. Сбой не мешает связи."""
     from . import storage
-    from .tg import send_html
 
+    try:
+        from .tg import send_html
+    except Exception:  # noqa: BLE001
+        # Фоновая задача: исключение здесь никто не заберёт, и оно ушло бы
+        # в журнал как «Task exception was never retrieved».
+        log.warning("Уведомление не отправлено: модуль Telegram недоступен")
+        return
     lang = str((storage.get_user(owner) or {}).get("lang") or "ru")
     for name, external in (await members(owner)).items():
         if name == platform:
@@ -456,8 +462,14 @@ def panel_code(owner: str, user: dict[str, Any] | None,
 async def announce_panel(owner: str, platform: str) -> None:
     """Сообщить в остальные сети аккаунта, что запрошен вход в панель."""
     from . import storage
-    from .tg import send_html
 
+    try:
+        from .tg import send_html
+    except Exception:  # noqa: BLE001
+        # Фоновая задача: исключение здесь никто не заберёт, и оно ушло бы
+        # в журнал как «Task exception was never retrieved».
+        log.warning("Уведомление не отправлено: модуль Telegram недоступен")
+        return
     lang = str((storage.get_user(owner) or {}).get("lang") or "ru")
     text = _t("panel.notice", lang,
               "🔐 Запрошен код входа в веб-панель из {net}. Если это были не вы — "

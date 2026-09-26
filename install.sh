@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.8 — автономный установщик.
+# Система «Радар» v5.8.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.8"
+VERSION="5.8.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -227,6 +227,9 @@ t() {                  # t <ключ> [подстановка]
             migrate_port_busy)   value="Port is already in use:" ;;
             action_title)        value="What are we doing?" ;;
             action_main)         value="Install the latest code (main) — default" ;;
+            newer_found)         value="This installer carries version" ;;
+            newer_latest)        value="the newest release on GitHub is" ;;
+            newer_ask)           value="Download and run the newest installer instead? [Y/n]" ;;
             action_release)      value="Install a specific release" ;;
             action_backup)       value="Only make a full backup and exit" ;;
             action_migrate)      value="Move to another server" ;;
@@ -395,6 +398,9 @@ t() {                  # t <ключ> [подстановка]
             migrate_port_busy)   value="Порт уже занят:" ;;
             action_title)        value="Что делаем?" ;;
             action_main)         value="Поставить последний код (main) — по умолчанию" ;;
+            newer_found)         value="Этот установщик несёт версию" ;;
+            newer_latest)        value="а последний выпуск на GitHub —" ;;
+            newer_ask)           value="Скачать и запустить установщик последнего выпуска? [Y/n]" ;;
             action_release)      value="Поставить конкретный релиз" ;;
             action_backup)       value="Только снять полную копию и выйти" ;;
             action_migrate)      value="Переехать на другой сервер" ;;
@@ -629,10 +635,36 @@ ask_action() {
         2) choose_release ;;
         3) BACKUP_ONLY=true ;;
         4) MIGRATE_OUT=true ;;
-        *) : ;;   # main — как и было
+        *) offer_newer_release ;;
     esac
 
     ask_updates
+}
+
+# «Последний код» — это код, встроенный в ЭТОТ файл. Сохранённый на сервере
+# старый install.sh по пункту 1 переставлял ту же старую версию: так
+# с 4.9.x нельзя было уйти на 5.x, запустив прежний файл (найдено в 5.8.1).
+# Теперь установщик сверяется с последним выпуском и предлагает скачать
+# его установщик — тем же путём, что и выбор конкретного релиза.
+version_newer() {
+    [ "$1" != "$2" ] && \
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
+
+offer_newer_release() {
+    local latest=""
+    latest="$(fetch_versions | sed 's/^v//' | sort -V | tail -n 1)"
+    [ -z "$latest" ] && return 0
+    version_newer "$latest" "$VERSION" || return 0
+    printf "  %s v%s, %s v%s.\n" "$(t newer_found)" "$VERSION" "$(t newer_latest)" "$latest"
+    printf "  %s " "$(t newer_ask)"
+    local reply=""
+    read -r -t 120 reply < /dev/tty || reply=""
+    printf "\n"
+    case "$reply" in
+        n|N|н|Н|no|NO|нет|Нет) return 0 ;;
+    esac
+    TARGET_VERSION="v$latest"
 }
 
 # Сертификат и домен панели. Объявлены здесь, а не рядом с offer_tls ниже:
@@ -3240,6 +3272,12 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.8.1", [
+        "🔁 Проверен переход на 5.8 со всех выпусков 4.9 — на SQLite "
+        "и PostgreSQL данные сохраняются полностью.",
+        "🧰 Установщик, запущенный из старого файла, теперь предлагает "
+        "скачать последний выпуск, а не ставит свою старую версию.",
+    ]),
     ("5.8", [
         "🔗 <b>VPN: клиенты из панелей — к аккаунтам.</b> «Клиенты панелей» "
         "находит записи, заведённые руками или другим ботом, по Telegram-id "
@@ -5061,7 +5099,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.8"
+__version__ = "5.8.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -25496,8 +25534,14 @@ NOT_LINKED = "Этот аккаунт ни с чем не связан."
 async def announce(owner: str, platform: str) -> None:
     """Сообщить во все сети аккаунта о новой привязке. Сбой не мешает связи."""
     from . import storage
-    from .tg import send_html
 
+    try:
+        from .tg import send_html
+    except Exception:  # noqa: BLE001
+        # Фоновая задача: исключение здесь никто не заберёт, и оно ушло бы
+        # в журнал как «Task exception was never retrieved».
+        log.warning("Уведомление не отправлено: модуль Telegram недоступен")
+        return
     lang = str((storage.get_user(owner) or {}).get("lang") or "ru")
     for name, external in (await members(owner)).items():
         if name == platform:
@@ -25530,8 +25574,14 @@ def panel_code(owner: str, user: dict[str, Any] | None,
 async def announce_panel(owner: str, platform: str) -> None:
     """Сообщить в остальные сети аккаунта, что запрошен вход в панель."""
     from . import storage
-    from .tg import send_html
 
+    try:
+        from .tg import send_html
+    except Exception:  # noqa: BLE001
+        # Фоновая задача: исключение здесь никто не заберёт, и оно ушло бы
+        # в журнал как «Task exception was never retrieved».
+        log.warning("Уведомление не отправлено: модуль Telegram недоступен")
+        return
     lang = str((storage.get_user(owner) or {}).get("lang") or "ru")
     text = _t("panel.notice", lang,
               "🔐 Запрошен код входа в веб-панель из {net}. Если это были не вы — "

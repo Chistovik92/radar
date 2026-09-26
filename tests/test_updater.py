@@ -291,3 +291,46 @@ class PanelRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewerReleaseOfferTests(unittest.TestCase):
+    """Сохранённый старый install.sh по «последнему коду» ставил свою же
+    старую версию (5.8.1): теперь он сверяется с последним выпуском."""
+
+    def run_bash(self, script: str) -> str:
+        import shutil
+        import subprocess
+
+        if shutil.which("bash") is None:
+            self.skipTest("нет bash")
+        with open(os.path.join(ROOT, "tools", "install.template.sh"), encoding="utf-8") as handle:
+            template = handle.read()
+        functions = []
+        for name in ("version_newer", "offer_newer_release"):
+            start = template.index(f"{name}() {{")
+            end = template.index("\n}\n", start) + 3
+            functions.append(template[start:end])
+        code = "\n".join(functions) + '\nt(){ echo "[$1]"; }\n' + script
+        return subprocess.run(["bash", "-c", code], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=20).stdout
+
+    def test_old_installer_offers_latest(self):
+        out = self.run_bash(
+            "fetch_versions(){ printf 'v5.8\\nv5.7.1\\nv5.10\\nv4.9.9.4\\n'; }\n"
+            'VERSION=4.9.9.4; TARGET_VERSION=""; offer_newer_release; echo "T=$TARGET_VERSION"')
+        self.assertIn("T=v5.10", out, "берётся самый новый по номеру, а не первый в списке")
+
+    def test_same_or_offline_changes_nothing(self):
+        out = self.run_bash(
+            "fetch_versions(){ printf 'v5.8\\n'; }\n"
+            'VERSION=5.8; TARGET_VERSION=""; offer_newer_release; echo "A=$TARGET_VERSION."\n'
+            "fetch_versions(){ :; }\n"
+            'VERSION=4.9; TARGET_VERSION=""; offer_newer_release; echo "B=$TARGET_VERSION."')
+        self.assertIn("A=.", out)
+        self.assertIn("B=.", out)
+
+    def test_main_choice_goes_through_offer(self):
+        with open(os.path.join(ROOT, "tools", "install.template.sh"), encoding="utf-8") as handle:
+            template = handle.read()
+        body = template[template.index("ask_action() {"):template.index("version_newer() {")]
+        self.assertIn("*) offer_newer_release ;;", body)
