@@ -140,7 +140,11 @@ def main() -> int:
                                   capture_output=True, text=True)
 
         def copy(src: str, dst: str, replace: bool = False) -> subprocess.CompletedProcess:
-            code = ("import asyncio,sys\nfrom radar.db import transfer\n"
+            # Та же заглушка dotenv, что в PHASE: в CI ставятся только драйверы баз.
+            code = ("import asyncio,sys,types\n"
+                    "sys.modules.setdefault('dotenv', types.SimpleNamespace("
+                    "load_dotenv=lambda *a, **k: None))\n"
+                    "from radar.db import transfer\n"
                     f"print(asyncio.run(transfer.copy({src!r}, {dst!r}, replace={replace})))")
             return subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
                                   capture_output=True, text=True)
