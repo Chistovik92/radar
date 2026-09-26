@@ -187,8 +187,10 @@ async def main() -> int:
             await emulator.queue.put(message(555, "привет"))
             await emulator.queue.put(message(555, code))
             await emulator.queue.put(message(555, "да"))
-            for _ in range(60):
-                if await links.owner_of("vk", "555"):
+            # Ждём и связь, и третий ответ: «связаны» уходит после записи
+            # связи, и проверка, читавшая ответы сразу, ловила гонку.
+            for _ in range(100):
+                if await links.owner_of("vk", "555") and len(emulator.sent) >= 3:
                     break
                 await asyncio.sleep(0.1)
             owner = await links.owner_of("vk", "555")

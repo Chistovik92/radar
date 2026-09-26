@@ -1,4 +1,4 @@
-# Radar v5.8
+# Radar v5.8.1
 
 [Русская версия](README.md)
 
@@ -45,6 +45,31 @@ Installing an older release **is** the rollback procedure. It is not
 blocked and needs no confirmation: if a new version breaks something, you
 need to go back immediately, not argue with the installer. A snapshot is
 taken before anything is overwritten.
+
+### Updating from 4.9.x to 5.x
+
+One step, with a **fresh** installer:
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
+sudo bash install.sh
+# or the old file with an explicit version:
+sudo bash install.sh --version=v5.8.1
+```
+
+The move from 4.9.x to 5.8 was checked on **all 43 releases of 4.9**
+(v4.9 … v4.9.9.4), on SQLite and on PostgreSQL 16: a database created and
+filled by each release's own code is brought up by 5.8 the same way the
+bot does at start — missing tables and columns are added, the schema is
+not recreated, and users, addresses, sources, flags, service data,
+delivery history, short links and promo codes stay in place. Environment
+variables between 4.9 and 5.8 were only added, all with defaults.
+**There is one trap:** an old `install.sh` saved on the server installs
+its own old version under "latest code" — the code lives inside the file.
+Since 5.8.1 the installer checks the newest release at that point and
+offers to download its installer; for 4.9.x use a fresh file or
+`--version=v5.8.1`. The panel's "Update" button leads to 5.x only from
+4.9.8.9 on (see "Updating from the panel").
 
 ### Installer flags
 

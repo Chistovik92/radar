@@ -227,6 +227,9 @@ t() {                  # t <ключ> [подстановка]
             migrate_port_busy)   value="Port is already in use:" ;;
             action_title)        value="What are we doing?" ;;
             action_main)         value="Install the latest code (main) — default" ;;
+            newer_found)         value="This installer carries version" ;;
+            newer_latest)        value="the newest release on GitHub is" ;;
+            newer_ask)           value="Download and run the newest installer instead? [Y/n]" ;;
             action_release)      value="Install a specific release" ;;
             action_backup)       value="Only make a full backup and exit" ;;
             action_migrate)      value="Move to another server" ;;
@@ -395,6 +398,9 @@ t() {                  # t <ключ> [подстановка]
             migrate_port_busy)   value="Порт уже занят:" ;;
             action_title)        value="Что делаем?" ;;
             action_main)         value="Поставить последний код (main) — по умолчанию" ;;
+            newer_found)         value="Этот установщик несёт версию" ;;
+            newer_latest)        value="а последний выпуск на GitHub —" ;;
+            newer_ask)           value="Скачать и запустить установщик последнего выпуска? [Y/n]" ;;
             action_release)      value="Поставить конкретный релиз" ;;
             action_backup)       value="Только снять полную копию и выйти" ;;
             action_migrate)      value="Переехать на другой сервер" ;;
@@ -629,10 +635,36 @@ ask_action() {
         2) choose_release ;;
         3) BACKUP_ONLY=true ;;
         4) MIGRATE_OUT=true ;;
-        *) : ;;   # main — как и было
+        *) offer_newer_release ;;
     esac
 
     ask_updates
+}
+
+# «Последний код» — это код, встроенный в ЭТОТ файл. Сохранённый на сервере
+# старый install.sh по пункту 1 переставлял ту же старую версию: так
+# с 4.9.x нельзя было уйти на 5.x, запустив прежний файл (найдено в 5.8.1).
+# Теперь установщик сверяется с последним выпуском и предлагает скачать
+# его установщик — тем же путём, что и выбор конкретного релиза.
+version_newer() {
+    [ "$1" != "$2" ] && \
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
+
+offer_newer_release() {
+    local latest=""
+    latest="$(fetch_versions | sed 's/^v//' | sort -V | tail -n 1)"
+    [ -z "$latest" ] && return 0
+    version_newer "$latest" "$VERSION" || return 0
+    printf "  %s v%s, %s v%s.\n" "$(t newer_found)" "$VERSION" "$(t newer_latest)" "$latest"
+    printf "  %s " "$(t newer_ask)"
+    local reply=""
+    read -r -t 120 reply < /dev/tty || reply=""
+    printf "\n"
+    case "$reply" in
+        n|N|н|Н|no|NO|нет|Нет) return 0 ;;
+    esac
+    TARGET_VERSION="v$latest"
 }
 
 # Сертификат и домен панели. Объявлены здесь, а не рядом с offer_tls ниже:
