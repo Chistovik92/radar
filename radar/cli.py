@@ -71,12 +71,81 @@ async def _with_storage(action: Callable[[], Any]) -> Any:
 #  Источники
 # --------------------------------------------------------------------------
 
+def _prune_sources(args) -> int:
+    """Проверка источников и удаление молчащих (с 5.9.2.1).
+
+    Без --yes только показывает, что было бы удалено: список источников
+    нельзя вернуть одной командой.
+    """
+    from . import sourcecheck, sourceedit as se, sourceprune, storage
+
+    async def run():
+        channels, feeds = se.listing(se.TELEGRAM), se.listing(se.RSS)
+        if not channels and not feeds:
+            print("Источников нет.", file=sys.stderr)
+            return FAILED
+        print(f"Проверяю: каналов {len(channels)}, лент {len(feeds)} "
+              f"(пауза {args.pause} с — это займёт время)", file=sys.stderr)
+        report = await sourcecheck.check_all(channels, feeds, pause=args.pause)
+
+        chosen = sourceprune.select(report, args.days, dead=args.dead)
+        doubt = sourceprune.suspicious(report)
+        payload = {
+            "checked": report.total, "alive": len(report.alive),
+            "stale": len(report.stale), "dead": len(report.dead),
+            "candidates": [{"kind": c.kind, "ref": c.ref, "reason": c.reason}
+                           for c in chosen],
+            "removed": [], "warning": doubt,
+        }
+
+        def show(d):
+            print(f"Проверено {d['checked']}: живых {d['alive']}, затихших "
+                  f"{d['stale']}, недоступных {d['dead']}.")
+            for item in d["candidates"]:
+                print(f"  ✗ {item['kind']} {item['ref']} — {item['reason']}")
+            if not d["candidates"]:
+                print("Молчащих источников нет.")
+            if d["warning"]:
+                print("⚠️ " + d["warning"])
+
+        if doubt and not args.force:
+            _out(payload, args.json, show)
+            print("Удаление отменено. Если уверены — повторите с --force.", file=sys.stderr)
+            return FAILED
+        if not chosen:
+            _out(payload, args.json, show)
+            return OK
+        if not args.yes:
+            _out(payload, args.json, show)
+            print(f"Ничего не удалено. Убрать {len(chosen)} — повторите с --yes.",
+                  file=sys.stderr)
+            return NEEDS_YES
+
+        removed = sourceprune.apply(chosen)
+        await storage.save()
+        payload["removed"] = [{"kind": c.kind, "ref": c.ref} for c in removed]
+        _out(payload, args.json, lambda d: (
+            show(d), print(f"Удалено: {len(d['removed'])}.")))
+        return OK
+
+    return asyncio.run(_with_storage(run))
+
+
 def cmd_sources(args) -> int:
     from . import sourceedit as se
 
+    if args.action == "prune":
+        return _prune_sources(args)
+
     kinds = (se.TELEGRAM, se.RSS, se.VK)
+    # «telegram» в справке, «tg» в коде: принимаем оба, а не молча ничего
+    # не находим (до 5.9.2.1 «sources add telegram …» не делало ничего).
+    if args.kind == "telegram":
+        args.kind = se.TELEGRAM
 
     async def run():
+        from . import storage
+
         if args.action == "list":
             data = {kind: se.listing(kind) for kind in kinds}
             _out(data, args.json, lambda d: [
@@ -87,12 +156,16 @@ def cmd_sources(args) -> int:
 
         if args.action == "add":
             added, skipped = se.add(args.kind, args.value)
+            # Без сохранения правка жила только в памяти процесса и пропадала
+            # при выходе (до 5.9.2.1).
+            await storage.save()
             _out({"added": added, "skipped": skipped}, args.json, lambda d: print(
                 f"добавлено: {', '.join(d['added']) or '—'}; "
                 f"пропущено: {', '.join(d['skipped']) or '—'}"))
             return OK if added else FAILED
 
         removed = se.remove(args.kind, args.value)
+        await storage.save()
         _out({"removed": removed}, args.json,
              lambda d: print("удалено" if d["removed"] else "не найдено"))
         return OK if removed else FAILED
@@ -460,10 +533,20 @@ def build_parser() -> argparse.ArgumentParser:
                                        parser_class=argparse.ArgumentParser)
 
     sources = subparsers.add_parser("sources", help="источники", parents=[common])
-    sources.add_argument("action", choices=["list", "add", "remove"])
+    sources.add_argument("action", choices=["list", "add", "remove", "prune"],
+                         help="prune — проверить и убрать молчащие (без --yes только показать)")
     sources.add_argument("kind", nargs="?", default="",
-                         help="telegram | rss | vk")
+                         help="telegram (tg) | rss | vk")
     sources.add_argument("value", nargs="?", default="")
+    sources.add_argument("--days", type=int, default=30,
+                         help="prune: молчит дольше стольких дней (по умолчанию 30)")
+    sources.add_argument("--dead", action="store_true",
+                         help="prune: убирать и недоступные, не только молчащие")
+    sources.add_argument("--yes", action="store_true", help="prune: действительно удалить")
+    sources.add_argument("--force", action="store_true",
+                         help="prune: удалять, даже если недоступна большая часть списка")
+    sources.add_argument("--pause", type=float, default=0.8,
+                         help="prune: пауза между запросами, секунд")
     sources.set_defaults(func=cmd_sources)
 
     users = subparsers.add_parser("users", help="пользователи", parents=[common])

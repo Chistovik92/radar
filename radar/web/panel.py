@@ -712,11 +712,19 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     groups: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
         ("/", "Обзор", "home", overview),
     ]
-    if moderator:
+    if owner:
+        # Подписка бота — управление людьми: рядом с их списком (5.9.2.1).
+        groups.append(("/users", "Пользователи", "users",
+                       [("/users", "Люди", "users"),
+                        ("/subscriptions", "Подписка бота", "subscriptions")]))
+    elif moderator:
         groups.append(("/users", "Пользователи", "users", []))
     groups.append(("/sources", "Источники", "sources", []))
     if owner:
-        groups.append(("/vpn", "VPN", "vpn", []))
+        vpn_items = [("/vpn", "Обзор", "vpn"),
+                     ("/vpn/panels", "Панели", "vpn_panels"),
+                     ("/vpn/access", "Доступы и заказы", "vpn_access")]
+        groups.append((vpn_items[0][0], "VPN", "vpn", vpn_items))
     if media:
         groups.append((media[0][0], "Медиа", "media", media))
     if agent_items:
@@ -1798,7 +1806,7 @@ async def _vpn_body(session, message: str = "", failed: str = "") -> str:
         f"<tr><td>{item.number}</td><td>{html.escape(item.title)}</td>"
         f"<td>{html.escape(item.client.kind)}</td></tr>"
         for item in vpn.slots()
-    ) or '<tr><td colspan="3" class="muted">Панели не настроены — заполните слоты ниже.</td></tr>'
+    ) or '<tr><td colspan="3" class="muted">Панели не настроены — добавьте на странице «Панели».</td></tr>'
     pending = len(await vpn.pending())
     issued = len(await vpn.issued())
     parts.append(
@@ -1825,9 +1833,12 @@ async def _vpn_body(session, message: str = "", failed: str = "") -> str:
         parts.append(card("VPN", True))
     if "Продажа VPN" in groups:
         parts.append(card("Продажа VPN", False))
-    for group in groups:
-        if group not in ("VPN", "Продажа VPN"):
-            parts.append(card(group, False))
+    # Слоты панелей — не десяток ключей, а форма на своей странице (5.9.2.1).
+    parts.append(
+        '<div class="card"><h3>Панели и доступы</h3>'
+        '<p><a class="btn" href="/vpn/panels">Панели VPN — добавить, изменить, проверить</a> '
+        '<a class="btn ghost" href="/vpn/access">Доступы и заказы — заявки, выдача, продление</a></p></div>'
+    )
 
     # --- приложения HydraVPN ---
     devices = await appapi.all_devices()
@@ -2284,6 +2295,37 @@ def _is_vpn_group(group: str) -> bool:
     return group == "Продажа VPN" or group == "VPN" or group.startswith("VPN ")
 
 
+def _in_own_section(group: str) -> bool:
+    """Группы, у которых есть своя страница: в «Ключах» их не показываем."""
+    return _is_vpn_group(group) or group == "Подписка бота"
+
+
+def _validate_setting(key: str, value: str) -> str:
+    """Проверка значения до записи: опечатка в тарифах молча ломала бы продажу."""
+    if not value:
+        return ""
+    if key == "DIGEST_PLANS":
+        if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
+            return "Формат: 30:150, 90:400 — дни и звёзды через двоеточие."
+        for chunk in value.split(","):
+            days, _, stars = chunk.strip().partition(":")
+            if int(days) < 1 or int(stars) < 1:
+                return "Срок и цена — не меньше единицы (звезда — минимальная цена)."
+    elif key == "VPN_PLANS":
+        from .. import vpnsales
+
+        chunks = [c for c in value.split(";") if c.strip()]
+        if not chunks or len(vpnsales.parse_plans(value)) != len(chunks):
+            return ("Формат: дни:трафикГБ:устройства:цена через «;», например "
+                    "30:0:3:199; 90:0:3:499 — есть негодный тариф.")
+    elif key in ("VPN_DAYS", "VPN_TRAFFIC_GB", "VPN_DEVICES"):
+        if not value.isdigit():
+            return "Нужно целое число."
+        if key == "VPN_DAYS" and int(value) < 1:
+            return "Срок — не меньше одного дня."
+    return ""
+
+
 def _setting_row(setting, token: str, back: str = "") -> str:
     """Строка одной настройки с формой записи. `back` — куда вернуться после сохранения."""
     current = secrets_module.get(setting.key)
@@ -2323,7 +2365,7 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     token = auth.csrf_token(session)
     groups: dict[str, list] = {}
     for setting in secrets_module.SETTINGS:
-        if _is_vpn_group(setting.group):
+        if _in_own_section(setting.group):
             continue
         groups.setdefault(setting.group, []).append(setting)
 
@@ -2334,7 +2376,8 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     ]
     cards.append(
         '<div class="card muted">Настройки VPN, продажи и приложений HydraVPN — '
-        'в разделе <a href="/vpn">VPN</a>.</div>'
+        'в разделе <a href="/vpn">VPN</a>, тарифы подписки бота — '
+        '<a href="/subscriptions">Пользователи → Подписка бота</a>.</div>'
     )
 
     warning = (
@@ -2992,12 +3035,15 @@ async def create_app() -> Any:
         session, data = await _guarded_form(request, "superadmin")
         key = str(data.get("key", ""))
         back = str(data.get("back", "")) or "/keys"
-        if back not in ("/keys", "/vpn"):
+        if back not in ("/keys", "/vpn", "/subscriptions"):
             back = "/keys"
         if key not in secrets_module.BY_KEY:
             raise web.HTTPFound(back + "?err=" + quote("Неизвестный ключ"))
 
         value = str(data.get("value", "")).strip()
+        problem = _validate_setting(key, value)
+        if problem:
+            raise web.HTTPFound(back + "?err=" + quote(problem))
         if not secrets_module.write(key, value):
             raise web.HTTPFound(back + "?err=" + quote(
                 "Записать не удалось — проверьте права на .env"))
@@ -3354,6 +3400,104 @@ async def create_app() -> Any:
         raise web.HTTPFound("/vpn?ok=" + quote(f"Отключено устройств: {count}"))
 
     @owner_only
+    async def vpn_panels_page(request, session):
+        from . import adminpages
+
+        slot = request.query.get("slot", "")
+        edit = int(slot) if slot.isdigit() else None
+        body = await adminpages.panels_body(
+            auth.csrf_token(session), request.query.get("ok", ""),
+            request.query.get("err", ""), edit)
+        return web.Response(
+            text=_layout("Панели VPN", body, "vpn_panels",
+                         roles.title(session.role), session.role),
+            content_type="text/html")
+
+    async def vpn_panels_save(request):
+        from .. import vpnslots
+
+        session, data = await _guarded_form(request, "superadmin")
+        number = str(data.get("slot", ""))
+        if not number.isdigit():
+            raise web.HTTPFound("/vpn/panels?err=" + quote("Нет такого слота"))
+        problem = vpnslots.save(int(number), {k: str(data.get(k, "")) for k in vpnslots.FIELDS})
+        if problem:
+            raise web.HTTPFound(f"/vpn/panels?slot={number}&err=" + quote(problem))
+        # В журнал — слот и вид, без адреса и секретов.
+        audit.record(session.user_key, "VPN-панель сохранена", f"слот {number}")
+        raise web.HTTPFound("/vpn/panels?ok=" + quote(
+            f"Слот {number} сохранён. Проверьте работу кнопкой «проверить»."))
+
+    async def vpn_panels_remove(request):
+        from .. import vpnslots
+
+        session, data = await _guarded_form(request, "superadmin")
+        number = str(data.get("slot", ""))
+        if not number.isdigit() or not vpnslots.remove(int(number)):
+            raise web.HTTPFound("/vpn/panels?err=" + quote("Удалить не удалось"))
+        audit.record(session.user_key, "VPN-панель удалена", f"слот {number}")
+        raise web.HTTPFound("/vpn/panels?ok=" + quote(f"Слот {number} освобождён"))
+
+    async def vpn_panels_check(request):
+        from .. import vpnslots
+
+        session, data = await _guarded_form(request, "superadmin")
+        number = str(data.get("slot", ""))
+        if not number.isdigit():
+            raise web.HTTPFound("/vpn/panels?err=" + quote("Нет такого слота"))
+        ok, note = await vpnslots.check(int(number))
+        key = "ok" if ok else "err"
+        raise web.HTTPFound(f"/vpn/panels?{key}=" + quote(f"Слот {number}: {note}"))
+
+    @owner_only
+    async def vpn_access_page(request, session):
+        from . import adminpages
+
+        body = await adminpages.access_body(
+            auth.csrf_token(session), request.query.get("ok", ""),
+            request.query.get("err", ""), request.query.get("uid", ""))
+        return web.Response(
+            text=_layout("Доступы и заказы VPN", body, "vpn_access",
+                         roles.title(session.role), session.role),
+            content_type="text/html")
+
+    async def vpn_access_act(request):
+        from . import adminpages
+
+        session, data = await _guarded_form(request, "superadmin")
+        action = str(data.get("action", ""))
+        uid = str(data.get("uid", "")).strip()
+        done, failed = await adminpages.access_act(data, session.user_key, session.role)
+        audit.record(session.user_key, "VPN: " + action, uid)
+        tail = "&uid=" + quote(uid) if action in ("extend", "toggle", "revoke") and uid else ""
+        if failed:
+            raise web.HTTPFound("/vpn/access?err=" + quote(failed) + tail)
+        raise web.HTTPFound("/vpn/access?ok=" + quote(done) + tail)
+
+    @owner_only
+    async def subscriptions_page(request, session):
+        from . import adminpages
+
+        body = await adminpages.subscriptions_body(
+            auth.csrf_token(session), request.query.get("ok", ""),
+            request.query.get("err", ""), request.query.get("q", ""))
+        return web.Response(
+            text=_layout("Подписка бота", body, "subscriptions",
+                         roles.title(session.role), session.role),
+            content_type="text/html")
+
+    async def subscriptions_act(request):
+        from . import adminpages
+
+        session, data = await _guarded_form(request, "superadmin")
+        done, failed = await adminpages.subscriptions_act(data)
+        audit.record(session.user_key, "подписка бота: " + str(data.get("action", "")),
+                     str(data.get("uid", "")))
+        if failed:
+            raise web.HTTPFound("/subscriptions?err=" + quote(failed))
+        raise web.HTTPFound("/subscriptions?ok=" + quote(done))
+
+    @owner_only
     async def cloud_page(request, session):
         return web.Response(
             text=_layout(
@@ -3615,6 +3759,14 @@ async def create_app() -> Any:
         web.post("/chats/drop", chats_drop),
         web.get("/vpn", vpn_page),
         web.post("/vpn/app-revoke", vpn_app_revoke),
+        web.get("/vpn/panels", vpn_panels_page),
+        web.post("/vpn/panels/save", vpn_panels_save),
+        web.post("/vpn/panels/remove", vpn_panels_remove),
+        web.post("/vpn/panels/check", vpn_panels_check),
+        web.get("/vpn/access", vpn_access_page),
+        web.post("/vpn/access/act", vpn_access_act),
+        web.get("/subscriptions", subscriptions_page),
+        web.post("/subscriptions/act", subscriptions_act),
         web.get("/cloud", cloud_page),
         web.post("/cloud/add", cloud_add),
         web.post("/cloud/forget", cloud_forget),

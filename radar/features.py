@@ -259,7 +259,7 @@ FLAGS: tuple[Flag, ...] = (
          "Выдача доступа к VPN через одну или несколько панелей: 3x-ui, "
          "x-ui, s-ui, Marzban, PasarGuard, Marzneshin, Remnawave, Hiddify, "
          "Outline, wg-easy. Только по решению суперадминистратора, без "
-         "платежей. Панели задаются слотами в разделе ключей (VPN 1 … VPN 6).",
+         "платежей. Панели добавляются в веб-панели: раздел VPN → Панели (до шести).",
          group="VPN", since="5.0", default=False),
     Flag("vpn_sales", "Продажа VPN",
          "Покупка доступа к VPN по тарифам (VPN_PLANS): оплата через "

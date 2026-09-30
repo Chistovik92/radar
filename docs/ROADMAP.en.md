@@ -1683,6 +1683,29 @@ switches in "Features", values in "Keys", and the apps' devices nowhere.
 
 ---
 
+## 5.9.2.1 — VPN and bot subscription management in the panel, silent sources ⚠️ code written
+
+At the author's request: the panel had no way to add VPN panels and no
+management of the bot subscription or the VPN subscription.
+
+1. **VPN panels.** "VPN" → "Panels": a form per slot (one of ten kinds,
+   field validation, secrets not wiped by an empty field), "check" — a live
+   login to the panel, removal showing how many accesses were issued on it.
+   `.env` is written in one edit (`secrets.write_many`).
+2. **Access and orders.** Requests with panel choice, manual issue, a person
+   card (extend, enable and disable, revoke), sales orders (confirm payment,
+   retry issue, cancel).
+3. **Bot subscription.** "Users" → "Bot subscription": plans, promo codes,
+   each person's term (add days, remove the term). Plan values are validated
+   before saving.
+4. **Silent sources.** `tools/prune_sources.py` and `radar sources prune`:
+   list and, with `--yes`, remove sources silent for longer than `--days`
+   (30 by default); `--dead` adds unreachable ones; on mass unavailability
+   (network) it refuses without `--force`; VK is left alone.
+5. **Fixed on the way.** `radar sources add/remove` did not save.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2

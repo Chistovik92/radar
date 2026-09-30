@@ -114,8 +114,11 @@ class PanelPageTests(unittest.TestCase):
         self.assertNotIn("VPN_PLANS", keys)
         self.assertIn('href="/vpn"', keys)
         page = run(panel._vpn_body(self.session))
-        for needle in ("VPN_DEVICES", "VPN_DAYS", "VPN_PLANS", "VPN1_KIND"):
+        for needle in ("VPN_DEVICES", "VPN_DAYS", "VPN_PLANS"):
             self.assertIn(needle, page)
+        # Слоты панелей — форма на своей странице, а не десяток ключей (5.9.2.1).
+        self.assertNotIn("VPN1_KIND", page)
+        self.assertIn('href="/vpn/panels"', page)
 
     def test_forms_return_to_the_vpn_page(self) -> None:
         page = run(panel._vpn_body(self.session))

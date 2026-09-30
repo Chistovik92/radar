@@ -1,4 +1,4 @@
-# Radar v5.9.2
+# Radar v5.9.2.1
 
 [Русская версия](README.md)
 
@@ -94,6 +94,23 @@ memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
 eighth of the memory but no more than 128 MB, so the database does not hit
 its own container limit. Values set by hand are left alone; without these
 lines the database starts with the old defaults.
+
+**VPN and bot subscription management in the web panel (since 5.9.2.1).**
+"VPN" → "Panels": add a panel with a form (pick one of ten kinds, fields are
+validated, a token or password is not wiped by an empty field), edit, test
+the login and remove with a warning about issued access. "Access and
+orders": requests with panel choice, manual issue, a person card (extend,
+enable and disable, revoke), sales orders (confirm payment, retry issue,
+cancel). "Users" → "Bot subscription": plans, promo codes, each person's
+term (add days, remove the term). Plan values are validated before saving.
+
+**Silent sources (since 5.9.2.1).** `python3 tools/prune_sources.py` checks
+channels and feeds and lists those silent for more than 30 days (`--days N`;
+`--dead` adds unreachable ones). Without `--yes` nothing is deleted; if most
+of the list is unreachable (looks like a network failure) it refuses to
+delete without `--force`. The same command is `radar sources prune`, in the
+container `bash radarctl.sh sources prune --yes`. VK communities are not
+checked and not deleted.
 
 **"VPN" section of the web panel and 25 devices per subscription (since 5.9.2).**
 All VPN management is on one panel page (`/vpn`, superadmin): the "VPN

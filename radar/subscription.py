@@ -108,6 +108,29 @@ def on_trial(user: dict[str, Any] | None) -> bool:
     return (datetime.now(timezone.utc) - started).days < TRIAL_DAYS
 
 
+def revoke(user: dict[str, Any]) -> bool:
+    """Снимает оплаченный срок по всем частям подписки (5.9.2.1).
+
+    Нужен администрации: ошибочный подарок или возврат денег. Пробный
+    период остаётся «использованным» — второй раз он не даётся. Возвращает
+    True, если срок был.
+    """
+    had = bool(paid_until(user))
+    slot = dict(_slot(user))
+    if slot.get("until"):
+        slot["until"] = ""
+        user[SLOT] = slot
+    for key in ("digest", "media_quota"):
+        part = user.get(key)
+        if isinstance(part, dict) and part.get("paid_until"):
+            part = dict(part)
+            part["paid_until"] = ""
+            user[key] = part
+    if had:
+        log.info("Срок подписки снят")
+    return had
+
+
 def paid_until(user: dict[str, Any] | None) -> str:
     """Наибольший срок из всех оплаченных частей, ISO-строкой."""
     user = user or {}
