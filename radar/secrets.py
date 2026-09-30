@@ -41,6 +41,13 @@ class Setting:
     restart: bool = False     # применяется только после перезапуска
     secret: bool = True       # показывать замаскированным
     where: str = ""           # где получить значение
+    # Тип нужен форме и проверке: число — полем-числом, выбор — списком,
+    # флаг — переключателем. Значение в .env при этом остаётся строкой.
+    kind: str = "text"        # text | int | bool | choice | url | time
+    choices: tuple[str, ...] = ()
+    low: int | None = None
+    high: int | None = None
+    default: str = ""         # что действует, пока значение не задано
 
 
 SETTINGS: tuple[Setting, ...] = (
@@ -331,6 +338,11 @@ def _vpn_settings(slots: int) -> tuple[Setting, ...]:
 # .env на каждый показ, либо врать до перезапуска.
 SETTINGS = SETTINGS + _agent_settings(AGENT_SLOTS) + _vpn_settings(VPN_SLOTS)
 
+# Настройки, которые раньше правились только в .env (5.9.2.2), и типы прежних.
+from . import settingsets  # noqa: E402
+
+SETTINGS = settingsets.refine(SETTINGS + settingsets.build(Setting))
+
 BY_KEY = {item.key: item for item in SETTINGS}
 GROUPS: tuple[str, ...] = tuple(dict.fromkeys(item.group for item in SETTINGS))
 
@@ -433,9 +445,82 @@ def write_many(values: dict[str, str]) -> bool:
 
     # Применяем к текущему процессу: провайдеры ИИ читают ключи на лету
     for key, value in values.items():
+        known = BY_KEY.get(key)
+        if known is not None and known.restart and os.environ.get(key, "") != value:
+            PENDING_RESTART.add(key)
         os.environ[key] = value
         log.info("Обновлено значение %s (%d символов)", key, len(value))
     return True
+
+
+# Значения, изменённые с момента запуска и вступающие в силу после
+# перезапуска (5.9.2.2): панель показывает их и предлагает перезапуск.
+PENDING_RESTART: set[str] = set()
+
+_TRUE = ("1", "true", "yes", "on", "да")
+_FALSE = ("0", "false", "no", "off", "нет")
+
+
+def normalize_value(setting: "Setting", value: str) -> str:
+    """Приводит введённое к хранимому виду: флаг — 1/0, выбор — как в списке."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if setting.kind == "bool":
+        if text.lower() in _TRUE:
+            return "1"
+        if text.lower() in _FALSE:
+            return "0"
+    if setting.kind == "choice":
+        for option in setting.choices:
+            if option.lower() == text.lower():
+                return option
+    if setting.kind == "time":
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+        if match:
+            return f"{int(match.group(1)):02d}:{match.group(2)}"
+    return text
+
+
+def check_value(setting: "Setting", value: str) -> str:
+    """Причина отказа по-человечески или пустая строка (5.9.2.2).
+
+    Пустое значение допустимо всегда: оно возвращает настройку к значению
+    по умолчанию. Опечатка в числе или адресе иначе обнаруживалась бы
+    только по странному поведению бота после перезапуска.
+    """
+    text = normalize_value(setting, value)
+    if not text:
+        return ""
+    kind = setting.kind
+    if kind == "int":
+        if not re.fullmatch(r"\d{1,12}", text):
+            return "Нужно целое неотрицательное число."
+        number = int(text)
+        if setting.low is not None and number < setting.low:
+            return f"Не меньше {setting.low}."
+        if setting.high is not None and number > setting.high:
+            return f"Не больше {setting.high}."
+    elif kind == "bool":
+        if text not in ("0", "1"):
+            return "Нужно 1 (включено) или 0 (выключено)."
+    elif kind == "choice":
+        if text not in setting.choices:
+            return "Допустимо: " + ", ".join(setting.choices) + "."
+    elif kind == "url":
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(text)
+        except ValueError:
+            return "Адрес указан неверно."
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return "Адрес должен начинаться с http:// или https://."
+    elif kind == "time":
+        match = re.fullmatch(r"(\d{2}):(\d{2})", text)
+        if not match or int(match.group(1)) > 23 or int(match.group(2)) > 59:
+            return "Время — ЧЧ:ММ, например 20:00."
+    return ""
 
 
 def clear(key: str) -> bool:

@@ -729,6 +729,12 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
         groups.append((media[0][0], "Медиа", "media", media))
     if agent_items:
         groups.append((agent_items[0][0], "Агенты", "agents", agent_items))
+    if owner:
+        from . import settingspages
+
+        settings_items = [("/settings", "Обзор", "settings")] + [
+            (item.path, item.title, "settings_" + item.key) for item in settingspages.SECTIONS]
+        groups.append((settings_items[0][0], "Настройки", "settings", settings_items))
     return groups
 
 
@@ -2290,6 +2296,16 @@ async def _agents_body(session, message: str = "", failed: str = "") -> str:
             + "".join(form(item) for item in items) + form(None) + picked)
 
 
+# Задачи, которые не должны исчезнуть до завершения (перезапуск по кнопке).
+_restart_tasks: set = set()
+
+
+def _settings_sections():
+    from . import settingspages
+
+    return settingspages.SECTIONS
+
+
 def _is_vpn_group(group: str) -> bool:
     """Настройки VPN живут в разделе «VPN», а не среди общих ключей (5.9.2)."""
     return group == "Продажа VPN" or group == "VPN" or group.startswith("VPN ")
@@ -2326,6 +2342,33 @@ def _validate_setting(key: str, value: str) -> str:
     return ""
 
 
+def _setting_input(setting, current: str) -> str:
+    """Поле ввода по типу значения (5.9.2.2): список, переключатель, число, адрес."""
+    name = 'name="value"'
+    if setting.kind == "choice":
+        options = ['<option value="">— по умолчанию —</option>']
+        for choice in setting.choices:
+            picked = " selected" if choice.lower() == (current or "").lower() else ""
+            options.append(f'<option value="{html.escape(choice)}"{picked}>{html.escape(choice)}</option>')
+        return f"<select {name}>" + "".join(options) + "</select>"
+    if setting.kind == "bool":
+        state = secrets_module.normalize_value(setting, current)
+        opts = [("", "— по умолчанию —"), ("1", "включено"), ("0", "выключено")]
+        return (f"<select {name}>" + "".join(
+            f'<option value="{value}"{" selected" if value == state else ""}>{label}</option>'
+            for value, label in opts) + "</select>")
+    if setting.kind == "int":
+        low = f' min="{setting.low}"' if setting.low is not None else ""
+        high = f' max="{setting.high}"' if setting.high is not None else ""
+        return (f'<input type="number" {name} value="{html.escape(current)}"{low}{high} '
+                'placeholder="пусто — по умолчанию">')
+    field = "password" if setting.secret else ("url" if setting.kind == "url" else "text")
+    value = "" if setting.secret else html.escape(current)
+    hint = "новое значение, пусто — очистить" if setting.secret else "пусто — по умолчанию"
+    return (f'<input type="{field}" {name} value="{value}" autocomplete="off" '
+            f'placeholder="{hint}">')
+
+
 def _setting_row(setting, token: str, back: str = "") -> str:
     """Строка одной настройки с формой записи. `back` — куда вернуться после сохранения."""
     current = secrets_module.get(setting.key)
@@ -2335,7 +2378,10 @@ def _setting_row(setting, token: str, back: str = "") -> str:
              if setting.where else "")
     restart = (' <span class="warn">применится после перезапуска</span>'
                if setting.restart else "")
-    field = "password" if setting.secret else "text"
+    if setting.key in secrets_module.PENDING_RESTART:
+        restart += ' <span class="warn">изменено — ждёт перезапуска</span>'
+    default = (f' · по умолчанию: {html.escape(setting.default)}'
+               if setting.default and not setting.secret else "")
     back_field = (f'<input type="hidden" name="back" value="{html.escape(back)}">'
                   if back else "")
     return (
@@ -2343,13 +2389,12 @@ def _setting_row(setting, token: str, back: str = "") -> str:
         f"<div><b>{html.escape(setting.title)}</b> "
         f'<span class="muted">{html.escape(setting.key)}</span></div>'
         f'<div class="hint">{html.escape(setting.hint)}{where}{restart}</div>'
-        f'<div class="hint">Сейчас: {html.escape(shown)}</div>'
+        f'<div class="hint">Сейчас: {html.escape(shown)}{default}</div>'
         '<form class="inline" method="post" action="/keys/set">'
         f'<input type="hidden" name="csrf" value="{token}">'
         f'<input type="hidden" name="key" value="{html.escape(setting.key)}">'
         f"{back_field}"
-        f'<input type="{field}" name="value" autocomplete="off" '
-        'placeholder="новое значение, пусто — очистить">'
+        f"{_setting_input(setting, current)}"
         '<button type="submit">Сохранить</button></form>'
         "</div>"
     )
@@ -2376,7 +2421,8 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     ]
     cards.append(
         '<div class="card muted">Настройки VPN, продажи и приложений HydraVPN — '
-        'в разделе <a href="/vpn">VPN</a>, тарифы подписки бота — '
+        'в разделе <a href="/vpn">VPN</a>, остальное сгруппировано по темам — '
+        'в разделе <a href="/settings">Настройки</a>; здесь общий список. Тарифы подписки бота — '
         '<a href="/subscriptions">Пользователи → Подписка бота</a>.</div>'
     )
 
@@ -2614,7 +2660,8 @@ def _features_body(session, message: str = "", failed: str = "") -> str:
 
     note = (
         '<div class="card muted">Переключать может суперадминистратор — '
-        "здесь и в боте, командой /features. Режим обслуживания "
+        "здесь и в боте, командой /features. Удобнее по темам, вместе со "
+        'значениями: раздел <a href="/settings">Настройки</a>. Режим обслуживания '
         "останавливает рассылку оповещений: включайте его понимая это.</div>"
         if editable else
         '<div class="card muted">Переключение доступно '
@@ -3035,13 +3082,17 @@ async def create_app() -> Any:
         session, data = await _guarded_form(request, "superadmin")
         key = str(data.get("key", ""))
         back = str(data.get("back", "")) or "/keys"
-        if back not in ("/keys", "/vpn", "/subscriptions"):
+        if back not in ("/keys", "/vpn", "/subscriptions") and not back.startswith("/settings"):
+            back = "/keys"
+        if back.startswith("//") or "?" in back or "\\" in back:
             back = "/keys"
         if key not in secrets_module.BY_KEY:
             raise web.HTTPFound(back + "?err=" + quote("Неизвестный ключ"))
 
         value = str(data.get("value", "")).strip()
-        problem = _validate_setting(key, value)
+        setting = secrets_module.BY_KEY[key]
+        value = secrets_module.normalize_value(setting, value)
+        problem = secrets_module.check_value(setting, value) or _validate_setting(key, value)
         if problem:
             raise web.HTTPFound(back + "?err=" + quote(problem))
         if not secrets_module.write(key, value):
@@ -3170,7 +3221,7 @@ async def create_app() -> Any:
         # со страницы возможностей, и выбрасывать человека в другой
         # раздел — значит заставлять его искать дорогу обратно.
         back = str(data.get("back", "")) or "/features"
-        if not back.startswith("/") or back.startswith("//"):
+        if not back.startswith("/") or back.startswith("//") or "\\" in back or "?" in back:
             back = "/features"
         raise web.HTTPFound(back + "?ok=" + quote(
             f"{flag.title}: {'включено' if value else 'выключено'}"))
@@ -3497,6 +3548,61 @@ async def create_app() -> Any:
             raise web.HTTPFound("/subscriptions?err=" + quote(failed))
         raise web.HTTPFound("/subscriptions?ok=" + quote(done))
 
+    def _settings_page(section):
+        @owner_only
+        async def page(request, session):
+            from .. import dockerapi
+            from . import settingspages
+
+            body = settingspages.section_body(
+                section, auth.csrf_token(session), request.query.get("ok", ""),
+                request.query.get("err", ""), dockerapi.available())
+            return web.Response(
+                text=_layout(section.title, body, "settings_" + section.key,
+                             roles.title(session.role), session.role),
+                content_type="text/html")
+        return page
+
+    @owner_only
+    async def settings_overview(request, session):
+        from .. import dockerapi
+        from . import settingspages
+
+        body = settingspages.overview_body(
+            auth.csrf_token(session), request.query.get("ok", ""),
+            request.query.get("err", ""), dockerapi.available())
+        return web.Response(
+            text=_layout("Настройки", body, "settings", roles.title(session.role), session.role),
+            content_type="text/html")
+
+    async def settings_restart(request):
+        import asyncio
+        import socket
+
+        from .. import dockerapi
+
+        session, _data = await _guarded_form(request, "superadmin")
+        if not dockerapi.available():
+            raise web.HTTPFound("/settings?err=" + quote("Нет доступа к docker — перезапустите на сервере"))
+        audit.record(session.user_key, "перезапуск бота из панели", "")
+
+        async def later() -> None:
+            # Ответ должен успеть уйти: перезапускается тот самый процесс, что отвечает.
+            await asyncio.sleep(2)
+            docker = await dockerapi.session()
+            try:
+                name = "radar_container"
+                if not await dockerapi.container_exists(docker, name):
+                    name = socket.gethostname()
+                await dockerapi.container_action(docker, name, "restart")
+            finally:
+                await docker.close()
+
+        task = asyncio.get_running_loop().create_task(later())
+        _restart_tasks.add(task)
+        task.add_done_callback(_restart_tasks.discard)
+        raise web.HTTPFound("/settings?ok=" + quote("Перезапуск начат — через полминуты обновите страницу"))
+
     @owner_only
     async def cloud_page(request, session):
         return web.Response(
@@ -3757,6 +3863,9 @@ async def create_app() -> Any:
         web.post("/chats/announce", chats_announce),
         web.post("/chats/send", chats_send),
         web.post("/chats/drop", chats_drop),
+        web.get("/settings", settings_overview),
+        web.post("/settings/restart", settings_restart),
+        *[web.get(item.path, _settings_page(item)) for item in _settings_sections()],
         web.get("/vpn", vpn_page),
         web.post("/vpn/app-revoke", vpn_app_revoke),
         web.get("/vpn/panels", vpn_panels_page),

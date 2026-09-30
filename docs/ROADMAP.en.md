@@ -1706,6 +1706,30 @@ management of the bot subscription or the VPN subscription.
 
 ---
 
+## 5.9.2.2 — all settings in the web panel ⚠️ code written
+
+At the author's request: the settings of Discord, VK, MAX, cloud and the rest
+were scattered across "Keys" and "Features", and half of the values could only
+be changed in `.env`. Everything must be configurable from the panel.
+
+1. **The "Settings" section** (superadmin): platforms, AI, alerts and
+   sources, media and cloud, links and protection, system. A topic is a
+   card: its switches and its values side by side, links to the dedicated
+   pages.
+2. **`.env` values in the panel.** About sixty values (MAX, AI models and
+   quotas, source polling, video, file sharing, link checking, web panel,
+   log, RustDesk, ad) are described like the others: title, hint, type,
+   bounds, default.
+3. **Type check** before saving — in the panel and in the bot (`/keys`):
+   bounded number, flag, choice, address, time.
+4. **Restart.** Values read at startup take effect after a restart; the panel
+   shows what changed and, with docker, restarts the bot with a button.
+5. **Not exposed:** `PROMO_IN_ALERTS` (advertising inside alerts is
+   forbidden), `SUPERADMIN_ID`, `SECRET_KEY`, the database and paths — the
+   installer sets them. The list is shown on the "Settings" page.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2
