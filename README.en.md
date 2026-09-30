@@ -1,4 +1,4 @@
-# Radar v5.9.2.1
+# Radar v5.9.2.2
 
 [Русская версия](README.md)
 
@@ -94,6 +94,20 @@ memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
 eighth of the memory but no more than 128 MB, so the database does not hit
 its own container limit. Values set by hand are left alone; without these
 lines the database starts with the old defaults.
+
+**All settings in the web panel (since 5.9.2.2).** The "Settings" section
+(superadmin): platforms (Telegram, VK, Discord, MAX, Odnoklassniki), AI
+(keys, models, limits), alerts and sources, media and cloud (video, music,
+file sharing), links and protection, system (web panel, network, log,
+maintenance, RustDesk, project ad). Each topic has its switches and its
+values side by side; numbers, choices, flags, addresses and times are
+validated before saving, and the default is shown. Values the bot reads at
+startup take effect after a restart: the panel shows what changed and, with
+docker access, restarts the bot with a button. What the panel does not
+change is listed there too: `SUPERADMIN_ID`, `SECRET_KEY`, the database and
+paths (the installer sets them) and `PROMO_IN_ALERTS` — advertising inside
+alerts is forbidden. The "Features" and "Keys" pages remain as overall
+lists. The same value check applies in the bot (`/keys`).
 
 **VPN and bot subscription management in the web panel (since 5.9.2.1).**
 "VPN" → "Panels": add a panel with a form (pick one of ten kinds, fields are

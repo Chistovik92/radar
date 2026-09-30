@@ -192,6 +192,16 @@ async def save_value(message: Message, state: FSMContext, role: str) -> None:
         )
         return
 
+    # Та же проверка типа, что и в веб-панели (5.9.2.2): число, выбор, адрес.
+    value = secrets.normalize_value(setting, value)
+    problem = secrets.check_value(setting, value)
+    if problem:
+        await message.answer(
+            f"❌ {esc(problem)}",
+            reply_markup=back_kb(f"key:group:{setting.group}", "◀️ Назад"),
+        )
+        return
+
     if not secrets.write(key, value):
         await message.answer(
             "❌ Не удалось записать в .env — проверьте права на файл.",
