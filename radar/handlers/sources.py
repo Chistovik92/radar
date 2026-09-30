@@ -33,6 +33,7 @@ from .. import (
     sourcecheck,
     sourceedit,
     storage,
+    uploads,
 )
 from ..states import Form
 from ..textutils import esc
@@ -291,6 +292,7 @@ async def ask_import(call: CallbackQuery, role: str, user: dict) -> None:
                           show_alert=True)
         return
     await call.answer()
+    uploads.expect(call.from_user.id, uploads.SOURCES)
     await safe_edit(
         call,
         "⬆️ <b>Загрузка источников</b>\n\n"
@@ -302,7 +304,6 @@ async def ask_import(call: CallbackQuery, role: str, user: dict) -> None:
     )
 
 
-@router.message(F.document)
 async def import_sources(message: Message, role: str, user: dict) -> None:
     if not roles.is_admin(role):
         await message.answer(_t(user, "src.import_denied",
@@ -353,7 +354,11 @@ async def import_sources(message: Message, role: str, user: dict) -> None:
         if len(bundle.warnings) > 8:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
+    uploads.done(message.from_user.id)
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
+
+
+uploads.register(uploads.SOURCES, import_sources)
 
 
 # --------------------------------------------------------------------------

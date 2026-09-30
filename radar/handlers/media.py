@@ -42,6 +42,7 @@ from .. import (
     storage,
     subscription,
     transcode,
+    uploads,
 )
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
@@ -477,6 +478,7 @@ async def cookies_help(message: Message, role: str) -> None:
 
     from .. import cookies as cookies_module
 
+    uploads.expect(message.from_user.id, uploads.COOKIES)
     await message.answer(
         "🍪 <b>Cookies для закрытых записей</b>\n\n"
         f"{cookies_module.describe()}\n\n"
@@ -485,32 +487,31 @@ async def cookies_help(message: Message, role: str) -> None:
         "<b>Как подключить:</b>\n"
         "1. В браузере: расширение «Get cookies.txt LOCALLY» "
         "(Chrome/Firefox) — Export — для нужной площадки.\n"
-        "2. Пришлите файл <code>cookies.txt</code> сюда сообщением.\n\n"
+        "2. Пришлите файл <code>cookies.txt</code> сюда сообщением — "
+        "ближайший присланный файл в течение 10 минут будет принят "
+        "как cookies, имя не важно.\n\n"
         "<i>Файл держит сессию аккаунта: у кого он есть — тот вошёл. "
         "Не пересылайте его никому.</i>",
         reply_markup=back_kb(),
     )
 
 
-@router.message(F.document)
-async def take_cookies(message: Message, role: str) -> None:
+async def take_cookies(message: Message, role: str, user: dict | None = None) -> None:
     """Приём файла cookies прямо в чат.
 
     До 4.9.4.5 файл требовалось принести на сервер SCP-ом и прописать
     путь в .env руками. Формат проверяется до сохранения: мусор в нём
-    превращал бы отказы yt-dlp в загадки.
+    превращал бы отказы yt-dlp в загадки. С 5.9.0.1 вызывается из общего
+    приёмника документов (`handlers/documents.py`): раньше свой
+    `F.document` здесь опережала загрузка источников, и cookies
+    уходили в список каналов.
     """
     if not roles.is_superadmin(role):
-        return  # чужой документ — не наше дело, пусть идёт дальше
+        await message.answer("⛔️ Управление cookies — суперадминистратору.")
+        return
 
     document = message.document
-    if not document or not document.file_name:
-        return
-    if not document.file_name.lower().endswith(".txt"):
-        return
-    if "cookie" not in document.file_name.lower():
-        # Любой .txt документов может быть чем угодно — ловим только
-        # похожее на cookies по имени, иначе перехватили бы чужие файлы.
+    if not document:
         return
 
     from .. import cookies as cookies_module
@@ -536,6 +537,7 @@ async def take_cookies(message: Message, role: str) -> None:
         await message.answer(f"❌ Файл не принят: {esc(complaint)}")
         return
 
+    uploads.done(message.from_user.id)
     log.info("Файл cookies загружен суперадминистратором")
     await message.answer(
         "✅ <b>Cookies подключены.</b>\n"
@@ -544,6 +546,9 @@ async def take_cookies(message: Message, role: str) -> None:
         "<i>Файл держит сессию аккаунта и хранится с правами 600.</i>",
         reply_markup=back_kb(),
     )
+
+
+uploads.register(uploads.COOKIES, take_cookies)
 
 
 # --------------------------------------------------------------------------
