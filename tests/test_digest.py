@@ -538,11 +538,11 @@ class TestWebAuth(unittest.TestCase):
         self.assertTrue(moderator < admin < owner)
 
     def test_navigation_order_matches_use(self):
-        """Порядок разделов: обзор, люди, источники, медиа, агенты."""
+        """Порядок разделов: обзор, люди, источники, VPN (с 5.9.2), медиа, агенты."""
         from radar.web.panel import _nav_groups
 
         self.assertEqual([group[2] for group in _nav_groups("superadmin")],
-                         ["home", "users", "sources", "media", "agents"])
+                         ["home", "users", "sources", "vpn", "media", "agents"])
 
     def test_rare_pages_still_owner_only(self):
         """Убрали из меню — не значит открыли: страницы закрыты ролью."""
@@ -551,7 +551,7 @@ class TestWebAuth(unittest.TestCase):
         source = open(os.path.join(ROOT, "radar", "web", "panel.py"),
                       encoding="utf-8").read()
         for handler in ("backup_page", "audit_page", "features_page",
-                        "maintenance_page", "media_page"):
+                        "maintenance_page", "media_page", "vpn_page"):
             index = source.index(f"async def {handler}")
             self.assertIn("@owner_only", source[index - 40:index], handler)
 
