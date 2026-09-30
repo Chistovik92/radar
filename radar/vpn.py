@@ -159,8 +159,8 @@ def ready() -> tuple[bool, str]:
         wrong = unknown_kinds()
         if wrong:
             return False, "Незнакомый вид панели: " + ", ".join(wrong) + "."
-        return False, ("Ни одна панель не настроена: задайте VPN1_KIND "
-                       "и остальные поля слота в разделе ключей.")
+        return False, ("Ни одна панель не настроена: добавьте её в "
+                       "веб-панели, раздел VPN → Панели.")
     return True, ""
 
 

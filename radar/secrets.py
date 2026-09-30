@@ -163,6 +163,11 @@ SETTINGS: tuple[Setting, ...] = (
             "По умолчанию 25, 0 — без предела. Панели без такого предела "
             "(Marzban, PasarGuard, Hiddify, Outline, wg-easy…) его не применяют.",
             "VPN", secret=False),
+    Setting("DIGEST_PLANS", "Подписка бота: тарифы",
+            "«дни:звёзды» через запятую, например 30:150, 90:400, 365:1400. "
+            "Цена — в звёздах Telegram, не меньше одной. Подписка одна: "
+            "открывает и подборки, и загрузку видео без предела.",
+            "Подписка бота", secret=False),
     Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
             "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
 
@@ -360,7 +365,17 @@ def get(key: str) -> str:
 
 def write(key: str, value: str) -> bool:
     """Записывает значение в .env, сохраняя остальные строки и комментарии."""
-    if "\n" in value or "\r" in value:
+    return write_many({key: value})
+
+
+def write_many(values: dict[str, str]) -> bool:
+    """Записывает несколько значений одной правкой .env (5.9.2.1).
+
+    Одна копия `.env` и одна перезапись на всё: слот VPN-панели — десять
+    полей, и десять отдельных `write` вытеснили бы из десяти хранимых
+    копий все прежние.
+    """
+    if any("\n" in value or "\r" in value for value in values.values()):
         return False
 
     # Копия перед правкой: потерять прежние ключи из-за опечатки нельзя
@@ -377,17 +392,18 @@ def write(key: str, value: str) -> bool:
             with open(ENV_PATH, "r", encoding="utf-8") as handle:
                 lines = handle.readlines()
 
-        replaced = False
-        for index, line in enumerate(lines):
-            match = _LINE.match(line.strip())
-            if match and match.group(1) == key:
-                lines[index] = f"{key}={value}\n"
-                replaced = True
-                break
-        if not replaced:
-            if lines and not lines[-1].endswith("\n"):
-                lines.append("\n")
-            lines.append(f"{key}={value}\n")
+        for key, value in values.items():
+            replaced = False
+            for index, line in enumerate(lines):
+                match = _LINE.match(line.strip())
+                if match and match.group(1) == key:
+                    lines[index] = f"{key}={value}\n"
+                    replaced = True
+                    break
+            if not replaced:
+                if lines and not lines[-1].endswith("\n"):
+                    lines.append("\n")
+                lines.append(f"{key}={value}\n")
 
         # Запись НА МЕСТО, а не подмена через переименование.
         #
@@ -412,12 +428,13 @@ def write(key: str, value: str) -> bool:
         except OSError:
             log.debug("Права на %s оставлены как есть", ENV_PATH)
     except OSError as exc:
-        log.error("Не удалось записать %s в %s: %s", key, ENV_PATH, exc)
+        log.error("Не удалось записать %s в %s: %s", ", ".join(values), ENV_PATH, exc)
         return False
 
     # Применяем к текущему процессу: провайдеры ИИ читают ключи на лету
-    os.environ[key] = value
-    log.info("Обновлено значение %s (%d символов)", key, len(value))
+    for key, value in values.items():
+        os.environ[key] = value
+        log.info("Обновлено значение %s (%d символов)", key, len(value))
     return True
 
 

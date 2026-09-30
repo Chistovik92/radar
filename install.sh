@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.2 — автономный установщик.
+# Система «Радар» v5.9.2.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.2"
+VERSION="5.9.2.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=146
+FILE_COUNT=149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3292,6 +3292,16 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.2.1", [
+        "🖥 <b>Панель управляет VPN целиком.</b> Раздел «VPN» → «Панели»: "
+        "добавить панель любого из десяти видов, изменить, проверить, удалить; "
+        "«Доступы и заказы»: заявки, выдача, продление, включение и отзыв, "
+        "подтверждение оплаты. «Пользователи» → «Подписка бота»: тарифы, "
+        "промокоды, срок каждого человека.",
+        "🧹 <b>Молчащие источники.</b> Скрипт tools/prune_sources.py проверяет "
+        "источники и убирает те, что молчат дольше заданного срока "
+        "(сначала показывает, без --yes ничего не удаляет).",
+    ]),
     ("5.9.2", [
         "📱 <b>25 устройств на подписку.</b> Каждая выданная подписка VPN "
         "теперь рассчитана на 25 устройств (там, где панель умеет "
@@ -5147,7 +5157,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.2"
+__version__ = "5.9.2.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7310,7 +7320,7 @@ FLAGS: tuple[Flag, ...] = (
          "Выдача доступа к VPN через одну или несколько панелей: 3x-ui, "
          "x-ui, s-ui, Marzban, PasarGuard, Marzneshin, Remnawave, Hiddify, "
          "Outline, wg-easy. Только по решению суперадминистратора, без "
-         "платежей. Панели задаются слотами в разделе ключей (VPN 1 … VPN 6).",
+         "платежей. Панели добавляются в веб-панели: раздел VPN → Панели (до шести).",
          group="VPN", since="5.0", default=False),
     Flag("vpn_sales", "Продажа VPN",
          "Покупка доступа к VPN по тарифам (VPN_PLANS): оплата через "
@@ -10386,6 +10396,11 @@ SETTINGS: tuple[Setting, ...] = (
             "По умолчанию 25, 0 — без предела. Панели без такого предела "
             "(Marzban, PasarGuard, Hiddify, Outline, wg-easy…) его не применяют.",
             "VPN", secret=False),
+    Setting("DIGEST_PLANS", "Подписка бота: тарифы",
+            "«дни:звёзды» через запятую, например 30:150, 90:400, 365:1400. "
+            "Цена — в звёздах Telegram, не меньше одной. Подписка одна: "
+            "открывает и подборки, и загрузку видео без предела.",
+            "Подписка бота", secret=False),
     Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
             "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
 
@@ -10583,7 +10598,17 @@ def get(key: str) -> str:
 
 def write(key: str, value: str) -> bool:
     """Записывает значение в .env, сохраняя остальные строки и комментарии."""
-    if "\n" in value or "\r" in value:
+    return write_many({key: value})
+
+
+def write_many(values: dict[str, str]) -> bool:
+    """Записывает несколько значений одной правкой .env (5.9.2.1).
+
+    Одна копия `.env` и одна перезапись на всё: слот VPN-панели — десять
+    полей, и десять отдельных `write` вытеснили бы из десяти хранимых
+    копий все прежние.
+    """
+    if any("\n" in value or "\r" in value for value in values.values()):
         return False
 
     # Копия перед правкой: потерять прежние ключи из-за опечатки нельзя
@@ -10600,17 +10625,18 @@ def write(key: str, value: str) -> bool:
             with open(ENV_PATH, "r", encoding="utf-8") as handle:
                 lines = handle.readlines()
 
-        replaced = False
-        for index, line in enumerate(lines):
-            match = _LINE.match(line.strip())
-            if match and match.group(1) == key:
-                lines[index] = f"{key}={value}\n"
-                replaced = True
-                break
-        if not replaced:
-            if lines and not lines[-1].endswith("\n"):
-                lines.append("\n")
-            lines.append(f"{key}={value}\n")
+        for key, value in values.items():
+            replaced = False
+            for index, line in enumerate(lines):
+                match = _LINE.match(line.strip())
+                if match and match.group(1) == key:
+                    lines[index] = f"{key}={value}\n"
+                    replaced = True
+                    break
+            if not replaced:
+                if lines and not lines[-1].endswith("\n"):
+                    lines.append("\n")
+                lines.append(f"{key}={value}\n")
 
         # Запись НА МЕСТО, а не подмена через переименование.
         #
@@ -10635,12 +10661,13 @@ def write(key: str, value: str) -> bool:
         except OSError:
             log.debug("Права на %s оставлены как есть", ENV_PATH)
     except OSError as exc:
-        log.error("Не удалось записать %s в %s: %s", key, ENV_PATH, exc)
+        log.error("Не удалось записать %s в %s: %s", ", ".join(values), ENV_PATH, exc)
         return False
 
     # Применяем к текущему процессу: провайдеры ИИ читают ключи на лету
-    os.environ[key] = value
-    log.info("Обновлено значение %s (%d символов)", key, len(value))
+    for key, value in values.items():
+        os.environ[key] = value
+        log.info("Обновлено значение %s (%d символов)", key, len(value))
     return True
 
 
@@ -15075,6 +15102,29 @@ def on_trial(user: dict[str, Any] | None) -> bool:
     return (datetime.now(timezone.utc) - started).days < TRIAL_DAYS
 
 
+def revoke(user: dict[str, Any]) -> bool:
+    """Снимает оплаченный срок по всем частям подписки (5.9.2.1).
+
+    Нужен администрации: ошибочный подарок или возврат денег. Пробный
+    период остаётся «использованным» — второй раз он не даётся. Возвращает
+    True, если срок был.
+    """
+    had = bool(paid_until(user))
+    slot = dict(_slot(user))
+    if slot.get("until"):
+        slot["until"] = ""
+        user[SLOT] = slot
+    for key in ("digest", "media_quota"):
+        part = user.get(key)
+        if isinstance(part, dict) and part.get("paid_until"):
+            part = dict(part)
+            part["paid_until"] = ""
+            user[key] = part
+    if had:
+        log.info("Срок подписки снят")
+    return had
+
+
 def paid_until(user: dict[str, Any] | None) -> str:
     """Наибольший срок из всех оплаченных частей, ISO-строкой."""
     user = user or {}
@@ -17418,11 +17468,19 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     groups: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
         ("/", "Обзор", "home", overview),
     ]
-    if moderator:
+    if owner:
+        # Подписка бота — управление людьми: рядом с их списком (5.9.2.1).
+        groups.append(("/users", "Пользователи", "users",
+                       [("/users", "Люди", "users"),
+                        ("/subscriptions", "Подписка бота", "subscriptions")]))
+    elif moderator:
         groups.append(("/users", "Пользователи", "users", []))
     groups.append(("/sources", "Источники", "sources", []))
     if owner:
-        groups.append(("/vpn", "VPN", "vpn", []))
+        vpn_items = [("/vpn", "Обзор", "vpn"),
+                     ("/vpn/panels", "Панели", "vpn_panels"),
+                     ("/vpn/access", "Доступы и заказы", "vpn_access")]
+        groups.append((vpn_items[0][0], "VPN", "vpn", vpn_items))
     if media:
         groups.append((media[0][0], "Медиа", "media", media))
     if agent_items:
@@ -18504,7 +18562,7 @@ async def _vpn_body(session, message: str = "", failed: str = "") -> str:
         f"<tr><td>{item.number}</td><td>{html.escape(item.title)}</td>"
         f"<td>{html.escape(item.client.kind)}</td></tr>"
         for item in vpn.slots()
-    ) or '<tr><td colspan="3" class="muted">Панели не настроены — заполните слоты ниже.</td></tr>'
+    ) or '<tr><td colspan="3" class="muted">Панели не настроены — добавьте на странице «Панели».</td></tr>'
     pending = len(await vpn.pending())
     issued = len(await vpn.issued())
     parts.append(
@@ -18531,9 +18589,12 @@ async def _vpn_body(session, message: str = "", failed: str = "") -> str:
         parts.append(card("VPN", True))
     if "Продажа VPN" in groups:
         parts.append(card("Продажа VPN", False))
-    for group in groups:
-        if group not in ("VPN", "Продажа VPN"):
-            parts.append(card(group, False))
+    # Слоты панелей — не десяток ключей, а форма на своей странице (5.9.2.1).
+    parts.append(
+        '<div class="card"><h3>Панели и доступы</h3>'
+        '<p><a class="btn" href="/vpn/panels">Панели VPN — добавить, изменить, проверить</a> '
+        '<a class="btn ghost" href="/vpn/access">Доступы и заказы — заявки, выдача, продление</a></p></div>'
+    )
 
     # --- приложения HydraVPN ---
     devices = await appapi.all_devices()
@@ -18990,6 +19051,37 @@ def _is_vpn_group(group: str) -> bool:
     return group == "Продажа VPN" or group == "VPN" or group.startswith("VPN ")
 
 
+def _in_own_section(group: str) -> bool:
+    """Группы, у которых есть своя страница: в «Ключах» их не показываем."""
+    return _is_vpn_group(group) or group == "Подписка бота"
+
+
+def _validate_setting(key: str, value: str) -> str:
+    """Проверка значения до записи: опечатка в тарифах молча ломала бы продажу."""
+    if not value:
+        return ""
+    if key == "DIGEST_PLANS":
+        if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
+            return "Формат: 30:150, 90:400 — дни и звёзды через двоеточие."
+        for chunk in value.split(","):
+            days, _, stars = chunk.strip().partition(":")
+            if int(days) < 1 or int(stars) < 1:
+                return "Срок и цена — не меньше единицы (звезда — минимальная цена)."
+    elif key == "VPN_PLANS":
+        from .. import vpnsales
+
+        chunks = [c for c in value.split(";") if c.strip()]
+        if not chunks or len(vpnsales.parse_plans(value)) != len(chunks):
+            return ("Формат: дни:трафикГБ:устройства:цена через «;», например "
+                    "30:0:3:199; 90:0:3:499 — есть негодный тариф.")
+    elif key in ("VPN_DAYS", "VPN_TRAFFIC_GB", "VPN_DEVICES"):
+        if not value.isdigit():
+            return "Нужно целое число."
+        if key == "VPN_DAYS" and int(value) < 1:
+            return "Срок — не меньше одного дня."
+    return ""
+
+
 def _setting_row(setting, token: str, back: str = "") -> str:
     """Строка одной настройки с формой записи. `back` — куда вернуться после сохранения."""
     current = secrets_module.get(setting.key)
@@ -19029,7 +19121,7 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     token = auth.csrf_token(session)
     groups: dict[str, list] = {}
     for setting in secrets_module.SETTINGS:
-        if _is_vpn_group(setting.group):
+        if _in_own_section(setting.group):
             continue
         groups.setdefault(setting.group, []).append(setting)
 
@@ -19040,7 +19132,8 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     ]
     cards.append(
         '<div class="card muted">Настройки VPN, продажи и приложений HydraVPN — '
-        'в разделе <a href="/vpn">VPN</a>.</div>'
+        'в разделе <a href="/vpn">VPN</a>, тарифы подписки бота — '
+        '<a href="/subscriptions">Пользователи → Подписка бота</a>.</div>'
     )
 
     warning = (
@@ -19698,12 +19791,15 @@ async def create_app() -> Any:
         session, data = await _guarded_form(request, "superadmin")
         key = str(data.get("key", ""))
         back = str(data.get("back", "")) or "/keys"
-        if back not in ("/keys", "/vpn"):
+        if back not in ("/keys", "/vpn", "/subscriptions"):
             back = "/keys"
         if key not in secrets_module.BY_KEY:
             raise web.HTTPFound(back + "?err=" + quote("Неизвестный ключ"))
 
         value = str(data.get("value", "")).strip()
+        problem = _validate_setting(key, value)
+        if problem:
+            raise web.HTTPFound(back + "?err=" + quote(problem))
         if not secrets_module.write(key, value):
             raise web.HTTPFound(back + "?err=" + quote(
                 "Записать не удалось — проверьте права на .env"))
@@ -20060,6 +20156,104 @@ async def create_app() -> Any:
         raise web.HTTPFound("/vpn?ok=" + quote(f"Отключено устройств: {count}"))
 
     @owner_only
+    async def vpn_panels_page(request, session):
+        from . import adminpages
+
+        slot = request.query.get("slot", "")
+        edit = int(slot) if slot.isdigit() else None
+        body = await adminpages.panels_body(
+            auth.csrf_token(session), request.query.get("ok", ""),
+            request.query.get("err", ""), edit)
+        return web.Response(
+            text=_layout("Панели VPN", body, "vpn_panels",
+                         roles.title(session.role), session.role),
+            content_type="text/html")
+
+    async def vpn_panels_save(request):
+        from .. import vpnslots
+
+        session, data = await _guarded_form(request, "superadmin")
+        number = str(data.get("slot", ""))
+        if not number.isdigit():
+            raise web.HTTPFound("/vpn/panels?err=" + quote("Нет такого слота"))
+        problem = vpnslots.save(int(number), {k: str(data.get(k, "")) for k in vpnslots.FIELDS})
+        if problem:
+            raise web.HTTPFound(f"/vpn/panels?slot={number}&err=" + quote(problem))
+        # В журнал — слот и вид, без адреса и секретов.
+        audit.record(session.user_key, "VPN-панель сохранена", f"слот {number}")
+        raise web.HTTPFound("/vpn/panels?ok=" + quote(
+            f"Слот {number} сохранён. Проверьте работу кнопкой «проверить»."))
+
+    async def vpn_panels_remove(request):
+        from .. import vpnslots
+
+        session, data = await _guarded_form(request, "superadmin")
+        number = str(data.get("slot", ""))
+        if not number.isdigit() or not vpnslots.remove(int(number)):
+            raise web.HTTPFound("/vpn/panels?err=" + quote("Удалить не удалось"))
+        audit.record(session.user_key, "VPN-панель удалена", f"слот {number}")
+        raise web.HTTPFound("/vpn/panels?ok=" + quote(f"Слот {number} освобождён"))
+
+    async def vpn_panels_check(request):
+        from .. import vpnslots
+
+        session, data = await _guarded_form(request, "superadmin")
+        number = str(data.get("slot", ""))
+        if not number.isdigit():
+            raise web.HTTPFound("/vpn/panels?err=" + quote("Нет такого слота"))
+        ok, note = await vpnslots.check(int(number))
+        key = "ok" if ok else "err"
+        raise web.HTTPFound(f"/vpn/panels?{key}=" + quote(f"Слот {number}: {note}"))
+
+    @owner_only
+    async def vpn_access_page(request, session):
+        from . import adminpages
+
+        body = await adminpages.access_body(
+            auth.csrf_token(session), request.query.get("ok", ""),
+            request.query.get("err", ""), request.query.get("uid", ""))
+        return web.Response(
+            text=_layout("Доступы и заказы VPN", body, "vpn_access",
+                         roles.title(session.role), session.role),
+            content_type="text/html")
+
+    async def vpn_access_act(request):
+        from . import adminpages
+
+        session, data = await _guarded_form(request, "superadmin")
+        action = str(data.get("action", ""))
+        uid = str(data.get("uid", "")).strip()
+        done, failed = await adminpages.access_act(data, session.user_key, session.role)
+        audit.record(session.user_key, "VPN: " + action, uid)
+        tail = "&uid=" + quote(uid) if action in ("extend", "toggle", "revoke") and uid else ""
+        if failed:
+            raise web.HTTPFound("/vpn/access?err=" + quote(failed) + tail)
+        raise web.HTTPFound("/vpn/access?ok=" + quote(done) + tail)
+
+    @owner_only
+    async def subscriptions_page(request, session):
+        from . import adminpages
+
+        body = await adminpages.subscriptions_body(
+            auth.csrf_token(session), request.query.get("ok", ""),
+            request.query.get("err", ""), request.query.get("q", ""))
+        return web.Response(
+            text=_layout("Подписка бота", body, "subscriptions",
+                         roles.title(session.role), session.role),
+            content_type="text/html")
+
+    async def subscriptions_act(request):
+        from . import adminpages
+
+        session, data = await _guarded_form(request, "superadmin")
+        done, failed = await adminpages.subscriptions_act(data)
+        audit.record(session.user_key, "подписка бота: " + str(data.get("action", "")),
+                     str(data.get("uid", "")))
+        if failed:
+            raise web.HTTPFound("/subscriptions?err=" + quote(failed))
+        raise web.HTTPFound("/subscriptions?ok=" + quote(done))
+
+    @owner_only
     async def cloud_page(request, session):
         return web.Response(
             text=_layout(
@@ -20321,6 +20515,14 @@ async def create_app() -> Any:
         web.post("/chats/drop", chats_drop),
         web.get("/vpn", vpn_page),
         web.post("/vpn/app-revoke", vpn_app_revoke),
+        web.get("/vpn/panels", vpn_panels_page),
+        web.post("/vpn/panels/save", vpn_panels_save),
+        web.post("/vpn/panels/remove", vpn_panels_remove),
+        web.post("/vpn/panels/check", vpn_panels_check),
+        web.get("/vpn/access", vpn_access_page),
+        web.post("/vpn/access/act", vpn_access_act),
+        web.get("/subscriptions", subscriptions_page),
+        web.post("/subscriptions/act", subscriptions_act),
         web.get("/cloud", cloud_page),
         web.post("/cloud/add", cloud_add),
         web.post("/cloud/forget", cloud_forget),
@@ -20521,8 +20723,530 @@ def routes(web: Any) -> list[Any]:
         web.delete("/api/v1/app/session", logout),
     ]
 RADAR_FILE_44
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/adminpages.py"
+cat > "radar/web/adminpages.py" <<'RADAR_FILE_45'
+"""Страницы веб-панели: VPN-панели, доступы и заказы, подписка бота (5.9.2.1).
+
+Вынесено из panel.py, где уже три с половиной тысячи строк. Здесь только
+сборка HTML и действия над данными; маршруты, проверка сессии и токена
+формы остаются в panel.py — в одном месте, чтобы не пропустить проверку
+в новом обработчике.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import html
+import re
+import time
+from typing import Any
+
+from .. import features, roles, storage, subscription, vpn, vpnpanels, vpnsales, vpnslots
+from ..vpnpanels import Account, PanelError
+
+MAX_GRANT_DAYS = 3650
+MAX_PEOPLE_SHOWN = 60
+
+
+def esc(value: Any) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _note(kind: str, text: str) -> str:
+    if not text:
+        return ""
+    css = "ok" if kind == "ok" else "bad"
+    return f'<div class="card {css}">{esc(text)}</div>'
+
+
+def _stamp(value: Any) -> str:
+    try:
+        return time.strftime("%d.%m.%Y %H:%M", time.localtime(int(value)))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "—"
+
+
+def _hidden(token: str, **fields: str) -> str:
+    parts = [f'<input type="hidden" name="csrf" value="{esc(token)}">']
+    parts.extend(f'<input type="hidden" name="{esc(k)}" value="{esc(v)}">'
+                 for k, v in fields.items())
+    return "".join(parts)
+
+
+def who(uid: str) -> str:
+    user = storage.get_user(uid) or {}
+    name = user.get("username")
+    return "@" + str(name) if name else str(uid)
+
+
+def _host(url: str) -> str:
+    return re.sub(r"^https?://", "", url or "").split("/")[0] or "—"
+
+
+# --------------------------------------------------------------------------
+#  Панели VPN
+# --------------------------------------------------------------------------
+
+async def panels_body(token: str, message: str = "", failed: str = "",
+                      edit: int | None = None) -> str:
+    parts = [_note("ok", message), _note("bad", failed)]
+
+    records = await vpn.records()
+    per_slot: dict[str, int] = {}
+    for entry in records.values():
+        for key in (entry.get("panels") or {}):
+            per_slot[key] = per_slot.get(key, 0) + 1
+
+    rows = []
+    for number in vpnslots.numbers():
+        if not vpnslots.configured(number):
+            continue
+        values = vpnslots.read(number)
+        known = {info.kind: info.title for info in vpnslots.kinds()}
+        kind = known.get(vpnpanels.normalize_kind(values["KIND"]), values["KIND"] + " (незнакомый вид)")
+        secret = "токен" if values["TOKEN"] else ("логин и пароль" if values["USER"] else "—")
+        issued = per_slot.get(str(number), 0)
+        warn = (f"Доступов выдано на этой панели: {issued}. После удаления "
+                "бот перестанет находить их записи — выдавать придётся заново. "
+                "Сами записи в панели остаются.") if issued else "Удалить панель из бота?"
+        rows.append(
+            f"<tr><td>{number}</td>"
+            f"<td><b>{esc(values['TITLE'] or '—')}</b><br>"
+            f'<span class="muted">{esc(kind)}</span></td>'
+            f"<td>{esc(_host(values['URL']))}<br>"
+            f'<span class="muted">вход: {esc(secret)}</span></td>'
+            f"<td>{issued}</td>"
+            '<td style="text-align:right;white-space:nowrap">'
+            f'<a class="btn ghost" href="/vpn/panels?slot={number}#form">изменить</a> '
+            '<form class="inline" method="post" action="/vpn/panels/check">'
+            f"{_hidden(token, slot=str(number))}"
+            '<button class="ghost" type="submit">проверить</button></form> '
+            f'<form class="inline" method="post" action="/vpn/panels/remove" '
+            f"onsubmit=\"return confirm('{esc(warn)}')\">"
+            f"{_hidden(token, slot=str(number))}"
+            '<button class="ghost danger" type="submit">удалить</button></form>'
+            "</td></tr>"
+        )
+    if rows:
+        table = ("<table><tr><th>Слот</th><th>Панель</th><th>Адрес</th>"
+                 "<th>Выдано</th><th></th></tr>" + "".join(rows) + "</table>")
+    else:
+        table = '<p class="muted">Панели не добавлены. Добавьте первую ниже.</p>'
+    parts.append('<div class="card"><h3>Панели VPN</h3>' + table
+                 + '<p class="muted">Слотов всего '
+                 f"{vpn.SLOTS}; панели разных видов работают одновременно, "
+                 "отказ одной не задевает остальные.</p></div>")
+
+    # --- форма ---
+    target = edit if edit in vpnslots.numbers() and vpnslots.configured(edit or 0) else None
+    number = target if target is not None else vpnslots.free_number()
+    if number is None:
+        parts.append('<div class="card muted">Все слоты заняты. Удалите ненужную панель, '
+                     "чтобы добавить другую.</div>")
+        return "".join(parts)
+
+    values = vpnslots.read(number) if target is not None else {f: "" for f in vpnslots.FIELDS}
+    current_kind = vpnpanels.normalize_kind(values["KIND"])
+    options = "".join(
+        f'<option value="{esc(info.kind)}"{" selected" if info.kind == current_kind else ""}>'
+        f"{esc(info.title)}</option>" for info in vpnslots.kinds()
+    )
+
+    def field(name: str, label: str, secret: bool = False, hint: str = "") -> str:
+        kind = "password" if secret else "text"
+        if secret and values[name]:
+            place = "задан — оставьте пустым, чтобы не менять"
+            shown = ""
+        else:
+            place, shown = "", esc(values[name])
+        tail = f'<div class="hint">{esc(hint)}</div>' if hint else ""
+        return (f"<label><b>{esc(label)}</b><br>"
+                f'<input type="{kind}" name="{name}" value="{shown}" '
+                f'placeholder="{esc(place)}" autocomplete="off" style="width:100%"></label>{tail}')
+
+    title = f"Изменить панель (слот {number})" if target is not None else f"Добавить панель (слот {number})"
+    form = (
+        f'<div class="card" id="form"><h3>{esc(title)}</h3>'
+        '<form method="post" action="/vpn/panels/save">'
+        f"{_hidden(token, slot=str(number))}"
+        f'<label><b>Вид панели</b><br><select name="KIND">{options}</select></label>'
+        + field("TITLE", "Название", hint="Как панель подписана для людей, например «Нидерланды».")
+        + field("URL", "Адрес панели", hint="Вместе с секретным путём, если он есть. "
+                "Для Outline — apiUrl целиком, для Hiddify — с путём администратора.")
+        + field("TOKEN", "Токен или ключ API", secret=True)
+        + field("USER", "Логин (вместо токена)")
+        + field("PASS", "Пароль (вместо токена)", secret=True)
+        + field("INBOUND", "Номер подключения (inbound)", hint="Только для 3x-ui и x-ui.")
+        + field("SUB_URL", "Адрес службы подписки", hint="3x-ui, x-ui, s-ui; у Hiddify — клиентский путь.")
+        + field("GROUPS", "Группы, сервисы, отряды", hint="Через запятую; нужны не всем панелям.")
+        + field("CERT", "Отпечаток сертификата (SHA-256)",
+                hint="Для панели на самоподписанном сертификате; для Outline обязателен.")
+        + '<p><button type="submit">Сохранить</button> '
+        + ('<a class="btn ghost" href="/vpn/panels">отмена</a>' if target is not None else "")
+        + "</p></form></div>"
+    )
+    parts.append(form)
+
+    needs = "".join(f"<tr><td><b>{esc(info.title)}</b></td><td>{esc(info.needs)}</td></tr>"
+                    for info in vpnslots.kinds())
+    parts.append('<details class="card"><summary><b>Что нужно каждой панели</b></summary>'
+                 f"<table>{needs}</table>"
+                 '<p class="muted">Значения проверяются при сохранении; работу панели '
+                 "проверяет кнопка «проверить» — она входит в панель и читает список.</p>"
+                 "</details>")
+    return "".join(parts)
+
+
+# --------------------------------------------------------------------------
+#  Доступы и заказы
+# --------------------------------------------------------------------------
+
+def _slot_boxes(checked: bool = True) -> str:
+    items = []
+    for target in vpn.slots():
+        mark = " checked" if checked else ""
+        items.append(f'<label><input type="checkbox" name="slot" value="{esc(target.key)}"{mark}> '
+                     f"{esc(target.title)}</label> ")
+    return "".join(items) or '<span class="muted">Нет настроенных панелей.</span>'
+
+
+async def access_body(token: str, message: str = "", failed: str = "",
+                      uid: str = "") -> str:
+    parts = [_note("ok", message), _note("bad", failed)]
+    titles = {item.key: item.title for item in vpn.slots()}
+
+    # --- заявки ---
+    pending = await vpn.pending()
+    if pending:
+        rows = []
+        for person in pending:
+            rows.append(
+                f"<tr><td>{esc(who(person))}</td>"
+                '<td><form method="post" action="/vpn/access/act">'
+                f"{_hidden(token, uid=person)}{_slot_boxes()}"
+                '<button name="action" value="issue" type="submit">Выдать</button> '
+                '<button class="ghost danger" name="action" value="deny" type="submit">Отказать</button>'
+                "</form></td></tr>"
+            )
+        parts.append('<div class="card"><h3>Заявки</h3><table>' + "".join(rows) + "</table></div>")
+    else:
+        parts.append('<div class="card"><h3>Заявки</h3><p class="muted">Новых заявок нет.</p></div>')
+
+    # --- выдать вручную ---
+    parts.append(
+        '<div class="card"><h3>Выдать доступ</h3>'
+        '<form method="post" action="/vpn/access/act">'
+        f"{_hidden(token, action='issue')}"
+        '<label><b>Человек</b> <span class="muted">(числовой id в Telegram или ключ вида vk:123)</span><br>'
+        '<input type="text" name="uid" style="width:100%" autocomplete="off"></label>'
+        f"<p>{_slot_boxes()}</p>"
+        '<button type="submit">Выдать</button></form>'
+        '<p class="muted">Срок и предел трафика — из настроек раздела «VPN»; если запись '
+        "в панели уже есть, возвращается она же.</p></div>"
+    )
+
+    # --- карточка человека ---
+    if uid:
+        parts.append(await _person_card(token, uid, titles))
+
+    # --- выданные ---
+    records = await vpn.records()
+    given = [(key, entry) for key, entry in records.items() if entry.get("panels")]
+    if given:
+        rows = []
+        for key, entry in sorted(given, key=lambda item: str(item[0])):
+            slots = ", ".join(esc(titles.get(slot, "#" + slot)) for slot in vpn.issued_slots(entry))
+            rows.append(
+                f"<tr><td>{esc(who(key))}</td><td>{slots}</td>"
+                '<td style="text-align:right">'
+                f'<a class="btn ghost" href="/vpn/access?uid={esc(key)}#person">карточка</a></td></tr>'
+            )
+        parts.append('<div class="card"><h3>Выданные доступы</h3><table>'
+                     "<tr><th>Человек</th><th>Панели</th><th></th></tr>"
+                     + "".join(rows) + "</table></div>")
+    else:
+        parts.append('<div class="card"><h3>Выданные доступы</h3>'
+                     '<p class="muted">Пока никому не выдано.</p></div>')
+
+    parts.append(await _orders_card(token))
+    return "".join(parts)
+
+
+async def _person_card(token: str, uid: str, titles: dict[str, str]) -> str:
+    entry = await vpn.record(uid)
+    if not entry or not entry.get("panels"):
+        return f'<div class="card" id="person"><h3>{esc(who(uid))}</h3><p class="muted">Доступ не выдан.</p></div>'
+    results = await vpn.statuses(uid)
+    rows = []
+    for key in vpn.issued_slots(entry):
+        result = results.get(key)
+        if isinstance(result, Account):
+            state = esc(vpn.describe(result))
+            on = result.enabled
+        elif isinstance(result, PanelError):
+            state, on = "⚠️ " + esc(str(result)), None
+        else:
+            state, on = "Записи в панели нет.", None
+        toggle = ""
+        if on is not None:
+            word = "выключить" if on else "включить"
+            toggle = ('<form class="inline" method="post" action="/vpn/access/act">'
+                      f"{_hidden(token, uid=uid, slot=key, action='toggle', value='0' if on else '1')}"
+                      f'<button class="ghost" type="submit">{word}</button></form> ')
+        rows.append(
+            f"<tr><td><b>{esc(titles.get(key, '#' + key))}</b></td><td>{state}</td>"
+            '<td style="text-align:right;white-space:nowrap">'
+            '<form class="inline" method="post" action="/vpn/access/act">'
+            f"{_hidden(token, uid=uid, slot=key, action='extend')}"
+            '<input type="number" name="days" min="1" max="3650" value="30" style="width:5em"> '
+            '<button class="ghost" type="submit">продлить, дней</button></form> '
+            f"{toggle}"
+            '<form class="inline" method="post" action="/vpn/access/act" '
+            "onsubmit=\"return confirm('Отозвать доступ и удалить запись в панели?')\">"
+            f"{_hidden(token, uid=uid, slot=key, action='revoke')}"
+            '<button class="ghost danger" type="submit">отозвать</button></form>'
+            "</td></tr>"
+        )
+    return (f'<div class="card" id="person"><h3>{esc(who(uid))}</h3><table>'
+            + "".join(rows) + "</table></div>")
+
+
+async def _orders_card(token: str) -> str:
+    if not features.enabled("vpn_sales"):
+        return ('<div class="card"><h3>Заказы</h3><p class="muted">Продажа выключена — '
+                "включите «Продажа VPN» выше на странице «VPN».</p></div>")
+    orders = await vpnsales.recent(40)
+    if not orders:
+        return '<div class="card"><h3>Заказы</h3><p class="muted">Заказов пока нет.</p></div>'
+    rows = []
+    for item in orders:
+        status = str(item.get("status"))
+        order_id = str(item.get("id"))
+        plan = item.get("plan") or {}
+        desc = f"{plan.get('days', '?')} дн."
+        if plan.get("traffic_gb"):
+            desc += f", {plan['traffic_gb']} ГБ"
+        if plan.get("devices"):
+            desc += f", {plan['devices']} устр."
+        buttons = []
+        if status == vpnsales.NEW:
+            buttons.append(("confirm", "подтвердить оплату", ""))
+            buttons.append(("cancel", "отменить", "danger"))
+        elif status == vpnsales.FAILED:
+            buttons.append(("retry", "повторить выдачу", ""))
+        acts = "".join(
+            '<form class="inline" method="post" action="/vpn/access/act">'
+            f"{_hidden(token, action='order_' + act, order=order_id, uid=str(item.get('uid', '')))}"
+            f'<button class="ghost {cls}" type="submit">{label}</button></form> '
+            for act, label, cls in buttons)
+        rows.append(
+            f"<tr><td>{_stamp(item.get('created'))}</td><td>{esc(who(str(item.get('uid', ''))))}</td>"
+            f"<td>{esc(desc)}</td><td>{esc(item.get('amount', ''))} {esc(item.get('currency', ''))}</td>"
+            f"<td>{esc(vpnsales.STATUS_TITLES.get(status, status))}</td>"
+            f'<td style="text-align:right;white-space:nowrap">{acts}</td></tr>'
+        )
+    return ('<div class="card"><h3>Заказы</h3><table><tr><th>Когда</th><th>Кто</th><th>Тариф</th>'
+            "<th>Сумма</th><th>Состояние</th><th></th></tr>" + "".join(rows) + "</table></div>")
+
+
+async def access_act(form: Any, by: str, role: str) -> tuple[str, str]:
+    """Действие над доступом. Возвращает (сообщение, ошибка)."""
+    action = str(form.get("action", ""))
+    uid = str(form.get("uid", "")).strip()
+    slots = [str(item) for item in form.getall("slot", [])] if hasattr(form, "getall") else []
+    try:
+        if action == "issue":
+            if not uid:
+                return "", "Не указан человек."
+            if not slots:
+                return "", "Не выбрана ни одна панель."
+            results = await vpn.issue(uid, slots, by, role)
+            bad = [f"#{key}: {value}" for key, value in results.items() if isinstance(value, PanelError)]
+            done = len(results) - len(bad)
+            if bad:
+                return (f"Выдано на панелях: {done}" if done else "",
+                        "Не удалось: " + "; ".join(bad))
+            return f"Выдано на панелях: {done}.", ""
+        if action == "deny":
+            await vpn.deny(uid, by, role)
+            return "Заявка отклонена.", ""
+        slot = str(form.get("slot", ""))
+        if action == "extend":
+            days = int(str(form.get("days", "0")) or 0)
+            if not 1 <= days <= MAX_GRANT_DAYS:
+                return "", f"Срок — от 1 до {MAX_GRANT_DAYS} дней."
+            await vpn.extend(uid, slot, days, role)
+            return f"Продлено на {days} дн.", ""
+        if action == "toggle":
+            await vpn.set_enabled(uid, slot, str(form.get("value", "")) == "1", role)
+            return "Состояние изменено.", ""
+        if action == "revoke":
+            await vpn.revoke(uid, slot, role)
+            return "Доступ отозван.", ""
+        order_id = str(form.get("order", ""))
+        if action == "order_confirm":
+            await vpnsales.confirm(order_id, role, by)
+            return "Оплата подтверждена, доступ выдаётся.", ""
+        if action == "order_retry":
+            await vpnsales.retry(order_id, role)
+            return "Выдача повторена.", ""
+        if action == "order_cancel":
+            await vpnsales.cancel(order_id, uid, role)
+            return "Заказ отменён.", ""
+    except (PanelError, vpnsales.SaleError, ValueError) as exc:
+        return "", str(exc)
+    return "", "Неизвестное действие."
+
+
+# --------------------------------------------------------------------------
+#  Подписка бота
+# --------------------------------------------------------------------------
+
+def _until_text(user: dict[str, Any]) -> str:
+    until = subscription.paid_until(user)
+    return until[:10] if until else "—"
+
+
+async def subscriptions_body(token: str, message: str = "", failed: str = "",
+                             query: str = "") -> str:
+    from .. import redeem, secrets
+    from .panel import _setting_row
+
+    parts = [_note("ok", message), _note("bad", failed)]
+
+    # --- тарифы ---
+    parts.append(
+        '<div class="card"><h3>Тарифы</h3>'
+        + _setting_row(secrets.BY_KEY["DIGEST_PLANS"], token, "/subscriptions")
+        + f'<p class="muted">Пробный период: {subscription.TRIAL_DAYS} дней, один раз на человека; '
+        "администрации подписка не нужна — у неё всё открыто. Подписка одна: оплата открывает "
+        "и подборки, и загрузку видео без дневного предела. Подписка на VPN — отдельная: "
+        "раздел «VPN».</p></div>"
+    )
+
+    # --- промокоды ---
+    codes = await redeem.load()
+    rows = []
+    for item in codes:
+        used = (f"{esc(who(str(item.get('used_by'))))}, {esc(str(item.get('used_at', ''))[:10])}"
+                if item.get("used_by") else '<span class="ok">свободен</span>')
+        rows.append(
+            f"<tr><td><code>{esc(item.get('code'))}</code></td><td>{esc(item.get('days'))} дн.</td><td>{used}</td>"
+            '<td style="text-align:right"><form class="inline" method="post" action="/subscriptions/act">'
+            f"{_hidden(token, action='code_drop', code=str(item.get('code')))}"
+            '<button class="ghost danger" type="submit">удалить</button></form></td></tr>'
+        )
+    table = ("<table><tr><th>Код</th><th>Даёт</th><th>Использован</th><th></th></tr>"
+             + "".join(rows) + "</table>") if rows else '<p class="muted">Кодов нет.</p>'
+    parts.append(
+        '<div class="card"><h3>Промокоды</h3>' + table
+        + '<form method="post" action="/subscriptions/act">'
+        + _hidden(token, action="code_add")
+        + '<label><b>Новые коды</b> <span class="muted">(через пробел, запятую или с новой строки; '
+        "латиница, цифры и дефис, от 5 знаков)</span><br>"
+        '<textarea name="codes" rows="2" style="width:100%"></textarea></label>'
+        f'<label>Дней на код <input type="number" name="days" min="1" max="{MAX_GRANT_DAYS}" '
+        f'value="{redeem.DEFAULT_DAYS}" style="width:6em"></label> '
+        '<button type="submit">Завести</button></form></div>'
+    )
+
+    # --- люди ---
+    needle = query.strip().lower()
+    people = []
+    for uid, user in storage.users().items():
+        if needle:
+            if needle in str(uid).lower() or needle in str(user.get("username", "")).lower():
+                people.append((uid, user))
+        elif subscription.paid(user):
+            people.append((uid, user))
+    people.sort(key=lambda item: subscription.paid_until(item[1]), reverse=True)
+    shown = people[:MAX_PEOPLE_SHOWN]
+
+    rows = []
+    for uid, user in shown:
+        role = str(user.get("role", ""))
+        state = esc(subscription.describe(user, role))
+        rows.append(
+            f"<tr><td>{esc(who(str(uid)))}<br>"
+            f'<span class="muted">{esc(roles.title(role))}</span></td>'
+            f"<td>{state}<br><span class=\"muted\">до {esc(_until_text(user))}</span></td>"
+            '<td style="text-align:right;white-space:nowrap">'
+            '<form class="inline" method="post" action="/subscriptions/act">'
+            f"{_hidden(token, action='grant', uid=str(uid))}"
+            f'<input type="number" name="days" min="1" max="{MAX_GRANT_DAYS}" value="30" style="width:5em"> '
+            '<button class="ghost" type="submit">добавить, дней</button></form> '
+            '<form class="inline" method="post" action="/subscriptions/act" '
+            "onsubmit=\"return confirm('Снять оплаченный срок?')\">"
+            f"{_hidden(token, action='revoke', uid=str(uid))}"
+            '<button class="ghost danger" type="submit">снять срок</button></form>'
+            "</td></tr>"
+        )
+    if rows:
+        body = ("<table><tr><th>Человек</th><th>Подписка</th><th></th></tr>"
+                + "".join(rows) + "</table>")
+    else:
+        body = '<p class="muted">Никого не найдено.</p>' if needle else '<p class="muted">Платных подписок сейчас нет.</p>'
+    more = (f'<p class="muted">Показаны первые {MAX_PEOPLE_SHOWN} из {len(people)}; уточните поиск.</p>'
+            if len(people) > MAX_PEOPLE_SHOWN else "")
+    parts.append(
+        '<div class="card"><h3>Подписки людей</h3>'
+        '<form method="get" action="/subscriptions"><input type="text" name="q" '
+        f'value="{esc(query)}" placeholder="имя или id — найти любого; пусто — только платные">'
+        ' <button class="ghost" type="submit">найти</button></form>'
+        + body + more + "</div>"
+    )
+    return "".join(parts)
+
+
+async def subscriptions_act(form: Any) -> tuple[str, str]:
+    """Действие над подпиской бота. Возвращает (сообщение, ошибка)."""
+    from .. import redeem
+
+    action = str(form.get("action", ""))
+    uid = str(form.get("uid", "")).strip()
+
+    if action == "code_add":
+        try:
+            days = int(str(form.get("days", "") or redeem.DEFAULT_DAYS))
+        except ValueError:
+            return "", "Дни — число."
+        if not 1 <= days <= MAX_GRANT_DAYS:
+            return "", f"Срок кода — от 1 до {MAX_GRANT_DAYS} дней."
+        added, skipped = await redeem.add(str(form.get("codes", "")), days)
+        if not added:
+            return "", "Ни один код не добавлен (неверный вид или уже есть)."
+        tail = f" Пропущено: {len(skipped)}." if skipped else ""
+        return f"Заведено кодов: {len(added)}.{tail}", ""
+    if action == "code_drop":
+        ok = await redeem.drop(str(form.get("code", "")))
+        return ("Код удалён.", "") if ok else ("", "Такого кода нет.")
+
+    user = storage.get_user(uid)
+    if user is None:
+        return "", "Человек не найден."
+    if action == "grant":
+        try:
+            days = int(str(form.get("days", "0")) or 0)
+        except ValueError:
+            return "", "Дни — число."
+        if not 1 <= days <= MAX_GRANT_DAYS:
+            return "", f"Срок — от 1 до {MAX_GRANT_DAYS} дней."
+        until = subscription.grant(user, days)
+        await storage.save(uid)
+        return f"Добавлено {days} дн., подписка до {until[:10]}.", ""
+    if action == "revoke":
+        had = subscription.revoke(user)
+        await storage.save(uid)
+        return ("Срок снят.", "") if had else ("", "Оплаченного срока не было.")
+    return "", "Неизвестное действие."
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_45'
+cat > "radar/web/backup.py" <<'RADAR_FILE_46'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -20569,9 +21293,9 @@ def body(csrf: str = "") -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_45
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_46'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_47'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -20604,9 +21328,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_46
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_47'
+cat > "radar/db/models.py" <<'RADAR_FILE_48'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -20954,9 +21678,9 @@ class ChatWarning(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-RADAR_FILE_47
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_48'
+cat > "radar/db/engine.py" <<'RADAR_FILE_49'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -21470,9 +22194,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_48
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_49'
+cat > "radar/db/repo.py" <<'RADAR_FILE_50'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -22329,9 +23053,9 @@ async def warn_reset(chat_id: int, user_id: int) -> None:
         )).first()
         if row is not None:
             row.count = 0
-RADAR_FILE_49
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_50'
+cat > "radar/db/importer.py" <<'RADAR_FILE_51'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -22480,9 +23204,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_50
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/transfer.py"
-cat > "radar/db/transfer.py" <<'RADAR_FILE_51'
+cat > "radar/db/transfer.py" <<'RADAR_FILE_52'
 """Перенос данных между SQLite и PostgreSQL (с 5.9).
 
 До 5.9 смена базы в установщике давала пустую новую базу: старая
@@ -22675,9 +23399,9 @@ async def _reset_sequences(connection: Any) -> None:
                 f"SELECT setval(:sequence, GREATEST(COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 1), 1), COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 0) >= 1)"), {"sequence": sequence})
-RADAR_FILE_51
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_52'
+cat > "radar/doctor.py" <<'RADAR_FILE_53'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -23209,9 +23933,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_52
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_53'
+cat > "migrations/env.py" <<'RADAR_FILE_54'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -23271,9 +23995,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_53
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_54'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_55'
 """${message}
 
 Revision ID: ${up_revision}
@@ -23298,9 +24022,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_54
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_55'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_56'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -23467,9 +24191,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_55
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_56'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_57'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -23509,9 +24233,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_56
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_57'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_58'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -23559,9 +24283,9 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_57
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
-cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_58'
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_59'
 """Язык интерфейса и квоты загрузки видео.
 
 Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
@@ -23606,9 +24330,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("media_quota")
     op.drop_column("users", "lang")
-RADAR_FILE_58
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_59'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_60'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -23634,9 +24358,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_59
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_60'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_61'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -23761,9 +24485,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_60
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_61'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_62'
 """Адаптер мессенджера MAX.
 
 ⚠️ НАПИСАН ПО ДОКУМЕНТАЦИИ, НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН.
@@ -24204,9 +24928,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_61
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/maxbot.py"
-cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_62'
+cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_63'
 """Ответчик MAX (4.9.9.4; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН — как и весь адаптер MAX.
@@ -24325,9 +25049,9 @@ def enabled() -> bool:
     from .. import features
 
     return features.enabled("platform_max") and bool(config.MAX_BOT_TOKEN)
-RADAR_FILE_62
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discord.py"
-cat > "radar/platforms/discord.py" <<'RADAR_FILE_63'
+cat > "radar/platforms/discord.py" <<'RADAR_FILE_64'
 """Адаптер Discord (с 5.5): канал сообщества, а не оповещения по адресам.
 
 ⚠️ НАПИСАН ПО ИСХОДНИКАМ discord.py, С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -24799,9 +25523,9 @@ class DiscordTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_63
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discordbot.py"
-cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_64'
+cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_65'
 """Discord как канал сообщества: сводки и статус системы (с 5.5).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -25069,9 +25793,9 @@ async def community(transport: Any) -> None:
         except Exception:  # noqa: BLE001
             log.warning("Discord: публикация в канал не удалась", exc_info=True)
         await asyncio.sleep(CHECK_EVERY)
-RADAR_FILE_64
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vk.py"
-cat > "radar/platforms/vk.py" <<'RADAR_FILE_65'
+cat > "radar/platforms/vk.py" <<'RADAR_FILE_66'
 """Адаптер ВКонтакте как мессенджера (с 5.6, раздел 7.0 дорожной карты).
 
 ⚠️ СВЕРЕН С ИСХОДНИКАМИ vkbottle, С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -25333,9 +26057,9 @@ class VkTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_65
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vkbot.py"
-cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_66'
+cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_67'
 """Ответчик ВКонтакте (5.6; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -25395,9 +26119,9 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     text = await answer(event)
     if text and not await transport.send(event.chat_id, OutboundMessage(text=text)):
         log.warning("VK: ответ не доставлен")
-RADAR_FILE_66
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/textbot.py"
-cat > "radar/platforms/textbot.py" <<'RADAR_FILE_67'
+cat > "radar/platforms/textbot.py" <<'RADAR_FILE_68'
 """Общий текстовый ответчик для сетей без Telegram-интерфейса (с 5.7).
 
 ⚠️ С ЖИВЫМИ ВК И MAX НЕ ПРОВЕРЕН.
@@ -25672,9 +26396,9 @@ async def answer(platform: str, external_id: str | int, text: str = "", *,
         return status_text(lang) + "\n\n" + _t("text.disclaimer", lang, DISCLAIMER)
 
     return help_text(lang, bool((user or {}).get("locs")))
-RADAR_FILE_67
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/links.py"
-cat > "radar/links.py" <<'RADAR_FILE_68'
+cat > "radar/links.py" <<'RADAR_FILE_69'
 """Общий аккаунт одного человека в разных сетях (с 5.6, в обе стороны — с 5.7).
 
 Один человек — один профиль: адреса, настройки, роль и подписка. Telegram,
@@ -26189,9 +26913,9 @@ async def handle_text(platform: str, external_id: str | int, text: str,
         return f"❌ {reason}"
     return proposal_text(theirs, lang) + "\n\n" + _t(
         "link.answer", lang, "Ответьте «да» или «нет».")
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mirror.py"
-cat > "radar/mirror.py" <<'RADAR_FILE_69'
+cat > "radar/mirror.py" <<'RADAR_FILE_70'
 """Доставка в сети кроме Telegram и копии тревог (с 5.6).
 
 Тревога, уже доставленная в Telegram, уходит копией на аккаунты ВК и MAX,
@@ -26301,9 +27025,9 @@ async def drain() -> None:
     """Дождаться отправленных копий — для тестов и корректной остановки."""
     while _tasks:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linking.py"
-cat > "radar/handlers/linking.py" <<'RADAR_FILE_70'
+cat > "radar/handlers/linking.py" <<'RADAR_FILE_71'
 """Общий аккаунт в Telegram-боте: привязка других сетей (5.6, в обе стороны — 5.7).
 
 Здесь можно и выдать код (его вводят в ВК, MAX или Discord), и ввести код,
@@ -26445,9 +27169,9 @@ async def decide(call: CallbackQuery, user: dict) -> None:
     await call.answer()
     asyncio.get_running_loop().create_task(links.announce(owner, links.TELEGRAM))
     await safe_edit(call, esc(links.linked_text(lang)), None)
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_71'
+cat > "radar/storage.py" <<'RADAR_FILE_72'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -26639,9 +27363,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_72'
+cat > "radar/exporting.py" <<'RADAR_FILE_73'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -26847,9 +27571,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_73'
+cat > "radar/ai.py" <<'RADAR_FILE_74'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -27715,9 +28439,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_74'
+cat > "radar/geocode.py" <<'RADAR_FILE_75'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -27956,9 +28680,9 @@ async def forward(
     # в Nominatim адреса появляются.
     _FORWARD.put(key, [dict(item) for item in results])
     return results
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_75'
+cat > "radar/weather.py" <<'RADAR_FILE_76'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -28417,9 +29141,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title, lang), markup)
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_76'
+cat > "radar/sources.py" <<'RADAR_FILE_77'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -28798,9 +29522,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceedit.py"
-cat > "radar/sourceedit.py" <<'RADAR_FILE_77'
+cat > "radar/sourceedit.py" <<'RADAR_FILE_78'
 #!/usr/bin/env python3
 """Правка списка источников: добавление, удаление, проверка формата.
 
@@ -28944,9 +29668,9 @@ def listing(kind: str) -> list[str]:
 
 def counts() -> dict[str, int]:
     return {kind: len(_bucket(kind) or []) for kind in KINDS}
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/filedrop.py"
-cat > "radar/filedrop.py" <<'RADAR_FILE_78'
+cat > "radar/filedrop.py" <<'RADAR_FILE_79'
 #!/usr/bin/env python3
 """Выдача крупных файлов по ссылке.
 
@@ -29309,9 +30033,9 @@ def summary() -> str:
         lines.append(f"• {item.name} — {item.size_mb:.0f} МБ, "
                      f"осталось {item.hours_left:.0f} ч")
     return "\n".join(lines)
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/agents.py"
-cat > "radar/agents.py" <<'RADAR_FILE_79'
+cat > "radar/agents.py" <<'RADAR_FILE_80'
 #!/usr/bin/env python3
 """Свои агенты ИИ: несколько сервисов вместо одного.
 
@@ -29526,9 +30250,9 @@ def forget(slot: int) -> bool:
         secrets.write(LEGACY_KEY_ENV, "")
     log.info("Свой агент в слоте %s удалён", slot)
     return True
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/redeem.py"
-cat > "radar/redeem.py" <<'RADAR_FILE_80'
+cat > "radar/redeem.py" <<'RADAR_FILE_81'
 #!/usr/bin/env python3
 """Погашение кодов, выданных на стороне.
 
@@ -29689,9 +30413,9 @@ async def summary() -> str:
         return "Кодов пока нет."
     used = sum(1 for item in items if item.get("used_by"))
     return f"Кодов: {len(items)}, погашено: {used}, свободно: {len(items) - used}"
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_81'
+cat > "radar/tg.py" <<'RADAR_FILE_82'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -29859,9 +30583,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_82'
+cat > "radar/timezones.py" <<'RADAR_FILE_83'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -30003,9 +30727,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_83'
+cat > "radar/keyboards.py" <<'RADAR_FILE_84'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -30654,9 +31378,9 @@ def queue_item(lang: str = "ru") -> InlineKeyboardMarkup:
                                   callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_84'
+cat > "radar/states.py" <<'RADAR_FILE_85'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -30691,9 +31415,9 @@ class Form(StatesGroup):
     quiet_hours = State()          # интервал тихих часов
     chat_message = State()         # объявление в группу (суперадминистратор)
     chat_invite = State()          # ссылка приглашения в группу
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_85'
+cat > "radar/middlewares.py" <<'RADAR_FILE_86'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -30883,9 +31607,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_86'
+cat > "radar/monitor.py" <<'RADAR_FILE_87'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -31841,9 +32565,9 @@ async def _run_once() -> None:
                     return
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/health.py"
-cat > "radar/health.py" <<'RADAR_FILE_87'
+cat > "radar/health.py" <<'RADAR_FILE_88'
 """Проверка жизни бота для HEALTHCHECK контейнера.
 
 Запускается снаружи процесса — `python -m radar.health` — и потому смотрит
@@ -31908,9 +32632,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netguard.py"
-cat > "radar/netguard.py" <<'RADAR_FILE_88'
+cat > "radar/netguard.py" <<'RADAR_FILE_89'
 """Куда боту можно ходить по ссылке, присланной человеком.
 
 Ссылку в бот присылает кто угодно, а запрос по ней делает бот — изнутри
@@ -32048,9 +32772,9 @@ async def allowed(url: str) -> bool:
     # Достаточно одного внутреннего адреса, чтобы отказать: имя с двумя
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dockerapi.py"
-cat > "radar/dockerapi.py" <<'RADAR_FILE_89'
+cat > "radar/dockerapi.py" <<'RADAR_FILE_90'
 """Общий клиент Docker Engine API поверх Unix-сокета.
 
 Вынесено из `radar/updater.py` в 4.9.8.4: `radar/rustdesk.py` управляет
@@ -32230,9 +32954,9 @@ async def list_containers(session_, prefix: str = "radar") -> list[dict]:
         })
     result.sort(key=lambda row: row["name"])
     return result
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/appapi.py"
-cat > "radar/appapi.py" <<'RADAR_FILE_90'
+cat > "radar/appapi.py" <<'RADAR_FILE_91'
 """API для приложений HydraVPN: вход по коду из бота и выдача подписок (5.9.1).
 
 Приложения — HydraVPN для Android и HydraVPN for Routers — не заводят
@@ -32501,9 +33225,310 @@ async def subscriptions(uid: str | int) -> list[dict[str, Any]]:
 
 __all__ = ["enabled", "issue_code", "exchange", "session_of", "devices", "all_devices", "revoke",
            "revoke_token", "profile", "subscriptions", "CODE_TTL", "MAX_DEVICES"]
-RADAR_FILE_90
+RADAR_FILE_91
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceprune.py"
+cat > "radar/sourceprune.py" <<'RADAR_FILE_92'
+"""Удаление молчащих источников (с 5.9.2.1).
+
+`sourcecheck` находит источники, которые умерли или затихли, но убирать их
+приходилось руками по одному. Здесь — отбор и удаление одним действием.
+
+Осторожность важнее скорости, потому что ошибка тут необратима для списка:
+
+* по умолчанию ничего не удаляется — показывается, что было бы удалено;
+* «молчит» — это последний пост старше заданного числа дней. Источник без
+  даты постов (часть лент их не отдаёт) не молчащий, а неопределённый,
+  и остаётся;
+* недоступные удаляются только по явной просьбе: «не ответил» бывает
+  от сети, а не от источника;
+* если недоступна большая часть списка, это почти наверняка сеть или
+  блокировка у самого сервера, и удаление отказывается работать,
+  пока его не попросят об этом прямо (`force`);
+* сообщества ВКонтакте не проверяются (проверка — заглушка) и не трогаются.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from . import sourcecheck
+
+log = logging.getLogger("radar.sourceprune")
+
+DEFAULT_DAYS = 30
+# Доля недоступных, выше которой отчёту не верим (сеть, а не источники).
+SUSPICIOUS_SHARE = 0.5
+# Меньше проверенных — доля ничего не говорит.
+SUSPICIOUS_MIN = 4
+
+
+@dataclass(frozen=True)
+class Candidate:
+    status: sourcecheck.SourceStatus
+    reason: str
+
+    @property
+    def kind(self) -> str:
+        return self.status.kind
+
+    @property
+    def ref(self) -> str:
+        return self.status.ref
+
+
+def silent_days(status: sourcecheck.SourceStatus, now: datetime | None = None) -> int | None:
+    """Сколько дней молчит источник. None — дата последнего поста неизвестна."""
+    if status.last_post is None:
+        return None
+    moment = now or datetime.now(timezone.utc)
+    return max(0, (moment - status.last_post).days)
+
+
+def select(report: sourcecheck.CheckReport, days: int = DEFAULT_DAYS, *,
+           dead: bool = False, now: datetime | None = None) -> list[Candidate]:
+    """Что убрать: молчащие дольше `days` и, если просили, недоступные."""
+    chosen: list[Candidate] = []
+    for status in report.statuses:
+        if status.kind == "vk":
+            continue
+        if status.state == sourcecheck.DEAD:
+            if dead:
+                chosen.append(Candidate(status, "недоступен: " + (status.note or "нет ответа")))
+            continue
+        quiet = silent_days(status, now)
+        if quiet is not None and quiet > days:
+            chosen.append(Candidate(status, f"молчит {quiet} дн (порог {days})"))
+    return chosen
+
+
+def suspicious(report: sourcecheck.CheckReport) -> str:
+    """Причина не верить отчёту, если он похож на сбой сети. Пусто — верим."""
+    checked = [item for item in report.statuses if item.kind != "vk"]
+    if len(checked) < SUSPICIOUS_MIN:
+        return ""
+    dead = sum(1 for item in checked if item.state == sourcecheck.DEAD)
+    if dead / len(checked) > SUSPICIOUS_SHARE:
+        return (f"недоступны {dead} из {len(checked)} — похоже на сбой сети "
+                "или блокировку у самого сервера, а не на гибель источников")
+    return ""
+
+
+def apply(candidates: list[Candidate]) -> list[Candidate]:
+    """Убирает отобранные из списков источников. Сохранение — на вызывающем."""
+    from . import sourceedit
+
+    removed: list[Candidate] = []
+    for item in candidates:
+        if sourceedit.remove(item.kind, item.ref):
+            removed.append(item)
+    if removed:
+        log.info("Убрано молчащих источников: %d", len(removed))
+    return removed
+
+
+__all__ = ["Candidate", "DEFAULT_DAYS", "silent_days", "select", "suspicious", "apply"]
+RADAR_FILE_92
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnslots.py"
+cat > "radar/vpnslots.py" <<'RADAR_FILE_93'
+"""Добавление, правка и удаление VPN-панелей (слотов) из веб-панели (5.9.2.1).
+
+До 5.9.2.1 панель можно было завести только правкой десяти отдельных
+ключей `VPN<n>_*` в разделе «Ключи» — без проверки вида и адреса и без
+подсказки, какие поля нужны именно этой панели. Здесь — осмысленная форма
+на слот: вид выбирается из списка, поля проверяются, секреты не стираются
+пустым полем, удаление предупреждает о выданных доступах.
+
+Значения хранятся там же, где и раньше (`VPN<n>_KIND`, `VPN<n>_URL` …,
+файл `.env`), поэтому бот, CLI и прежние установки ничего не замечают.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from urllib.parse import urlparse
+
+from . import secrets, vpn, vpnpanels
+
+log = logging.getLogger("radar.vpnslots")
+
+FIELDS = vpn.FIELDS            # KIND TITLE URL TOKEN USER PASS INBOUND SUB_URL GROUPS CERT
+SECRET_FIELDS = ("TOKEN", "PASS")
+
+
+@dataclass(frozen=True)
+class KindInfo:
+    kind: str
+    title: str
+    needs: str        # что нужно этой панели — одной фразой для формы
+
+
+# Что нужно каждому виду. Сверено с тем, как клиенты в vpnpanels.py входят
+# в панель; подсказка не заменяет проверку, а только экономит попытки.
+_NEEDS = {
+    "3xui": "токен (Bearer) или логин и пароль; номер подключения (inbound); адрес службы подписки",
+    "xui": "логин и пароль; номер подключения (inbound); адрес службы подписки",
+    "sui": "токен из «Настройки → API»; адрес службы подписки",
+    "marzban": "логин и пароль администратора",
+    "pasarguard": "ключ API (токен) или логин и пароль; группы — по желанию",
+    "marzneshin": "логин и пароль администратора; сервисы — по желанию",
+    "remnawave": "токен из раздела API Tokens; отряды (squads) — по желанию",
+    "hiddify": "uuid администратора в поле токена; клиентский путь в адресе подписки",
+    "outline": "адрес — это apiUrl целиком; отпечаток сертификата обязателен",
+    "wgeasy": "пароль; ссылка — файл настроек WireGuard",
+}
+
+_TITLES = {
+    "3xui": "3x-ui (2.x и 3.x)", "xui": "x-ui (alireza0)", "sui": "s-ui",
+    "marzban": "Marzban", "pasarguard": "PasarGuard", "marzneshin": "Marzneshin",
+    "remnawave": "Remnawave", "hiddify": "Hiddify", "outline": "Outline", "wgeasy": "wg-easy",
+}
+
+
+def kinds() -> list[KindInfo]:
+    return [KindInfo(kind, _TITLES.get(kind, kind), _NEEDS.get(kind, ""))
+            for kind in vpnpanels.KINDS]
+
+
+def numbers() -> range:
+    return range(1, vpn.SLOTS + 1)
+
+
+def read(number: int) -> dict[str, str]:
+    """Значения слота. Секреты возвращаются как есть — для проверки «задан ли»."""
+    return {field: vpn.slot_value(number, field) for field in FIELDS}
+
+
+def configured(number: int) -> bool:
+    return bool(vpn.slot_value(number, "KIND"))
+
+
+def free_number() -> int | None:
+    for number in numbers():
+        if not configured(number):
+            return number
+    return None
+
+
+def _valid_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def validate(values: dict[str, str]) -> str:
+    """Причина отказа по-человечески. Пусто — можно сохранять."""
+    kind = vpnpanels.normalize_kind(values.get("KIND", ""))
+    if not kind:
+        return "Не выбран вид панели."
+    if kind not in vpnpanels.KINDS:
+        if kind in vpnpanels.UNSUPPORTED:
+            return vpnpanels.UNSUPPORTED[kind]
+        return f"Незнакомый вид панели: «{kind}»."
+    url = values.get("URL", "").strip()
+    if not url:
+        return "Не указан адрес панели."
+    if not _valid_url(url):
+        return "Адрес панели должен начинаться с http:// или https://."
+    inbound = values.get("INBOUND", "").strip()
+    if inbound and not inbound.isdigit():
+        return "Номер подключения (inbound) — число."
+    sub_url = values.get("SUB_URL", "").strip()
+    if sub_url and not _valid_url(sub_url):
+        return "Адрес подписки должен начинаться с http:// или https://."
+    cert = values.get("CERT", "").strip().replace(":", "").lower()
+    if cert and (len(cert) != 64 or any(ch not in "0123456789abcdef" for ch in cert)):
+        return "Отпечаток сертификата — 64 шестнадцатеричных знака (SHA-256)."
+    if kind == "outline" and not cert:
+        return "Для Outline отпечаток сертификата обязателен."
+    has_token = bool(values.get("TOKEN", "").strip())
+    has_login = bool(values.get("USER", "").strip() and values.get("PASS", "").strip())
+    if kind == "wgeasy":
+        if not values.get("PASS", "").strip():
+            return "Для wg-easy нужен пароль."
+    elif kind != "outline" and not (has_token or has_login):
+        return "Нужен токен либо логин с паролем."
+    return ""
+
+
+def save(number: int, form: dict[str, str]) -> str:
+    """Записывает слот. Возвращает причину отказа или пустую строку.
+
+    Пустой токен или пароль при правке уже настроенного слота означает
+    «не менять»: панель не показывает секреты, и иначе любое сохранение
+    стирало бы их. Остальные пустые поля очищаются.
+    """
+    if number not in numbers():
+        return "Нет такого слота."
+    merged: dict[str, str] = {}
+    for field in FIELDS:
+        value = (form.get(field) or "").strip()
+        if field in SECRET_FIELDS and not value:
+            value = vpn.slot_value(number, field)
+        merged[field] = value
+    merged["KIND"] = vpnpanels.normalize_kind(merged["KIND"])
+    merged["CERT"] = merged["CERT"].replace(":", "").lower()
+
+    problem = validate(merged)
+    if problem:
+        return problem
+
+    if not secrets.write_many({vpn.env_name(number, field): merged[field] for field in FIELDS}):
+        return "Записать не удалось — проверьте права на .env."
+    log.info("VPN: слот %d сохранён (%s)", number, merged["KIND"])
+    return ""
+
+
+async def issued_on(number: int) -> int:
+    """Сколько людей получили доступ именно на этом слоте."""
+    records = await vpn.records()
+    return sum(1 for entry in records.values() if str(number) in (entry.get("panels") or {}))
+
+
+def remove(number: int) -> bool:
+    """Освобождает слот. Выданные на нём доступы в панели не трогаются."""
+    if number not in numbers():
+        return False
+    cleared = {vpn.env_name(number, field): "" for field in FIELDS}
+    if number == 1:
+        # Слот 1 читает и прежние имена (VPN_PANEL, …) — их тоже нужно снять,
+        # иначе удалённая панель «воскреснет» из старых настроек.
+        cleared.update({legacy: "" for legacy in vpn.LEGACY.values()})
+    ok = secrets.write_many(cleared)
+    log.info("VPN: слот %d освобождён", number)
+    return ok
+
+
+async def check(number: int) -> tuple[bool, str]:
+    """Живая проверка одного слота: вход в панель и чтение."""
+    target = vpn.slot(number)
+    if target is None:
+        return False, "Слот не настроен или вид панели незнаком."
+    results = await vpn.check_all()
+    return results.get(str(number), (False, "нет ответа"))
+
+
+__all__ = ["KindInfo", "FIELDS", "SECRET_FIELDS", "kinds", "numbers", "read", "configured",
+           "free_number", "validate", "save", "issued_on", "remove", "check"]
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
-cat > "radar/updater.py" <<'RADAR_FILE_91'
+cat > "radar/updater.py" <<'RADAR_FILE_94'
 """Обновление системы из веб-панели.
 
 Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
@@ -32824,9 +33849,9 @@ def progress(lines: int = 40) -> tuple[str, str]:
         return "", ""
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
-RADAR_FILE_91
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/uploads.py"
-cat > "radar/uploads.py" <<'RADAR_FILE_92'
+cat > "radar/uploads.py" <<'RADAR_FILE_95'
 """Приём присланных файлов: один вход для всех разделов бота.
 
 До 5.9.0.1 у каждого раздела был свой обработчик `F.document`, и работал
@@ -32926,9 +33951,9 @@ def reset() -> None:
 
 __all__ = ["COOKIES", "SOURCES", "EXPECT_TTL", "register", "handler_for",
            "expect", "expected", "done", "classify", "looks_like_cookies", "reset"]
-RADAR_FILE_92
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
-cat > "radar/wipe.py" <<'RADAR_FILE_93'
+cat > "radar/wipe.py" <<'RADAR_FILE_96'
 """Полное удаление системы с сервера, запускаемое из панели.
 
 Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
@@ -33096,9 +34121,9 @@ async def start(actor: str) -> tuple[bool, str]:
 
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
-RADAR_FILE_93
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
-cat > "radar/moderation.py" <<'RADAR_FILE_94'
+cat > "radar/moderation.py" <<'RADAR_FILE_97'
 """Правила модерации групп: решение отдельно от Telegram.
 
 Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
@@ -33289,9 +34314,9 @@ def describe(decision: Decision, settings: Settings) -> str:
     if decision.delete_message:
         return f"🧹 Удалено: {decision.reason}"
     return ""
-RADAR_FILE_94
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
-cat > "radar/chatlink.py" <<'RADAR_FILE_95'
+cat > "radar/chatlink.py" <<'RADAR_FILE_98'
 """Ссылка на группу, где бот работает модератором.
 
 Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
@@ -33463,9 +34488,9 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
         return False, "Telegram не вернул ссылку."
     _cache[chat_id] = link
     return True, link
-RADAR_FILE_95
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cloudstore.py"
-cat > "radar/cloudstore.py" <<'RADAR_FILE_96'
+cat > "radar/cloudstore.py" <<'RADAR_FILE_99'
 """Облачное хранилище музыки по WebDAV (с 4.9.9).
 
 Продолжение внешнего носителя из 4.9.5.4: там каталог музыки выносился
@@ -33728,9 +34753,9 @@ async def check() -> tuple[bool, str]:
     from .music import format_size
 
     return True, f"доступно, свободно {format_size(available)}"
-RADAR_FILE_96
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rclonerc.py"
-cat > "radar/rclonerc.py" <<'RADAR_FILE_97'
+cat > "radar/rclonerc.py" <<'RADAR_FILE_100'
 """Управляющее API rclone: подключение облаков без терминала (с 4.9.9.1).
 
 В 4.9.9 облако подключалось руками на сервере: `rclone config`, потом
@@ -34034,9 +35059,9 @@ async def check() -> tuple[bool, str]:
     if not ok:
         return False, str(body)
     return True, "управляющее API отвечает"
-RADAR_FILE_97
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/metrics.py"
-cat > "radar/metrics.py" <<'RADAR_FILE_98'
+cat > "radar/metrics.py" <<'RADAR_FILE_101'
 """Метрики и здоровье системы в одном месте (с 4.9.9.3).
 
 Закрывает два пункта раздела 4.9 дорожной карты:
@@ -34337,9 +35362,9 @@ def render(data: dict[str, Any]) -> str:
             lines.append(f"{icon} {esc(row['name'])} — {esc(state)}{esc(tail)}")
 
     return "\n".join(lines)
-RADAR_FILE_98
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adfilter.py"
-cat > "radar/adfilter.py" <<'RADAR_FILE_99'
+cat > "radar/adfilter.py" <<'RADAR_FILE_102'
 """Реклама VPN-сервисов в пересылаемых текстах (с 4.9.9.3).
 
 Городские каналы и СМИ всё чаще вставляют в посты рекламу VPN:
@@ -34485,9 +35510,9 @@ def split_entries(entries: Iterable[Item]) -> tuple[list[Item], int]:
         if text.strip():
             clean.append(replace(entry, summary=text.strip()))
     return clean, removed
-RADAR_FILE_99
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicmeta.py"
-cat > "radar/musicmeta.py" <<'RADAR_FILE_100'
+cat > "radar/musicmeta.py" <<'RADAR_FILE_103'
 """Метаданные треков из открытых баз (с 4.9.9.3).
 
 Пункт 3 раздела 4.9.5 дорожной карты: «источники для подбора». Подбор
@@ -34702,9 +35727,9 @@ def apply(track: dict, meta: dict[str, Any]) -> bool:
         track["related"] = related
         changed = True
     return changed
-RADAR_FILE_100
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_101'
+cat > "radar/chatpost.py" <<'RADAR_FILE_104'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -34808,9 +35833,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_101
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_102'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_105'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -35237,9 +36262,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_102
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_103'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_106'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -35723,9 +36748,9 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
             )
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_103
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_104'
+cat > "radar/cli.py" <<'RADAR_FILE_107'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -35799,12 +36824,81 @@ async def _with_storage(action: Callable[[], Any]) -> Any:
 #  Источники
 # --------------------------------------------------------------------------
 
+def _prune_sources(args) -> int:
+    """Проверка источников и удаление молчащих (с 5.9.2.1).
+
+    Без --yes только показывает, что было бы удалено: список источников
+    нельзя вернуть одной командой.
+    """
+    from . import sourcecheck, sourceedit as se, sourceprune, storage
+
+    async def run():
+        channels, feeds = se.listing(se.TELEGRAM), se.listing(se.RSS)
+        if not channels and not feeds:
+            print("Источников нет.", file=sys.stderr)
+            return FAILED
+        print(f"Проверяю: каналов {len(channels)}, лент {len(feeds)} "
+              f"(пауза {args.pause} с — это займёт время)", file=sys.stderr)
+        report = await sourcecheck.check_all(channels, feeds, pause=args.pause)
+
+        chosen = sourceprune.select(report, args.days, dead=args.dead)
+        doubt = sourceprune.suspicious(report)
+        payload = {
+            "checked": report.total, "alive": len(report.alive),
+            "stale": len(report.stale), "dead": len(report.dead),
+            "candidates": [{"kind": c.kind, "ref": c.ref, "reason": c.reason}
+                           for c in chosen],
+            "removed": [], "warning": doubt,
+        }
+
+        def show(d):
+            print(f"Проверено {d['checked']}: живых {d['alive']}, затихших "
+                  f"{d['stale']}, недоступных {d['dead']}.")
+            for item in d["candidates"]:
+                print(f"  ✗ {item['kind']} {item['ref']} — {item['reason']}")
+            if not d["candidates"]:
+                print("Молчащих источников нет.")
+            if d["warning"]:
+                print("⚠️ " + d["warning"])
+
+        if doubt and not args.force:
+            _out(payload, args.json, show)
+            print("Удаление отменено. Если уверены — повторите с --force.", file=sys.stderr)
+            return FAILED
+        if not chosen:
+            _out(payload, args.json, show)
+            return OK
+        if not args.yes:
+            _out(payload, args.json, show)
+            print(f"Ничего не удалено. Убрать {len(chosen)} — повторите с --yes.",
+                  file=sys.stderr)
+            return NEEDS_YES
+
+        removed = sourceprune.apply(chosen)
+        await storage.save()
+        payload["removed"] = [{"kind": c.kind, "ref": c.ref} for c in removed]
+        _out(payload, args.json, lambda d: (
+            show(d), print(f"Удалено: {len(d['removed'])}.")))
+        return OK
+
+    return asyncio.run(_with_storage(run))
+
+
 def cmd_sources(args) -> int:
     from . import sourceedit as se
 
+    if args.action == "prune":
+        return _prune_sources(args)
+
     kinds = (se.TELEGRAM, se.RSS, se.VK)
+    # «telegram» в справке, «tg» в коде: принимаем оба, а не молча ничего
+    # не находим (до 5.9.2.1 «sources add telegram …» не делало ничего).
+    if args.kind == "telegram":
+        args.kind = se.TELEGRAM
 
     async def run():
+        from . import storage
+
         if args.action == "list":
             data = {kind: se.listing(kind) for kind in kinds}
             _out(data, args.json, lambda d: [
@@ -35815,12 +36909,16 @@ def cmd_sources(args) -> int:
 
         if args.action == "add":
             added, skipped = se.add(args.kind, args.value)
+            # Без сохранения правка жила только в памяти процесса и пропадала
+            # при выходе (до 5.9.2.1).
+            await storage.save()
             _out({"added": added, "skipped": skipped}, args.json, lambda d: print(
                 f"добавлено: {', '.join(d['added']) or '—'}; "
                 f"пропущено: {', '.join(d['skipped']) or '—'}"))
             return OK if added else FAILED
 
         removed = se.remove(args.kind, args.value)
+        await storage.save()
         _out({"removed": removed}, args.json,
              lambda d: print("удалено" if d["removed"] else "не найдено"))
         return OK if removed else FAILED
@@ -36188,10 +37286,20 @@ def build_parser() -> argparse.ArgumentParser:
                                        parser_class=argparse.ArgumentParser)
 
     sources = subparsers.add_parser("sources", help="источники", parents=[common])
-    sources.add_argument("action", choices=["list", "add", "remove"])
+    sources.add_argument("action", choices=["list", "add", "remove", "prune"],
+                         help="prune — проверить и убрать молчащие (без --yes только показать)")
     sources.add_argument("kind", nargs="?", default="",
-                         help="telegram | rss | vk")
+                         help="telegram (tg) | rss | vk")
     sources.add_argument("value", nargs="?", default="")
+    sources.add_argument("--days", type=int, default=30,
+                         help="prune: молчит дольше стольких дней (по умолчанию 30)")
+    sources.add_argument("--dead", action="store_true",
+                         help="prune: убирать и недоступные, не только молчащие")
+    sources.add_argument("--yes", action="store_true", help="prune: действительно удалить")
+    sources.add_argument("--force", action="store_true",
+                         help="prune: удалять, даже если недоступна большая часть списка")
+    sources.add_argument("--pause", type=float, default=0.8,
+                         help="prune: пауза между запросами, секунд")
     sources.set_defaults(func=cmd_sources)
 
     users = subparsers.add_parser("users", help="пользователи", parents=[common])
@@ -36276,9 +37384,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_104
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_105'
+cat > "radar/__main__.py" <<'RADAR_FILE_108'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -36300,9 +37408,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_105
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_106'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_109'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -36444,9 +37552,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_106
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_107'
+cat > "tools/restore.sh" <<'RADAR_FILE_110'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -36688,9 +37796,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_107
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_108'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_111'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -36786,9 +37894,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_108
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_109'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_112'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -36981,9 +38089,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_109
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_110'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_113'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -38663,9 +39771,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_110
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_111'
+cat > "radar/vpn.py" <<'RADAR_FILE_114'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -38827,8 +39935,8 @@ def ready() -> tuple[bool, str]:
         wrong = unknown_kinds()
         if wrong:
             return False, "Незнакомый вид панели: " + ", ".join(wrong) + "."
-        return False, ("Ни одна панель не настроена: задайте VPN1_KIND "
-                       "и остальные поля слота в разделе ключей.")
+        return False, ("Ни одна панель не настроена: добавьте её в "
+                       "веб-панели, раздел VPN → Панели.")
     return True, ""
 
 
@@ -39485,9 +40593,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_111
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_112'
+cat > "radar/payments.py" <<'RADAR_FILE_115'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -39716,13 +40824,13 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_112
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_113'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_116'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
-цены задаёт суперадминистратор строкой `VPN_PLANS` в разделе ключей,
+цены задаёт суперадминистратор строкой `VPN_PLANS` в разделе «VPN» веб-панели,
 как уже задаются цены подписки на подборки. Оплата открывает доступ,
 окончание срока его отключает силами панели, продление возвращает
 **тот же** ключ и прибавляет дни к оставшимся.
@@ -39854,7 +40962,7 @@ def ready() -> tuple[bool, str]:
     if not ok:
         return False, reason
     if not plans():
-        return False, "Тарифы не заданы: VPN_PLANS в разделе ключей."
+        return False, "Тарифы не заданы: VPN_PLANS в разделе VPN веб-панели."
     if not sale_slots():
         return False, "Ни одна панель не выбрана для продажи (VPN_PLAN_SLOTS)."
     problems = payments.provider().problems()
@@ -40085,9 +41193,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_113
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_114'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_117'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -40208,9 +41316,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_114
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_115'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_118'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -40681,9 +41789,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_115
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_116'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_119'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -40849,9 +41957,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_116
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_117'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_120'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -41356,9 +42464,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_117
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_118'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_121'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -41864,9 +42972,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_118
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_119'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_122'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -42310,9 +43418,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_119
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_120'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_123'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -42459,9 +43567,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_120
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_121'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_124'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -42749,9 +43857,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_121
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_125'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -42998,9 +44106,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_122
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_123'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_126'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -43371,9 +44479,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_123
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_124'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_127'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -43948,9 +45056,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_124
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_128'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -44051,9 +45159,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_125
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_126'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_129'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -44143,9 +45251,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_126
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_130'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -44566,9 +45674,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_127
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_131'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -45759,9 +46867,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_128
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_132'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -46505,9 +47613,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_129
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_133'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -47031,9 +48139,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_130
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_134'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -47241,9 +48349,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_131
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_135'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -48230,9 +49338,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_132
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_136'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -48645,9 +49753,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_133
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_137'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -48688,9 +49796,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_134
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_138'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -48953,9 +50061,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_135
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_139'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -49105,9 +50213,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_136
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_140'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -49575,9 +50683,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_137
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_138'
+cat > "radar/cookies.py" <<'RADAR_FILE_141'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -49710,9 +50818,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_138
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_139'
+cat > "radar/music.py" <<'RADAR_FILE_142'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -50516,9 +51624,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_139
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_143'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -51132,9 +52240,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_140
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_141'
+cat > "multitool/__init__.py" <<'RADAR_FILE_144'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -51160,9 +52268,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_141'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_141
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_142'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_145'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -51195,9 +52303,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_142'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_142
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_143'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_146'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -51604,9 +52712,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_143
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_144'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_147'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -52090,9 +53198,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_144
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_145'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_148'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -52332,7 +53440,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_145
+RADAR_FILE_148
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
