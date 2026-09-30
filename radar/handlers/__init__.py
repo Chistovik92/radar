@@ -18,6 +18,7 @@ from . import (
     chats,
     common,
     digest,
+    documents,
     features,
     group,
     history,
@@ -45,6 +46,9 @@ from . import (
 # Порядок прежний и важный: ассистент перехватывает любой оставшийся
 # текст, поэтому он последний, а ссылки — прямо перед ним.
 PRIVATE_ROUTERS = (
+    # Документы — первыми: единый приёмник решает, чей это файл
+    # (5.9.0.1; до того источники перехватывали cookies).
+    documents,
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
     linkcheck, music, digest, sos, chats, vpn, linking,

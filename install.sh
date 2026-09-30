@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9 — автономный установщик.
+# Система «Радар» v5.9.0.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9"
+VERSION="5.9.0.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=142
+FILE_COUNT=144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3292,6 +3292,12 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.0.1", [
+        "📎 <b>Файлы, присланные боту, попадают по адресу.</b> Cookies "
+        "после /cookies больше не уходят в список источников: приём "
+        "документов стал общим для всех разделов. Лимит cookies поднят "
+        "с 512 КБ до 4 МБ — обычная выгрузка браузера весит 700+ КБ.",
+    ]),
     ("5.9", [
         "🗄 <b>Смена базы — с данными.</b> Переход с SQLite на PostgreSQL "
         "и обратно теперь переносит всё: пользователей, адреса, источники, "
@@ -5125,7 +5131,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9"
+__version__ = "5.9.0.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -32210,8 +32216,110 @@ def progress(lines: int = 40) -> tuple[str, str]:
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
 RADAR_FILE_89
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/uploads.py"
+cat > "radar/uploads.py" <<'RADAR_FILE_90'
+"""Приём присланных файлов: один вход для всех разделов бота.
+
+До 5.9.0.1 у каждого раздела был свой обработчик `F.document`, и работал
+только тот, что стоял в цепочке первым. Загрузка источников перехватывала
+любой документ, поэтому cookies из `/cookies` молча уходили в список
+каналов («Загрузка источников» отвечала «Список загружен» или разбирала
+их как мусор). Тот же случай ждал любой следующий раздел, принимающий файл.
+
+Теперь документ разбирается здесь, в три шага:
+
+1. раздел, попросивший файл (`expect`), получает следующий файл человека
+   в течение десяти минут — по имени файла не гадаем;
+2. без ожидания вид определяет `classify` по имени и роли;
+3. вид без обработчика не теряется: человеку отвечают, что делать.
+
+Новый раздел подключается одним вызовом `register(kind, handler)`
+и вызовом `expect` там, где просит файл.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import time
+from typing import Awaitable, Callable
+
+COOKIES = "cookies"
+SOURCES = "sources"
+
+# Сколько ждём файл после просьбы. Дольше — человек уже занят другим,
+# и случайный документ не должен стать «ответом» на давний вопрос.
+EXPECT_TTL = 600
+
+Handler = Callable[..., Awaitable[None]]
+
+_handlers: dict[str, Handler] = {}
+_expected: dict[str, tuple[str, float]] = {}
+
+
+def register(kind: str, handler: Handler) -> None:
+    _handlers[kind] = handler
+
+
+def handler_for(kind: str) -> Handler | None:
+    return _handlers.get(kind)
+
+
+def expect(user_key: str | int, kind: str, now: float | None = None) -> None:
+    """Раздел просит файл: следующий документ человека — для него."""
+    moment = now if now is not None else time.time()
+    for owner in [owner for owner, (_, until) in _expected.items() if until < moment]:
+        _expected.pop(owner, None)
+    _expected[str(user_key)] = (kind, moment + EXPECT_TTL)
+
+
+def expected(user_key: str | int, now: float | None = None) -> str | None:
+    moment = now if now is not None else time.time()
+    entry = _expected.get(str(user_key))
+    if entry is None:
+        return None
+    if entry[1] < moment:
+        _expected.pop(str(user_key), None)
+        return None
+    return entry[0]
+
+
+def done(user_key: str | int) -> None:
+    """Файл принят — ожидание снимается."""
+    _expected.pop(str(user_key), None)
+
+
+def looks_like_cookies(filename: str) -> bool:
+    name = (filename or "").lower()
+    return name.endswith(".txt") and "cookie" in name
+
+
+def classify(user_key: str | int, filename: str, *, superadmin: bool,
+             now: float | None = None) -> str:
+    """Вид документа. Ожидание раздела сильнее догадки по имени."""
+    waiting = expected(user_key, now)
+    if waiting:
+        return waiting
+    if superadmin and looks_like_cookies(filename):
+        return COOKIES
+    # Прежнее поведение: непонятный документ — список источников
+    # (простой текст каналов и db.json от 2.x называются как угодно).
+    return SOURCES
+
+
+def reset() -> None:
+    _expected.clear()
+
+
+__all__ = ["COOKIES", "SOURCES", "EXPECT_TTL", "register", "handler_for",
+           "expect", "expected", "done", "classify", "looks_like_cookies", "reset"]
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
-cat > "radar/wipe.py" <<'RADAR_FILE_90'
+cat > "radar/wipe.py" <<'RADAR_FILE_91'
 """Полное удаление системы с сервера, запускаемое из панели.
 
 Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
@@ -32379,9 +32487,9 @@ async def start(actor: str) -> tuple[bool, str]:
 
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
-cat > "radar/moderation.py" <<'RADAR_FILE_91'
+cat > "radar/moderation.py" <<'RADAR_FILE_92'
 """Правила модерации групп: решение отдельно от Telegram.
 
 Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
@@ -32572,9 +32680,9 @@ def describe(decision: Decision, settings: Settings) -> str:
     if decision.delete_message:
         return f"🧹 Удалено: {decision.reason}"
     return ""
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
-cat > "radar/chatlink.py" <<'RADAR_FILE_92'
+cat > "radar/chatlink.py" <<'RADAR_FILE_93'
 """Ссылка на группу, где бот работает модератором.
 
 Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
@@ -32746,9 +32854,9 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
         return False, "Telegram не вернул ссылку."
     _cache[chat_id] = link
     return True, link
-RADAR_FILE_92
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cloudstore.py"
-cat > "radar/cloudstore.py" <<'RADAR_FILE_93'
+cat > "radar/cloudstore.py" <<'RADAR_FILE_94'
 """Облачное хранилище музыки по WebDAV (с 4.9.9).
 
 Продолжение внешнего носителя из 4.9.5.4: там каталог музыки выносился
@@ -33011,9 +33119,9 @@ async def check() -> tuple[bool, str]:
     from .music import format_size
 
     return True, f"доступно, свободно {format_size(available)}"
-RADAR_FILE_93
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rclonerc.py"
-cat > "radar/rclonerc.py" <<'RADAR_FILE_94'
+cat > "radar/rclonerc.py" <<'RADAR_FILE_95'
 """Управляющее API rclone: подключение облаков без терминала (с 4.9.9.1).
 
 В 4.9.9 облако подключалось руками на сервере: `rclone config`, потом
@@ -33317,9 +33425,9 @@ async def check() -> tuple[bool, str]:
     if not ok:
         return False, str(body)
     return True, "управляющее API отвечает"
-RADAR_FILE_94
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/metrics.py"
-cat > "radar/metrics.py" <<'RADAR_FILE_95'
+cat > "radar/metrics.py" <<'RADAR_FILE_96'
 """Метрики и здоровье системы в одном месте (с 4.9.9.3).
 
 Закрывает два пункта раздела 4.9 дорожной карты:
@@ -33620,9 +33728,9 @@ def render(data: dict[str, Any]) -> str:
             lines.append(f"{icon} {esc(row['name'])} — {esc(state)}{esc(tail)}")
 
     return "\n".join(lines)
-RADAR_FILE_95
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adfilter.py"
-cat > "radar/adfilter.py" <<'RADAR_FILE_96'
+cat > "radar/adfilter.py" <<'RADAR_FILE_97'
 """Реклама VPN-сервисов в пересылаемых текстах (с 4.9.9.3).
 
 Городские каналы и СМИ всё чаще вставляют в посты рекламу VPN:
@@ -33768,9 +33876,9 @@ def split_entries(entries: Iterable[Item]) -> tuple[list[Item], int]:
         if text.strip():
             clean.append(replace(entry, summary=text.strip()))
     return clean, removed
-RADAR_FILE_96
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicmeta.py"
-cat > "radar/musicmeta.py" <<'RADAR_FILE_97'
+cat > "radar/musicmeta.py" <<'RADAR_FILE_98'
 """Метаданные треков из открытых баз (с 4.9.9.3).
 
 Пункт 3 раздела 4.9.5 дорожной карты: «источники для подбора». Подбор
@@ -33985,9 +34093,9 @@ def apply(track: dict, meta: dict[str, Any]) -> bool:
         track["related"] = related
         changed = True
     return changed
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_98'
+cat > "radar/chatpost.py" <<'RADAR_FILE_99'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -34091,9 +34199,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_99'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_100'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -34520,9 +34628,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_100'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_101'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -35006,9 +35114,9 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
             )
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_101'
+cat > "radar/cli.py" <<'RADAR_FILE_102'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -35559,9 +35667,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_101
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_102'
+cat > "radar/__main__.py" <<'RADAR_FILE_103'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -35583,9 +35691,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_102
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_103'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_104'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -35727,9 +35835,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_103
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_104'
+cat > "tools/restore.sh" <<'RADAR_FILE_105'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -35971,9 +36079,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_104
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_105'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_106'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -36069,9 +36177,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_105
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_106'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_107'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -36264,9 +36372,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_106
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_107'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_108'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -37946,9 +38054,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_107
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_108'
+cat > "radar/vpn.py" <<'RADAR_FILE_109'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -38755,9 +38863,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_108
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_109'
+cat > "radar/payments.py" <<'RADAR_FILE_110'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -38986,9 +39094,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_109
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_110'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_111'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -39355,9 +39463,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_110
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_112'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -39378,6 +39486,7 @@ from . import (
     chats,
     common,
     digest,
+    documents,
     features,
     group,
     history,
@@ -39405,6 +39514,9 @@ from . import (
 # Порядок прежний и важный: ассистент перехватывает любой оставшийся
 # текст, поэтому он последний, а ссылки — прямо перед ним.
 PRIVATE_ROUTERS = (
+    # Документы — первыми: единый приёмник решает, чей это файл
+    # (5.9.0.1; до того источники перехватывали cookies).
+    documents,
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
     linkcheck, music, digest, sos, chats, vpn, linking,
@@ -39474,9 +39586,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_111
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_113'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -39947,9 +40059,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_113'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_114'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -40115,9 +40227,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_114'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_115'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -40622,9 +40734,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_114
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_115'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_116'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -40660,6 +40772,7 @@ from .. import (
     sourcecheck,
     sourceedit,
     storage,
+    uploads,
 )
 from ..states import Form
 from ..textutils import esc
@@ -40918,6 +41031,7 @@ async def ask_import(call: CallbackQuery, role: str, user: dict) -> None:
                           show_alert=True)
         return
     await call.answer()
+    uploads.expect(call.from_user.id, uploads.SOURCES)
     await safe_edit(
         call,
         "⬆️ <b>Загрузка источников</b>\n\n"
@@ -40929,7 +41043,6 @@ async def ask_import(call: CallbackQuery, role: str, user: dict) -> None:
     )
 
 
-@router.message(F.document)
 async def import_sources(message: Message, role: str, user: dict) -> None:
     if not roles.is_admin(role):
         await message.answer(_t(user, "src.import_denied",
@@ -40980,7 +41093,11 @@ async def import_sources(message: Message, role: str, user: dict) -> None:
         if len(bundle.warnings) > 8:
             lines.append(f"…и ещё {len(bundle.warnings) - 8} замечаний")
 
+    uploads.done(message.from_user.id)
     await message.answer("\n".join(lines), reply_markup=back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
+
+
+uploads.register(uploads.SOURCES, import_sources)
 
 
 # --------------------------------------------------------------------------
@@ -41125,9 +41242,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_115
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_116'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_117'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -41571,9 +41688,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_116
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_117'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_118'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -41720,9 +41837,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_117
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_118'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_119'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -42010,9 +42127,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_118
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_119'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_120'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -42259,9 +42376,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_119
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_120'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_121'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -42632,9 +42749,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_120
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_121'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_122'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -43209,9 +43326,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_121
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_123'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -43312,9 +43429,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_122
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_123'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_124'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -43404,9 +43521,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_123
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_124'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_125'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -43827,9 +43944,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_124
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_126'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -43874,6 +43991,7 @@ from .. import (
     storage,
     subscription,
     transcode,
+    uploads,
 )
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
@@ -44309,6 +44427,7 @@ async def cookies_help(message: Message, role: str) -> None:
 
     from .. import cookies as cookies_module
 
+    uploads.expect(message.from_user.id, uploads.COOKIES)
     await message.answer(
         "🍪 <b>Cookies для закрытых записей</b>\n\n"
         f"{cookies_module.describe()}\n\n"
@@ -44317,32 +44436,31 @@ async def cookies_help(message: Message, role: str) -> None:
         "<b>Как подключить:</b>\n"
         "1. В браузере: расширение «Get cookies.txt LOCALLY» "
         "(Chrome/Firefox) — Export — для нужной площадки.\n"
-        "2. Пришлите файл <code>cookies.txt</code> сюда сообщением.\n\n"
+        "2. Пришлите файл <code>cookies.txt</code> сюда сообщением — "
+        "ближайший присланный файл в течение 10 минут будет принят "
+        "как cookies, имя не важно.\n\n"
         "<i>Файл держит сессию аккаунта: у кого он есть — тот вошёл. "
         "Не пересылайте его никому.</i>",
         reply_markup=back_kb(),
     )
 
 
-@router.message(F.document)
-async def take_cookies(message: Message, role: str) -> None:
+async def take_cookies(message: Message, role: str, user: dict | None = None) -> None:
     """Приём файла cookies прямо в чат.
 
     До 4.9.4.5 файл требовалось принести на сервер SCP-ом и прописать
     путь в .env руками. Формат проверяется до сохранения: мусор в нём
-    превращал бы отказы yt-dlp в загадки.
+    превращал бы отказы yt-dlp в загадки. С 5.9.0.1 вызывается из общего
+    приёмника документов (`handlers/documents.py`): раньше свой
+    `F.document` здесь опережала загрузка источников, и cookies
+    уходили в список каналов.
     """
     if not roles.is_superadmin(role):
-        return  # чужой документ — не наше дело, пусть идёт дальше
+        await message.answer("⛔️ Управление cookies — суперадминистратору.")
+        return
 
     document = message.document
-    if not document or not document.file_name:
-        return
-    if not document.file_name.lower().endswith(".txt"):
-        return
-    if "cookie" not in document.file_name.lower():
-        # Любой .txt документов может быть чем угодно — ловим только
-        # похожее на cookies по имени, иначе перехватили бы чужие файлы.
+    if not document:
         return
 
     from .. import cookies as cookies_module
@@ -44368,6 +44486,7 @@ async def take_cookies(message: Message, role: str) -> None:
         await message.answer(f"❌ Файл не принят: {esc(complaint)}")
         return
 
+    uploads.done(message.from_user.id)
     log.info("Файл cookies загружен суперадминистратором")
     await message.answer(
         "✅ <b>Cookies подключены.</b>\n"
@@ -44376,6 +44495,9 @@ async def take_cookies(message: Message, role: str) -> None:
         "<i>Файл держит сессию аккаунта и хранится с правами 600.</i>",
         reply_markup=back_kb(),
     )
+
+
+uploads.register(uploads.COOKIES, take_cookies)
 
 
 # --------------------------------------------------------------------------
@@ -45015,9 +45137,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_125
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_126'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_127'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -45761,9 +45883,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_126
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_128'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -46287,9 +46409,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_127
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_129'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -46497,9 +46619,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_128
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_130'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -47427,9 +47549,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_129
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_131'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -47842,9 +47964,52 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_130
+RADAR_FILE_131
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_132'
+"""Единая точка приёма документов (с 5.9.0.1).
+
+Раньше `F.document` слушали два раздела сразу — источники и cookies, —
+и побеждал тот, что раньше в цепочке. Подробности — в `radar/uploads.py`.
+Сам разбор остаётся в разделах: они регистрируют обработчик своего вида,
+а здесь решается, чей это файл.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from aiogram import F, Router
+from aiogram.types import Message
+
+from .. import roles, uploads
+
+router = Router(name="documents")
+
+
+@router.message(F.document)
+async def route_document(message: Message, role: str, user: dict) -> None:
+    document = message.document
+    owner = str(message.from_user.id) if message.from_user else ""
+    kind = uploads.classify(
+        owner, (document.file_name or "") if document else "",
+        superadmin=roles.is_superadmin(role),
+    )
+    handler = uploads.handler_for(kind)
+    if handler is None:
+        await message.answer("❌ Этот файл сейчас принять некуда.")
+        return
+    await handler(message, role, user)
+
+
+__all__ = ["router"]
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_133'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -48107,9 +48272,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_131
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_134'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -48259,9 +48424,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_132
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_135'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -48729,9 +48894,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_133
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_134'
+cat > "radar/cookies.py" <<'RADAR_FILE_136'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -48764,9 +48929,11 @@ log = logging.getLogger("radar.cookies")
 
 PATH = "data/cookies.txt"
 
-# Ограничения приёма: файл cookies — текст, и 512 КБ хватает с запасом
-# на сотни доменов. Больше — не cookies, а что-то перепутали.
-MAX_BYTES = 512 * 1024
+# Ограничения приёма: файл cookies — текст. Выгрузка «со всех сайтов»
+# у человека с браузером за несколько лет легко весит 700+ КБ (5.9.0.1:
+# файл в 749 КБ отклонялся бы), поэтому запас — 4 МБ. Больше — не
+# cookies, а что-то перепутали.
+MAX_BYTES = 4 * 1024 * 1024
 
 # Минимум строк с куками, ниже которого файл кукой быть не может.
 # Заголовок с "# HTTP Cookie File" не считается.
@@ -48862,9 +49029,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_134
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_135'
+cat > "radar/music.py" <<'RADAR_FILE_137'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -49668,9 +49835,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_135
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_138'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -50284,9 +50451,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_136
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_137'
+cat > "multitool/__init__.py" <<'RADAR_FILE_139'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -50312,9 +50479,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_137'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_137
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_138'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_140'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -50347,9 +50514,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_138'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_138
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_139'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_141'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -50756,9 +50923,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_139
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_140'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_142'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -51242,9 +51409,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_140
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_141'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_143'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -51484,7 +51651,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_141
+RADAR_FILE_143
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

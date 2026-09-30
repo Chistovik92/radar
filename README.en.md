@@ -1,4 +1,4 @@
-# Radar v5.9
+# Radar v5.9.0.1
 
 [Русская версия](README.md)
 
@@ -94,6 +94,14 @@ memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
 eighth of the memory but no more than 128 MB, so the database does not hit
 its own container limit. Values set by hand are left alone; without these
 lines the database starts with the old defaults.
+
+**Files sent to the bot (since 5.9.0.1).** One shared intake decides who
+gets a document instead of "first in the chain": the section that asked
+for a file (`/cookies`, "Upload sources") receives the person's next file
+within ten minutes whatever its name; with no request pending, cookies
+are recognised by name (`*cookie*.txt`, superadmin), anything else goes
+to the source list as before. Before 5.9.0.1 a cookies file ended up in
+the source list. The cookies limit is 4 MB (was 512 KB).
 
 **Switching SQLite ⇄ PostgreSQL with the data (since 5.9).** When the
 database is changed, the installer offers to move the data and does it
