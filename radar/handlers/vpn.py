@@ -137,6 +137,11 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
         if vpn.issued_slots(entry):
             results = await vpn.statuses(uid)
             lines.extend(_status_lines(results, lang))
+            if vpn.default_devices():
+                lines.append("")
+                lines.append(i18n.t("vpn.devices_limit", lang,
+                                    "📱 Устройств на подписку: до {n}"
+                                    ).format(n=vpn.default_devices()))
             known = _titles()
             for key, result in sorted(results.items(), key=lambda item: int(item[0])):
                 if isinstance(result, Account) and key in known:

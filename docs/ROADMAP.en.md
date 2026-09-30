@@ -1662,6 +1662,27 @@ and panels.
 
 ---
 
+## 5.9.2 — the "VPN" panel section and 25 devices per subscription ⚠️ code written
+
+At the author's request: the settings of the new features had scattered —
+switches in "Features", values in "Keys", and the apps' devices nowhere.
+
+1. **The "VPN" section of the web panel** (`/vpn`, superadmin): the `vpn`,
+   `vpn_sales`, `app_api` switches; state and panel slots; settings of the
+   groups "VPN", "VPN n" and "VPN sales"; the connected HydraVPN app
+   devices with a "disconnect" button. The forms are the same as in "Keys"
+   and "Features" but return to this page. The VPN groups left "Keys",
+   which keeps a link.
+2. **25 devices per subscription.** `VPN_DEVICES`, default 25, `0` —
+   unlimited. The limit is set on issue and renewal where the panel
+   supports it: 3x-ui and x-ui (`limitIp`), Remnawave
+   (`hwidDeviceLimit`). Sales plans still carry their own number in
+   `VPN_PLANS`. The bot shows the limit in the VPN section.
+3. **Not done.** Discord, VK, MAX, cloud and other settings stay in "Keys"
+   and "Features"; moving them section by section is a separate release.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2

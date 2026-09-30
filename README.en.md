@@ -1,4 +1,4 @@
-# Radar v5.9.1
+# Radar v5.9.2
 
 [Русская версия](README.md)
 
@@ -94,6 +94,16 @@ memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
 eighth of the memory but no more than 128 MB, so the database does not hit
 its own container limit. Values set by hand are left alone; without these
 lines the database starts with the old defaults.
+
+**"VPN" section of the web panel and 25 devices per subscription (since 5.9.2).**
+All VPN management is on one panel page (`/vpn`, superadmin): the "VPN
+access", "VPN sales" and "API for apps" switches, settings (term,
+traffic, devices per subscription, plans, payment), panel slots, and the
+connected app devices with a "disconnect" button. The VPN settings left
+"Keys" for this page; the forms are the same and return to it. Devices
+per subscription default to 25 (`VPN_DEVICES`, 0 — unlimited); the limit
+is applied where the panel supports it — 3x-ui, x-ui (`limitIp`),
+Remnawave (`hwidDeviceLimit`); other panels do not apply it.
 
 **API for the HydraVPN apps (since 5.9.1).** HydraVPN (Android) and
 HydraVPN for Routers sign in to a person's bot account with a one-time

@@ -99,6 +99,7 @@ EN_STRINGS: dict[str, str] = {
     "vpn.link_button": "📋 Subscription link",
     "vpn.gone": "The account is missing from the panel — request access again.",
     "vpn.ask_button": "📨 Request access",
+    "vpn.devices_limit": "📱 Devices per subscription: up to {n}",
     "vpn.app_button": "📱 Connect an app",
     "vpn.app_nothing": "You need issued access first.",
     "vpn.app_title": "📱 <b>Connecting an app</b>",

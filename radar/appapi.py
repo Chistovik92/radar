@@ -158,6 +158,14 @@ async def devices(uid: str | int) -> list[dict[str, Any]]:
     return sorted(mine, key=lambda s: s.get("created", 0))
 
 
+async def all_devices() -> list[dict[str, Any]]:
+    """Все подключённые устройства — для раздела «VPN» веб-панели. Без токенов и их хэшей."""
+    keep = ("uid", "id", "device", "app", "created", "seen")
+    items = [{k: v for k, v in entry.items() if k in keep}
+             for entry in (await _load()).values()]
+    return sorted(items, key=lambda item: (str(item.get("uid")), item.get("created", 0)))
+
+
 async def revoke(uid: str | int, device_id: str | None = None) -> int:
     """Отключить устройство (или все, если id не указан). Возвращает число."""
     async with _lock:
@@ -256,5 +264,5 @@ async def subscriptions(uid: str | int) -> list[dict[str, Any]]:
     return items
 
 
-__all__ = ["enabled", "issue_code", "exchange", "session_of", "devices", "revoke",
+__all__ = ["enabled", "issue_code", "exchange", "session_of", "devices", "all_devices", "revoke",
            "revoke_token", "profile", "subscriptions", "CODE_TTL", "MAX_DEVICES"]

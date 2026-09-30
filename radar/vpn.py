@@ -53,6 +53,10 @@ ACTIVE = "active"
 DENIED = "denied"
 
 DEFAULT_DAYS = 30
+# Устройств на одну подписку (с 5.9.2). Предел ставится там, где панель
+# это умеет (3x-ui и x-ui — limitIp, Remnawave — hwidDeviceLimit).
+DEFAULT_DEVICES = 25
+MAX_DEVICES_SETTING = 1000
 
 # Поля слота: окружение VPN{n}_<ПОЛЕ>. Для первого слота читаются и имена
 # из 5.0 (VPN_PANEL, VPN_PANEL_URL…), чтобы обновление не сбросило
@@ -163,6 +167,14 @@ def ready() -> tuple[bool, str]:
 def default_days() -> int:
     value = _setting("VPN_DAYS")
     return int(value) if value.isdigit() and int(value) > 0 else DEFAULT_DAYS
+
+
+def default_devices() -> int:
+    """Устройств на подписку: VPN_DEVICES, по умолчанию 25; 0 — без предела."""
+    value = _setting("VPN_DEVICES")
+    if value.isdigit():
+        return min(int(value), MAX_DEVICES_SETTING)
+    return DEFAULT_DEVICES
 
 
 def default_traffic() -> int:
@@ -329,7 +341,8 @@ async def issue(uid: str | int, keys: list[str], by: str | int, role: str | None
         raise PanelError("Не выбрано ни одной панели.")
 
     return await _grant(uid, targets, by, period=(days or default_days()) * DAY,
-                        traffic=default_traffic(), renew=False)
+                        traffic=default_traffic(), devices=default_devices(),
+                        renew=False)
 
 
 async def grant_paid(uid: str | int, keys: list[str], order_id: str, *,

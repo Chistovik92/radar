@@ -20,6 +20,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -714,6 +715,8 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     if moderator:
         groups.append(("/users", "Пользователи", "users", []))
     groups.append(("/sources", "Источники", "sources", []))
+    if owner:
+        groups.append(("/vpn", "VPN", "vpn", []))
     if media:
         groups.append((media[0][0], "Медиа", "media", media))
     if agent_items:
@@ -1751,6 +1754,125 @@ def _users_body(session, message: str = "", failed: str = "") -> str:
     )
 
 
+async def _vpn_body(session, message: str = "", failed: str = "") -> str:
+    """Раздел «VPN»: всё управление VPN, продажей и приложениями HydraVPN в одном месте (5.9.2).
+
+    До 5.9.2 тумблеры лежали в «Возможностях», настройки — в «Ключах»,
+    а подключённые устройства приложений не были видны вовсе. Здесь они
+    собраны; формы те же, что и там, — они лишь возвращают сюда.
+    """
+    from .. import appapi, shortener, vpn
+
+    token = auth.csrf_token(session)
+    parts: list[str] = [_note("ok", message), _note("bad", failed)]
+
+    # --- возможности ---
+    rows = []
+    for key in ("vpn", "vpn_sales", "app_api"):
+        flag = features.resolve(key)
+        if flag is None:
+            continue
+        on = features.enabled(key)
+        state = '<span class="ok">включено</span>' if on else '<span class="muted">выключено</span>'
+        action = "выключить" if on else "включить"
+        rows.append(
+            f"<tr><td>{html.escape(flag.title)}<br>"
+            f'<span class="muted">{html.escape(flag.description)}</span></td>'
+            f"<td>{state}</td>"
+            '<td style="text-align:right;width:1%">'
+            '<form method="post" action="/features/toggle">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="key" value="{html.escape(key)}">'
+            '<input type="hidden" name="back" value="/vpn">'
+            f'<button class="ghost" type="submit">{action}</button>'
+            "</form></td></tr>"
+        )
+    joined = "".join(rows)
+    parts.append(f'<div class="card"><h3>Возможности</h3><table>{joined}</table></div>')
+
+    # --- состояние ---
+    ok, reason = vpn.ready()
+    verdict = ('<span class="ok">Раздел готов к работе.</span>' if ok
+               else '<span class="warn">' + html.escape(reason) + "</span>")
+    slot_rows = "".join(
+        f"<tr><td>{item.number}</td><td>{html.escape(item.title)}</td>"
+        f"<td>{html.escape(item.client.kind)}</td></tr>"
+        for item in vpn.slots()
+    ) or '<tr><td colspan="3" class="muted">Панели не настроены — заполните слоты ниже.</td></tr>'
+    pending = len(await vpn.pending())
+    issued = len(await vpn.issued())
+    parts.append(
+        '<div class="card"><h3>Состояние</h3>'
+        f"<p>{verdict}</p>"
+        f'<p class="muted">Заявок ждёт решения: {pending} · выдано доступов: {issued}. '
+        "Решает и выдаёт суперадминистратор в боте: «🔐 VPN».</p>"
+        f"<table><tr><th>Слот</th><th>Название</th><th>Вид</th></tr>{slot_rows}</table></div>"
+    )
+
+    # --- настройки по группам ---
+    groups: dict[str, list] = {}
+    for setting in secrets_module.SETTINGS:
+        if _is_vpn_group(setting.group):
+            groups.setdefault(setting.group, []).append(setting)
+
+    def card(group: str, opened: bool) -> str:
+        inner = "".join(_setting_row(item, token, "/vpn") for item in groups[group])
+        attr = " open" if opened else ""
+        return (f'<details class="card"{attr}>'
+                f"<summary><b>{html.escape(group)}</b></summary>{inner}</details>")
+
+    if "VPN" in groups:
+        parts.append(card("VPN", True))
+    if "Продажа VPN" in groups:
+        parts.append(card("Продажа VPN", False))
+    for group in groups:
+        if group not in ("VPN", "Продажа VPN"):
+            parts.append(card(group, False))
+
+    # --- приложения HydraVPN ---
+    devices = await appapi.all_devices()
+    base = shortener.base_url() or "не задан (SHORT_BASE_URL)"
+    dev_rows = []
+    for item in devices:
+        uid = str(item.get("uid", ""))
+        user = storage.get_user(uid) or {}
+        who = "@" + str(user["username"]) if user.get("username") else uid
+        device_id = str(item.get("id", ""))
+        dev_rows.append(
+            f"<tr><td>{html.escape(who)}</td>"
+            f"<td>{html.escape(str(item.get('device', '')))}</td>"
+            f"<td>{html.escape(str(item.get('app', '')))}</td>"
+            f"<td>{_stamp(item.get('created'))}</td><td>{_stamp(item.get('seen'))}</td>"
+            '<td style="text-align:right"><form method="post" action="/vpn/app-revoke">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="uid" value="{html.escape(uid)}">'
+            f'<input type="hidden" name="id" value="{html.escape(device_id)}">'
+            '<button class="ghost" type="submit">отключить</button></form></td></tr>'
+        )
+    if dev_rows:
+        table = ("<table><tr><th>Человек</th><th>Устройство</th><th>Приложение</th>"
+                 "<th>Подключено</th><th>На связи</th><th></th></tr>"
+                 + "".join(dev_rows) + "</table>")
+    else:
+        table = '<p class="muted">Приложения пока не подключены.</p>'
+    parts.append(
+        '<div class="card"><h3>Приложения HydraVPN</h3>'
+        '<p class="muted">Человек берёт код в боте («🔐 VPN» → «📱 Подключить приложение») '
+        "и вводит его в приложении. API только читает выданные подписки. "
+        f"Адрес сервера для приложений: <code>{html.escape(base)}</code>. "
+        "Наружу — только за HTTPS. Описание: <code>docs/API_APPS.md</code>.</p>"
+        f"{table}</div>"
+    )
+    return "".join(parts)
+
+
+def _stamp(value) -> str:
+    try:
+        return time.strftime("%d.%m.%Y %H:%M", time.localtime(int(value)))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "—"
+
+
 def _note(kind: str, text: str) -> str:
     """Полоса с итогом действия. Пусто — ничего не показываем."""
     if not text:
@@ -2157,6 +2279,40 @@ async def _agents_body(session, message: str = "", failed: str = "") -> str:
             + "".join(form(item) for item in items) + form(None) + picked)
 
 
+def _is_vpn_group(group: str) -> bool:
+    """Настройки VPN живут в разделе «VPN», а не среди общих ключей (5.9.2)."""
+    return group == "Продажа VPN" or group == "VPN" or group.startswith("VPN ")
+
+
+def _setting_row(setting, token: str, back: str = "") -> str:
+    """Строка одной настройки с формой записи. `back` — куда вернуться после сохранения."""
+    current = secrets_module.get(setting.key)
+    shown = (secrets_module.mask(current) if setting.secret
+             else (current or "— не задано —"))
+    where = (f' <span class="hint">Где взять: {html.escape(setting.where)}</span>'
+             if setting.where else "")
+    restart = (' <span class="warn">применится после перезапуска</span>'
+               if setting.restart else "")
+    field = "password" if setting.secret else "text"
+    back_field = (f'<input type="hidden" name="back" value="{html.escape(back)}">'
+                  if back else "")
+    return (
+        '<div class="keyrow">'
+        f"<div><b>{html.escape(setting.title)}</b> "
+        f'<span class="muted">{html.escape(setting.key)}</span></div>'
+        f'<div class="hint">{html.escape(setting.hint)}{where}{restart}</div>'
+        f'<div class="hint">Сейчас: {html.escape(shown)}</div>'
+        '<form class="inline" method="post" action="/keys/set">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        f'<input type="hidden" name="key" value="{html.escape(setting.key)}">'
+        f"{back_field}"
+        f'<input type="{field}" name="value" autocomplete="off" '
+        'placeholder="новое значение, пусто — очистить">'
+        '<button type="submit">Сохранить</button></form>'
+        "</div>"
+    )
+
+
 def _keys_body(session, message: str = "", failed: str = "") -> str:
     """Ключи ИИ и токены сервисов. Только запись, без чтения.
 
@@ -2167,37 +2323,19 @@ def _keys_body(session, message: str = "", failed: str = "") -> str:
     token = auth.csrf_token(session)
     groups: dict[str, list] = {}
     for setting in secrets_module.SETTINGS:
+        if _is_vpn_group(setting.group):
+            continue
         groups.setdefault(setting.group, []).append(setting)
 
-    cards = []
-    for group, items in groups.items():
-        rows = []
-        for setting in items:
-            current = secrets_module.get(setting.key)
-            shown = (secrets_module.mask(current) if setting.secret
-                     else (current or "— не задано —"))
-            where = (f' <span class="hint">Где взять: {html.escape(setting.where)}</span>'
-                     if setting.where else "")
-            restart = (' <span class="warn">применится после перезапуска</span>'
-                       if setting.restart else "")
-            field = "password" if setting.secret else "text"
-            rows.append(
-                '<div class="keyrow">'
-                f"<div><b>{html.escape(setting.title)}</b> "
-                f'<span class="muted">{html.escape(setting.key)}</span></div>'
-                f'<div class="hint">{html.escape(setting.hint)}{where}{restart}</div>'
-                f'<div class="hint">Сейчас: {html.escape(shown)}</div>'
-                '<form class="inline" method="post" action="/keys/set">'
-                f'<input type="hidden" name="csrf" value="{token}">'
-                f'<input type="hidden" name="key" value="{html.escape(setting.key)}">'
-                f'<input type="{field}" name="value" autocomplete="off" '
-                'placeholder="новое значение, пусто — очистить">'
-                '<button type="submit">Сохранить</button></form>'
-                "</div>"
-            )
-        cards.append(
-            f'<div class="card"><h3>{html.escape(group)}</h3>{"".join(rows)}</div>'
-        )
+    cards = [
+        f'<div class="card"><h3>{html.escape(group)}</h3>'
+        f'{"".join(_setting_row(item, token) for item in items)}</div>'
+        for group, items in groups.items()
+    ]
+    cards.append(
+        '<div class="card muted">Настройки VPN, продажи и приложений HydraVPN — '
+        'в разделе <a href="/vpn">VPN</a>.</div>'
+    )
 
     warning = (
         '<div class="card"><b>Значения не показываются.</b> '
@@ -2853,12 +2991,15 @@ async def create_app() -> Any:
     async def keys_set(request):
         session, data = await _guarded_form(request, "superadmin")
         key = str(data.get("key", ""))
+        back = str(data.get("back", "")) or "/keys"
+        if back not in ("/keys", "/vpn"):
+            back = "/keys"
         if key not in secrets_module.BY_KEY:
-            raise web.HTTPFound("/keys?err=" + quote("Неизвестный ключ"))
+            raise web.HTTPFound(back + "?err=" + quote("Неизвестный ключ"))
 
         value = str(data.get("value", "")).strip()
         if not secrets_module.write(key, value):
-            raise web.HTTPFound("/keys?err=" + quote(
+            raise web.HTTPFound(back + "?err=" + quote(
                 "Записать не удалось — проверьте права на .env"))
 
         # В журнал уходит имя ключа, но НИКОГДА значение: журнал панели
@@ -2867,7 +3008,7 @@ async def create_app() -> Any:
         audit.record(session.user_key,
                      "ключ очищен" if not value else "ключ изменён", key)
         done = "очищен" if not value else "сохранён"
-        raise web.HTTPFound("/keys?ok=" + quote(f"{key} {done}"))
+        raise web.HTTPFound(back + "?ok=" + quote(f"{key} {done}"))
 
     @admin_only
     async def events_page(_request, session):
@@ -3189,6 +3330,30 @@ async def create_app() -> Any:
             f"{chat_id}: модерация {'включена' if value else 'выключена'}"))
 
     @owner_only
+    async def vpn_page(request, session):
+        return web.Response(
+            text=_layout(
+                "VPN",
+                await _vpn_body(session,
+                                request.query.get("ok", ""),
+                                request.query.get("err", "")),
+                "vpn", roles.title(session.role), session.role,
+            ),
+            content_type="text/html",
+        )
+
+    async def vpn_app_revoke(request):
+        from .. import appapi
+
+        session, data = await _guarded_form(request, "superadmin")
+        uid = str(data.get("uid", ""))
+        device_id = str(data.get("id", "")) or None
+        count = await appapi.revoke(uid, device_id) if uid else 0
+        # В журнал — чьё устройство, без токенов.
+        audit.record(session.user_key, "устройство приложения отключено", uid)
+        raise web.HTTPFound("/vpn?ok=" + quote(f"Отключено устройств: {count}"))
+
+    @owner_only
     async def cloud_page(request, session):
         return web.Response(
             text=_layout(
@@ -3448,6 +3613,8 @@ async def create_app() -> Any:
         web.post("/chats/announce", chats_announce),
         web.post("/chats/send", chats_send),
         web.post("/chats/drop", chats_drop),
+        web.get("/vpn", vpn_page),
+        web.post("/vpn/app-revoke", vpn_app_revoke),
         web.get("/cloud", cloud_page),
         web.post("/cloud/add", cloud_add),
         web.post("/cloud/forget", cloud_forget),

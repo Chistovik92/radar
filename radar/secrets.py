@@ -158,6 +158,11 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("VPN_DAYS", "VPN: срок выдачи, дней",
             "Срок новой записи и шаг продления. По умолчанию 30.",
             "VPN", secret=False),
+    Setting("VPN_DEVICES", "VPN: устройств на подписку",
+            "Сколько устройств одновременно может пользоваться одной подпиской. "
+            "По умолчанию 25, 0 — без предела. Панели без такого предела "
+            "(Marzban, PasarGuard, Hiddify, Outline, wg-easy…) его не применяют.",
+            "VPN", secret=False),
     Setting("VPN_TRAFFIC_GB", "VPN: предел трафика, ГБ",
             "Для новых записей. Пусто или 0 — без предела.", "VPN", secret=False),
 
