@@ -175,8 +175,62 @@ async def _menu_view(uid: str, user: dict[str, Any], role: str
         if features.enabled("vpn_sales"):
             rows.append([_button("🧾 Заказы", "vpn:orders")])
 
+    if ok and features.enabled("app_api") and vpn.issued_slots(entry):
+        rows.append([_button(i18n.t("vpn.app_button", lang,
+                                    "📱 Подключить приложение"), "vpn:app")])
+
     rows.append([_button(i18n.t("menu.home", lang, "🏠 В главное меню"), "menu:main")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "vpn:app")
+async def app_connect(call: CallbackQuery, user: dict) -> None:
+    """Код для приложения HydraVPN и список подключённых устройств (5.9.1)."""
+    from .. import appapi, shortener
+
+    lang = i18n.language_of(user)
+    if not features.enabled("vpn") or not appapi.enabled():
+        await call.answer(DISABLED_TEXT, show_alert=True)
+        return
+    uid = str(call.from_user.id)
+    if not vpn.issued_slots(await vpn.record(uid)):
+        await call.answer(i18n.t("vpn.app_nothing", lang,
+                                 "Сначала нужен выданный доступ."), show_alert=True)
+        return
+    await call.answer()
+    code = appapi.issue_code(uid)
+    lines = [
+        i18n.t("vpn.app_title", lang, "📱 <b>Подключение приложения</b>"),
+        "",
+        i18n.t("vpn.app_code", lang,
+               "Код: <code>{code}</code>\nОдноразовый, действует 5 минут. "
+               "Введите его в HydraVPN («Аккаунт бота») вместе с адресом сервера."
+               ).format(code=code),
+    ]
+    base = shortener.base_url()
+    if base:
+        lines.append(i18n.t("vpn.app_server", lang, "Адрес сервера: <code>{url}</code>"
+                            ).format(url=esc(base)))
+    devices = await appapi.devices(uid)
+    if devices:
+        lines.append("")
+        lines.append(i18n.t("vpn.app_devices", lang, "Подключено устройств: {n}"
+                            ).format(n=len(devices)))
+        lines.extend(f"• {esc(item.get('device', ''))} ({esc(item.get('app', ''))})"
+                     for item in devices)
+    rows = [[_button(i18n.t("vpn.app_revoke", lang, "🔌 Отключить все устройства"),
+                     "vpn:appx")]] if devices else []
+    rows.append(_back("vpn:menu", lang))
+    await safe_edit(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "vpn:appx")
+async def app_revoke(call: CallbackQuery, user: dict) -> None:
+    from .. import appapi
+
+    count = await appapi.revoke(str(call.from_user.id))
+    await call.answer(i18n.t("vpn.app_revoked", i18n.language_of(user),
+                             "Отключено устройств: {n}").format(n=count), show_alert=True)
 
 
 @router.callback_query(F.data == "vpn:menu")

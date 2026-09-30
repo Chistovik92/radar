@@ -74,6 +74,10 @@ jobs:
           python -m pip install --quiet aiohttp
           python tools/vpn_http_check.py
 
+      # API для приложений HydraVPN на настоящем aiohttp (5.9.1).
+      - name: API для приложений по HTTP
+        run: python tools/app_http_check.py
+
       # Адаптер Discord по настоящему WebSocket: эмулятор Gateway и REST.
       - name: Discord по WebSocket
         run: python tools/discord_http_check.py

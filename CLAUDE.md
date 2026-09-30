@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 5.9.0.1, она же выложена на GitHub.
+Текущая версия — 5.9.1, она же выложена на GitHub.
 
 ## Общение
 
@@ -29,6 +29,7 @@ python3 tools/lint_manifest.py          # новые модули попали �
 python3 tools/vpn_http_check.py         # VPN-клиенты по HTTP (нужен aiohttp)
 python3 tools/discord_http_check.py     # адаптер Discord по WebSocket (нужен aiohttp)
 python3 tools/vk_http_check.py          # ВК и зеркало тревог по HTTP (нужен aiohttp)
+python3 tools/app_http_check.py         # API для приложений HydraVPN по HTTP (нужен aiohttp)
 python3 tools/db_transfer_check.py      # перенос SQLite ⇄ SQLite (PG_URL — и PostgreSQL)
 ```
 
@@ -37,6 +38,9 @@ python3 tools/db_transfer_check.py      # перенос SQLite ⇄ SQLite (PG_U
 (в CI — сервис `postgres:16-alpine`): сверка строка в строку в обе
 стороны, счётчики, отказ в непустую базу. Нужны SQLAlchemy[asyncio]
 и aiosqlite; тесты выше идут на заглушках и базы не видят.
+
+`app_http_check.py` (5.9.1) — API для приложений HydraVPN на настоящем
+aiohttp: обмен кода на токен, Bearer, коды 401/404, выход.
 
 `vpn_http_check.py` добавлен в 5.0.1: офлайн-тесты подменяют обмен
 с панелью и не видят транспорт — куки, CSRF, заголовки входа,
@@ -144,7 +148,7 @@ for f in tests/test_*.py; do python3 -m unittest "tests.$(basename "$f" .py)" ||
 ## Документы
 
 `docs/STATUS.md` — состояние и решения · `docs/ROADMAP.md` — план по версиям
-(+ `ROADMAP.en.md`) · `docs/API_SETUP.md` — настройка сервисов ·
+(+ `ROADMAP.en.md`) · `docs/API_SETUP.md` — настройка сервисов · `docs/API_APPS.md` — API для приложений HydraVPN ·
 `docs/HANDOFF.md` — передача проекта
 
 ## Работа из Claude Code на Windows
