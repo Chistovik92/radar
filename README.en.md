@@ -1,4 +1,4 @@
-# Radar v5.9.0.1
+# Radar v5.9.1
 
 [Русская версия](README.md)
 
@@ -94,6 +94,13 @@ memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
 eighth of the memory but no more than 128 MB, so the database does not hit
 its own container limit. Values set by hand are left alone; without these
 lines the database starts with the old defaults.
+
+**API for the HydraVPN apps (since 5.9.1).** HydraVPN (Android) and
+HydraVPN for Routers sign in to a person's bot account with a one-time
+code ("🔐 VPN" → "📱 Connect an app") and fetch the subscriptions issued
+to them: link, expiry, traffic. Read-only — the superadmin still issues
+access. Flag `app_api` (off) plus `web_panel`; expose it only behind
+HTTPS. Routes: [docs/API_APPS.md](docs/API_APPS.md).
 
 **Files sent to the bot (since 5.9.0.1).** One shared intake decides who
 gets a document instead of "first in the chain": the section that asked

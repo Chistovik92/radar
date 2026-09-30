@@ -1627,6 +1627,41 @@ Not verified with live VK, MAX and Discord — only by tests and emulators
 
 ---
 
+## 5.9.1 — API for the HydraVPN apps ⚠️ code written
+
+At the author's request: the apps [HydraVPN](https://github.com/Chistovik92/HydraVPN)
+(Android) and [HydraVPN for Routers](https://github.com/Chistovik92/HydraVPNforRouters)
+(a Go daemon for OpenWrt, Keenetic, MikroTik) keep no users of their own —
+the person is already in the bot and has been given access there. The app
+connects to their account and fetches the subscriptions issued to them.
+
+1. **Sign-in by code.** "🔐 VPN" → "📱 Connect an app" gives a one-time
+   code valid for five minutes. The app exchanges it for a device token;
+   the token is shown once, only its SHA-256 is stored on the server. Up
+   to five devices per person, the oldest is evicted; a device can be
+   disconnected from the bot ("🔌") or from the app itself.
+2. **Read, not manage.** The API returns the profile and subscriptions
+   (link, expiry, traffic, state per panel). Issuing, extending and
+   revoking stay with the single superadmin (the 5.0.1 decision). A
+   blocked person, or with the VPN section off, gets nothing.
+3. **Flag `app_api`** (off). The routes live in the web panel
+   (`/api/v1/app/*`), so `web_panel` is needed too; with the flag off
+   they answer 404. For app authors: `docs/API_APPS.md`.
+4. **Protection.** Wrong codes and tokens count against the same
+   per-address attempt counter as the panel login; responses carry
+   `Cache-Control: no-store`; subscription links and tokens are never
+   logged. The token travels over HTTP — expose the API only behind
+   HTTPS (`WEB_HTTPS=1`, reverse proxy).
+5. **Checks.** `tests/test_appapi.py` and `tools/app_http_check.py`
+   (real aiohttp, a CI step).
+
+Not done: the apps themselves (a "Bot account" screen in HydraVPN, the
+router daemon calling the API) — they live in other repositories; the
+contract for them is in `docs/API_APPS.md`. Not verified with real apps
+and panels.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2

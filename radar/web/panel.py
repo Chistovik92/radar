@@ -3460,6 +3460,10 @@ async def create_app() -> Any:
         web.post("/partners/remove", partners_remove),
         web.get("/partners/export", partners_export),
     ])
+    # API для приложений HydraVPN (5.9.1): за своим флагом app_api.
+    from . import appapi as app_routes
+
+    application.add_routes(app_routes.routes(web))
     return application
 
 
