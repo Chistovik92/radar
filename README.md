@@ -1,4 +1,4 @@
-# Система «Радар» v5.9.7
+# Система «Радар» v5.9.8
 
 [English version](README.en.md)
 
@@ -1224,6 +1224,45 @@ radarctl.sh audit tail --limit 20              # журнал действий, 
 проверяются теми же правилами, что в панели.
 `tools/lint_cli_parity.py` следит, чтобы каждая команда бота и маршрут панели
 были учтены: сделаны в консоли, отложены с причиной или вне консоли.
+
+**Подписки, VPN, партнёры, перезапуск (с 5.9.8).** Те же действия, что в
+разделах панели «Подписка бота», «VPN» и «Партнёры»; консоль зовёт те же
+функции, а не повторяет их.
+
+```bash
+radarctl.sh subs list [--q текст]                  # у кого оплачена подписка бота
+radarctl.sh subs grant 123456789 30                # добавить 30 дней
+radarctl.sh subs revoke 123456789 --yes            # снять оплаченный срок
+radarctl.sh subs codes                             # промокоды на подписку
+radarctl.sh subs code-add ABCDE-1 ABCDE-2 --days 30
+radarctl.sh subs code-drop ABCDE-1
+
+radarctl.sh vpn panels                             # настроенные панели (секреты не печатаются)
+radarctl.sh vpn panel-save 2 --set KIND=marzban --set URL=https://хост:8000 --set TITLE=Main
+radarctl.sh vpn panel-check 2                      # живой вход в панель
+radarctl.sh vpn panel-remove 2 --yes
+radarctl.sh vpn access [UID]                       # заявки и выданное; по человеку — состояние
+radarctl.sh vpn issue UID --slot 1 --slot 2        # выдать доступ
+radarctl.sh vpn extend UID 1 30                    # продлить на панели 1 на 30 дней
+radarctl.sh vpn off UID 1 / vpn on UID 1           # выключить / включить
+radarctl.sh vpn revoke UID 1 --yes                 # отозвать и удалить запись в панели
+radarctl.sh vpn deny UID                           # отклонить заявку
+radarctl.sh vpn orders                             # заказы
+radarctl.sh vpn order-confirm ID                   # подтвердить оплату (также order-retry, order-cancel)
+radarctl.sh vpn app-revoke UID [--device ID]       # отключить устройства приложений
+
+radarctl.sh partners list
+radarctl.sh partners save shop --set title=Магазин --set url=https://shop.example
+radarctl.sh partners remove shop --yes
+radarctl.sh partners export shop > promo-shop.csv  # коды партнёра файлом
+radarctl.sh files remove ТОКЕН --yes               # отключить раздачу файла досрочно
+radarctl.sh restart --yes                          # перезапустить бота (docker.sock); на хосте — просто `radarctl.sh restart`
+```
+
+`partners save` меняет только заданные поля: правка названия не стирает описание,
+порядок и счётчик переходов. Лимит проектов и разбор полей — общие с панелью
+(`radar/ops.py`, `radar/partners.py`). Всё это пишется в журнал действий
+от имени «консоль», без секретов и адресов панелей.
 
 ### Удаление установки
 

@@ -1,7 +1,7 @@
 # Радар — инструкция по использованию
 
 Бот, веб-панель и командная строка — три способа управлять одной системой.
-Документ собран по коду версии 5.9.3. Подробности установки, настроек и
+Документ собран по коду версии 5.9.8. Подробности установки, настроек и
 каждой возможности — в [README.md](../README.md); здесь — порядок работы и справочник.
 
 > Система не заменяет официальные каналы оповещения.
@@ -159,7 +159,14 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 | `vpn` | `check`, `selftest` | `--yes` |
 | `doctor` | — | `--quick` |
 | `version` | — | |
-| Хост | `update`, `restore ФАЙЛ`, `wipe --yes` | не из контейнера |
+| `users` | `list`, `show`, `role`, `delete`, `time`, `stale` | см. README |
+| `keys` | `list`, `get`, `set`, `unset`, `pending` | значения проверяются, как в панели |
+| `stats`, `logs`, `audit` | `stats`; `logs list\|tail\|clear`; `audit tail\|clear` | |
+| `subs` | `list`, `codes`, `grant`, `revoke`, `code-add`, `code-drop` | подписка бота |
+| `vpn` | `panels`, `panel-save\|remove\|check`, `access`, `issue`, `extend`, `on`, `off`, `revoke`, `deny`, `orders`, `order-*`, `app-revoke` | см. README |
+| `partners` | `list`, `show`, `save`, `remove`, `export` | `save --set поле=значение` |
+| `restart` | — | `--yes` |
+| Хост | `update`, `restore ФАЙЛ`, `wipe --yes`, `restart` | не из контейнера |
 
 У команд есть `--json`. Разрушающие действия без `--yes` ничего не делают и
 возвращают код **2**; ошибка — код **1**; успех — **0**. Так cron отличает
@@ -196,10 +203,9 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 
 ### Чего в CLI пока нет
 
-ИИ (агенты, модели, провайдер, квота), дайджест, музыка, медиа, SOS, партнёры,
-подписки, VPN-панели и доступы, настройки `.env` по разделам, журналы, статистика,
-чаты (объявления и отправка). Полный список и план — в
-[PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md), раздел 1.2.
+ИИ (агенты, модели, провайдер, квота), дайджест, история, проверка ссылок,
+музыка и облако, медиа, SOS, чаты (объявления и сообщения), события. Полный
+список — `tools/lint_cli_parity.py`, план — [PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md).
 
 ---
 

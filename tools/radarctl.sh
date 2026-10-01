@@ -28,6 +28,7 @@
 #   bash radarctl.sh update            обновиться до последнего выпуска
 #   bash radarctl.sh wipe --yes        стереть установку целиком
 #   bash radarctl.sh restore ФАЙЛ      восстановить из копии
+#   bash radarctl.sh restart           перезапустить контейнер бота
 #
 # Общее:
 #   RADAR_HOME=/путь bash radarctl.sh …   нестандартный каталог установки
@@ -65,6 +66,15 @@ case "$1" in
         bash -n install.sh.new || { rm -f install.sh.new; die "Установщик повреждён"; }
         mv -f install.sh.new install.sh
         exec env RADAR_HOME="$APP_DIR" bash install.sh --skip-updates "$@"
+        ;;
+
+    restart)
+        # Перезапуск самого контейнера: изнутри его не сделать без docker.sock,
+        # а на хосте это одна команда. Оповещения встанут примерно на полминуты.
+        docker inspect "$CONTAINER" >/dev/null 2>&1             || die "Контейнер $CONTAINER не найден — бот не установлен или остановлен"
+        docker restart "$CONTAINER" >/dev/null || die "Не удалось перезапустить $CONTAINER"
+        printf "  ✓ Контейнер %s перезапущен
+" "$CONTAINER"
         ;;
 
     wipe)

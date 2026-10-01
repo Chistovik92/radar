@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.7 — автономный установщик.
+# Система «Радар» v5.9.8 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.7"
+VERSION="5.9.8"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=161
+FILE_COUNT=163
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3303,6 +3303,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.8", [
+        "🖥 <b>Консоль: подписки, VPN и партнёры.</b> radarctl теперь умеет выдавать и снимать подписку, заводить и проверять VPN-панели, выдавать, продлевать и отзывать доступы, подтверждать заказы, править партнёрские проекты и перезапускать бота — те же действия, что в веб-панели.",
+    ]),
     ("5.9.7", [
         "🎵 <b>Discord: музыка по ссылке.</b> Команда /play играет в голосовом канале то, на что дадут ссылку (YouTube, SoundCloud, Bandcamp, файл…) или найдёт по словам; ещё /skip, /pause, /resume, /stop, /queue. Выключено по умолчанию. Spotify и Apple Music не открываются; проигрывание с YouTube нарушает его условия.",
     ]),
@@ -5221,7 +5224,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_07'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.7"
+__version__ = "5.9.8"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -21769,10 +21772,6 @@ async def _agents_body(session, message: str = "", failed: str = "") -> str:
             + "".join(form(item) for item in items) + form(None) + picked)
 
 
-# Задачи, которые не должны исчезнуть до завершения (перезапуск по кнопке).
-_restart_tasks: set = set()
-
-
 def _settings_sections():
     from . import settingspages
 
@@ -22579,43 +22578,26 @@ async def create_app() -> Any:
         )
 
     async def partners_save(request):
-        from .. import partners
+        from .. import ops
 
         session, data = await _guarded_form(request, "superadmin")
-        projects = await partners.load()
-        slug = str(data.get("slug", "")).strip().lower()
-
-        existing = next((item for item in projects if item.slug == slug), None)
-        if existing is None and len(projects) >= partners.MAX_PROJECTS:
-            raise web.HTTPFound("/partners?err=" + quote(
-                f"Больше {partners.MAX_PROJECTS} проектов не бывает"))
-
-        # Разбор формы живёт в самом модуле партнёров: второй набор
-        # правил в панели разошёлся бы с ботом.
-        project = partners.from_form(data, existing)
-        if project is None:
-            raise web.HTTPFound("/partners?err=" + quote(
-                "Проверьте короткое имя, название и ссылку"))
-
-        rest = [item for item in projects if item.slug != project.slug]
-        await partners.save(rest + [project])
+        result = await ops.partner_save(data)
+        if not result.ok:
+            raise web.HTTPFound("/partners?err=" + quote(result.message))
+        kind, _, slug = result.extra.partition(":")
         audit.record(session.user_key,
-                     "партнёр изменён" if existing else "партнёр добавлен",
-                     project.slug)
-        raise web.HTTPFound("/partners?ok=" + quote(f"Сохранено: {project.title}"))
+                     "партнёр изменён" if kind == "changed" else "партнёр добавлен", slug)
+        raise web.HTTPFound("/partners?ok=" + quote(result.message))
 
     async def partners_remove(request):
-        from .. import partners
+        from .. import ops
 
         session, data = await _guarded_form(request, "superadmin")
-        slug = str(data.get("slug", "")).strip().lower()
-        projects = await partners.load()
-        rest = [item for item in projects if item.slug != slug]
-        if len(rest) == len(projects):
-            raise web.HTTPFound("/partners?err=" + quote("Такого проекта нет"))
-        await partners.save(rest)
-        audit.record(session.user_key, "партнёр удалён", slug)
-        raise web.HTTPFound("/partners?ok=" + quote("Проект удалён"))
+        result = await ops.partner_remove(str(data.get("slug", "")))
+        if not result.ok:
+            raise web.HTTPFound("/partners?err=" + quote(result.message))
+        audit.record(session.user_key, "партнёр удалён", result.extra)
+        raise web.HTTPFound("/partners?ok=" + quote(result.message))
 
     @owner_only
     async def partners_export(request, _session):
@@ -23028,32 +23010,15 @@ async def create_app() -> Any:
             content_type="text/html")
 
     async def settings_restart(request):
-        import asyncio
-        import socket
-
-        from .. import dockerapi
+        from .. import ops
 
         session, _data = await _guarded_form(request, "superadmin")
-        if not dockerapi.available():
-            raise web.HTTPFound("/settings?err=" + quote("Нет доступа к docker — перезапустите на сервере"))
+        result = await ops.restart_bot()
+        if not result.ok:
+            raise web.HTTPFound("/settings?err=" + quote(result.message))
         audit.record(session.user_key, "перезапуск бота из панели", "")
-
-        async def later() -> None:
-            # Ответ должен успеть уйти: перезапускается тот самый процесс, что отвечает.
-            await asyncio.sleep(2)
-            docker = await dockerapi.session()
-            try:
-                name = "radar_container"
-                if not await dockerapi.container_exists(docker, name):
-                    name = socket.gethostname()
-                await dockerapi.container_action(docker, name, "restart")
-            finally:
-                await docker.close()
-
-        task = asyncio.get_running_loop().create_task(later())
-        _restart_tasks.add(task)
-        task.add_done_callback(_restart_tasks.discard)
-        raise web.HTTPFound("/settings?ok=" + quote("Перезапуск начат — через полминуты обновите страницу"))
+        raise web.HTTPFound("/settings?ok=" + quote(
+            "Перезапуск начат — через полминуты обновите страницу"))
 
     @owner_only
     async def cloud_page(request, session):
@@ -41206,7 +41171,8 @@ _LOOP: asyncio.AbstractEventLoop | None = None
 LOCAL_ONLY = {"doctor", "version"}
 # Что только читает: для них молчание о неработающем боте не страшно.
 READ_ACTIONS = {"list", "size", "check", "info", "connections", "show", "get",
-                "tail", "pending", "stale"}
+                "tail", "pending", "stale", "codes", "panels", "access", "orders",
+                "export", "panel-check"}
 
 
 def attach(loop: asyncio.AbstractEventLoop | None) -> None:
@@ -41648,6 +41614,11 @@ async def _clean_deleted(chat_id: int, args) -> int:
 def cmd_files(args) -> int:
     from . import filedrop
 
+    if args.action == "remove":
+        from . import cli_ops
+
+        return cli_ops.files_remove(args)
+
     rows = [{"token": drop.token, "name": drop.name} for drop in filedrop.listing()]
     _out(rows, args.json, lambda data: [
         print(f"{row['token']}  {row['name']}") for row in data
@@ -41709,7 +41680,10 @@ def cmd_vpn(args) -> int:
     запись radar_selftest, проходит полный круг и оставляет её выключенной.
     Поэтому он — только с --yes.
     """
-    from . import vpn
+    from . import cli_ops, vpn
+
+    if args.action in cli_ops.VPN_ADMIN:
+        return cli_ops.vpn_admin(args)
 
     if not vpn.slots():
         wrong = vpn.unknown_kinds()
@@ -41848,7 +41822,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     files = subparsers.add_parser("files", help=L("раздача файлов", "file sharing"),
                                   parents=[common])
-    files.add_argument("action", nargs="?", choices=["list"], default="list")
+    files.add_argument("action", nargs="?", choices=["list", "remove"], default="list")
+    files.add_argument("token", nargs="?", default="")
+    files.add_argument("--yes", action="store_true")
     files.set_defaults(func=cmd_files)
 
     rd = subparsers.add_parser("rustdesk",
@@ -41862,7 +41838,29 @@ def build_parser() -> argparse.ArgumentParser:
     vpn_cmd = subparsers.add_parser(
         "vpn", help=L("VPN-панели: проверка и полный круг", "VPN panels: check and full cycle"),
         parents=[common])
-    vpn_cmd.add_argument("action", choices=["check", "selftest"])
+    from . import cli_ops
+
+    vpn_cmd.add_argument(
+        "action", choices=["check", "selftest", *cli_ops.VPN_ADMIN],
+        help=L("check/selftest — проверка; panels, panel-save, panel-remove, panel-check — "
+               "панели; access, issue, deny, extend, on, off, revoke — доступы; orders, "
+               "order-confirm, order-retry, order-cancel — заказы; app-revoke — устройства "
+               "приложений",
+               "check/selftest — verification; panels, panel-save, panel-remove, panel-check — "
+               "panels; access, issue, deny, extend, on, off, revoke — access; orders, "
+               "order-confirm, order-retry, order-cancel — orders; app-revoke — app devices"))
+    vpn_cmd.add_argument("items", nargs="*", help=L("аргументы действия (UID, слот, дни, заказ)",
+                                                     "action arguments (UID, slot, days, order)"))
+    vpn_cmd.add_argument("--set", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ",
+                         help=L("panel-save: поле слота (KIND, TITLE, URL, TOKEN, USER, PASS, "
+                                "INBOUND, SUB_URL, GROUPS, CERT)",
+                                "panel-save: a slot field (KIND, TITLE, URL, TOKEN, USER, PASS, "
+                                "INBOUND, SUB_URL, GROUPS, CERT)"))
+    vpn_cmd.add_argument("--slot", action="append", default=[],
+                         help=L("issue: номер панели (можно несколько)",
+                                "issue: a panel number (repeatable)"))
+    vpn_cmd.add_argument("--device", default="", help=L("app-revoke: id устройства",
+                                                         "app-revoke: device id"))
     vpn_cmd.add_argument("--yes", action="store_true")
     vpn_cmd.set_defaults(func=cmd_vpn)
 
@@ -41878,6 +41876,10 @@ def build_parser() -> argparse.ArgumentParser:
     from . import cli_admin
 
     cli_admin.register(subparsers, common)
+
+    from . import cli_ops as _ops
+
+    _ops.register(subparsers, common)
 
     return parser
 
@@ -41927,8 +41929,577 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 RADAR_FILE_115
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_ops.py"
+cat > "radar/cli_ops.py" <<'RADAR_FILE_116'
+"""Консоль: подписки, VPN-панели и доступы, партнёры, перезапуск (с 5.9.8).
+
+Продолжение `radar.cli`, как и `cli_admin`: подкоманды зовут те же функции,
+что обработчики панели (`adminpages.subscriptions_act`, `access_act`,
+`vpnslots`, `ops`, `redeem`, `partners`) — разбор, проверки и права живут
+там один раз. От формы панели консоль берёт только вид: словарь с методом
+`getall`.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from typing import Any
+
+from . import cli
+from .clitext import L
+from .cli_admin import audit
+
+OK, FAILED, NEEDS_YES = cli.OK, cli.FAILED, cli.NEEDS_YES
+CONSOLE = "консоль"
+ROLE = "superadmin"
+
+
+class Form(dict):
+    """Поля формы так, как их отдаёт панель: `get` и `getall`."""
+
+    def getall(self, key: str, default: Any = None) -> list[str]:
+        value = self.get(key)
+        if value is None:
+            return list(default or [])
+        return list(value) if isinstance(value, (list, tuple)) else [value]
+
+
+def pairs(items: list[str] | None) -> tuple[dict[str, str], str]:
+    """`--set КЛЮЧ=ЗНАЧЕНИЕ` → словарь. Вторым — причина отказа."""
+    found: dict[str, str] = {}
+    for item in items or []:
+        key, sign, value = item.partition("=")
+        if not sign or not key.strip():
+            return {}, L(f"Нужно КЛЮЧ=ЗНАЧЕНИЕ, получено «{item}».",
+                         f"Expected KEY=VALUE, got “{item}”.")
+        found[key.strip()] = value
+    return found, ""
+
+
+def _need_yes(args, text_ru: str, text_en: str) -> bool:
+    if getattr(args, "yes", False):
+        return False
+    cli._err(L(text_ru + " Повторите с --yes.", text_en + " Repeat with --yes."))
+    return True
+
+
+def _result(message: str, error: str, as_json: bool) -> int:
+    payload = {"ok": not error, "message": message or error}
+    cli._out(payload, as_json, lambda d: print(d["message"]) if not error
+             else cli._err(d["message"]))
+    return FAILED if error else OK
+
+
+# --------------------------------------------------------------------------
+#  Подписка бота
+# --------------------------------------------------------------------------
+
+def cmd_subs(args) -> int:
+    from . import redeem, storage, subscription
+    from .web import adminpages
+
+    async def run():
+        action, items = args.action, args.items
+
+        if action == "list":
+            needle = (args.q or "").strip().lower()
+            rows = []
+            for uid, user in storage.users().items():
+                if needle:
+                    if needle not in str(uid).lower() and needle not in str(
+                            user.get("username", "")).lower():
+                        continue
+                elif not subscription.paid(user):
+                    continue
+                rows.append({"uid": uid, "username": user.get("username", ""),
+                             "until": subscription.paid_until(user),
+                             "paid": subscription.paid(user),
+                             "trial": subscription.on_trial(user)})
+            cli._out(rows, args.json, lambda data: [
+                print(f"{r['uid']:>14}  {r['until'] or '—':<12} {r['username']}")
+                for r in data] or print(L("нет оплаченных подписок",
+                                          "no paid subscriptions")))
+            return OK
+
+        if action == "codes":
+            rows = [{"code": c.get("code"), "days": c.get("days"),
+                     "used_by": c.get("used_by") or "", "used_at": c.get("used_at") or ""}
+                    for c in await redeem.load()]
+            cli._out(rows, args.json, lambda data: [
+                print(f"{r['code']:<24} {r['days']:>4} дн.  "
+                      + (f"{L('использован', 'used')}: {r['used_by']}" if r["used_by"]
+                         else L("свободен", "free"))) for r in data
+            ] or print(L("кодов нет", "no codes")))
+            return OK
+
+        if action == "grant":
+            if len(items) != 2:
+                cli._err(L("subs grant UID ДНЕЙ", "subs grant UID DAYS"))
+                return FAILED
+            done, failed = await adminpages.subscriptions_act(
+                Form(action="grant", uid=items[0], days=items[1]))
+            if not failed:
+                audit("подписка выдана", f"{items[0]}: {items[1]} дн.")
+            return _result(done, failed, args.json)
+
+        if action == "revoke":
+            if not items:
+                cli._err(L("subs revoke UID", "subs revoke UID"))
+                return FAILED
+            if _need_yes(args, "Оплаченный срок будет снят.", "The paid term will be removed."):
+                return NEEDS_YES
+            done, failed = await adminpages.subscriptions_act(
+                Form(action="revoke", uid=items[0]))
+            if not failed:
+                audit("подписка снята", items[0])
+            return _result(done, failed, args.json)
+
+        if action == "code-add":
+            if not items:
+                cli._err(L("subs code-add КОД [КОД…] [--days N]",
+                           "subs code-add CODE [CODE…] [--days N]"))
+                return FAILED
+            done, failed = await adminpages.subscriptions_act(
+                Form(action="code_add", codes="\n".join(items),
+                     days=str(args.days or redeem.DEFAULT_DAYS)))
+            if not failed:
+                audit("коды подписки заведены", str(len(items)))
+            return _result(done, failed, args.json)
+
+        # code-drop
+        if not items:
+            cli._err(L("subs code-drop КОД", "subs code-drop CODE"))
+            return FAILED
+        done, failed = await adminpages.subscriptions_act(Form(action="code_drop", code=items[0]))
+        if not failed:
+            audit("код подписки удалён", items[0])
+        return _result(done, failed, args.json)
+
+    return cli._run(cli._with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  VPN: панели, доступы, заказы, приложения
+# --------------------------------------------------------------------------
+
+VPN_ADMIN = ("panels", "panel-save", "panel-remove", "panel-check", "access", "issue",
+             "deny", "extend", "on", "off", "revoke", "orders", "order-confirm",
+             "order-retry", "order-cancel", "app-revoke")
+
+
+def vpn_admin(args) -> int:
+    from . import appapi, vpn, vpnsales, vpnslots
+    from .web import adminpages
+
+    async def run():
+        action, items = args.action, args.items
+
+        def need(count: int, usage: str) -> bool:
+            if len(items) < count:
+                cli._err(L("Использование: ", "Usage: ") + usage)
+                return True
+            return False
+
+        if action == "panels":
+            rows = []
+            for number in vpnslots.numbers():
+                if not vpnslots.configured(number):
+                    continue
+                values = vpnslots.read(number)
+                rows.append({
+                    "slot": number, "kind": values.get("KIND", ""),
+                    "title": values.get("TITLE", ""), "url": values.get("URL", ""),
+                    # Секреты не печатаем: только факт, что заданы.
+                    "secret_set": any(values.get(f) for f in vpnslots.SECRET_FIELDS),
+                    "issued": await vpnslots.issued_on(number)})
+            cli._out(rows, args.json, lambda data: [
+                print(f"#{r['slot']}  {r['kind']:<11} {r['title']:<20} {r['url']}  "
+                      f"{L('выдано', 'issued')}: {r['issued']}") for r in data
+            ] or print(L("панелей нет", "no panels")))
+            return OK
+
+        if action == "panel-save":
+            if need(1, "vpn panel-save N --set KIND=3xui --set URL=… --set TITLE=…"):
+                return FAILED
+            fields, bad = pairs(args.set)
+            if bad or not items[0].isdigit():
+                cli._err(bad or L("Номер слота — число.", "The slot number is a number."))
+                return FAILED
+            unknown = [k for k in fields if k not in vpnslots.FIELDS]
+            if unknown:
+                cli._err(L("Нет таких полей: ", "No such fields: ") + ", ".join(unknown)
+                         + " (" + ", ".join(vpnslots.FIELDS) + ")")
+                return FAILED
+            problem = vpnslots.save(int(items[0]), fields)
+            if problem:
+                cli._err(problem)
+                return FAILED
+            audit("VPN-панель сохранена", f"слот {items[0]}")
+            print(L(f"Слот {items[0]} сохранён. Проверьте: vpn panel-check {items[0]}",
+                    f"Slot {items[0]} saved. Check it: vpn panel-check {items[0]}"))
+            return OK
+
+        if action == "panel-remove":
+            if need(1, "vpn panel-remove N --yes") or not items[0].isdigit():
+                return FAILED
+            issued = await vpnslots.issued_on(int(items[0]))
+            if _need_yes(args, f"Слот {items[0]} будет освобождён (выдано на нём: {issued}; "
+                               "доступы в панели останутся).",
+                         f"Slot {items[0]} will be freed ({issued} issued on it; "
+                         "accesses on the panel stay)."):
+                return NEEDS_YES
+            if not vpnslots.remove(int(items[0])):
+                cli._err(L("Удалить не удалось.", "Could not remove."))
+                return FAILED
+            audit("VPN-панель удалена", f"слот {items[0]}")
+            print(L(f"Слот {items[0]} освобождён", f"Slot {items[0]} freed"))
+            return OK
+
+        if action == "panel-check":
+            if need(1, "vpn panel-check N") or not items[0].isdigit():
+                return FAILED
+            ok, note = await vpnslots.check(int(items[0]))
+            cli._out({"slot": int(items[0]), "ok": ok, "note": note}, args.json,
+                     lambda d: print(f"{'OK' if d['ok'] else 'FAIL'} #{d['slot']}: {d['note']}"))
+            return OK if ok else FAILED
+
+        if action == "access":
+            if not items:
+                payload = {"pending": await vpn.pending(), "issued": await vpn.issued()}
+                cli._out(payload, args.json, lambda d: (
+                    print(L("Заявки: ", "Requests: ") + (", ".join(d["pending"]) or "—")),
+                    print(L("Выдано: ", "Issued: ") + (", ".join(d["issued"]) or "—"))))
+                return OK
+            entry = await vpn.record(items[0])
+            results = await vpn.statuses(items[0]) if entry and entry.get("panels") else {}
+            rows = {key: (vpn.describe(value) if hasattr(value, "enabled") else str(value))
+                    for key, value in results.items()}
+            cli._out({"uid": items[0], "panels": rows}, args.json, lambda d: [
+                print(f"#{k}: {v}") for k, v in d["panels"].items()
+            ] or print(L("доступ не выдан", "no access issued")))
+            return OK
+
+        if action in ("issue", "deny", "extend", "on", "off", "revoke"):
+            usage = {"issue": "vpn issue UID --slot N [--slot M]", "deny": "vpn deny UID",
+                     "extend": "vpn extend UID SLOT DAYS", "on": "vpn on UID SLOT",
+                     "off": "vpn off UID SLOT", "revoke": "vpn revoke UID SLOT --yes"}[action]
+            want = {"issue": 1, "deny": 1, "extend": 3}.get(action, 2)
+            if need(want, usage):
+                return FAILED
+            form = Form(uid=items[0])
+            if action == "issue":
+                form.update(action="issue", slot=list(args.slot or []))
+            elif action == "deny":
+                form.update(action="deny")
+            elif action == "extend":
+                form.update(action="extend", slot=items[1], days=items[2])
+            elif action in ("on", "off"):
+                form.update(action="toggle", slot=items[1], value="1" if action == "on" else "0")
+            else:
+                if _need_yes(args, "Доступ будет отозван, запись в панели удалена.",
+                             "Access will be revoked and the panel entry deleted."):
+                    return NEEDS_YES
+                form.update(action="revoke", slot=items[1])
+            done, failed = await adminpages.access_act(form, CONSOLE, ROLE)
+            if not failed:
+                audit("VPN: " + form["action"], items[0])
+            return _result(done, failed, args.json)
+
+        if action == "orders":
+            rows = [{"id": o.get("id"), "uid": o.get("uid"), "status": o.get("status"),
+                     "plan": o.get("plan")} for o in await vpnsales.recent(30)]
+            cli._out(rows, args.json, lambda data: [
+                print(f"{str(r['id']):<12} {str(r['uid']):>12}  {r['status']}") for r in data
+            ] or print(L("заказов нет", "no orders")))
+            return OK
+
+        if action in ("order-confirm", "order-retry", "order-cancel"):
+            if need(1, f"vpn {action} ORDER"):
+                return FAILED
+            uid = ""
+            if action == "order-cancel":
+                found = await vpnsales.order(items[0])
+                uid = str((found or {}).get("uid") or "")
+            done, failed = await adminpages.access_act(
+                Form(action=action.replace("-", "_"), order=items[0], uid=uid), CONSOLE, ROLE)
+            if not failed:
+                audit("VPN: " + action, items[0])
+            return _result(done, failed, args.json)
+
+        # app-revoke
+        if need(1, "vpn app-revoke UID [--device ID]"):
+            return FAILED
+        count = await appapi.revoke(items[0], args.device or None)
+        audit("устройство приложения отключено", items[0])
+        cli._out({"uid": items[0], "revoked": count}, args.json,
+                 lambda d: print(L(f"Отключено устройств: {d['revoked']}",
+                                   f"Devices disconnected: {d['revoked']}")))
+        return OK
+
+    return cli._run(cli._with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  Партнёрские проекты
+# --------------------------------------------------------------------------
+
+def cmd_partners(args) -> int:
+    from . import ops, partners, promo
+
+    async def run():
+        action, items = args.action, args.items
+        projects = await partners.load()
+
+        if action == "list":
+            rows = [{"slug": p.slug, "title": p.title, "url": p.url, "visible": p.visible,
+                     "clicks": p.clicks, "promo": p.promo_kind} for p in
+                    partners.order_projects(projects)]
+            cli._out(rows, args.json, lambda data: [
+                print(f"{r['slug']:<16} {'+' if r['visible'] else '-'} {r['clicks']:>5}  "
+                      f"{r['title']}  {r['url']}") for r in data
+            ] or print(L("проектов нет", "no projects")))
+            return OK
+
+        if not items:
+            cli._err(L("Нужно короткое имя проекта (slug).", "A project slug is required."))
+            return FAILED
+        slug = items[0].strip().lower()
+        existing = next((p for p in projects if p.slug == slug), None)
+
+        if action == "show":
+            if existing is None:
+                cli._err(L("Такого проекта нет.", "No such project."))
+                return FAILED
+            cli._out(existing.to_dict(), args.json, lambda d: [
+                print(f"{k}: {v}") for k, v in d.items()])
+            return OK
+
+        if action == "save":
+            fields, bad = pairs(args.set)
+            if bad:
+                cli._err(bad)
+                return FAILED
+            # Незаданные поля остаются прежними: правка названия не должна
+            # стирать описание и промокод.
+            base = {k: ("" if v is None else str(v)) for k, v in
+                    (existing.to_dict().items() if existing else [])}
+            if existing is not None:
+                base["visible"] = "1" if existing.visible else ""
+            base.update(fields)
+            if "visible" in fields:
+                base["visible"] = "1" if fields["visible"].lower() in ("1", "true", "yes", "да") else ""
+            base["slug"] = slug
+            result = await ops.partner_save(Form(base))
+            if result.ok:
+                audit("партнёр изменён" if existing else "партнёр добавлен", slug)
+            return _result(result.message if result.ok else "",
+                           "" if result.ok else result.message, args.json)
+
+        if action == "remove":
+            if _need_yes(args, f"Проект «{slug}» будет удалён.", f"Project “{slug}” will be deleted."):
+                return NEEDS_YES
+            result = await ops.partner_remove(slug)
+            if result.ok:
+                audit("партнёр удалён", slug)
+            return _result(result.message if result.ok else "",
+                           "" if result.ok else result.message, args.json)
+
+        # export
+        rows = await promo.export_for_partner(slug)
+        print(promo.render_csv(rows), end="")
+        return OK
+
+    return cli._run(cli._with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  Перезапуск и раздача файлов
+# --------------------------------------------------------------------------
+
+def cmd_restart(args) -> int:
+    from . import ops
+
+    if _need_yes(args, "Бот перезапустится, оповещения встанут на полминуты.",
+                 "The bot will restart; alerts pause for about half a minute."):
+        return NEEDS_YES
+    result = cli._run(ops.restart_bot())
+    if result.ok:
+        audit("перезапуск бота из консоли", "")
+    return _result(result.message if result.ok else "",
+                   "" if result.ok else result.message, args.json)
+
+
+def files_remove(args) -> int:
+    from . import filedrop
+
+    if not args.token:
+        cli._err(L("Нужен токен раздачи: files remove ТОКЕН --yes.",
+                   "A share token is required: files remove TOKEN --yes."))
+        return FAILED
+    if _need_yes(args, "Ссылка будет отключена, файл удалён.",
+                 "The link will be disabled and the file deleted."):
+        return NEEDS_YES
+    if filedrop.remove(args.token):
+        audit("ссылка на файл отключена", args.token[:8])
+        print(L("Ссылка отключена, файл удалён", "Link disabled, file deleted"))
+        return OK
+    cli._err(L("Такой ссылки уже нет", "No such link any more"))
+    return FAILED
+
+
+# --------------------------------------------------------------------------
+#  Разбор аргументов
+# --------------------------------------------------------------------------
+
+def register(subparsers, common) -> None:
+    subs_cmd = subparsers.add_parser("subs", help=L("подписка бота и коды", "bot subscription and codes"),
+                                 parents=[common])
+    subs_cmd.add_argument("action", choices=["list", "codes", "grant", "revoke", "code-add", "code-drop"])
+    subs_cmd.add_argument("items", nargs="*")
+    subs_cmd.add_argument("--q", default="", help=L("list: искать по ключу или имени",
+                                                 "list: search by key or username"))
+    subs_cmd.add_argument("--days", type=int, default=0, help=L("code-add: дней на код",
+                                                             "code-add: days per code"))
+    subs_cmd.add_argument("--yes", action="store_true")
+    subs_cmd.set_defaults(func=cmd_subs)
+
+    partners_cmd = subparsers.add_parser("partners", help=L("партнёрские проекты", "partner projects"),
+                                     parents=[common])
+    partners_cmd.add_argument("action", choices=["list", "show", "save", "remove", "export"])
+    partners_cmd.add_argument("items", nargs="*")
+    partners_cmd.add_argument("--set", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ",
+                          help=L("save: поле проекта (title, url, description, icon, order, "
+                                 "visible, promo_kind, promo_value, promo_prefix, promo_terms)",
+                                 "save: a project field (title, url, description, icon, order, "
+                                 "visible, promo_kind, promo_value, promo_prefix, promo_terms)"))
+    partners_cmd.add_argument("--yes", action="store_true")
+    partners_cmd.set_defaults(func=cmd_partners)
+
+    restart_cmd = subparsers.add_parser("restart", help=L("перезапустить бота (через docker.sock)",
+                                                      "restart the bot (through docker.sock)"),
+                                    parents=[common])
+    restart_cmd.add_argument("--yes", action="store_true")
+    restart_cmd.set_defaults(func=cmd_restart)
+RADAR_FILE_116
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ops.py"
+cat > "radar/ops.py" <<'RADAR_FILE_117'
+"""Действия администрации, общие для панели и консоли (с 5.9.8).
+
+Раньше правка партнёрских проектов и перезапуск бота жили внутри
+обработчиков веб-панели, и консоли пришлось бы повторять их логику. А две
+копии правил расходятся: лимит проектов, разбор формы и порядок действий
+в одном месте обновили бы, в другом — забыли. Здесь они лежат один раз;
+панель и консоль зовут эти функции и каждая добавляет своё — редирект или
+вывод, запись в журнал действий.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import socket
+from dataclasses import dataclass
+from typing import Any
+
+log = logging.getLogger("radar.ops")
+
+
+@dataclass
+class Result:
+    ok: bool
+    message: str
+    extra: str = ""      # что вызывающему нужно для журнала: «changed», «added»…
+
+
+# --------------------------------------------------------------------------
+#  Партнёрские проекты
+# --------------------------------------------------------------------------
+
+async def partner_save(data: Any) -> Result:
+    """Заводит или правит проект по полям формы (словарь или форма панели)."""
+    from . import partners
+
+    projects = await partners.load()
+    slug = str(data.get("slug", "")).strip().lower()
+    existing = next((item for item in projects if item.slug == slug), None)
+    if existing is None and len(projects) >= partners.MAX_PROJECTS:
+        return Result(False, f"Больше {partners.MAX_PROJECTS} проектов не бывает")
+
+    # Разбор формы живёт в самом модуле партнёров: второй набор правил
+    # разошёлся бы с ботом.
+    project = partners.from_form(data, existing)
+    if project is None:
+        return Result(False, "Проверьте короткое имя, название и ссылку")
+
+    rest = [item for item in projects if item.slug != project.slug]
+    await partners.save(rest + [project])
+    return Result(True, f"Сохранено: {project.title}",
+                  ("changed" if existing else "added") + ":" + project.slug)
+
+
+async def partner_remove(slug: str) -> Result:
+    from . import partners
+
+    slug = (slug or "").strip().lower()
+    projects = await partners.load()
+    rest = [item for item in projects if item.slug != slug]
+    if len(rest) == len(projects):
+        return Result(False, "Такого проекта нет")
+    await partners.save(rest)
+    return Result(True, "Проект удалён", slug)
+
+
+# --------------------------------------------------------------------------
+#  Перезапуск бота
+# --------------------------------------------------------------------------
+
+# Ссылки на задачи: asyncio держит на них только слабую, и перезапуск,
+# о котором никто не помнит, мог бы не состояться.
+_tasks: set[asyncio.Task] = set()
+
+
+async def restart_bot(delay: float = 2.0) -> Result:
+    """Перезапускает контейнер бота через docker.sock.
+
+    Ответ вызывающему должен успеть уйти: перезапускается тот самый процесс,
+    что отвечает, поэтому само действие откладывается.
+    """
+    from . import dockerapi
+
+    if not dockerapi.available():
+        return Result(False, "Нет доступа к docker — перезапустите на сервере")
+
+    async def later() -> None:
+        await asyncio.sleep(delay)
+        docker = await dockerapi.session()
+        try:
+            name = "radar_container"
+            if not await dockerapi.container_exists(docker, name):
+                name = socket.gethostname()
+            await dockerapi.container_action(docker, name, "restart")
+        except Exception:  # noqa: BLE001
+            log.warning("Перезапуск бота не удался", exc_info=True)
+        finally:
+            await docker.close()
+
+    task = asyncio.get_running_loop().create_task(later())
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return Result(True, "Перезапуск начат — через полминуты бот вернётся")
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordmusic.py"
-cat > "radar/discordmusic.py" <<'RADAR_FILE_116'
+cat > "radar/discordmusic.py" <<'RADAR_FILE_118'
 """Музыка в голосовом канале Discord по ссылке (с 5.9.7).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕНО.
@@ -42519,9 +43090,9 @@ class DiscordPyHost(VoiceHost):
     def channel_of(self, handle: Any) -> str:
         channel = getattr(handle, "channel", None)
         return str(getattr(channel, "id", "") or "")
-RADAR_FILE_116
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordverify.py"
-cat > "radar/discordverify.py" <<'RADAR_FILE_117'
+cat > "radar/discordverify.py" <<'RADAR_FILE_119'
 """Проверка участников Discord-сервера (с 5.9.5): логика без сети.
 
 Честно о том, что тут возможно. У Discord нет капчи для ботов, и надёжно
@@ -42707,9 +43278,9 @@ def evaluate(user_id: int | str, username: str = "", global_name: str = "",
     if suspicious_name(username, global_name):
         return Verdict("kick", "в имени реклама или приглашение")
     return Verdict("allow")
-RADAR_FILE_117
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
-cat > "radar/cli_admin.py" <<'RADAR_FILE_118'
+cat > "radar/cli_admin.py" <<'RADAR_FILE_120'
 """Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
 
 Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
@@ -43172,9 +43743,9 @@ def register(subparsers, common) -> None:
     audit_cmd.add_argument("--limit", type=int, default=50)
     audit_cmd.add_argument("--yes", action="store_true")
     audit_cmd.set_defaults(func=cmd_audit)
-RADAR_FILE_118
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
-cat > "radar/clitext.py" <<'RADAR_FILE_119'
+cat > "radar/clitext.py" <<'RADAR_FILE_121'
 """Язык командной строки: русский и английский (с 5.9.3.1).
 
 Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
@@ -43239,9 +43810,9 @@ def current() -> str:
 def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
     """Строка на языке консоли."""
     return ru if _current == RU else en
-RADAR_FILE_119
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_120'
+cat > "radar/__main__.py" <<'RADAR_FILE_122'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -43263,9 +43834,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_120
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_121'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_123'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -43407,9 +43978,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_121
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_122'
+cat > "tools/restore.sh" <<'RADAR_FILE_124'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -43651,9 +44222,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_122
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_123'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_125'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -43684,6 +44255,7 @@ cat > "tools/radarctl.sh" <<'RADAR_FILE_123'
 #   bash radarctl.sh update            обновиться до последнего выпуска
 #   bash radarctl.sh wipe --yes        стереть установку целиком
 #   bash radarctl.sh restore ФАЙЛ      восстановить из копии
+#   bash radarctl.sh restart           перезапустить контейнер бота
 #
 # Общее:
 #   RADAR_HOME=/путь bash radarctl.sh …   нестандартный каталог установки
@@ -43723,6 +44295,15 @@ case "$1" in
         exec env RADAR_HOME="$APP_DIR" bash install.sh --skip-updates "$@"
         ;;
 
+    restart)
+        # Перезапуск самого контейнера: изнутри его не сделать без docker.sock,
+        # а на хосте это одна команда. Оповещения встанут примерно на полминуты.
+        docker inspect "$CONTAINER" >/dev/null 2>&1             || die "Контейнер $CONTAINER не найден — бот не установлен или остановлен"
+        docker restart "$CONTAINER" >/dev/null || die "Не удалось перезапустить $CONTAINER"
+        printf "  ✓ Контейнер %s перезапущен
+" "$CONTAINER"
+        ;;
+
     wipe)
         shift
         if [ -f "$APP_DIR/tools/uninstall.sh" ]; then
@@ -43749,9 +44330,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_123
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_124'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_126'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -43944,9 +44525,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_124
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_125'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_127'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -45700,9 +46281,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_125
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_126'
+cat > "radar/vpn.py" <<'RADAR_FILE_128'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -46522,9 +47103,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_126
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_127'
+cat > "radar/payments.py" <<'RADAR_FILE_129'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -46753,9 +47334,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_127
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_128'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_130'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -47122,9 +47703,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_128
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_131'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -47245,9 +47826,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_129
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_132'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -47718,9 +48299,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_130
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_133'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -47886,9 +48467,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_131
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_134'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -48386,9 +48967,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_132
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_135'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -48894,9 +49475,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_133
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_136'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -49340,9 +49921,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_134
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_137'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -49489,9 +50070,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_135
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_138'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -49779,9 +50360,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_136
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_139'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -50028,9 +50609,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_137
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_140'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -50401,9 +50982,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_138
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_141'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -50978,9 +51559,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_139
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_142'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -51081,9 +51662,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_140
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_143'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -51171,9 +51752,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_141
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_144'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -51594,9 +52175,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_142
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_145'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -52787,9 +53368,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_143
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_144'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_146'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -53543,9 +54124,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_144
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_147'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -54069,9 +54650,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_145
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_146'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_148'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -54279,9 +54860,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_146
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_147'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_149'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -55268,9 +55849,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_147
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_148'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_150'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -55683,9 +56264,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_148
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_149'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_151'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -55726,9 +56307,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_149
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_150'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_152'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -55991,9 +56572,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_150
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_151'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_153'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -56143,9 +56724,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_151
+RADAR_FILE_153
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_152'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_154'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -56613,9 +57194,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_152
+RADAR_FILE_154
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_153'
+cat > "radar/cookies.py" <<'RADAR_FILE_155'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -56748,9 +57329,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_153
+RADAR_FILE_155
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_154'
+cat > "radar/music.py" <<'RADAR_FILE_156'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -57554,9 +58135,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_154
+RADAR_FILE_156
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_155'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_157'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -58170,9 +58751,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_155
+RADAR_FILE_157
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_156'
+cat > "multitool/__init__.py" <<'RADAR_FILE_158'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -58198,9 +58779,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_156'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_156
+RADAR_FILE_158
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_157'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_159'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -58233,9 +58814,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_157'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_157
+RADAR_FILE_159
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_158'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_160'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -58642,9 +59223,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_158
+RADAR_FILE_160
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_159'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_161'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -59128,9 +59709,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_159
+RADAR_FILE_161
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_160'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_162'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -59370,7 +59951,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_160
+RADAR_FILE_162
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

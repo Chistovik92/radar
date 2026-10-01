@@ -1750,9 +1750,12 @@ duplication of the bot's and the panel's functions. Plan:
    validation), `stats`, `logs`, `audit`. `tools/lint_cli_parity.py` checks
    every bot command and panel route against a "done / postponed / outside
    the console" table.
-4. **Next (5.9.3.x):** the rest of the parity table - AI, subscriptions, VPN
-   panels and access, partners, music and cloud, media, digest, chats
-   (announcements and messages).
+4. **5.9.8 - subscriptions, VPN, partners, restart:** `subs`, `vpn panels|access|orders|
+   app-revoke`, `partners`, `files remove`, `restart`; the actions shared by the panel and
+   the console - `radar/ops.py`.
+5. **Next:** the rest of the parity table - AI (agents, models, provider, quota), digest,
+   history, link check, music and cloud, media, SOS, chats (announcements and messages),
+   events.
 
 ---
 

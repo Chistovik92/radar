@@ -1,4 +1,4 @@
-# Radar v5.9.7
+# Radar v5.9.8
 
 [Русская версия](README.md)
 
@@ -816,6 +816,45 @@ a missing field and `keys set` wrote without validation — now numbers, choices
 addresses and plans are checked by the panel's own rules.
 `tools/lint_cli_parity.py` makes sure every bot command and panel route is
 accounted for: done in the console, postponed with a reason, or outside it.
+
+**Subscriptions, VPN, partners, restart (since 5.9.8).** The same actions as
+the panel sections "Bot subscription", "VPN" and "Partners"; the console calls
+the same functions instead of repeating them.
+
+```bash
+radarctl.sh subs list [--q text]                   # who has a paid bot subscription
+radarctl.sh subs grant 123456789 30                # add 30 days
+radarctl.sh subs revoke 123456789 --yes            # remove the paid term
+radarctl.sh subs codes                             # subscription promo codes
+radarctl.sh subs code-add ABCDE-1 ABCDE-2 --days 30
+radarctl.sh subs code-drop ABCDE-1
+
+radarctl.sh vpn panels                             # configured panels (secrets are not printed)
+radarctl.sh vpn panel-save 2 --set KIND=marzban --set URL=https://host:8000 --set TITLE=Main
+radarctl.sh vpn panel-check 2                      # a live sign-in to the panel
+radarctl.sh vpn panel-remove 2 --yes
+radarctl.sh vpn access [UID]                       # requests and issued; per person - status
+radarctl.sh vpn issue UID --slot 1 --slot 2        # issue access
+radarctl.sh vpn extend UID 1 30                    # extend on panel 1 by 30 days
+radarctl.sh vpn off UID 1 / vpn on UID 1           # switch off / on
+radarctl.sh vpn revoke UID 1 --yes                 # revoke and delete the panel entry
+radarctl.sh vpn deny UID                           # decline a request
+radarctl.sh vpn orders                             # orders
+radarctl.sh vpn order-confirm ID                   # confirm payment (also order-retry, order-cancel)
+radarctl.sh vpn app-revoke UID [--device ID]       # disconnect app devices
+
+radarctl.sh partners list
+radarctl.sh partners save shop --set title=Shop --set url=https://shop.example
+radarctl.sh partners remove shop --yes
+radarctl.sh partners export shop > promo-shop.csv  # a partner's codes as a file
+radarctl.sh files remove TOKEN --yes               # disable a file share early
+radarctl.sh restart --yes                          # restart the bot (docker.sock); on the host just `radarctl.sh restart`
+```
+
+`partners save` changes only the given fields: renaming does not wipe the
+description, order or click counter. The project limit and field parsing are
+shared with the panel (`radar/ops.py`, `radar/partners.py`). All of it is
+written to the action log as "console", without secrets or panel addresses.
 
 ### Removing the installation
 
