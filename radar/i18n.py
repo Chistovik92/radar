@@ -34,10 +34,17 @@ log = logging.getLogger("radar.i18n")
 
 RU = "ru"
 EN = "en"
-LANGUAGES = (RU, EN)
+UK = "uk"
+FA = "fa"
+ZH = "zh"
+# Языки интерфейса — те же, что в приложении HydraVPN (с 5.9.6).
+LANGUAGES = (RU, EN, UK, FA, ZH)
 DEFAULT = RU
 
-TITLES = {RU: "🇷🇺 Русский", EN: "🇬🇧 English"}
+TITLES = {
+    RU: "🇷🇺 Русский", EN: "🇬🇧 English", UK: "🇺🇦 Українська",
+    FA: "🇮🇷 فارسی", ZH: "🇨🇳 简体中文",
+}
 
 # Словарь. Ключ — короткое имя строки, значение — перевод на английский.
 # Русский текст живёт в самих вызовах как запасной вариант: так его видно
@@ -819,7 +826,34 @@ EN_STRINGS: dict[str, str] = {
     "manage.all_sections": "All sections are available, including access keys and logs.",
     "manage.admin_sections": "Sources, users, statistics, links and invites are available.",
     "manage.mod_sections": "Sources and user settings editing are available.",
+
+    # --- ключи, которые код использовал, а словарь не содержал (с 5.9.6) ---
+    "img.too_slow": "🖼 The site did not give the images within two minutes — "
+                    "stopped.\n<i>This happens when the post is closed or the "
+                    "site slows down unfamiliar visitors. Try again later.</i>",
+    "settings.back": "◀️ To settings",
+    "settings.tz.whole": "◀️ Whole hours",
+    "settings.tz.fractional": "⏱ Half-hour zones",
+    "settings.tz.bad": "Could not parse the zone.",
+    "settings.tz.now": "Now",
+    "settings.tz.saved": "Time zone",
+    "settings.tz.title": "🕓 <b>Time zone</b>",
+    "settings.tz.prompt": "Offsets are counted from UTC. Quiet hours, the weather "
+                          "time and digest delivery all follow the zone you pick here.",
 }
+
+# Таблицы остальных языков лежат в отдельных файлах: словарь каждого — сотни
+# строк, и в одном модуле они заслонили бы логику. Ключи — те же, что выше.
+from .i18n_fa import STRINGS as FA_STRINGS  # noqa: E402
+from .i18n_uk import STRINGS as UK_STRINGS  # noqa: E402
+from .i18n_zh import STRINGS as ZH_STRINGS  # noqa: E402
+
+TABLES: dict[str, dict[str, str]] = {
+    EN: EN_STRINGS, UK: UK_STRINGS, FA: FA_STRINGS, ZH: ZH_STRINGS,
+}
+# Чего не нашли в таблице языка, берём отсюда. Украинцу русская строка
+# понятнее английской; персу и китайцу — наоборот.
+FALLBACK_TO_EN = (FA, ZH)
 
 
 def normalize(value: Any) -> str:
@@ -846,10 +880,16 @@ def t(key: str, lang: str, fallback: str) -> str:
     """Строка на нужном языке.
 
     fallback — русский текст, он же значение по умолчанию. Если перевода
-    нет, вернётся он: русская строка среди английских понятнее, чем
-    служебный ключ.
+    нет, вернётся он (а для персидского и китайского — английский): строка
+    на другом языке понятнее, чем служебный ключ.
     """
-    if normalize(lang) == EN:
+    code = normalize(lang)
+    if code == RU:
+        return fallback
+    found = TABLES.get(code, {}).get(key)
+    if found is not None:
+        return found
+    if code in FALLBACK_TO_EN:
         return EN_STRINGS.get(key, fallback)
     return fallback
 
@@ -886,6 +926,8 @@ TRANSLATE_SYSTEM = (
     "keep the tone. Return only the translation, nothing else."
 )
 
+TARGET_NAMES = {EN: "English", UK: "Ukrainian", FA: "Persian", ZH: "Simplified Chinese"}
+
 
 def cache_key(text: str, lang: str) -> tuple[str, str]:
     return (text.strip()[:400], normalize(lang))
@@ -911,7 +953,7 @@ async def translate(text: str, lang: str) -> str:
     try:
         result = (await ai.generate(
             text[:1500],
-            system=TRANSLATE_SYSTEM.format(target="English"),
+            system=TRANSLATE_SYSTEM.format(target=TARGET_NAMES.get(lang, "English")),
             max_tokens=600,
             temperature=0.2,
             role=ai.ANALYSIS,

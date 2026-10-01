@@ -1790,6 +1790,22 @@ At the author's request. Plan: [PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md)
 
 ---
 
+## 5.9.6 - interface in five languages ⚠️ code written
+
+At the author's request: the languages of the HydraVPN app - Russian,
+English, Ukrainian, Persian, Simplified Chinese.
+
+1. **Tables** `radar/i18n_uk.py`, `i18n_fa.py`, `i18n_zh.py` - 530 keys, with
+   a test for completeness, placeholders, HTML tags and script.
+2. **Fallback language:** Ukrainian → Russian, Persian and Chinese → English.
+3. **Around the text:** weekdays, the wind rose, the zone label, the language
+   chooser, `/lang` and yes/no answers in text networks.
+4. **Not translated:** superadministrator screens, the web panel, the console
+   (Russian and English). Translations were made without native speakers -
+   corrections are welcome.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2

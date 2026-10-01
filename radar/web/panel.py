@@ -1717,7 +1717,7 @@ def _users_body(session, message: str = "", failed: str = "") -> str:
         cities = ", ".join(
             sorted({str(loc.get("city") or "") for loc in locations if loc.get("city")})
         )
-        lang = "en" if str(item.get("lang") or "").startswith("en") else "ru"
+        lang = "ru" if not item.get("lang") else str(item.get("lang"))[:2]
         zone = timezones.user_label(item, lang)
         if not timezones.chosen(item):
             zone += " (серверный)"

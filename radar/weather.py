@@ -71,6 +71,12 @@ CODES: dict[int, tuple[str, str, str]] = {
 SPARK = "▁▂▃▄▅▆▇█"
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 WEEKDAYS_EN = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# Остальные языки интерфейса (5.9.6); чего нет здесь — английские.
+WEEKDAYS_BY = {
+    "uk": ("пн", "вт", "ср", "чт", "пт", "сб", "нд"),
+    "fa": ("د", "س", "چ", "پ", "ج", "ش", "ی"),
+    "zh": ("周一", "周二", "周三", "周四", "周五", "周六", "周日"),
+}
 
 def describe(code: int | None, day: bool = True, lang: str = "ru") -> tuple[str, str]:
     from . import i18n
@@ -305,7 +311,8 @@ def _day_label(date: str, index: int, lang: str = "ru") -> str:
         return i18n.t("weather.tomorrow", lang, "завтра")
     try:
         parsed = datetime.strptime(str(date)[:10], "%Y-%m-%d")
-        weekdays = WEEKDAYS_EN if i18n.normalize(lang) == i18n.EN else WEEKDAYS
+        code = i18n.normalize(lang)
+        weekdays = WEEKDAYS if code == i18n.RU else WEEKDAYS_BY.get(code, WEEKDAYS_EN)
         return f"{weekdays[parsed.weekday()]} {parsed.day}"
     except ValueError:
         return str(date)[:10]

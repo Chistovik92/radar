@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.5 — автономный установщик.
+# Система «Радар» v5.9.6 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.5"
+VERSION="5.9.6"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=156
+FILE_COUNT=159
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3292,6 +3292,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.6", [
+        "🌍 <b>Бот заговорил на пяти языках.</b> К русскому и английскому добавились украинский, персидский и китайский — как в приложении HydraVPN. Язык выбирается в меню «🌍 Язык» (в ВК, MAX и Discord — /lang uk, /lang fa, /lang zh). Переводы сделаны без носителей языка: если увидите неточность — сообщите автору.",
+    ]),
     ("5.9.5", [
         "🛡 <b>Discord: проверка участников.</b> Новый участник нажимает кнопку и отвечает на короткий вопрос — так он получает роль «проверен»; связанный через /link аккаунт проходит без вопроса. Слишком молодые аккаунты и имена с рекламой исключаются при вступлении, не прошедшие вовремя — по тайм-ауту. Выключено по умолчанию, настраивается в панели. Доказать человека нельзя — это поднимает цену автоматического входа.",
     ]),
@@ -5204,7 +5207,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.5"
+__version__ = "5.9.6"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -13342,6 +13345,12 @@ ROSE_KEYS = ("wind.n", "wind.ne", "wind.e", "wind.se",
              "wind.s", "wind.sw", "wind.w", "wind.nw")
 ROSE_SHORT = ("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
 ROSE_SHORT_EN = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+# Короткие подписи по языкам (5.9.6); чего нет здесь — английские.
+ROSE_SHORT_BY = {
+    "uk": ("Пн", "ПнСх", "Сх", "ПдСх", "Пд", "ПдЗх", "Зх", "ПнЗх"),
+    "fa": ("ش", "ش‌ق", "ق", "ج‌ق", "ج", "ج‌غ", "غ", "ش‌غ"),
+    "zh": ("北", "东北", "东", "东南", "南", "西南", "西", "西北"),
+}
 
 # Границы шкалы Бофорта в м/с и названия: русское — запасной вариант.
 FORCE = (
@@ -13376,8 +13385,10 @@ def wind_short(degrees: float | None, lang: str = "ru") -> str:
     sector = wind_sector(degrees)
     if sector is None:
         return ""
-    table = ROSE_SHORT_EN if i18n.normalize(lang) == i18n.EN else ROSE_SHORT
-    return table[sector]
+    code = i18n.normalize(lang)
+    if code == i18n.RU:
+        return ROSE_SHORT[sector]
+    return ROSE_SHORT_BY.get(code, ROSE_SHORT_EN)[sector]
 
 
 def beaufort(speed: float | None, lang: str = "ru") -> str:
@@ -14141,10 +14152,17 @@ log = logging.getLogger("radar.i18n")
 
 RU = "ru"
 EN = "en"
-LANGUAGES = (RU, EN)
+UK = "uk"
+FA = "fa"
+ZH = "zh"
+# Языки интерфейса — те же, что в приложении HydraVPN (с 5.9.6).
+LANGUAGES = (RU, EN, UK, FA, ZH)
 DEFAULT = RU
 
-TITLES = {RU: "🇷🇺 Русский", EN: "🇬🇧 English"}
+TITLES = {
+    RU: "🇷🇺 Русский", EN: "🇬🇧 English", UK: "🇺🇦 Українська",
+    FA: "🇮🇷 فارسی", ZH: "🇨🇳 简体中文",
+}
 
 # Словарь. Ключ — короткое имя строки, значение — перевод на английский.
 # Русский текст живёт в самих вызовах как запасной вариант: так его видно
@@ -14926,7 +14944,34 @@ EN_STRINGS: dict[str, str] = {
     "manage.all_sections": "All sections are available, including access keys and logs.",
     "manage.admin_sections": "Sources, users, statistics, links and invites are available.",
     "manage.mod_sections": "Sources and user settings editing are available.",
+
+    # --- ключи, которые код использовал, а словарь не содержал (с 5.9.6) ---
+    "img.too_slow": "🖼 The site did not give the images within two minutes — "
+                    "stopped.\n<i>This happens when the post is closed or the "
+                    "site slows down unfamiliar visitors. Try again later.</i>",
+    "settings.back": "◀️ To settings",
+    "settings.tz.whole": "◀️ Whole hours",
+    "settings.tz.fractional": "⏱ Half-hour zones",
+    "settings.tz.bad": "Could not parse the zone.",
+    "settings.tz.now": "Now",
+    "settings.tz.saved": "Time zone",
+    "settings.tz.title": "🕓 <b>Time zone</b>",
+    "settings.tz.prompt": "Offsets are counted from UTC. Quiet hours, the weather "
+                          "time and digest delivery all follow the zone you pick here.",
 }
+
+# Таблицы остальных языков лежат в отдельных файлах: словарь каждого — сотни
+# строк, и в одном модуле они заслонили бы логику. Ключи — те же, что выше.
+from .i18n_fa import STRINGS as FA_STRINGS  # noqa: E402
+from .i18n_uk import STRINGS as UK_STRINGS  # noqa: E402
+from .i18n_zh import STRINGS as ZH_STRINGS  # noqa: E402
+
+TABLES: dict[str, dict[str, str]] = {
+    EN: EN_STRINGS, UK: UK_STRINGS, FA: FA_STRINGS, ZH: ZH_STRINGS,
+}
+# Чего не нашли в таблице языка, берём отсюда. Украинцу русская строка
+# понятнее английской; персу и китайцу — наоборот.
+FALLBACK_TO_EN = (FA, ZH)
 
 
 def normalize(value: Any) -> str:
@@ -14953,10 +14998,16 @@ def t(key: str, lang: str, fallback: str) -> str:
     """Строка на нужном языке.
 
     fallback — русский текст, он же значение по умолчанию. Если перевода
-    нет, вернётся он: русская строка среди английских понятнее, чем
-    служебный ключ.
+    нет, вернётся он (а для персидского и китайского — английский): строка
+    на другом языке понятнее, чем служебный ключ.
     """
-    if normalize(lang) == EN:
+    code = normalize(lang)
+    if code == RU:
+        return fallback
+    found = TABLES.get(code, {}).get(key)
+    if found is not None:
+        return found
+    if code in FALLBACK_TO_EN:
         return EN_STRINGS.get(key, fallback)
     return fallback
 
@@ -14993,6 +15044,8 @@ TRANSLATE_SYSTEM = (
     "keep the tone. Return only the translation, nothing else."
 )
 
+TARGET_NAMES = {EN: "English", UK: "Ukrainian", FA: "Persian", ZH: "Simplified Chinese"}
+
 
 def cache_key(text: str, lang: str) -> tuple[str, str]:
     return (text.strip()[:400], normalize(lang))
@@ -15018,7 +15071,7 @@ async def translate(text: str, lang: str) -> str:
     try:
         result = (await ai.generate(
             text[:1500],
-            system=TRANSLATE_SYSTEM.format(target="English"),
+            system=TRANSLATE_SYSTEM.format(target=TARGET_NAMES.get(lang, "English")),
             max_tokens=600,
             temperature=0.2,
             role=ai.ANALYSIS,
@@ -15043,8 +15096,2414 @@ def forget_translations() -> None:
     """Сбросить кэш — после правки описаний и в тестах."""
     _CACHE.clear()
 RADAR_FILE_34
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n_fa.py"
+cat > "radar/i18n_fa.py" <<'RADAR_FILE_35'
+"""رابط ربات به فارسی (از نسخهٔ 5.9.6).
+
+کلیدها همان کلیدهای `i18n.EN_STRINGS` هستند؛ آزمون کامل بودن و برابری
+جایگزین‌های `{…}` و برچسب‌های HTML با متن انگلیسی را بررسی می‌کند.
+ترجمه بدون زبان‌آموختهٔ بومی انجام شده؛ اشکالات را به نویسنده اطلاع دهید.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+STRINGS: dict[str, str] = {
+    # --- انتخاب زبان ---
+    "lang.ask": "Choose your language / Выберите язык / زبان خود را انتخاب کنید",
+    "lang.saved": "زبان به فارسی تغییر کرد.",
+    "lang.button": "🌍 زبان",
+
+    # --- منوی اصلی ---
+    "menu.locations": "📍 نشانی‌های من",
+    "menu.weather": "🌤 آب‌وهوا",
+    "menu.alerts": "⚙️ هشدارها",
+    "menu.suggest": "📢 پیشنهاد منبع",
+    "menu.invite": "🔗 دعوت",
+    "menu.digest": "📰 خلاصه‌های خبری",
+    "menu.sos": "🆘 SOS",
+    "menu.assistant": "🧠 دستیار هوش مصنوعی",
+    "menu.manage": "🛠 مدیریت",
+    "menu.about": "ℹ️ دربارهٔ سامانه",
+    "menu.history": "📖 تاریخچه",
+    "menu.media": "🎬 دانلود ویدیو",
+    "menu.partners": "🤝 پروژه‌های همکار",
+    "menu.groups": "💬 گفتگوهای ما",
+    "groups.title": "💬 <b>گفتگوهای ما</b>",
+    "groups.hint": "برای باز کردن، روی گفتگو بزنید. پذیرش در برخی با درخواست "
+                   "است و مدیران گفتگو آن را تأیید می‌کنند.",
+    "groups.empty": "هنوز گفتگویی برای پیوستن نیست.",
+    "menu.home": "🏠 منوی اصلی",
+    "menu.back": "◀️ بازگشت",
+
+    # --- بررسی پیوند ---
+    "linkcheck.off": "بررسی پیوند غیرفعال است.",
+    "linkcheck.usage": "🔍 پس از دستور یک پیوند بفرستید:\n"
+                       "<code>/check https://example.com/page</code>",
+    "linkcheck.working": "⏳ در حال بررسی پیوند…",
+    "linkcheck.slow_down": "⚠️ بررسی‌های پشت‌سرهم زیاد است. یک دقیقه صبر کنید.",
+    "linkcheck.limit": "🔒 سقف روزانهٔ بررسی تمام شد "
+                       "(۲۰۰ در روز).\n\nاشتراک این سقف را برمی‌دارد. "
+                       "هشدارهای خطر همیشه رایگان‌اند و به آن وابسته نیستند.",
+    "linkcheck.left": "باقی‌مانده امروز",
+    "linkcheck.unlimited": "بررسی بدون سقف روزانه — با اشتراک.",
+    "linkcheck.section": "🔍 <b>بررسی پیوند</b>\n\n"
+                         "نشانی را از نظر نشانه‌های کلاهبرداری تحلیل می‌کند: "
+                         "نویسه‌های شبیه برند، دامنهٔ بیگانه، "
+                         "تغییر مسیر، سن دامنه و فهرست‌های Safe Browsing.",
+    "menu.linkcheck": "🔍 بررسی پیوند",
+    "menu.music": "🎵 موسیقی",
+    "menu.sub_button": "💳 اشتراک — بررسی نامحدود",
+    "help.cmd_linkcheck": "/check &lt;پیوند&gt; — بررسی پیوند از نظر نشانه‌های کلاهبرداری",
+    "help.cmd_music": "/music — موسیقی و فهرست‌های پخش",
+
+    # --- VPN (5.0) ---
+    "menu.vpn": "🔐 VPN",
+    "vpn.title": "🔐 <b>VPN</b>",
+    "vpn.unavailable": "مدیر هنوز این بخش را تنظیم نکرده است.",
+    "vpn.link_button": "📋 پیوند اشتراک",
+    "vpn.gone": "حساب در پنل نیست — دوباره درخواست دسترسی کنید.",
+    "vpn.ask_button": "📨 درخواست دسترسی",
+    "vpn.devices_limit": "📱 دستگاه به ازای هر اشتراک: تا {n}",
+    "vpn.app_button": "📱 اتصال برنامه",
+    "vpn.app_nothing": "ابتدا باید دسترسی صادر شده باشد.",
+    "vpn.app_title": "📱 <b>اتصال برنامه</b>",
+    "vpn.app_code": "کد: <code>{code}</code>\nیک‌بارمصرف، ۵ دقیقه اعتبار دارد. آن را همراه با نشانی سرور در HydraVPN (\"حساب ربات\") وارد کنید.",
+    "vpn.app_server": "نشانی سرور: <code>{url}</code>",
+    "vpn.app_devices": "دستگاه‌های متصل: {n}",
+    "vpn.app_revoke": "🔌 قطع همهٔ دستگاه‌ها",
+    "vpn.app_revoked": "دستگاه‌های قطع‌شده: {n}",
+    "vpn.pending": "⏳ درخواست شما ارسال شد و منتظر مدیر است.",
+    "vpn.denied": "درخواست قبلی شما رد شد. می‌توانید درخواست تازه‌ای بفرستید.",
+    "vpn.intro": "دسترسی VPN را مدیر می‌دهد. "
+                 "درخواست بفرستید — پاسخ همین‌جا می‌آید.",
+    "vpn.sent": "درخواست ارسال شد.",
+    "vpn.link_title": "🔐 <b>پیوند اشتراک شما</b>",
+    "vpn.setup_steps": "<b>روش اتصال:</b>\n"
+                       "۱. برنامه‌ای نصب کنید که از اشتراک پشتیبانی می‌کند: "
+                       "HydraVPN یا v2rayNG در اندروید، Streisand یا Happ "
+                       "در آیفون، Hiddify یا v2rayN در رایانه.\n"
+                       "۲. اشتراک را با پیوند بالا اضافه کنید — "
+                       "«وارد کردن از کلیپ‌بورد» یا «افزودن اشتراک».\n"
+                       "۳. اشتراک را به‌روز کنید و یک سرور انتخاب کنید.\n\n"
+                       "پیوند کلید شماست: آن را برای کسی نفرستید. همین "
+                       "پیوند روی همهٔ دستگاه‌های شما کار می‌کند.",
+    "vpn.key_title": "🔐 <b>کلید شما</b>",
+    "vpn.config_title": "🔐 <b>پیوند تنظیمات شما</b>",
+    "vpn.key_steps": "<b>روش اتصال:</b>\n"
+                     "۱. Outline Client یا هر برنامهٔ Shadowsocks را نصب کنید.\n"
+                     "۲. کلید بالا را کپی کنید و در برنامه اضافه کنید.\n\n"
+                     "کلید دسترسی شماست: آن را برای کسی نفرستید.",
+    "vpn.config_steps": "<b>روش اتصال:</b>\n"
+                        "۱. WireGuard (یا AmneziaWG) را نصب کنید.\n"
+                        "۲. پیوند بالا را باز کنید و فایل تنظیمات را "
+                        "دانلود کنید — پیوند <b>یک‌بارمصرف</b> است و بار "
+                        "دوم باز نمی‌شود.\n"
+                        "۳. فایل را در برنامه وارد کنید.\n\n"
+                        "دوباره لازم است؟ دکمه را یک بار دیگر بزنید تا ربات "
+                        "پیوند تازه‌ای بدهد.",
+    "vpn.hydra_button": "⬇️ HydraVPN برای اندروید",
+    "vpn.no_access": "دسترسی داده نشده است.",
+    "vpn.denied_note": "🔐 مدیر درخواست VPN شما را رد کرد.",
+    "vpn.until": "معتبر تا {until} ({left} روز باقی مانده)",
+    "vpn.forever": "اعتبار: بدون تاریخ انقضا",
+    "vpn.traffic": "ترافیک: {used} از {limit}",
+    "vpn.traffic_free": "ترافیک: {used}، نامحدود",
+    "vpn.disabled": "⛔ دسترسی غیرفعال است",
+    "vpn.buy_button": "💳 خرید دسترسی",
+    "vpn.plans_title": "💳 <b>طرح‌های VPN</b>\n\nتمدید همان کلید را نگه می‌دارد "
+                       "و روزها را به باقی‌ماندهٔ شما اضافه می‌کند.",
+    "vpn.order_title": "🧾 <b>سفارش</b> <code>{id}</code>",
+    "vpn.order_pay": "صورت‌حساب را با دکمهٔ زیر پرداخت کنید، سپس «پرداخت کردم» را بزنید.",
+    "vpn.pay_button": "💳 پرداخت",
+    "vpn.paid_button": "✅ پرداخت کردم",
+    "vpn.order_manual": "پرداخت را مدیر تأیید می‌کند. دسترسی بلافاصله پس از تأیید "
+                        "همین‌جا می‌آید.",
+    "vpn.cancel_order": "✖️ لغو سفارش",
+    "vpn.order_done": "✅ پرداخت دریافت شد، دسترسی باز است.",
+    "vpn.not_paid": "پرداخت هنوز نرسیده است. یک دقیقه دیگر دوباره امتحان کنید.",
+    "link.button": "🔗 شبکه‌های متصل",
+    "link.title": "🔗 <b>شبکه‌های متصل</b>",
+    "link.intro": "یک حساب در همهٔ شبکه‌ها: نشانی‌ها و تنظیمات مشترک‌اند و "
+                  "هشدارها آنجا هم می‌رسند. می‌توانید VK، MAX و Discord را متصل کنید.",
+    "link.linked": "متصل",
+    "link.unlink": "✖️ جدا کردن",
+    "link.get_code": "🔑 دریافت کد",
+    "link.unlinked": "جدا شد.",
+    "link.unavailable": "اتصال حساب‌ها اکنون در دسترس نیست.",
+    "link.code_any": "کد شما: {code}\nآن را در شبکهٔ دیگر برای ربات بفرستید — در "
+                     "Telegram به شکل /link {code}، در VK، MAX یا Discord فقط کد. "
+                     "کد ۱۰ دقیقه اعتبار دارد.",
+    "link.enter_hint": "<i>در شبکهٔ دیگر کد گرفتید؟ آن را اینجا بفرستید:</i> "
+                       "<code>/link CODE</code>.",
+    "link.confirm": "این حساب به حسابی که {nets} دارد متصل شود؟\n\n"
+                    "نشانی‌ها و تنظیمات مشترک می‌شوند و هشدارها در همهٔ "
+                    "شبکه‌های متصل می‌رسند. اگر این کد را شخص دیگری برایتان "
+                    "فرستاده، رد کنید: او به نشانی‌های شما دسترسی پیدا می‌کرد.",
+    "link.answer": "پاسخ دهید «بله» یا «خیر».",
+    "link.yes": "✅ اتصال",
+    "link.no": "✖️ رد کردن",
+    "link.done": "✅ حساب‌ها متصل شدند. نشانی‌ها و تنظیمات اکنون مشترک‌اند و "
+                 "هشدارها در همهٔ شبکه‌های متصل می‌رسند. برای جدا کردن — /unlink.",
+    "link.declined": "باشد، حساب‌ها متصل نشدند.",
+    "link.notice": "🔗 {net} به حساب شما متصل شد. اگر شما نبودید، "
+                   "جدایش کنید: /unlink در آن شبکه یا «شبکه‌های متصل» در "
+                   "تنظیمات ربات تلگرام.",
+    "link.unlinked_net": "جدا شد: این حساب دیگر به بقیه وصل نیست.",
+    "link.not_linked": "این حساب به چیزی متصل نیست.",
+    "text.about": "رادار تهدیدهای شهری و خرابی‌های خدمات شهری را در نشانی‌های شما "
+                  "دنبال می‌کند و فقط آنچه به آن‌ها مربوط است می‌فرستد.",
+    "text.has_addresses": "نشانی‌ها ثبت شده‌اند — هشدارهای آن‌ها اینجا می‌رسد.",
+    "text.no_addresses": "هنوز نشانی‌ای نیست. اولی را اضافه کنید: /address خیابان، پلاک، "
+                         "شهر — یا موقعیت مکانی بفرستید.",
+    "text.commands": "/address خیابان، پلاک، شهر — افزودن نشانی\n"
+                     "/addresses — نشانی‌های من، /remove N — حذف\n"
+                     "/link — اتصال به Telegram، VK، MAX یا Discord\n"
+                     "/unlink — جدا کردن این حساب\n"
+                     "/status — آیا پایش کار می‌کند\n"
+                     "/panel — کد ورود به پنل وب (مدیران محتوا)\n"
+                     "/lang fa — فارسی",
+    "text.disclaimer": "این سامانه جایگزین کانال‌های رسمی هشدار نیست.",
+    "text.status_ok": "✅ پایش کار می‌کند.",
+    "text.status_bad": "🚨 پایش حدود {minutes} دقیقه است ساکت است. "
+                       "به مدیران اطلاع داده شد.",
+    "text.already": "ℹ️ این نشانی از قبل ذخیره شده است: {name}.",
+    "text.confirm_address": "پیدا شد: {place}\nاین نشانی ذخیره شود؟ پاسخ دهید «بله» یا «خیر». "
+                            "اگر درست نیست، دقیق‌تر بنویسید: /address خیابان، پلاک، شهر.",
+    "text.limit": "❌ به سقف نشانی‌ها رسیدید ({limit}).",
+    "text.saved": "🏠 نشانی ذخیره شد: {name}. هشدارهای آن اینجا می‌رسد.",
+    "text.no_street": "⚠️ خیابان تشخیص داده نشد — هشدارهای خرابی خدمات شهری "
+                      "برای این نشانی ممکن است نادقیق باشد.",
+    "text.empty": "هنوز نشانی‌ای نیست. /address خیابان، پلاک، شهر",
+    "text.list": "نشانی‌های شما:",
+    "text.remove_hint": "حذف: /remove N",
+    "text.geo_failed": "نشانی تشخیص داده نشد. بعداً دوباره امتحان کنید.",
+    "text.not_saved": "باشد، ذخیره نشد.",
+    "text.not_found": "نشانی پیدا نشد. دقیق‌تر بنویسید: خیابان، پلاک، شهر — یا "
+                      "موقعیت مکانی بفرستید.",
+    "text.no_such": "چنین شماره‌ای نیست. /addresses — فهرست.",
+    "text.removed": "حذف شد: {name}.",
+    "text.lang_set": "زبان پاسخ‌ها: فارسی.",
+    "panel.off": "پنل وب خاموش است.",
+    "panel.denied": "پنل وب برای مدیران محتوا و بالاتر است.",
+    "panel.code": "کد ورود به پنل وب: {code}\nیک‌بارمصرف، ۵ دقیقه اعتبار دارد. آن را "
+                  "در صفحهٔ ورود پنل وارد کنید. اگر شما درخواست نکرده‌اید، کاری نکنید.",
+    "panel.notice": "🔐 از {net} کد ورود به پنل وب درخواست شد. اگر شما نبودید، "
+                    "آن شبکه را جدا کنید (/unlink).",
+    "vpn.gb": "گیگابایت",
+    "vpn.mb": "مگابایت",
+
+    # --- RustDesk ---
+    "menu.rustdesk": "🖥 RustDesk",
+    "rustdesk.title": "🖥 <b>RustDesk</b>",
+    "rustdesk.info_button": "📋 نشانی و کلید",
+    "rustdesk.conn_button": "🔌 اتصال‌های همین لحظه",
+    "rustdesk.info_title": "📋 <b>مشخصات اتصال</b>",
+    "rustdesk.no_subscription": "⭐️ <b>نشانی و کلید — با اشتراک</b>\n\n"
+                                "اشتراک سرور RustDesk اختصاصی، دانلود نامحدود "
+                                "ویدیو و همهٔ موضوع‌های خلاصه‌های خبری را باز "
+                                "می‌کند. هشدارهای خطر همیشه رایگان می‌مانند.",
+    "manage.chats": "🛡 گفتگوها",
+    "rustdesk.setup_steps": "<b>روش افزودن دستگاه:</b>\n"
+                            "۱. RustDesk را نصب کنید (دکمهٔ زیر).\n"
+                            "۲. ⚙️ ← «شبکه» ← «سرور ID/Relay» را بزنید.\n"
+                            "۳. ID Server، Relay Server و Key را از همین "
+                            "پیام جای‌گذاری کنید.\n"
+                            "۴. ذخیره کنید — روی هر دو دستگاه: دستگاهی که از "
+                            "آن وصل می‌شوید و دستگاهی که به آن وصل می‌شوید.",
+
+    # --- هشدارها: مهم‌ترین بخش ---
+    "alert.danger": "خطر",
+    "alert.utility": "خدمات شهری و خرابی‌ها",
+    "alert.all_clear": "پایان خطر",
+    "alert.matched": "نشانی‌های منطبق",
+    "alert.citywide": "در سطح شهر",
+    "alert.whitelist.title": "اینترنت همراه",
+    "alert.whitelist.body": (
+        "هنگام تهدید هوایی اپراتورها به فهرست سفید می‌روند: فقط "
+        "خدمات دولتی، بانک‌ها، نقشه و تاکسی کار می‌کنند. "
+        "پیام‌رسان‌ها و شبکه‌های اجتماعی ممکن است باز نشوند. اینترنت ثابت خانگی "
+        "و Wi-Fi معمولاً کار می‌کنند. برای تماس فوری از تماس تلفنی و پیامک استفاده کنید."
+    ),
+    "alert.not_official": "این سامانه جایگزین کانال‌های رسمی هشدار نیست.",
+    "alert.read_source": "خواندن منبع",
+    "alert.no_ai": "(بدون هوش مصنوعی)",
+
+    # --- پروژه‌های همکار ---
+    "partners.empty": "فهرست فعلاً خالی است.",
+    "partners.promo": "🎁 دریافت کد تخفیف",
+    "partners.promo.issued": "صادر شد",
+    "partners.promo.kept": "کد مال شماست: با زدن دوباره همان نمایش داده می‌شود.",
+
+    # --- رسانه ---
+    "media.title": "🎬 دانلود ویدیو",
+    "media.prompt": "پیوند بفرستید — گزینه‌های کیفیت را پیشنهاد می‌دهم و فایل را می‌فرستم.",
+    "media.limit": "سقف ارسال",
+    "media.quota.left": "دانلودهای باقی‌مانده امروز",
+    "media.quota.spent": "سقف روزانه تمام شد",
+    "media.quota.unlimited": "نامحدود تا",
+    "media.quota.buy": "⭐️ نامحدود برای یک ماه",
+    "media.too_big": "فایل از سقف بزرگ‌تر است.",
+    "media.looking": "🔎 <b>در حال بررسی پیوند…</b>",
+    "media.slow_probe": "❌ سایت در ۹۰ ثانیه پاسخ نداد.",
+    "media.pick_quality": "🎯 <b>کیفیت را انتخاب کنید:</b>",
+    "media.pick_note": "<i>سقف ارسال {limit} مگابایت است. گزینه‌های دارای ⚠️ جا نمی‌شوند.</i>",
+    "media.btn_text": "📝 متن توضیحات",
+    "media.btn_cancel": "❌ لغو",
+    "media.cancelled": "دانلود لغو شد.",
+    "media.busy": "⏳ دانلود دیگری در جریان است. صبر کنید — "
+                  "دانلودهای همزمان سرور را زیر فشار می‌گذارند.",
+    "media.no_file": "❌ فایل ساخته نشد.",
+    "media.sending": "📤 <b>در حال ارسال به تلگرام…</b>",
+    "img.downloading": "🖼 <b>در حال دانلود تصویر…</b>",
+    "img.looking": "🖼 <b>در حال جست‌وجوی تصویر در پست…</b>",
+    "img.none_found": "🖼 در این پست تصویری پیدا نشد.\n"
+                      "<i>پست خصوصی بدون ورود، برای مرورگر هم آن‌ها را نشان نمی‌دهد.</i>",
+    "img.in_post": "تصویر در پست",
+    "img.not_sent": "❌ تصویر دانلود شد اما ارسال نشد.",
+    "zip.too_long": "📏 <b>ویدیو بلندتر از آن است که بتوان به‌صورت فایل فرستاد "
+                    "({limit} مگابایت) و ابزاری برای فشرده‌سازی آن نیست.</b>",
+    "zip.full_note": "نسخهٔ کامل با پیوند — تا {gb} گیگابایت، {hours} ساعت باقی می‌ماند.",
+    "zip.offer": "🗜 <b>ویدیو جا نمی‌شود: {size} مگابایت با سقف "
+                 "{limit} مگابایت.</b>",
+    "zip.free_line": "رایگان: فشرده‌سازی تا {height}p — تقریباً {limit} مگابایت، حدود "
+                     "<b>{time}</b> طول می‌کشد — پردازندهٔ رایانهٔ تک‌برد ضعیف است و "
+                     "فشرده‌سازی با اولویت پایین اجرا می‌شود تا هشدارها دیر نرسند.",
+    "zip.btn_zip": "🗜 فشرده‌سازی تا {height}p ({time}) — رایگان",
+    "zip.btn_full": "⭐️ نسخهٔ کامل با پیوند — تا {gb} گیگابایت",
+    "zip.btn_other": "◀️ انتخاب کیفیت دیگر",
+    "zip.running": "🗜 <b>فشرده‌سازی تا {height}p</b>",
+    "zip.running_pct": "🗜 <b>فشرده‌سازی تا {height}p</b> — {pct}٪",
+    "zip.time_note": "حدود {time} طول می‌کشد. هشدارها در این مدت طبق معمول کار می‌کنند.",
+    "sub.needed_title": "⭐️ <b>نسخهٔ کامل با اشتراک است</b>",
+    "sub.needed_line": "کل فایل، کیفیت {label}، با پیوند — تا "
+                       "{gb} گیگابایت برای {hours} ساعت.",
+    "sub.needed_note": "اشتراک این را باز می‌کند، دانلود ویدیو بدون سقف "
+                       "روزانه و همهٔ موضوع‌های خلاصه‌های خبری را. هشدارهای خطر "
+                       "همیشه رایگان‌اند.",
+    "sub.btn": "💳 اشتراک",
+    "linkcheck.choice": "🔗 <b>با پیوند چه کنم؟</b>",
+    "linkcheck.btn_check": "🔍 بررسی کن",
+    "linkcheck.btn_video": "🎬 دانلود ویدیو",
+    "linkcheck.btn_images": "🖼 تصویرهای پست",
+    "linkcheck.btn_nothing": "❌ هیچ‌چیز",
+    "drop.preparing": "🔗 <b>در حال آماده‌سازی پیوند دانلود…</b>",
+    "drop.ready_size": "اندازه",
+    "drop.ready_note": "از سقف تلگرام بزرگ‌تر است، پس فایل با "
+                       "پیوند داده می‌شود.",
+    "drop.download": "⬇️ دانلود فایل",
+    "drop.ttl": "<i>پیوند {hours} ساعت باقی می‌ماند، سپس فایل از "
+                "سرور حذف می‌شود.</i>",
+    "drop.too_large": "⚠️ فایل بیش از {gb} گیگابایت است — چنین فایل‌هایی با پیوند "
+                      "داده نمی‌شوند. کیفیت پایین‌تری انتخاب کنید.",
+    "drop.over_limit": "⚠️ <b>فایل از سقف تلگرام بزرگ‌تر است.</b>",
+
+    # --- خلاصه‌ها ---
+    "digest.title": "خلاصه‌های خبری",
+    "digest.buy": "⭐️ اشتراک",
+    "digest.sources": "منابع",
+
+    "digest.staff": "🛠 <b>دسترسی کارکنان</b> — همهٔ موضوع‌ها باز است، بدون پرداخت.",
+    "digest.extra_days": "روزهای پرداخت‌شدهٔ اضافه",
+    "digest.paid": "اشتراک فعال، روزهای باقی‌مانده",
+    "digest.covers_media": "سقف روزانهٔ دانلود ویدیو را هم برمی‌دارد.",
+    "digest.free": "موضوع‌های رایگان",
+    "digest.upsell": "اشتراک همهٔ آن‌ها را باز می‌کند.",
+    "digest.topics": "موضوع‌های شما",
+    "digest.no_topics": "موضوعی انتخاب نشده — خلاصه نمی‌رسد.",
+    "digest.times": "زمان ارسال",
+    "digest.free_always": (
+        "هشدارهای خطر، خدمات شهری، آب‌وهوا و SOS همیشه رایگان‌اند "
+        "و به اشتراک وابسته نیستند."
+    ),
+
+    # --- نام موضوع‌ها ---
+    "topic.city": "شهر و حکومت",
+    "topic.incidents": "حوادث",
+    "topic.utilities": "خدمات شهری و زیرساخت",
+    "topic.transport": "حمل‌ونقل",
+    "topic.health": "سلامت",
+    "topic.education": "آموزش",
+    "topic.social": "اجتماعی",
+    "topic.economy": "اقتصاد و کسب‌وکار",
+    "topic.culture": "فرهنگ و اوقات فراغت",
+    "topic.weather_nature": "آب‌وهوا و طبیعت",
+    "topic.region": "منطقه",
+    "topic.federal": "سراسری",
+    "topic.it": "فناوری اطلاعات و بازی",
+    "topic.science": "علم و فناوری",
+    "topic.sport": "ورزش",
+    "topic.hobby": "سرگرمی و خودرو",
+    "topic.cinema": "فیلم و سریال",
+    "topic.finance": "پول و بازار",
+
+    # --- آب‌وهوا ---
+    "weather.feels": "احساس می‌شود",
+    "weather.wind": "باد",
+    "weather.humidity": "رطوبت",
+    "weather.sunrise": "طلوع",
+    "weather.sunset": "غروب",
+    "weather.now": "اکنون",
+    "weather.today": "امروز",
+    "weather.tomorrow": "فردا",
+    "weather.hour_suffix": "ساعت",
+    "weather.error.no_coords": "مختصات نیست — موقعیت را دوباره بفرستید",
+    "weather.error.bad_status": "سرویس آب‌وهوا این کد را برگرداند",
+    "weather.error.fetch_failed": "دریافت آب‌وهوا ناموفق بود",
+    "weather.error.no_data": "داده‌ای از آب‌وهوا نیست",
+
+    # --- آب‌وهوا: توضیح کدهای WMO ---
+    "weather.wmo.0": "آسمان صاف",
+    "weather.wmo.1": "عمدتاً صاف",
+    "weather.wmo.2": "نیمه‌ابری",
+    "weather.wmo.3": "ابری",
+    "weather.wmo.45": "مه",
+    "weather.wmo.48": "مه یخ‌زده",
+    "weather.wmo.51": "نم‌نم باران سبک",
+    "weather.wmo.53": "نم‌نم باران",
+    "weather.wmo.55": "نم‌نم باران شدید",
+    "weather.wmo.56": "نم‌نم باران یخ‌زدهٔ سبک",
+    "weather.wmo.57": "نم‌نم باران یخ‌زدهٔ شدید",
+    "weather.wmo.61": "باران خفیف",
+    "weather.wmo.63": "باران",
+    "weather.wmo.65": "باران شدید",
+    "weather.wmo.66": "باران یخ‌زدهٔ سبک",
+    "weather.wmo.67": "باران یخ‌زدهٔ شدید",
+    "weather.wmo.71": "برف خفیف",
+    "weather.wmo.73": "برف",
+    "weather.wmo.75": "برف شدید",
+    "weather.wmo.77": "دانه‌های برف",
+    "weather.wmo.80": "بارش‌های رگباری خفیف",
+    "weather.wmo.81": "رگبار",
+    "weather.wmo.82": "رگبار شدید",
+    "weather.wmo.85": "بارش برف رگباری خفیف",
+    "weather.wmo.86": "بارش برف رگباری شدید",
+    "weather.wmo.95": "رعد و برق",
+    "weather.wmo.96": "رعد و برق با تگرگ خفیف",
+    "weather.wmo.99": "رعد و برق با تگرگ شدید",
+
+    # --- آب‌وهوا به‌صورت تصویر ---
+    "weather.image.title": "آب‌وهوا",
+    "weather.image.feels_like": "احساس می‌شود",
+    "weather.image.gusts_to": "تندباد تا",
+    "weather.image.humidity": "رطوبت",
+    "weather.image.mmhg": "میلی‌متر جیوه",
+    "weather.image.ms": "متر بر ثانیه",
+    "weather.image.now": "اکنون",
+    "weather.sky.night": "شب",
+    "weather.sky.dawn": "سپیده‌دم",
+    "weather.sky.day": "روز",
+    "weather.sky.dusk": "غروب",
+
+    # --- گل‌باد ---
+    "wind.n": "شمالی",
+    "wind.ne": "شمال‌شرقی",
+    "wind.e": "شرقی",
+    "wind.se": "جنوب‌شرقی",
+    "wind.s": "جنوبی",
+    "wind.sw": "جنوب‌غربی",
+    "wind.w": "غربی",
+    "wind.nw": "شمال‌غربی",
+
+    # --- شدت باد ---
+    "wind.calm": "آرام",
+    "wind.light": "ضعیف",
+    "wind.moderate": "متوسط",
+    "wind.fresh": "نسبتاً تند",
+    "wind.strong": "قوی",
+    "wind.storm": "طوفانی",
+
+    # --- فازهای ماه ---
+    "moon.new": "ماه نو",
+    "moon.waxing_crescent": "هلال رو‌به‌رشد",
+    "moon.first_quarter": "تربیع اول",
+    "moon.waxing_gibbous": "ماه رو‌به‌رشد",
+    "moon.full": "ماه کامل",
+    "moon.waning_gibbous": "ماه رو‌به‌کاهش",
+    "moon.last_quarter": "تربیع آخر",
+    "moon.waning_crescent": "هلال رو‌به‌کاهش",
+
+    # --- SOS ---
+    "sos.overview": "🆘 کمک اضطراری",
+    "sos.no_contacts": (
+        "هنوز مخاطب مورد اعتمادی نیست. کسی را اضافه کنید که با زدن دکمهٔ SOS "
+        "موقعیت شما را دریافت کند."
+    ),
+    "sos.contacts": "مخاطبان مورد اعتماد",
+    "sos.ready": "آمادهٔ دریافت سیگنال",
+    "sos.pending": "تأیید نشده — ربات را باز نکرده است",
+    "sos.none_confirmed": (
+        "⚠️ هیچ مخاطبی تأیید نشده است. تلگرام اجازه نمی‌دهد ربات اول پیام بدهد — "
+        "مخاطب باید ربات را با پیوند شما باز کند. تا آن زمان سیگنال "
+        "به مدیران سامانه می‌رسد."
+    ),
+    "sos.add": "➕ افزودن مخاطب",
+    "sos.fire": "🆘 ارسال سیگنال",
+    "sos.title": "🆘 SOS",
+    "sos.send": "🆘 ارسال هشدار",
+    "sos.stop": "✅ لغو هشدار",
+    "sos.sent": "هشدار برای مخاطبان شما ارسال شد.",
+
+    # --- تاریخچه ---
+    "history.title": "📖 تاریخچه",
+    "history.empty": "در ۳۰ روز گذشته چیزی برای شما ارسال نشده است.",
+    "history.note": (
+        "این به معنای بیکار بودن ربات نیست: به این معناست که "
+        "نزدیک نشانی‌های شما اتفاقی نیفتاده است."
+    ),
+    "history.trimmed": "جدیدترین موارد نمایش داده شد.",
+
+    # --- تنظیمات ---
+    "settings.title": "⚙️ هشدارها",
+    "settings.prompt": "رویدادهای دریافتی و حالت آب‌وهوا را انتخاب کنید.",
+    "settings.quiet": "ساعت‌های آرام",
+    "settings.weather_mode": "حالت آب‌وهوا",
+    "settings.weather_view": "نمای آب‌وهوا",
+
+    # --- عمومی ---
+    "common.cancelled": "✅ لغو شد.",
+    "common.only_superadmin": "⛔️ فقط برای مدیر ارشد.",
+    "common.error": "مشکلی پیش آمد — بعداً دوباره امتحان کنید.",
+    "common.insufficient_rights": "دسترسی کافی نیست.",
+
+    # --- راهنما (/help) ---
+    "help.title": "چگونه کار می‌کند",
+    "help.step1": (
+        "۱. موقعیت خود را بفرستید (گیره ← موقعیت مکانی) — این یک نشانی اضافه می‌کند. "
+        "هر قدر بخواهید می‌توانید اضافه کنید."
+    ),
+    "help.step2": (
+        "۲. تهدیدهای نظامی (پهپاد، خطر موشکی) به‌صورت یک پیام "
+        "در سطح شهر می‌رسند که همهٔ نشانی‌های شما در آن را پوشش می‌دهد."
+    ),
+    "help.step3": "۳. خرابی خدمات شهری بر اساس نشانی جست‌وجو می‌شود — خیابان و پلاک.",
+    "help.step4": "۴. نشانی‌هایی که کمتر از ۱ کیلومتر با هم فاصله دارند در یک خلاصه ادغام می‌شوند.",
+    "help.commands_title": "دستورها",
+    "help.cmd_basic": "/menu — منو - /id — شناسه و نقش شما - /cancel — بازنشانی ورودی",
+    "help.cmd_partner": "/partner — پروژهٔ همکار",
+    "help.cmd_assistant": "/ai &lt;پرسش&gt; — دستیار هوش مصنوعی - /aireset — پاک کردن زمینه",
+    "help.cmd_quota": "/quota — مصرف سهمیهٔ Gemini",
+    "help.cmd_admin1": "/stats — آمار سامانه - /models — مدل‌های Gemini",
+    "help.cmd_admin2": "/digest — خلاصه‌های خبری - /sos — دکمهٔ SOS",
+    "help.cmd_admin3": "/media — دانلود ویدیو با پیوند - /panel — پنل وب",
+    "help.cmd_super1": (
+        "/features — امکانات سامانه\n"
+        "/logs — گزارش‌ها - /logtail — آخرین خط‌ها - /logclear — پاک کردن"
+    ),
+    "help.cmd_super2": "/perf — زمان چرخه و منابع - /bench — مقایسهٔ ارائه‌دهندگان هوش مصنوعی",
+    "help.cmd_super3": (
+        "/keys — کلیدها و تنظیمات - /provider — انتخاب ارائه‌دهنده\n"
+        "/network — شبکه و پراکسی - /backup — نسخهٔ پشتیبان"
+    ),
+
+    # --- خوشامد و عنوان‌های عمومی ---
+    "app.title": "رادار",
+    "greeting.assistant": (
+        "🧠 <i>دستیار هوش مصنوعی فعال است: پرسش خود را در گفتگو بنویسید "
+        "یا از /ai استفاده کنید.</i>"
+    ),
+    "greeting.no_key": (
+        "⚠️ <i>GEMINI_API_KEY تنظیم نشده — تحلیل ابتکاری بدون "
+        "هوش مصنوعی کار می‌کند.</i>"
+    ),
+    "restart.missed": (
+        "🛠 <b>ربات برای تعمیرات از دسترس خارج بود</b>\n\n"
+        "پیام شما هنگام راه‌اندازی دوباره رسید و پردازش نشد "
+        "— لطفاً دوباره بفرستید.\n\n"
+        "<i>هشدارهای خطر از دست نرفتند: ربات پس از هر راه‌اندازی دوباره "
+        "منابعش را می‌خواند.</i>"
+    ),
+    "common.your_id": "🆔 شناسهٔ شما",
+    "common.role": "نقش",
+    "common.pinned_buttons": (
+        "دکمه‌های <b>منو</b> و <b>HydraSite</b> زیر "
+        "کادر ورودی سنجاق شده‌اند."
+    ),
+
+    # --- نقش‌ها ---
+    "role.user": "👤 کاربر",
+    "role.moderator": "🛡 مدیر محتوا",
+    "role.admin": "👑 مدیر",
+    "role.superadmin": "⭐️ مدیر ارشد",
+
+    # --- دسته‌های هشدار ---
+    "category.bpla": "پهپاد / خطر موشکی",
+    "category.mchs": "هشدارهای خدمات اضطراری",
+    "category.jkh": "خدمات شهری و قطعی شبکه‌ها",
+    "category.whitelist": "هشدار دربارهٔ فهرست سفید",
+
+    # --- تنظیمات: آب‌وهوا ---
+    "settings.weather_button": "🌤 آب‌وهوا",
+    "settings.weather_mode.title": "⏱ <b>حالت آب‌وهوا</b>",
+    "settings.weather_mode.prompt": "یک بازه انتخاب کنید یا مقدار دلخواه بدهید.",
+    "settings.weather.off": "خاموش",
+    "settings.weather.every": "هر",
+    "settings.weather.at": "ساعت",
+    "settings.weather.minutes": "دقیقه",
+    "settings.weather.hours_short": "ساعت",
+    "settings.weather.hour": "هر ساعت",
+    "settings.weather.hours3": "هر ۳ ساعت",
+    "settings.weather.hours6": "هر ۶ ساعت",
+    "settings.weather.disable": "خاموش کردن",
+    "settings.weather.own_interval": "بازهٔ دلخواه",
+    "settings.weather.fixed_time": "در زمان مشخص",
+    "settings.weather.disabled": "آب‌وهوا خاموش شد",
+    "settings.weather.interval_set": "بازه",
+    "settings.weather.ask_time": (
+        "⏰ زمان را به شکل <code>HH:MM</code> وارد کنید (مثلاً 08:30):"
+    ),
+    "settings.weather.ask_interval": (
+        "⏱ بازه را وارد کنید: <code>45</code> (دقیقه) یا <code>2h</code> (ساعت):"
+    ),
+    "settings.weather.bad_time": (
+        "❌ قالب نادرست. نمونه: <code>08:30</code>. /cancel برای لغو."
+    ),
+    "settings.weather.bad_interval": (
+        "❌ تعداد دقیقه یا چیزی مانند <code>2h</code> وارد کنید."
+    ),
+    "settings.weather.range": "❌ بازه باید بین ۱۵ دقیقه و ۲۴ ساعت باشد.",
+    "settings.weather.daily_at": "✅ آب‌وهوا هر روز ساعت می‌رسد",
+    "settings.weather.interval_ok": "✅ بازه",
+
+    # --- تنظیمات: نمای آب‌وهوا ---
+    "settings.wformat.title": "🖼 <b>قالب خلاصهٔ آب‌وهوا</b>",
+    "settings.wformat.now": "اکنون",
+    "settings.wformat.text": "متن",
+    "settings.wformat.image": "تصویر",
+    "settings.wformat.image_all": "تصویر (برای همه)",
+    "settings.wformat.as_text": "📄 به‌صورت متن",
+    "settings.wformat.as_image": "🖼 به‌صورت تصویر",
+    "settings.wformat.forced": (
+        "انتخاب شخصی موقتاً در دسترس نیست. وقتی مدیریت تنظیم کلی را "
+        "بردارد، انتخاب قبلی شما برمی‌گردد."
+    ),
+    "settings.wformat.why": (
+        "تصویر گویاتر است، اما با محدودیت‌های اینترنت همراه بارگیری "
+        "نمی‌شود — و این سامانه دقیقاً برای همین وضعیت ساخته شده. "
+        "متن همیشه می‌رسد."
+    ),
+    "settings.wformat.off": "آب‌وهوا به‌صورت تصویر خاموش است.",
+    "settings.wformat.label": "🖼 قالب آب‌وهوا",
+
+    # --- تنظیمات: ساعت‌های آرام ---
+    "settings.quiet.title": "🌙 <b>ساعت‌های آرام</b>",
+    "settings.quiet.label": "🌙 ساعت‌های آرام",
+    "settings.quiet.prompt": (
+        "یک بازه بفرستید، مثلاً <code>23:00-07:00</code>.\n"
+        "«-» ساعت‌های آرام را خاموش می‌کند."
+    ),
+    "settings.quiet.always": (
+        "<b>تهدیدهای نظامی و هشدارهای اضطراری همیشه می‌رسند</b> — "
+        "فقط خدمات شهری و آب‌وهوا نگه داشته می‌شوند."
+    ),
+    "settings.quiet.bad_format": (
+        "❌ قالب: <code>23:00-07:00</code>. «-» خاموش می‌کند. /cancel برای لغو."
+    ),
+    "settings.quiet.cleared": "✅ ساعت‌های آرام خاموش شد.",
+    "settings.quiet.set": "✅ ساعت‌های آرام",
+    "settings.quiet.note": (
+        "<i>تهدیدهای نظامی و هشدارهای اضطراری در هر زمان می‌رسند.</i>"
+    ),
+    "settings.quiet.disabled": "ساعت‌های آرام خاموش است.",
+    "settings.quiet.none": "خاموش",
+
+    # --- پیشنهاد منبع ---
+    "suggest.title": "📢 <b>پیشنهاد منبع</b>",
+    "suggest.prompt": (
+        "نام کاربری یک کانال عمومی را بفرستید، مثلاً "
+        "<code>saratovzhkh</code>، یا پیوند آن را."
+    ),
+    "suggest.thematic": (
+        "<i>کانال‌های موضوعی هم می‌شوند — بازی، ورزش، علم: آن‌ها به "
+        "خلاصه‌های خبری می‌روند.</i>"
+    ),
+    "suggest.closed": (
+        "پیشنهادها فعلاً بسته است — فهرست منابع را "
+        "مدیریت تنظیم می‌کند."
+    ),
+    "suggest.sent": "✅ کانال @{channel} برای مدیران محتوا ارسال شد.",
+    "suggest.already": "ℹ️ منبع از قبل در فهرست یا صف است.",
+    "suggest.bad": "❌ نام کاربری کانال نادرست است.",
+
+    # --- عمومی (ادامه) ---
+    "common.on": "فعال",
+    "common.off": "غیرفعال",
+    "common.user_not_found": "کاربر پیدا نشد.",
+    "common.cancel": "لغو",
+    "common.back": "◀️ بازگشت",
+    "common.cancel_x": "❌ لغو",
+    "common.yes": "✅ بله",
+
+    # --- صفحه‌های مدیر محتوا: کاربران (از 4.9.9.3) ---
+    "users.no_rights": "دسترسی کافی نیست.",
+    "users.not_found": "کاربر پیدا نشد.",
+    "users.list_title": "👥 <b>کاربران</b> — در مجموع {total} (صفحهٔ {page}/{pages})",
+    "users.locations_count": "نشانی: {count}",
+    "users.open_hint": "برای باز کردن کارت، روی کاربر بزنید.",
+    "users.none": "ندارد",
+    "users.card_title": "👤 <b>کاربر</b>",
+    "users.nick": "نام کاربری",
+    "users.role": "نقش",
+    "users.locations": "نشانی‌ها",
+    "users.categories": "دسته‌های هشدار",
+    "users.weather": "آب‌وهوا",
+    "users.settings_title": "⚙️ <b>هشدارهای کاربر</b>",
+    "users.self_role": "نمی‌توانید نقش خودتان را تغییر دهید.",
+    "users.role_denied": "دسترسی کافی برای این نقش نیست.",
+    "users.role_changed": "نقش تغییر کرد: {role}",
+    "users.role_notice": "ℹ️ نقش شما در «رادار» به {role} تغییر کرد.",
+    "users.delete_admins": "حذف برای مدیران در دسترس است.",
+    "users.delete_ask": "⚠️ کاربر {id} ({role}) با همهٔ نشانی‌هایش حذف شود؟",
+    "users.deleted_short": "کاربر حذف شد",
+    "users.deleted": "✅ کاربر {id} حذف شد.",
+    "users.invite_title": "🔗 <b>پیوند دعوت</b>",
+    "users.invite_hint": "هر کس از آن وارد شود نقش «کاربر» می‌گیرد: نشانی‌ها و "
+                         "هشدارهای خودش. فقط مدیریت می‌تواند نقش را "
+                         "بالا ببرد.",
+    "users.default_city": "شهر پیش‌فرض {city} است.",
+    "users.add_loc_title": "➕ <b>نشانی برای</b>",
+    "users.add_loc_prompt": "نشانی را به‌صورت متن بفرستید، مثلاً "
+                            "<code>خیابان چاپایف، ۱۲</code>.",
+    "users.add_loc_geo": "می‌توانید موقعیت مکانی هم بفرستید یا هدایت کنید — به "
+                         "این کاربر افزوده می‌شود.",
+    "users.cancel_hint": "/cancel — لغو.",
+    "users.loc_added_notice": "📍 مدیر یک نشانی برای شما اضافه کرد: {name}.\n"
+                              "هشدارهای آن از همین حالا روشن است — می‌توانید در "
+                              "«نشانی‌های من» مدیریتش کنید.",
+    "users.loc_added": "✅ نشانی {name} به کاربر {id} افزوده شد.",
+    "users.no_street": "خیابان تشخیص داده نشد — هشدارهای خرابی خدمات شهری "
+                       "برای این نشانی ممکن است نادقیق باشد.",
+    "users.back_to_user": "◀️ بازگشت به کاربر",
+    "users.gone_or_denied": "کاربر پیدا نشد یا دسترسی کافی نیست.",
+    "users.address_not_found": "نشانی پیدا نشد. دقیق‌تر بنویسید — مثلاً "
+                               "<code>ساراتف، خیابان چاپایف، ۱۲</code>. "
+                               "/cancel — لغو.",
+    "users.variants": "🔎 <b>موارد منطبق: {count}</b>",
+    "users.pick_one": "مورد درست را انتخاب کنید.",
+    "users.list_stale": "فهرست قدیمی شده، از نو شروع کنید.",
+    "users.adding": "در حال افزودن…",
+
+    # --- صفحه‌کلیدهای مدیر محتوا (از 4.9.9.3) ---
+    "ucard.locs": "📍 نشانی‌ها",
+    "ucard.alerts": "⚙️ هشدارها",
+    "ucard.add_loc": "➕ افزودن نشانی",
+    "ucard.weather": "🌤 آب‌وهوای کاربر",
+    "ucard.delete": "🔨 حذف کاربر",
+    "ucard.back": "◀️ بازگشت به فهرست",
+    "ucard.locs_short": "نشانی",
+    "mod.queue": "📥 صف منابع",
+    "mod.list": "📋 فهرست منابع",
+    "mod.check": "🔍 بررسی دسترسی‌پذیری",
+    "mod.add_channel": "➕ افزودن کانال",
+    "mod.add_rss": "🌐 افزودن خوراک RSS خبری",
+    "mod.export": "⬇️ دانلود فهرست",
+    "mod.import": "⬆️ بارگذاری فهرست",
+    "mod.back": "◀️ بازگشت به مدیریت",
+    "mod.approve": "✅ پذیرفتن",
+    "mod.reject": "❌ رد کردن",
+
+    # --- گفتگوهای تحت نظارت، بخش مدیریت (از 4.9.9.3) ---
+    "chats.title": "🛡 <b>گفتگوهای تحت نظارت</b>",
+    "chats.mod_on": "نظارت روشن",
+    "chats.mod_off": "نظارت خاموش",
+    "chats.tap_hint": "برای باز کردن، روی گروه بزنید.",
+    "chats.mod_disabled": "نظارت خاموش است — در بخش «امکانات» روشنش کنید.",
+    "chats.admins_only": "فقط برای مدیریت.",
+    "chats.add_hint": (
+        "🛡 <b>گفتگوهای تحت نظارت</b>\n\n"
+        "هنوز گروهی نیست.\n\n"
+        "<b>روش افزودن ربات:</b>\n"
+        "۱. گروه را باز کنید ← «اعضا» ← «افزودن».\n"
+        "۲. ربات را با نام پیدا کنید و اضافه کنید.\n"
+        "۳. آن‌جا مدیرش کنید و "
+        "<b>«حذف پیام‌ها»</b> و <b>«مسدود کردن کاربران»</b> را روشن کنید.\n"
+        "۴. در گروه <code>/modon</code> بفرستید — گفتگو اینجا ظاهر می‌شود.\n\n"
+        "<b>ربات از قبل در گروه است؟</b> پس چیزی لازم نیست اضافه شود: "
+        "بررسی کنید مدیر با این دسترسی‌ها باشد و در گروه "
+        "<code>/modon</code> بفرستید. گروه‌هایی که ربات "
+        "پیش‌تر به آن‌ها اضافه شده خودشان اعلام نمی‌شوند — تلگرام فقط "
+        "تغییرها را به ربات خبر می‌دهد.\n\n"
+        "<i>لازم نیست حالت حریم خصوصی را در @BotFather تغییر دهید: مدیر "
+        "همهٔ پیام‌ها را به‌هرحال دریافت می‌کند. ربات به کسانی که "
+        "از قبل در گروه‌اند چیزی نمی‌نویسد — بررسی فقط برای کسانی است که "
+        "پس از روشن شدن بپیوندند.</i>"
+    ),
+
+    # --- صفحه‌های مدیر محتوا: منابع (از 4.9.9.3) ---
+    "src.menu_text": "📡 <b>منابع</b>\n\nکانال‌ها و خوراک‌ها اینجا افزوده می‌شوند، "
+                     "دسترسی‌پذیری‌شان بررسی می‌شود و پیشنهادهای کاربران "
+                     "بررسی می‌شود.",
+    "src.queue_empty": "📥 صف خالی است.",
+    "src.queue_item": "📥 <b>صف: {count}</b>\nدر حال بررسی: {channel}",
+    "src.approved": "پذیرفته شد",
+    "src.rejected": "رد شد",
+    "src.empty": "— خالی —",
+    "src.list_channels": "📋 <b>کانال‌های تلگرام</b>",
+    "src.list_feeds": "🌐 <b>خوراک‌های RSS</b>",
+    "src.add_prompt": "➕ نام کاربری کانال را بفرستید. چند تا با هم — با "
+                      "ویرگول یا خط جدید جدا کنید.",
+    "src.added": "✅ افزوده شد: ",
+    "src.skipped": "⚠️ رد شد: ",
+    "src.nothing_added": "چیزی افزوده نشد",
+    "src.rss_prompt": "🌐 نشانی یک خوراک RSS خبری یا رسمی را بفرستید "
+                      "(مثلاً <code>https://example.ru/rss</code>).",
+    "src.feeds_added": "✅ خوراک‌های افزوده‌شده:",
+    "src.no_valid": "⚠️ نشانی معتبری پیدا نشد.",
+    "src.export_off": "خروجی گرفتن از منابع غیرفعال است.",
+    "src.preparing": "در حال آماده‌سازی فایل…",
+    "src.import_off": "بارگذاری منابع غیرفعال است.",
+    "src.import_admins": "بارگذاری برای مدیران در دسترس است.",
+    "src.import_denied": "⛔️ بارگذاری منابع برای مدیران در دسترس است.",
+    "src.none": "منبعی نیست.",
+    "src.check_start": "شروع بررسی…",
+    "src.checking": "🔍 در حال بررسی منابع: <b>{total}</b>…",
+    "src.check_denied": "⛔️ بررسی منابع برای مدیران محتوا و بالاتر در دسترس است.",
+    "src.drop_hint": "منابع در دسترس‌نبودن را می‌توان با دکمهٔ زیر برداشت.",
+    "src.drop_button": "🗑 برداشتن منابع در دسترس‌نبودن ({count})",
+    "src.stale": "فهرست قدیمی شده — بررسی را دوباره اجرا کنید.",
+    "src.removed_short": "منابع برداشته‌شده: {count}",
+    "src.removed": "🗑 منابع در دسترس‌نبودن برداشته شد: <b>{removed}</b>.\n"
+                   "باقی‌مانده: کانال {channels}، خوراک {feeds}.",
+
+    # --- بخش «مدیریت» ---
+    "manage.sources": "📡 منابع",
+    "manage.users": "👥 کاربران",
+    "manage.stats": "📊 آمار",
+    "manage.metrics": "🩺 سنجه‌ها و سلامت",
+    "manage.links": "🔗 پیوندها",
+    "manage.features": "⚙️ امکانات",
+    "manage.keys": "🔑 کلیدهای دسترسی",
+    "manage.ai": "🧠 مدیریت هوش مصنوعی",
+    "manage.backups": "💾 نسخه‌های پشتیبان",
+    "manage.network": "🌐 دسترسی به شبکه",
+    "manage.logs": "📋 گزارش‌ها",
+    "manage.panel": "🖥 پنل وب",
+    "manage.role_line": "نقش شما",
+    "manage.all_sections": "همهٔ بخش‌ها در دسترس است، از جمله کلیدهای دسترسی و گزارش‌ها.",
+    "manage.admin_sections": "منابع، کاربران، آمار، پیوندها و دعوت‌ها در دسترس است.",
+    "manage.mod_sections": "ویرایش منابع و تنظیمات کاربران در دسترس است.",
+    # --- کلیدهایی که کد استفاده می‌کرد و واژه‌نامه نداشت (از 5.9.6) ---
+    "img.too_slow": "🖼 سایت تصویرها را در دو دقیقه نداد — متوقف شد.\n"
+                    "<i>این وقتی پیش می‌آید که پست بسته است یا سایت بازدیدکنندگان "
+                    "ناشناس را کند می‌کند. بعداً دوباره امتحان کنید.</i>",
+    "settings.back": "◀️ به تنظیمات",
+    "settings.tz.whole": "◀️ ساعت‌های کامل",
+    "settings.tz.fractional": "⏱ منطقه‌های نیم‌ساعته",
+    "settings.tz.bad": "منطقهٔ زمانی تشخیص داده نشد.",
+    "settings.tz.now": "اکنون",
+    "settings.tz.saved": "منطقهٔ زمانی",
+    "settings.tz.title": "🕓 <b>منطقهٔ زمانی</b>",
+    "settings.tz.prompt": "اختلاف‌ها از UTC محاسبه می‌شوند. ساعت‌های آرام، زمان آب‌وهوا "
+                          "و ارسال خلاصه‌ها طبق منطقه‌ای که اینجا انتخاب می‌کنید است.",
+}
+RADAR_FILE_35
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n_uk.py"
+cat > "radar/i18n_uk.py" <<'RADAR_FILE_36'
+"""Інтерфейс бота українською (з 5.9.6).
+
+Ключі — ті самі, що в `i18n.EN_STRINGS`; тест перевіряє повноту і те, що
+підстановки `{…}` та HTML-теги збігаються з англійським оригіналом.
+Переклад зроблено без носія мови — недоліки варто повідомляти автору.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+STRINGS: dict[str, str] = {
+    # --- вибір мови ---
+    "lang.ask": "Choose your language / Выберите язык / Оберіть мову",
+    "lang.saved": "Мову перемкнено на українську.",
+    "lang.button": "🌍 Мова",
+
+    # --- головне меню ---
+    "menu.locations": "📍 Мої адреси",
+    "menu.weather": "🌤 Погода",
+    "menu.alerts": "⚙️ Сповіщення",
+    "menu.suggest": "📢 Запропонувати джерело",
+    "menu.invite": "🔗 Запросити",
+    "menu.digest": "📰 Новинні добірки",
+    "menu.sos": "🆘 SOS",
+    "menu.assistant": "🧠 ШІ-асистент",
+    "menu.manage": "🛠 Керування",
+    "menu.about": "ℹ️ Про систему",
+    "menu.history": "📖 Журнал",
+    "menu.media": "🎬 Завантажити відео",
+    "menu.partners": "🤝 Партнерські проєкти",
+    "menu.groups": "💬 Наші чати",
+    "groups.title": "💬 <b>Наші чати</b>",
+    "groups.hint": "Натисніть чат, щоб відкрити його. До деяких приймають за "
+                   "заявкою — її схвалюють адміністратори чату.",
+    "groups.empty": "Чатів для вступу поки немає.",
+    "menu.home": "🏠 Головне меню",
+    "menu.back": "◀️ Назад",
+
+    # --- перевірка посилань ---
+    "linkcheck.off": "Перевірку посилань вимкнено.",
+    "linkcheck.usage": "🔍 Надішліть посилання після команди:\n"
+                       "<code>/check https://example.com/page</code>",
+    "linkcheck.working": "⏳ Перевіряю посилання…",
+    "linkcheck.slow_down": "⚠️ Забагато перевірок поспіль. Зачекайте хвилину.",
+    "linkcheck.limit": "🔒 Добовий ліміт перевірок вичерпано "
+                       "(200 на добу).\n\nПідписка знімає "
+                       "ліміт. Сповіщення про небезпеку безкоштовні завжди "
+                       "і від нього не залежать.",
+    "linkcheck.left": "Залишилось сьогодні",
+    "linkcheck.unlimited": "Перевірки без добового ліміту — з підпискою.",
+    "linkcheck.section": "🔍 <b>Перевірка посилань</b>\n\n"
+                         "Аналізує адресу на ознаки шахрайства: символи, що "
+                         "імітують бренд, чужий домен, "
+                         "переспрямування, вік домену, списки Safe Browsing.",
+    "menu.linkcheck": "🔍 Перевірити посилання",
+    "menu.music": "🎵 Музика",
+    "menu.sub_button": "💳 Підписка — перевірки без обмежень",
+    "help.cmd_linkcheck": "/check &lt;посилання&gt; — перевірити посилання на ознаки шахрайства",
+    "help.cmd_music": "/music — музика та плейлисти",
+
+    # --- VPN (5.0) ---
+    "menu.vpn": "🔐 VPN",
+    "vpn.title": "🔐 <b>VPN</b>",
+    "vpn.unavailable": "Адміністратор ще не налаштував цей розділ.",
+    "vpn.link_button": "📋 Посилання на підписку",
+    "vpn.gone": "Облікового запису немає в панелі — запросіть доступ знову.",
+    "vpn.ask_button": "📨 Запросити доступ",
+    "vpn.devices_limit": "📱 Пристроїв на підписку: до {n}",
+    "vpn.app_button": "📱 Підключити застосунок",
+    "vpn.app_nothing": "Спершу потрібен виданий доступ.",
+    "vpn.app_title": "📱 <b>Підключення застосунку</b>",
+    "vpn.app_code": "Код: <code>{code}</code>\nОдноразовий, діє 5 хвилин. Введіть його в HydraVPN (\"Акаунт бота\") разом з адресою сервера.",
+    "vpn.app_server": "Адреса сервера: <code>{url}</code>",
+    "vpn.app_devices": "Підключених пристроїв: {n}",
+    "vpn.app_revoke": "🔌 Відключити всі пристрої",
+    "vpn.app_revoked": "Відключено пристроїв: {n}",
+    "vpn.pending": "⏳ Запит надіслано й очікує на адміністратора.",
+    "vpn.denied": "Попередній запит відхилено. Можна надіслати новий.",
+    "vpn.intro": "Доступ до VPN видає адміністратор. "
+                 "Надішліть запит — відповідь прийде сюди.",
+    "vpn.sent": "Запит надіслано.",
+    "vpn.link_title": "🔐 <b>Ваше посилання на підписку</b>",
+    "vpn.setup_steps": "<b>Як підключитися:</b>\n"
+                       "1. Встановіть клієнт із підтримкою підписок: "
+                       "HydraVPN або v2rayNG на Android, Streisand чи Happ "
+                       "на iPhone, Hiddify або v2rayN на комп'ютері.\n"
+                       "2. Додайте підписку за посиланням вище — "
+                       "«імпорт із буфера» або «додати підписку».\n"
+                       "3. Оновіть підписку та оберіть сервер.\n\n"
+                       "Посилання — ваш ключ: не пересилайте його. Те саме "
+                       "посилання працює на всіх ваших пристроях.",
+    "vpn.key_title": "🔐 <b>Ваш ключ</b>",
+    "vpn.config_title": "🔐 <b>Ваше посилання на налаштування</b>",
+    "vpn.key_steps": "<b>Як підключитися:</b>\n"
+                     "1. Встановіть Outline Client або будь-який клієнт Shadowsocks.\n"
+                     "2. Скопіюйте ключ вище й додайте його в клієнт.\n\n"
+                     "Ключ — це ваш доступ: не пересилайте його.",
+    "vpn.config_steps": "<b>Як підключитися:</b>\n"
+                        "1. Встановіть WireGuard (або AmneziaWG).\n"
+                        "2. Відкрийте посилання вище та завантажте файл "
+                        "налаштувань — посилання <b>одноразове</b>, вдруге "
+                        "воно не відкриється.\n"
+                        "3. Імпортуйте файл у застосунок.\n\n"
+                        "Потрібно ще раз? Натисніть кнопку знову, і бот "
+                        "видасть нове посилання.",
+    "vpn.hydra_button": "⬇️ HydraVPN для Android",
+    "vpn.no_access": "Доступ не надано.",
+    "vpn.denied_note": "🔐 Адміністратор відхилив ваш запит на VPN.",
+    "vpn.until": "Діє до {until} (залишилось днів: {left})",
+    "vpn.forever": "Діє: безстроково",
+    "vpn.traffic": "Трафік: {used} із {limit}",
+    "vpn.traffic_free": "Трафік: {used}, без обмежень",
+    "vpn.disabled": "⛔ Доступ вимкнено",
+    "vpn.buy_button": "💳 Купити доступ",
+    "vpn.plans_title": "💳 <b>Тарифи VPN</b>\n\nПодовження зберігає той самий ключ "
+                       "і додає дні до тих, що залишились.",
+    "vpn.order_title": "🧾 <b>Замовлення</b> <code>{id}</code>",
+    "vpn.order_pay": "Сплатіть рахунок кнопкою нижче, потім натисніть «Я сплатив».",
+    "vpn.pay_button": "💳 Сплатити",
+    "vpn.paid_button": "✅ Я сплатив",
+    "vpn.order_manual": "Оплату підтверджує адміністратор. Доступ прийде сюди "
+                        "одразу після підтвердження.",
+    "vpn.cancel_order": "✖️ Скасувати замовлення",
+    "vpn.order_done": "✅ Оплату отримано, доступ відкрито.",
+    "vpn.not_paid": "Оплата ще не надійшла. Спробуйте ще раз за хвилину.",
+    "link.button": "🔗 Пов'язані мережі",
+    "link.title": "🔗 <b>Пов'язані мережі</b>",
+    "link.intro": "Один акаунт у всіх мережах: адреси й налаштування спільні, "
+                  "сповіщення приходять і туди. Можна пов'язати VK, MAX і Discord.",
+    "link.linked": "пов'язано",
+    "link.unlink": "✖️ Відв'язати",
+    "link.get_code": "🔑 Отримати код",
+    "link.unlinked": "Відв'язано.",
+    "link.unavailable": "Прив'язка зараз недоступна.",
+    "link.code_any": "Ваш код: {code}\nНадішліть його боту в іншій мережі — в "
+                     "Telegram як /link {code}, у VK, MAX чи Discord просто код. "
+                     "Код діє 10 хвилин.",
+    "link.enter_hint": "<i>Отримали код в іншій мережі? Надішліть його сюди як</i> "
+                       "<code>/link КОД</code>.",
+    "link.confirm": "Пов'язати цей акаунт з акаунтом, де є {nets}?\n\n"
+                    "Адреси й налаштування стануть спільними, а сповіщення "
+                    "приходитимуть у всі пов'язані мережі. Якщо цей код вам "
+                    "надіслав хтось інший, відхиліть: "
+                    "він отримав би доступ до ваших адрес.",
+    "link.answer": "Дайте відповідь «так» або «ні».",
+    "link.yes": "✅ Пов'язати",
+    "link.no": "✖️ Відхилити",
+    "link.done": "✅ Акаунти пов'язано. Адреси й налаштування тепер спільні, сповіщення "
+                 "приходять у всі пов'язані мережі. Щоб відв'язати — /unlink.",
+    "link.declined": "Гаразд, акаунти не пов'язано.",
+    "link.notice": "🔗 {net} пов'язано з вашим акаунтом. Якщо це були не ви, "
+                   "відв'яжіть: /unlink у цій мережі або «Пов'язані мережі» в "
+                   "налаштуваннях бота в Telegram.",
+    "link.unlinked_net": "Відв'язано: цей акаунт більше не з'єднаний з іншими.",
+    "link.not_linked": "Цей акаунт ні з чим не пов'язано.",
+    "text.about": "Радар стежить за міськими загрозами й аваріями комунальних "
+                  "служб за вашими адресами та надсилає лише те, що їх стосується.",
+    "text.has_addresses": "Адреси задано — сповіщення за ними приходять сюди.",
+    "text.no_addresses": "Адрес поки немає. Додайте першу: /address вулиця, будинок, "
+                         "місто — або надішліть геолокацію.",
+    "text.commands": "/address вулиця, будинок, місто — додати адресу\n"
+                     "/addresses — мої адреси, /remove N — видалити\n"
+                     "/link — пов'язати з Telegram, VK, MAX або Discord\n"
+                     "/unlink — відв'язати цей акаунт\n"
+                     "/status — чи працює моніторинг\n"
+                     "/panel — код входу у вебпанель (модератори)\n"
+                     "/lang uk — українською",
+    "text.disclaimer": "Система не замінює офіційні канали оповіщення.",
+    "text.status_ok": "✅ Моніторинг працює.",
+    "text.status_bad": "🚨 Моніторинг мовчить близько {minutes} хв. "
+                       "Адміністраторів повідомлено.",
+    "text.already": "ℹ️ Ця адреса вже збережена: {name}.",
+    "text.confirm_address": "Знайдено: {place}\nЗберегти цю адресу? Дайте відповідь «так» або «ні». "
+                            "Якщо це не те, уточніть: /address вулиця, будинок, місто.",
+    "text.limit": "❌ Досягнуто межі адрес ({limit}).",
+    "text.saved": "🏠 Адресу збережено: {name}. Сповіщення за нею приходитимуть сюди.",
+    "text.no_street": "⚠️ Вулицю не визначено — сповіщення про аварії комунальних "
+                      "служб за цією адресою можуть бути неточними.",
+    "text.empty": "Адрес поки немає. /address вулиця, будинок, місто",
+    "text.list": "Ваші адреси:",
+    "text.remove_hint": "Видалити: /remove N",
+    "text.geo_failed": "Не вдалося визначити адресу. Спробуйте пізніше.",
+    "text.not_saved": "Гаразд, не збережено.",
+    "text.not_found": "Адресу не знайдено. Уточніть: вулиця, будинок, місто — або надішліть "
+                      "геолокацію.",
+    "text.no_such": "Такого номера немає. /addresses — список.",
+    "text.removed": "Видалено: {name}.",
+    "text.lang_set": "Мова відповідей: українська.",
+    "panel.off": "Вебпанель вимкнено.",
+    "panel.denied": "Вебпанель — для модераторів і вище.",
+    "panel.code": "Код входу у вебпанель: {code}\nОдноразовий, діє 5 хвилин. Введіть його "
+                  "на сторінці входу панелі. Якщо ви його не запитували, нічого не робіть.",
+    "panel.notice": "🔐 З {net} запитано код входу у вебпанель. Якщо це були не "
+                    "ви, відв'яжіть цю мережу (/unlink).",
+    "vpn.gb": "ГБ",
+    "vpn.mb": "МБ",
+
+    # --- RustDesk ---
+    "menu.rustdesk": "🖥 RustDesk",
+    "rustdesk.title": "🖥 <b>RustDesk</b>",
+    "rustdesk.info_button": "📋 Адреса й ключ",
+    "rustdesk.conn_button": "🔌 Підключення зараз",
+    "rustdesk.info_title": "📋 <b>Дані для підключення</b>",
+    "rustdesk.no_subscription": "⭐️ <b>Адреса й ключ — з підпискою</b>\n\n"
+                                "Підписка відкриває власний сервер RustDesk, "
+                                "завантаження відео без обмежень і всі "
+                                "теми добірок. Сповіщення про небезпеку "
+                                "безкоштовні завжди.",
+    "manage.chats": "🛡 Чати",
+    "rustdesk.setup_steps": "<b>Як додати пристрій:</b>\n"
+                            "1. Встановіть RustDesk (кнопка нижче).\n"
+                            "2. Натисніть ⚙️ → «Мережа» → «ID/Relay сервер».\n"
+                            "3. Вставте ID-сервер, Relay-сервер і ключ "
+                            "із цього повідомлення.\n"
+                            "4. Збережіть — зробіть це на обох пристроях: "
+                            "з якого підключаєтесь і до якого підключаєтесь.",
+
+    # --- сповіщення: найважливіше ---
+    "alert.danger": "НЕБЕЗПЕКА",
+    "alert.utility": "Комунальні служби та аварії",
+    "alert.all_clear": "Відбій",
+    "alert.matched": "Збіг за адресами",
+    "alert.citywide": "по всьому місту",
+    "alert.whitelist.title": "Мобільний інтернет",
+    "alert.whitelist.body": (
+        "Під час повітряної загрози оператори переходять на білі списки: "
+        "працюють лише державні сервіси, банки, карти й таксі. "
+        "Месенджери та соцмережі можуть не відкриватися. Домашній дротовий "
+        "інтернет і Wi-Fi зазвичай працюють. Для термінового зв'язку "
+        "користуйтеся дзвінками та SMS."
+    ),
+    "alert.not_official": "Ця система не замінює офіційні канали оповіщення.",
+    "alert.read_source": "Читати джерело",
+    "alert.no_ai": "(без ШІ)",
+
+    # --- партнерські проєкти ---
+    "partners.empty": "Список поки порожній.",
+    "partners.promo": "🎁 Отримати промокод",
+    "partners.promo.issued": "Видано",
+    "partners.promo.kept": "Код ваш: повторне натискання покаже той самий.",
+
+    # --- медіа ---
+    "media.title": "🎬 Завантаження відео",
+    "media.prompt": "Надішліть посилання — запропоную варіанти якості й надішлю файл.",
+    "media.limit": "Межа відправлення",
+    "media.quota.left": "Завантажень залишилось сьогодні",
+    "media.quota.spent": "Добовий ліміт вичерпано",
+    "media.quota.unlimited": "Без обмежень до",
+    "media.quota.buy": "⭐️ Без обмежень на місяць",
+    "media.too_big": "Файл більший за межу.",
+    "media.looking": "🔎 <b>Дивлюся посилання…</b>",
+    "media.slow_probe": "❌ Сайт не відповів за 90 секунд.",
+    "media.pick_quality": "🎯 <b>Оберіть якість:</b>",
+    "media.pick_note": "<i>Межа відправлення — {limit} МБ. Варіанти з позначкою ⚠️ не вмістяться.</i>",
+    "media.btn_text": "📝 Текст опису",
+    "media.btn_cancel": "❌ Скасувати",
+    "media.cancelled": "Завантаження скасовано.",
+    "media.busy": "⏳ Уже виконується інше завантаження. Зачекайте — "
+                  "одночасні завантаження перевантажують сервер.",
+    "media.no_file": "❌ Файл не створено.",
+    "media.sending": "📤 <b>Надсилаю в Telegram…</b>",
+    "img.downloading": "🖼 <b>Завантажую зображення…</b>",
+    "img.looking": "🖼 <b>Шукаю зображення в дописі…</b>",
+    "img.none_found": "🖼 У цьому дописі зображень не знайдено.\n"
+                      "<i>Приватний допис без входу їх не покаже й браузеру.</i>",
+    "img.in_post": "Зображень у дописі",
+    "img.not_sent": "❌ Зображення завантажено, але надіслати не вдалося.",
+    "zip.too_long": "📏 <b>Відео довше, ніж можна надіслати файлом "
+                    "({limit} МБ), а стиснути його нічим.</b>",
+    "zip.full_note": "Повна версія за посиланням — до {gb} ГБ, живе {hours} год.",
+    "zip.offer": "🗜 <b>Відео не вмістится: {size} МБ при межі "
+                 "{limit} МБ.</b>",
+    "zip.free_line": "Безкоштовно: стиснути до {height}p — приблизно {limit} МБ, займе "
+                     "<b>{time}</b> — процесор одноплатного комп'ютера слабкий, а "
+                     "стиснення працює з низьким пріоритетом, щоб не затримувати сповіщення.",
+    "zip.btn_zip": "🗜 Стиснути до {height}p ({time}) — безкоштовно",
+    "zip.btn_full": "⭐️ Повна версія за посиланням — до {gb} ГБ",
+    "zip.btn_other": "◀️ Обрати іншу якість",
+    "zip.running": "🗜 <b>Стискаю до {height}p</b>",
+    "zip.running_pct": "🗜 <b>Стискаю до {height}p</b> — {pct}%",
+    "zip.time_note": "Займе {time}. Сповіщення тим часом працюють як зазвичай.",
+    "sub.needed_title": "⭐️ <b>Повна версія — з підпискою</b>",
+    "sub.needed_line": "Увесь файл, якість {label}, за посиланням — до "
+                       "{gb} ГБ на {hours} год.",
+    "sub.needed_note": "Підписка відкриває це, завантаження відео без "
+                       "добового обмеження й усі теми новинних добірок. Сповіщення "
+                       "про небезпеку безкоштовні завжди.",
+    "sub.btn": "💳 Підписатися",
+    "linkcheck.choice": "🔗 <b>Що зробити з посиланням?</b>",
+    "linkcheck.btn_check": "🔍 Перевірити",
+    "linkcheck.btn_video": "🎬 Завантажити відео",
+    "linkcheck.btn_images": "🖼 Зображення з допису",
+    "linkcheck.btn_nothing": "❌ Нічого",
+    "drop.preparing": "🔗 <b>Готую посилання для завантаження…</b>",
+    "drop.ready_size": "Розмір",
+    "drop.ready_note": "більше за межу Telegram, тому файл видається "
+                       "за посиланням.",
+    "drop.download": "⬇️ Завантажити файл",
+    "drop.ttl": "<i>Посилання живе {hours} год, потім файл видаляється "
+                "із сервера.</i>",
+    "drop.too_large": "⚠️ Файл більший за {gb} ГБ — такі файли за посиланням "
+                      "не віддаються. Оберіть нижчу якість.",
+    "drop.over_limit": "⚠️ <b>Файл перевищує межу Telegram.</b>",
+
+    # --- добірки ---
+    "digest.title": "Новинні добірки",
+    "digest.buy": "⭐️ Підписатися",
+    "digest.sources": "Джерела",
+
+    "digest.staff": "🛠 <b>Доступ персоналу</b> — усі теми відкриті, без оплати.",
+    "digest.extra_days": "Оплачених днів додатково",
+    "digest.paid": "Підписка активна, залишилось днів",
+    "digest.covers_media": "Вона також знімає добовий ліміт завантажень відео.",
+    "digest.free": "Теми, доступні безкоштовно",
+    "digest.upsell": "Підписка відкриває всі.",
+    "digest.topics": "Ваші теми",
+    "digest.no_topics": "Теми не обрано — добірка не надходитиме.",
+    "digest.times": "Час доставки",
+    "digest.free_always": (
+        "Сповіщення про небезпеку, комунальні служби, погода й SOS завжди "
+        "безкоштовні та від підписки не залежать."
+    ),
+
+    # --- назви тематик ---
+    "topic.city": "Місто та влада",
+    "topic.incidents": "Події",
+    "topic.utilities": "Комунальні служби та інфраструктура",
+    "topic.transport": "Транспорт",
+    "topic.health": "Здоров'я",
+    "topic.education": "Освіта",
+    "topic.social": "Соціальна сфера",
+    "topic.economy": "Економіка та бізнес",
+    "topic.culture": "Культура та дозвілля",
+    "topic.weather_nature": "Погода та природа",
+    "topic.region": "Регіон",
+    "topic.federal": "Загальнодержавні",
+    "topic.it": "IT та ігри",
+    "topic.science": "Наука й технології",
+    "topic.sport": "Спорт",
+    "topic.hobby": "Хобі та авто",
+    "topic.cinema": "Фільми та серіали",
+    "topic.finance": "Гроші та ринки",
+
+    # --- погода ---
+    "weather.feels": "відчувається як",
+    "weather.wind": "вітер",
+    "weather.humidity": "вологість",
+    "weather.sunrise": "схід сонця",
+    "weather.sunset": "захід сонця",
+    "weather.now": "зараз",
+    "weather.today": "сьогодні",
+    "weather.tomorrow": "завтра",
+    "weather.hour_suffix": "г",
+    "weather.error.no_coords": "немає координат — надішліть геолокацію знову",
+    "weather.error.bad_status": "сервіс погоди повернув код",
+    "weather.error.fetch_failed": "не вдалося отримати погоду",
+    "weather.error.no_data": "немає даних про погоду",
+
+    # --- погода: описи кодів WMO ---
+    "weather.wmo.0": "ясно",
+    "weather.wmo.1": "переважно ясно",
+    "weather.wmo.2": "мінлива хмарність",
+    "weather.wmo.3": "похмуро",
+    "weather.wmo.45": "туман",
+    "weather.wmo.48": "паморозний туман",
+    "weather.wmo.51": "легка мжичка",
+    "weather.wmo.53": "мжичка",
+    "weather.wmo.55": "густа мжичка",
+    "weather.wmo.56": "легка паморозна мжичка",
+    "weather.wmo.57": "густа паморозна мжичка",
+    "weather.wmo.61": "невеликий дощ",
+    "weather.wmo.63": "дощ",
+    "weather.wmo.65": "сильний дощ",
+    "weather.wmo.66": "легкий крижаний дощ",
+    "weather.wmo.67": "сильний крижаний дощ",
+    "weather.wmo.71": "невеликий сніг",
+    "weather.wmo.73": "сніг",
+    "weather.wmo.75": "сильний сніг",
+    "weather.wmo.77": "снігова крупа",
+    "weather.wmo.80": "невеликі зливи",
+    "weather.wmo.81": "зливи",
+    "weather.wmo.82": "сильні зливи",
+    "weather.wmo.85": "невеликі снігові зливи",
+    "weather.wmo.86": "сильні снігові зливи",
+    "weather.wmo.95": "гроза",
+    "weather.wmo.96": "гроза з невеликим градом",
+    "weather.wmo.99": "гроза з сильним градом",
+
+    # --- погода картинкою ---
+    "weather.image.title": "Погода",
+    "weather.image.feels_like": "відчувається як",
+    "weather.image.gusts_to": "пориви до",
+    "weather.image.humidity": "вологість",
+    "weather.image.mmhg": "мм рт. ст.",
+    "weather.image.ms": "м/с",
+    "weather.image.now": "зараз",
+    "weather.sky.night": "ніч",
+    "weather.sky.dawn": "світанок",
+    "weather.sky.day": "день",
+    "weather.sky.dusk": "сутінки",
+
+    # --- роза вітрів ---
+    "wind.n": "північний",
+    "wind.ne": "північно-східний",
+    "wind.e": "східний",
+    "wind.se": "південно-східний",
+    "wind.s": "південний",
+    "wind.sw": "південно-західний",
+    "wind.w": "західний",
+    "wind.nw": "північно-західний",
+
+    # --- сила вітру ---
+    "wind.calm": "штиль",
+    "wind.light": "слабкий",
+    "wind.moderate": "помірний",
+    "wind.fresh": "свіжий",
+    "wind.strong": "сильний",
+    "wind.storm": "штормовий",
+
+    # --- фази місяця ---
+    "moon.new": "новий місяць",
+    "moon.waxing_crescent": "молодий місяць",
+    "moon.first_quarter": "перша чверть",
+    "moon.waxing_gibbous": "місяць зростає",
+    "moon.full": "повня",
+    "moon.waning_gibbous": "місяць спадає",
+    "moon.last_quarter": "остання чверть",
+    "moon.waning_crescent": "старий місяць",
+
+    # --- SOS ---
+    "sos.overview": "🆘 Екстрена допомога",
+    "sos.no_contacts": (
+        "Довірених контактів поки немає. Додайте того, хто отримає вашу геолокацію, "
+        "якщо ви натиснете кнопку SOS."
+    ),
+    "sos.contacts": "Довірені контакти",
+    "sos.ready": "готовий отримати сигнал",
+    "sos.pending": "не підтверджено — не відкривав(ла) бота",
+    "sos.none_confirmed": (
+        "⚠️ Жоден контакт не підтверджено. Telegram не дозволяє боту писати першим — "
+        "контакт має відкрити бота за вашим посиланням. До того часу сигнал "
+        "надходить адміністраторам системи."
+    ),
+    "sos.add": "➕ Додати контакт",
+    "sos.fire": "🆘 Надіслати сигнал",
+    "sos.title": "🆘 SOS",
+    "sos.send": "🆘 Надіслати тривогу",
+    "sos.stop": "✅ Скасувати тривогу",
+    "sos.sent": "Тривогу надіслано вашим контактам.",
+
+    # --- журнал ---
+    "history.title": "📖 Журнал",
+    "history.empty": "За останні 30 днів вам нічого не надсилалося.",
+    "history.note": (
+        "Це не означає, що бот бездіяв: це означає, що поруч "
+        "із вашими адресами нічого не сталося."
+    ),
+    "history.trimmed": "Показано найновіші записи.",
+
+    # --- налаштування ---
+    "settings.title": "⚙️ Сповіщення",
+    "settings.prompt": "Оберіть, які події отримувати, і режим погоди.",
+    "settings.quiet": "Тихі години",
+    "settings.weather_mode": "Режим погоди",
+    "settings.weather_view": "Вигляд погоди",
+
+    # --- загальне ---
+    "common.cancelled": "✅ Скасовано.",
+    "common.only_superadmin": "⛔️ Лише для суперадміністратора.",
+    "common.error": "Щось пішло не так — спробуйте пізніше.",
+    "common.insufficient_rights": "Недостатньо прав.",
+
+    # --- довідка (/help) ---
+    "help.title": "Як це працює",
+    "help.step1": (
+        "1. Надішліть геолокацію (скріпка → Геопозиція) — це додасть адресу. "
+        "Додавати можна скільки завгодно."
+    ),
+    "help.step2": (
+        "2. Воєнні загрози (дрони, ракетна небезпека) приходять одним "
+        "повідомленням по місту, що охоплює всі ваші адреси в ньому."
+    ),
+    "help.step3": "3. Аварії комунальних служб шукаються за адресою — вулиця й номер будинку.",
+    "help.step4": "4. Адреси ближче ніж за 1 км одна від одної об'єднуються в одну зведену.",
+    "help.commands_title": "Команди",
+    "help.cmd_basic": "/menu — меню - /id — ваш ID і роль - /cancel — скинути введення",
+    "help.cmd_partner": "/partner — партнерський проєкт",
+    "help.cmd_assistant": "/ai &lt;запитання&gt; — ШІ-асистент - /aireset — очистити контекст",
+    "help.cmd_quota": "/quota — витрата квоти Gemini",
+    "help.cmd_admin1": "/stats — статистика системи - /models — моделі Gemini",
+    "help.cmd_admin2": "/digest — новинні добірки - /sos — кнопка SOS",
+    "help.cmd_admin3": "/media — завантажити відео за посиланням - /panel — вебпанель",
+    "help.cmd_super1": (
+        "/features — можливості системи\n"
+        "/logs — журнали - /logtail — останні рядки - /logclear — очистити"
+    ),
+    "help.cmd_super2": "/perf — час циклу й ресурси - /bench — порівняння провайдерів ШІ",
+    "help.cmd_super3": (
+        "/keys — ключі й налаштування - /provider — обрати провайдера\n"
+        "/network — мережа й проксі - /backup — резервна копія"
+    ),
+
+    # --- привітання та загальні підписи ---
+    "app.title": "Радар",
+    "greeting.assistant": (
+        "🧠 <i>ШІ-асистент активний: напишіть запитання в чат "
+        "або скористайтеся /ai.</i>"
+    ),
+    "greeting.no_key": (
+        "⚠️ <i>GEMINI_API_KEY не задано — працює евристичний аналіз "
+        "без ШІ.</i>"
+    ),
+    "restart.missed": (
+        "🛠 <b>Бот був недоступний через технічні роботи</b>\n\n"
+        "Ваше повідомлення надійшло під час перезапуску й не було оброблене "
+        "— надішліть його ще раз.\n\n"
+        "<i>Сповіщення про небезпеку не втрачено: після кожного перезапуску "
+        "бот перечитує свої джерела.</i>"
+    ),
+    "common.your_id": "🆔 Ваш ID",
+    "common.role": "Роль",
+    "common.pinned_buttons": (
+        "Кнопки <b>Меню</b> і <b>HydraSite</b> закріплено під "
+        "полем введення."
+    ),
+
+    # --- ролі ---
+    "role.user": "👤 Користувач",
+    "role.moderator": "🛡 Модератор",
+    "role.admin": "👑 Адміністратор",
+    "role.superadmin": "⭐️ Суперадміністратор",
+
+    # --- категорії сповіщень ---
+    "category.bpla": "Дрони / ракетна небезпека",
+    "category.mchs": "Сповіщення екстрених служб",
+    "category.jkh": "Комунальні служби та збої мереж",
+    "category.whitelist": "Попереджати про білі списки",
+
+    # --- налаштування: погода ---
+    "settings.weather_button": "🌤 Погода",
+    "settings.weather_mode.title": "⏱ <b>Режим погоди</b>",
+    "settings.weather_mode.prompt": "Оберіть інтервал або задайте власне значення.",
+    "settings.weather.off": "вимкнено",
+    "settings.weather.every": "кожні",
+    "settings.weather.at": "о",
+    "settings.weather.minutes": "хв",
+    "settings.weather.hours_short": "г",
+    "settings.weather.hour": "щогодини",
+    "settings.weather.hours3": "кожні 3 години",
+    "settings.weather.hours6": "кожні 6 годин",
+    "settings.weather.disable": "Вимкнути",
+    "settings.weather.own_interval": "Власний інтервал",
+    "settings.weather.fixed_time": "У визначений час",
+    "settings.weather.disabled": "Погоду вимкнено",
+    "settings.weather.interval_set": "Інтервал",
+    "settings.weather.ask_time": (
+        "⏰ Введіть час у форматі <code>HH:MM</code> (наприклад, 08:30):"
+    ),
+    "settings.weather.ask_interval": (
+        "⏱ Введіть інтервал: <code>45</code> (хвилин) або <code>2h</code> (годин):"
+    ),
+    "settings.weather.bad_time": (
+        "❌ Неправильний формат. Приклад: <code>08:30</code>. /cancel — скасувати."
+    ),
+    "settings.weather.bad_interval": (
+        "❌ Введіть кількість хвилин або щось на кшталт <code>2h</code>."
+    ),
+    "settings.weather.range": "❌ Інтервал має бути від 15 хвилин до 24 годин.",
+    "settings.weather.daily_at": "✅ Погода надходитиме щодня о",
+    "settings.weather.interval_ok": "✅ Інтервал",
+
+    # --- налаштування: вигляд погоди ---
+    "settings.wformat.title": "🖼 <b>Формат погодної зведеної</b>",
+    "settings.wformat.now": "Зараз",
+    "settings.wformat.text": "текст",
+    "settings.wformat.image": "зображення",
+    "settings.wformat.image_all": "зображення (для всіх)",
+    "settings.wformat.as_text": "📄 Текстом",
+    "settings.wformat.as_image": "🖼 Зображенням",
+    "settings.wformat.forced": (
+        "Особистий вибір тимчасово недоступний. Коли адміністрація "
+        "зніме загальне налаштування, ваш попередній вибір повернеться."
+    ),
+    "settings.wformat.why": (
+        "Зображення наочніше, але воно не завантажиться за обмежень "
+        "мобільного інтернету — а саме для таких ситуацій ця система "
+        "й існує. Текст доходить завжди."
+    ),
+    "settings.wformat.off": "Погоду зображенням вимкнено.",
+    "settings.wformat.label": "🖼 Формат погоди",
+
+    # --- налаштування: тихі години ---
+    "settings.quiet.title": "🌙 <b>Тихі години</b>",
+    "settings.quiet.label": "🌙 Тихі години",
+    "settings.quiet.prompt": (
+        "Надішліть проміжок, наприклад <code>23:00-07:00</code>.\n"
+        "«-» вимикає тихі години."
+    ),
+    "settings.quiet.always": (
+        "<b>Воєнні загрози й екстрені сповіщення доходять завжди</b> — "
+        "стримуються лише комунальні служби й погода."
+    ),
+    "settings.quiet.bad_format": (
+        "❌ Формат: <code>23:00-07:00</code>. «-» вимикає. /cancel — скасувати."
+    ),
+    "settings.quiet.cleared": "✅ Тихі години вимкнено.",
+    "settings.quiet.set": "✅ Тихі години",
+    "settings.quiet.note": (
+        "<i>Воєнні загрози й екстрені сповіщення надходитимуть у будь-який час.</i>"
+    ),
+    "settings.quiet.disabled": "Тихі години вимкнено.",
+    "settings.quiet.none": "вимкнено",
+
+    # --- пропозиція джерела ---
+    "suggest.title": "📢 <b>Запропонувати джерело</b>",
+    "suggest.prompt": (
+        "Надішліть ім'я користувача публічного каналу, наприклад "
+        "<code>saratovzhkh</code>, або посилання на нього."
+    ),
+    "suggest.thematic": (
+        "<i>Тематичні канали теж підходять — ігри, спорт, наука: вони потрапляють "
+        "у новинні добірки.</i>"
+    ),
+    "suggest.closed": (
+        "Пропозиції зараз закрито — перелік джерел веде "
+        "адміністрація."
+    ),
+    "suggest.sent": "✅ Канал @{channel} надіслано модераторам.",
+    "suggest.already": "ℹ️ Джерело вже є в переліку або в черзі.",
+    "suggest.bad": "❌ Неправильне ім'я каналу.",
+
+    # --- загальне (продовження) ---
+    "common.on": "Увімкнено",
+    "common.off": "Вимкнено",
+    "common.user_not_found": "Користувача не знайдено.",
+    "common.cancel": "Скасувати",
+    "common.back": "◀️ Назад",
+    "common.cancel_x": "❌ Скасувати",
+    "common.yes": "✅ Так",
+
+    # --- екрани модератора: користувачі (з 4.9.9.3) ---
+    "users.no_rights": "Недостатньо прав.",
+    "users.not_found": "Користувача не знайдено.",
+    "users.list_title": "👥 <b>Користувачі</b> — усього {total} (сторінка {page}/{pages})",
+    "users.locations_count": "адрес: {count}",
+    "users.open_hint": "Натисніть користувача, щоб відкрити його картку.",
+    "users.none": "немає",
+    "users.card_title": "👤 <b>Користувач</b>",
+    "users.nick": "Ім'я користувача",
+    "users.role": "Роль",
+    "users.locations": "Адреси",
+    "users.categories": "Категорії сповіщень",
+    "users.weather": "Погода",
+    "users.settings_title": "⚙️ <b>Сповіщення користувача</b>",
+    "users.self_role": "Не можна змінювати власну роль.",
+    "users.role_denied": "Недостатньо прав для цієї ролі.",
+    "users.role_changed": "Роль змінено: {role}",
+    "users.role_notice": "ℹ️ Вашу роль у системі «Радар» змінено на {role}.",
+    "users.delete_admins": "Видаляти можуть адміністратори.",
+    "users.delete_ask": "⚠️ Видалити користувача {id} ({role}) разом з усіма його адресами?",
+    "users.deleted_short": "Користувача видалено",
+    "users.deleted": "✅ Користувача {id} видалено.",
+    "users.invite_title": "🔗 <b>Посилання-запрошення</b>",
+    "users.invite_hint": "Хто за ним перейде, отримає роль «Користувач»: власні "
+                         "адреси й сповіщення. Підвищити роль може лише "
+                         "адміністрація.",
+    "users.default_city": "Місто за замовчуванням — {city}.",
+    "users.add_loc_title": "➕ <b>Адреса для</b>",
+    "users.add_loc_prompt": "Надішліть адресу текстом, наприклад "
+                            "<code>вулиця Чапаєва, 12</code>.",
+    "users.add_loc_geo": "Можна також переслати або надіслати геолокацію — її буде "
+                         "додано цьому користувачу.",
+    "users.cancel_hint": "/cancel — скасувати.",
+    "users.loc_added_notice": "📍 Адміністратор додав вам адресу: {name}.\n"
+                              "Сповіщення за нею вже ввімкнено — керувати нею можна "
+                              "в розділі «Мої адреси».",
+    "users.loc_added": "✅ Адресу {name} додано користувачу {id}.",
+    "users.no_street": "Вулицю не визначено — сповіщення про аварії комунальних "
+                       "служб за адресою можуть бути неточними.",
+    "users.back_to_user": "◀️ Назад до користувача",
+    "users.gone_or_denied": "Користувача не знайдено або недостатньо прав.",
+    "users.address_not_found": "Адресу не знайдено. Уточніть — наприклад, "
+                               "<code>Саратов, вулиця Чапаєва, 12</code>. "
+                               "/cancel — скасувати.",
+    "users.variants": "🔎 <b>Знайдено збігів: {count}</b>",
+    "users.pick_one": "Оберіть потрібний.",
+    "users.list_stale": "Перелік застарів, почніть спочатку.",
+    "users.adding": "Додаю…",
+
+    # --- клавіатури модератора (з 4.9.9.3) ---
+    "ucard.locs": "📍 Адреси",
+    "ucard.alerts": "⚙️ Сповіщення",
+    "ucard.add_loc": "➕ Додати адресу",
+    "ucard.weather": "🌤 Погода користувача",
+    "ucard.delete": "🔨 Видалити користувача",
+    "ucard.back": "◀️ До переліку",
+    "ucard.locs_short": "адр.",
+    "mod.queue": "📥 Черга джерел",
+    "mod.list": "📋 Перелік джерел",
+    "mod.check": "🔍 Перевірити доступність",
+    "mod.add_channel": "➕ Додати канал",
+    "mod.add_rss": "🌐 Додати новинну RSS-стрічку",
+    "mod.export": "⬇️ Завантажити перелік",
+    "mod.import": "⬆️ Завантажити перелік у бота",
+    "mod.back": "◀️ До керування",
+    "mod.approve": "✅ Прийняти",
+    "mod.reject": "❌ Відхилити",
+
+    # --- чати під модерацією, частина адміністрації (з 4.9.9.3) ---
+    "chats.title": "🛡 <b>Чати під модерацією</b>",
+    "chats.mod_on": "модерацію ввімкнено",
+    "chats.mod_off": "модерацію вимкнено",
+    "chats.tap_hint": "Натисніть групу, щоб відкрити її.",
+    "chats.mod_disabled": "Модерацію вимкнено — увімкніть її в розділі «Можливості».",
+    "chats.admins_only": "Лише для адміністрації.",
+    "chats.add_hint": (
+        "🛡 <b>Чати під модерацією</b>\n\n"
+        "Груп поки немає.\n\n"
+        "<b>Як додати бота:</b>\n"
+        "1. Відкрийте групу → «Учасники» → «Додати».\n"
+        "2. Знайдіть бота за іменем і додайте.\n"
+        "3. Зробіть його там адміністратором і ввімкніть "
+        "<b>«Видалення повідомлень»</b> та <b>«Блокування користувачів»</b>.\n"
+        "4. Надішліть у групі <code>/modon</code> — чат з'явиться тут.\n\n"
+        "<b>Бот уже в групі?</b> Тоді нічого додавати не треба: "
+        "перевірте, що він адміністратор із цими правами, і надішліть "
+        "у групі <code>/modon</code>. Групи, куди бота додали "
+        "раніше, самі про себе не повідомляють — Telegram сповіщає бота "
+        "лише про зміни.\n\n"
+        "<i>Змінювати режим приватності в @BotFather не потрібно: "
+        "адміністратор і так отримує всі повідомлення. Бот нічого не пише "
+        "тим, хто вже в групі — перевірка стосується лише тих, хто "
+        "долучиться після ввімкнення.</i>"
+    ),
+
+    # --- екрани модератора: джерела (з 4.9.9.3) ---
+    "src.menu_text": "📡 <b>Джерела</b>\n\nТут додають канали й стрічки, "
+                     "перевіряють їхню доступність і розглядають "
+                     "пропозиції користувачів.",
+    "src.queue_empty": "📥 Черга порожня.",
+    "src.queue_item": "📥 <b>Черга: {count}</b>\nРозглядається: {channel}",
+    "src.approved": "Прийнято",
+    "src.rejected": "Відхилено",
+    "src.empty": "— порожньо —",
+    "src.list_channels": "📋 <b>Канали Telegram</b>",
+    "src.list_feeds": "🌐 <b>RSS-стрічки</b>",
+    "src.add_prompt": "➕ Надішліть ім'я каналу. Кілька одразу — через "
+                      "коми або з нового рядка.",
+    "src.added": "✅ Додано: ",
+    "src.skipped": "⚠️ Пропущено: ",
+    "src.nothing_added": "Нічого не додано",
+    "src.rss_prompt": "🌐 Надішліть адресу новинної або офіційної RSS-стрічки "
+                      "(наприклад <code>https://example.ru/rss</code>).",
+    "src.feeds_added": "✅ Стрічок додано:",
+    "src.no_valid": "⚠️ Придатних адрес не знайдено.",
+    "src.export_off": "Вивантаження джерел вимкнено.",
+    "src.preparing": "Готую файл…",
+    "src.import_off": "Завантаження джерел вимкнено.",
+    "src.import_admins": "Завантажувати можуть адміністратори.",
+    "src.import_denied": "⛔️ Завантаження джерел доступне адміністраторам.",
+    "src.none": "Джерел немає.",
+    "src.check_start": "Починаю перевірку…",
+    "src.checking": "🔍 Перевіряю джерела: <b>{total}</b>…",
+    "src.check_denied": "⛔️ Перевірка джерел доступна модераторам і вище.",
+    "src.drop_hint": "Недоступні можна прибрати кнопкою нижче.",
+    "src.drop_button": "🗑 Прибрати недоступні ({count})",
+    "src.stale": "Перелік застарів — запустіть перевірку знову.",
+    "src.removed_short": "Прибрано джерел: {count}",
+    "src.removed": "🗑 Недоступні джерела прибрано: <b>{removed}</b>.\n"
+                   "Залишилось: каналів {channels}, стрічок {feeds}.",
+
+    # --- розділ «Керування» ---
+    "manage.sources": "📡 Джерела",
+    "manage.users": "👥 Користувачі",
+    "manage.stats": "📊 Статистика",
+    "manage.metrics": "🩺 Метрики та стан",
+    "manage.links": "🔗 Посилання",
+    "manage.features": "⚙️ Можливості",
+    "manage.keys": "🔑 Ключі доступу",
+    "manage.ai": "🧠 Керування ШІ",
+    "manage.backups": "💾 Резервні копії",
+    "manage.network": "🌐 Вихід у мережу",
+    "manage.logs": "📋 Журнали",
+    "manage.panel": "🖥 Вебпанель",
+    "manage.role_line": "Ваша роль",
+    "manage.all_sections": "Доступні всі розділи, зокрема ключі доступу й журнали.",
+    "manage.admin_sections": "Доступні джерела, користувачі, статистика, посилання та запрошення.",
+    "manage.mod_sections": "Доступне редагування джерел і налаштувань користувачів.",
+    # --- ключи, які код використовував, а словник не містив (з 5.9.6) ---
+    "img.too_slow": "🖼 Майданчик не віддав зображення за дві хвилини — зупинився.\n"
+                    "<i>Таке буває, коли допис закрито або майданчик гальмує "
+                    "незнайомих відвідувачів. Спробуйте пізніше.</i>",
+    "settings.back": "◀️ До налаштувань",
+    "settings.tz.whole": "◀️ Цілі години",
+    "settings.tz.fractional": "⏱ Пів годинні пояси",
+    "settings.tz.bad": "Не вдалося розібрати пояс.",
+    "settings.tz.now": "Зараз",
+    "settings.tz.saved": "Часовий пояс",
+    "settings.tz.title": "🕓 <b>Часовий пояс</b>",
+    "settings.tz.prompt": "Відлік іде від UTC. За обраним поясом рахуються тихі години, "
+                          "час погоди та доставка добірок.",
+}
+RADAR_FILE_36
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n_zh.py"
+cat > "radar/i18n_zh.py" <<'RADAR_FILE_37'
+"""机器人界面简体中文（自 5.9.6 起）。
+
+键与 `i18n.EN_STRINGS` 相同；测试会检查是否完整，以及 `{…}` 占位符和
+HTML 标签是否与英文原文一致。翻译未经母语者审校，发现问题请告知作者。
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+STRINGS: dict[str, str] = {
+    # --- 语言选择 ---
+    "lang.ask": "Choose your language / Выберите язык / 请选择语言",
+    "lang.saved": "语言已切换为简体中文。",
+    "lang.button": "🌍 语言",
+
+    # --- 主菜单 ---
+    "menu.locations": "📍 我的地址",
+    "menu.weather": "🌤 天气",
+    "menu.alerts": "⚙️ 通知",
+    "menu.suggest": "📢 推荐信息源",
+    "menu.invite": "🔗 邀请",
+    "menu.digest": "📰 新闻摘要",
+    "menu.sos": "🆘 SOS",
+    "menu.assistant": "🧠 AI 助手",
+    "menu.manage": "🛠 管理",
+    "menu.about": "ℹ️ 关于",
+    "menu.history": "📖 历史",
+    "menu.media": "🎬 下载视频",
+    "menu.partners": "🤝 合作项目",
+    "menu.groups": "💬 我们的群聊",
+    "groups.title": "💬 <b>我们的群聊</b>",
+    "groups.hint": "点按群聊即可打开。部分群需要申请加入——由群管理员审批。",
+    "groups.empty": "暂时没有可加入的群聊。",
+    "menu.home": "🏠 主菜单",
+    "menu.back": "◀️ 返回",
+
+    # --- 链接检查 ---
+    "linkcheck.off": "链接检查已关闭。",
+    "linkcheck.usage": "🔍 在命令后发送链接：\n"
+                       "<code>/check https://example.com/page</code>",
+    "linkcheck.working": "⏳ 正在检查链接…",
+    "linkcheck.slow_down": "⚠️ 连续检查次数过多，请等待一分钟。",
+    "linkcheck.limit": "🔒 今日检查次数已用完"
+                       "（每天 200 次）。\n\n订阅可取消限制。"
+                       "危险警报始终免费，不受此限制影响。",
+    "linkcheck.left": "今日剩余",
+    "linkcheck.unlimited": "订阅后检查次数不限。",
+    "linkcheck.section": "🔍 <b>链接检查</b>\n\n"
+                         "分析地址是否有欺诈迹象：仿冒品牌的相似字符、"
+                         "他人域名、跳转、域名年龄、Safe Browsing 名单。",
+    "menu.linkcheck": "🔍 检查链接",
+    "menu.music": "🎵 音乐",
+    "menu.sub_button": "💳 订阅 — 不限次数检查",
+    "help.cmd_linkcheck": "/check &lt;链接&gt; — 检查链接是否有诈骗迹象",
+    "help.cmd_music": "/music — 音乐与播放列表",
+
+    # --- VPN (5.0) ---
+    "menu.vpn": "🔐 VPN",
+    "vpn.title": "🔐 <b>VPN</b>",
+    "vpn.unavailable": "管理员尚未设置此功能。",
+    "vpn.link_button": "📋 订阅链接",
+    "vpn.gone": "面板中没有该账户 — 请重新申请访问。",
+    "vpn.ask_button": "📨 申请访问",
+    "vpn.devices_limit": "📱 每个订阅的设备数：最多 {n} 台",
+    "vpn.app_button": "📱 连接应用",
+    "vpn.app_nothing": "需要先开通访问权限。",
+    "vpn.app_title": "📱 <b>连接应用</b>",
+    "vpn.app_code": "验证码：<code>{code}</code>\n一次性，5 分钟内有效。请与服务器地址一起输入 HydraVPN（“机器人账户”）。",
+    "vpn.app_server": "服务器地址：<code>{url}</code>",
+    "vpn.app_devices": "已连接设备：{n}",
+    "vpn.app_revoke": "🔌 断开所有设备",
+    "vpn.app_revoked": "已断开设备：{n}",
+    "vpn.pending": "⏳ 您的申请已发送，正等待管理员处理。",
+    "vpn.denied": "您之前的申请已被拒绝，可以重新提交。",
+    "vpn.intro": "VPN 访问权限由管理员发放。"
+                 "请提交申请 — 回复会发到这里。",
+    "vpn.sent": "申请已发送。",
+    "vpn.link_title": "🔐 <b>您的订阅链接</b>",
+    "vpn.setup_steps": "<b>连接方法：</b>\n"
+                       "1. 安装支持订阅的客户端："
+                       "Android 用 HydraVPN 或 v2rayNG，iPhone 用 Streisand 或 Happ，"
+                       "电脑用 Hiddify 或 v2rayN。\n"
+                       "2. 用上面的链接添加订阅 — "
+                       "“从剪贴板导入”或“添加订阅”。\n"
+                       "3. 更新订阅并选择服务器。\n\n"
+                       "链接就是您的密钥：请勿转发。同一个"
+                       "链接可用于您的所有设备。",
+    "vpn.key_title": "🔐 <b>您的密钥</b>",
+    "vpn.config_title": "🔐 <b>您的配置链接</b>",
+    "vpn.key_steps": "<b>连接方法：</b>\n"
+                     "1. 安装 Outline Client 或任意 Shadowsocks 客户端。\n"
+                     "2. 复制上面的密钥并添加到客户端。\n\n"
+                     "密钥就是您的访问权限：请勿转发。",
+    "vpn.config_steps": "<b>连接方法：</b>\n"
+                        "1. 安装 WireGuard（或 AmneziaWG）。\n"
+                        "2. 打开上面的链接并下载配置文件 — "
+                        "该链接<b>仅限一次</b>，第二次无法打开。\n"
+                        "3. 把文件导入应用。\n\n"
+                        "需要再次获取？再点一次按钮，"
+                        "机器人会发给您新的链接。",
+    "vpn.hydra_button": "⬇️ HydraVPN Android 版",
+    "vpn.no_access": "尚未开通访问权限。",
+    "vpn.denied_note": "🔐 管理员拒绝了您的 VPN 申请。",
+    "vpn.until": "有效期至 {until}（剩余 {left} 天）",
+    "vpn.forever": "有效期：长期",
+    "vpn.traffic": "流量：已用 {used}，共 {limit}",
+    "vpn.traffic_free": "流量：已用 {used}，不限量",
+    "vpn.disabled": "⛔ 访问已停用",
+    "vpn.buy_button": "💳 购买访问权限",
+    "vpn.plans_title": "💳 <b>VPN 套餐</b>\n\n续费保留同一个密钥，"
+                       "并把天数加到您的剩余时间上。",
+    "vpn.order_title": "🧾 <b>订单</b> <code>{id}</code>",
+    "vpn.order_pay": "请用下方按钮支付账单，然后点“我已支付”。",
+    "vpn.pay_button": "💳 支付",
+    "vpn.paid_button": "✅ 我已支付",
+    "vpn.order_manual": "付款由管理员确认。确认后访问信息会立即发到这里。",
+    "vpn.cancel_order": "✖️ 取消订单",
+    "vpn.order_done": "✅ 已收到付款，访问已开通。",
+    "vpn.not_paid": "尚未收到付款。请一分钟后再试。",
+    "link.button": "🔗 已关联的网络",
+    "link.title": "🔗 <b>已关联的网络</b>",
+    "link.intro": "所有网络共用一个账户：地址和设置共享，"
+                  "警报也会发到那边。可关联 VK、MAX 和 Discord。",
+    "link.linked": "已关联",
+    "link.unlink": "✖️ 取消关联",
+    "link.get_code": "🔑 获取验证码",
+    "link.unlinked": "已取消关联。",
+    "link.unavailable": "暂时无法关联。",
+    "link.code_any": "您的验证码：{code}\n请在另一个网络里发给机器人 — 在 "
+                     "Telegram 中发送 /link {code}，在 VK、MAX 或 Discord 中只发验证码。"
+                     "验证码 10 分钟内有效。",
+    "link.enter_hint": "<i>在另一个网络收到验证码了？请这样发到这里：</i> "
+                       "<code>/link CODE</code>。",
+    "link.confirm": "把此账户与拥有 {nets} 的账户关联吗？\n\n"
+                    "地址和设置将共享，警报会发到所有已关联的网络。"
+                    "如果这个验证码是别人发给您的，请拒绝："
+                    "否则对方将获得您的地址。",
+    "link.answer": "请回复“是”或“否”。",
+    "link.yes": "✅ 关联",
+    "link.no": "✖️ 拒绝",
+    "link.done": "✅ 账户已关联。地址和设置现已共享，警报会发到所有已关联的网络。"
+                 "取消关联请用 /unlink。",
+    "link.declined": "好的，账户未关联。",
+    "link.notice": "🔗 {net} 已与您的账户关联。如果不是您操作的，"
+                   "请取消关联：在该网络里发 /unlink，或在 "
+                   "Telegram 机器人设置的“已关联的网络”中操作。",
+    "link.unlinked_net": "已取消关联：此账户不再与其他账户相连。",
+    "link.not_linked": "此账户未关联任何账户。",
+    "text.about": "雷达关注您所在地址的城市威胁与市政故障，"
+                  "只发送与之相关的内容。",
+    "text.has_addresses": "已设置地址 — 相关警报会发到这里。",
+    "text.no_addresses": "还没有地址。添加第一个：/address 街道, 门牌, "
+                         "城市 — 或发送地理位置。",
+    "text.commands": "/address 街道, 门牌, 城市 — 添加地址\n"
+                     "/addresses — 我的地址，/remove N — 删除\n"
+                     "/link — 与 Telegram、VK、MAX 或 Discord 关联\n"
+                     "/unlink — 取消此账户的关联\n"
+                     "/status — 监控是否在运行\n"
+                     "/panel — 网页面板登录码（版主）\n"
+                     "/lang zh — 简体中文",
+    "text.disclaimer": "本系统不能替代官方预警渠道。",
+    "text.status_ok": "✅ 监控正在运行。",
+    "text.status_bad": "🚨 监控已静默约 {minutes} 分钟。"
+                       "已通知管理员。",
+    "text.already": "ℹ️ 该地址已保存：{name}。",
+    "text.confirm_address": "找到：{place}\n保存此地址吗？请回复“是”或“否”。"
+                            "如果不对，请写得更具体：/address 街道, 门牌, 城市。",
+    "text.limit": "❌ 已达到地址数量上限（{limit}）。",
+    "text.saved": "🏠 地址已保存：{name}。相关警报会发到这里。",
+    "text.no_street": "⚠️ 未识别出街道 — 该地址的市政故障警报"
+                      "可能不够准确。",
+    "text.empty": "还没有地址。/address 街道, 门牌, 城市",
+    "text.list": "您的地址：",
+    "text.remove_hint": "删除：/remove N",
+    "text.geo_failed": "无法识别地址。请稍后再试。",
+    "text.not_saved": "好的，未保存。",
+    "text.not_found": "未找到地址。请写得更具体：街道, 门牌, 城市 — 或发送"
+                      "地理位置。",
+    "text.no_such": "没有这个编号。/addresses — 查看列表。",
+    "text.removed": "已删除：{name}。",
+    "text.lang_set": "回复语言：简体中文。",
+    "panel.off": "网页面板已关闭。",
+    "panel.denied": "网页面板仅限版主及以上。",
+    "panel.code": "网页面板登录码：{code}\n一次性，5 分钟内有效。请在面板登录页面输入。"
+                  "如果不是您申请的，请不要理会。",
+    "panel.notice": "🔐 有人通过 {net} 申请了网页面板登录码。如果不是"
+                    "您本人，请取消该网络的关联（/unlink）。",
+    "vpn.gb": "GB",
+    "vpn.mb": "MB",
+
+    # --- RustDesk ---
+    "menu.rustdesk": "🖥 RustDesk",
+    "rustdesk.title": "🖥 <b>RustDesk</b>",
+    "rustdesk.info_button": "📋 地址和密钥",
+    "rustdesk.conn_button": "🔌 当前连接",
+    "rustdesk.info_title": "📋 <b>连接信息</b>",
+    "rustdesk.no_subscription": "⭐️ <b>地址和密钥 — 需订阅</b>\n\n"
+                                "订阅可使用您自己的 RustDesk 服务器、"
+                                "不限量下载视频，并解锁所有摘要主题。"
+                                "危险警报始终免费。",
+    "manage.chats": "🛡 群聊",
+    "rustdesk.setup_steps": "<b>如何添加设备：</b>\n"
+                            "1. 安装 RustDesk（下方按钮）。\n"
+                            "2. 点 ⚙️ → “网络” → “ID/中继服务器”。\n"
+                            "3. 粘贴本消息中的 ID 服务器、中继服务器和密钥。\n"
+                            "4. 保存 — 两台设备都要做：发起连接的"
+                            "和被连接的。",
+
+    # --- 警报：最重要的部分 ---
+    "alert.danger": "危险",
+    "alert.utility": "市政设施与故障",
+    "alert.all_clear": "警报解除",
+    "alert.matched": "匹配的地址",
+    "alert.citywide": "全市范围",
+    "alert.whitelist.title": "移动网络",
+    "alert.whitelist.body": (
+        "空袭威胁期间，运营商会切换为白名单模式：只有"
+        "政府服务、银行、地图和出租车可用。"
+        "即时通讯和社交网络可能打不开。家用宽带"
+        "和 Wi-Fi 通常正常。紧急联系请使用电话和短信。"
+    ),
+    "alert.not_official": "本系统不能替代官方预警渠道。",
+    "alert.read_source": "阅读来源",
+    "alert.no_ai": "（未使用 AI）",
+
+    # --- 合作项目 ---
+    "partners.empty": "列表暂时为空。",
+    "partners.promo": "🎁 获取优惠码",
+    "partners.promo.issued": "已发放",
+    "partners.promo.kept": "该优惠码归您：再次点按会显示同一个。",
+
+    # --- 媒体 ---
+    "media.title": "🎬 视频下载",
+    "media.prompt": "发送链接 — 我会给出清晰度选项并发送文件。",
+    "media.limit": "发送上限",
+    "media.quota.left": "今日剩余下载次数",
+    "media.quota.spent": "已达每日上限",
+    "media.quota.unlimited": "不限量，截至",
+    "media.quota.buy": "⭐️ 一个月不限量",
+    "media.too_big": "文件超过上限。",
+    "media.looking": "🔎 <b>正在查看链接…</b>",
+    "media.slow_probe": "❌ 网站在 90 秒内没有响应。",
+    "media.pick_quality": "🎯 <b>请选择清晰度：</b>",
+    "media.pick_note": "<i>发送上限为 {limit} MB。带 ⚠️ 的选项放不下。</i>",
+    "media.btn_text": "📝 描述文字",
+    "media.btn_cancel": "❌ 取消",
+    "media.cancelled": "下载已取消。",
+    "media.busy": "⏳ 已有另一个下载在进行。请稍候 — "
+                  "同时下载会使服务器过载。",
+    "media.no_file": "❌ 文件未生成。",
+    "media.sending": "📤 <b>正在发送到 Telegram…</b>",
+    "img.downloading": "🖼 <b>正在下载图片…</b>",
+    "img.looking": "🖼 <b>正在查找帖子中的图片…</b>",
+    "img.none_found": "🖼 此帖子中没有找到图片。\n"
+                      "<i>私密帖子未登录时，浏览器同样看不到。</i>",
+    "img.in_post": "帖子中的图片",
+    "img.not_sent": "❌ 图片已下载，但无法发送。",
+    "zip.too_long": "📏 <b>视频太长，无法作为文件发送"
+                    "（{limit} MB），而且没有压缩手段。</b>",
+    "zip.full_note": "完整版通过链接提供 — 最大 {gb} GB，保留 {hours} 小时。",
+    "zip.offer": "🗜 <b>视频放不下：{size} MB，上限 "
+                 "{limit} MB。</b>",
+    "zip.free_line": "免费：压缩到 {height}p — 约 {limit} MB，需要 "
+                     "<b>{time}</b> — 单板电脑的处理器较弱，压缩"
+                     "以低优先级运行，以免耽误警报。",
+    "zip.btn_zip": "🗜 压缩到 {height}p（{time}）— 免费",
+    "zip.btn_full": "⭐️ 完整版链接 — 最大 {gb} GB",
+    "zip.btn_other": "◀️ 选择其他清晰度",
+    "zip.running": "🗜 <b>正在压缩到 {height}p</b>",
+    "zip.running_pct": "🗜 <b>正在压缩到 {height}p</b> — {pct}%",
+    "zip.time_note": "需要 {time}。期间警报照常运行。",
+    "sub.needed_title": "⭐️ <b>完整版需要订阅</b>",
+    "sub.needed_line": "完整文件，{label} 清晰度，通过链接提供 — 最大 "
+                       "{gb} GB，保留 {hours} 小时。",
+    "sub.needed_note": "订阅可使用此功能、不限每日次数下载视频，"
+                       "并解锁所有新闻摘要主题。危险警报"
+                       "始终免费。",
+    "sub.btn": "💳 订阅",
+    "linkcheck.choice": "🔗 <b>要如何处理这个链接？</b>",
+    "linkcheck.btn_check": "🔍 检查",
+    "linkcheck.btn_video": "🎬 下载视频",
+    "linkcheck.btn_images": "🖼 帖子中的图片",
+    "linkcheck.btn_nothing": "❌ 不处理",
+    "drop.preparing": "🔗 <b>正在准备下载链接…</b>",
+    "drop.ready_size": "大小",
+    "drop.ready_note": "超过 Telegram 的限制，因此文件以链接形式提供。",
+    "drop.download": "⬇️ 下载文件",
+    "drop.ttl": "<i>链接保留 {hours} 小时，之后文件会从服务器删除。</i>",
+    "drop.too_large": "⚠️ 文件超过 {gb} GB — 此类文件不通过链接提供。"
+                      "请选择较低的清晰度。",
+    "drop.over_limit": "⚠️ <b>文件超过 Telegram 的限制。</b>",
+
+    # --- 摘要 ---
+    "digest.title": "新闻摘要",
+    "digest.buy": "⭐️ 订阅",
+    "digest.sources": "来源",
+
+    "digest.staff": "🛠 <b>工作人员权限</b> — 所有主题开放，无需付费。",
+    "digest.extra_days": "额外已付费天数",
+    "digest.paid": "订阅有效，剩余天数",
+    "digest.covers_media": "同时取消每日视频下载次数限制。",
+    "digest.free": "免费主题",
+    "digest.upsell": "订阅可解锁全部主题。",
+    "digest.topics": "您的主题",
+    "digest.no_topics": "未选择主题 — 将不会收到摘要。",
+    "digest.times": "发送时间",
+    "digest.free_always": (
+        "危险警报、市政设施、天气和 SOS 始终免费，"
+        "不依赖订阅。"
+    ),
+
+    # --- 主题名称 ---
+    "topic.city": "城市与政府",
+    "topic.incidents": "事件",
+    "topic.utilities": "市政与基础设施",
+    "topic.transport": "交通",
+    "topic.health": "健康",
+    "topic.education": "教育",
+    "topic.social": "社会",
+    "topic.economy": "经济与商业",
+    "topic.culture": "文化与休闲",
+    "topic.weather_nature": "天气与自然",
+    "topic.region": "地区",
+    "topic.federal": "全国",
+    "topic.it": "IT 与游戏",
+    "topic.science": "科学与技术",
+    "topic.sport": "体育",
+    "topic.hobby": "爱好与汽车",
+    "topic.cinema": "电影与剧集",
+    "topic.finance": "金融与市场",
+
+    # --- 天气 ---
+    "weather.feels": "体感",
+    "weather.wind": "风",
+    "weather.humidity": "湿度",
+    "weather.sunrise": "日出",
+    "weather.sunset": "日落",
+    "weather.now": "现在",
+    "weather.today": "今天",
+    "weather.tomorrow": "明天",
+    "weather.hour_suffix": "时",
+    "weather.error.no_coords": "没有坐标 — 请重新发送位置",
+    "weather.error.bad_status": "天气服务返回了代码",
+    "weather.error.fetch_failed": "获取天气失败",
+    "weather.error.no_data": "没有天气数据",
+
+    # --- 天气：WMO 代码说明 ---
+    "weather.wmo.0": "晴",
+    "weather.wmo.1": "大部晴朗",
+    "weather.wmo.2": "多云",
+    "weather.wmo.3": "阴",
+    "weather.wmo.45": "雾",
+    "weather.wmo.48": "雾凇",
+    "weather.wmo.51": "小毛毛雨",
+    "weather.wmo.53": "毛毛雨",
+    "weather.wmo.55": "浓毛毛雨",
+    "weather.wmo.56": "小冻毛毛雨",
+    "weather.wmo.57": "浓冻毛毛雨",
+    "weather.wmo.61": "小雨",
+    "weather.wmo.63": "雨",
+    "weather.wmo.65": "大雨",
+    "weather.wmo.66": "小冻雨",
+    "weather.wmo.67": "强冻雨",
+    "weather.wmo.71": "小雪",
+    "weather.wmo.73": "雪",
+    "weather.wmo.75": "大雪",
+    "weather.wmo.77": "米雪",
+    "weather.wmo.80": "小阵雨",
+    "weather.wmo.81": "阵雨",
+    "weather.wmo.82": "强阵雨",
+    "weather.wmo.85": "小阵雪",
+    "weather.wmo.86": "大阵雪",
+    "weather.wmo.95": "雷暴",
+    "weather.wmo.96": "雷暴伴小冰雹",
+    "weather.wmo.99": "雷暴伴大冰雹",
+
+    # --- 天气图片 ---
+    "weather.image.title": "天气",
+    "weather.image.feels_like": "体感",
+    "weather.image.gusts_to": "阵风可达",
+    "weather.image.humidity": "湿度",
+    "weather.image.mmhg": "毫米汞柱",
+    "weather.image.ms": "米/秒",
+    "weather.image.now": "现在",
+    "weather.sky.night": "夜",
+    "weather.sky.dawn": "黎明",
+    "weather.sky.day": "白天",
+    "weather.sky.dusk": "黄昏",
+
+    # --- 风向 ---
+    "wind.n": "北风",
+    "wind.ne": "东北风",
+    "wind.e": "东风",
+    "wind.se": "东南风",
+    "wind.s": "南风",
+    "wind.sw": "西南风",
+    "wind.w": "西风",
+    "wind.nw": "西北风",
+
+    # --- 风力 ---
+    "wind.calm": "无风",
+    "wind.light": "微风",
+    "wind.moderate": "和风",
+    "wind.fresh": "清劲风",
+    "wind.strong": "强风",
+    "wind.storm": "风暴",
+
+    # --- 月相 ---
+    "moon.new": "新月",
+    "moon.waxing_crescent": "娥眉月",
+    "moon.first_quarter": "上弦月",
+    "moon.waxing_gibbous": "盈凸月",
+    "moon.full": "满月",
+    "moon.waning_gibbous": "亏凸月",
+    "moon.last_quarter": "下弦月",
+    "moon.waning_crescent": "残月",
+
+    # --- SOS ---
+    "sos.overview": "🆘 紧急求助",
+    "sos.no_contacts": (
+        "还没有可信联系人。添加一个人，您按下 SOS 按钮时，"
+        "他会收到您的位置。"
+    ),
+    "sos.contacts": "可信联系人",
+    "sos.ready": "可接收信号",
+    "sos.pending": "未确认 — 尚未打开机器人",
+    "sos.none_confirmed": (
+        "⚠️ 没有已确认的联系人。Telegram 不允许机器人先发消息 — "
+        "联系人必须通过您的链接打开机器人。在此之前，信号"
+        "会发给系统管理员。"
+    ),
+    "sos.add": "➕ 添加联系人",
+    "sos.fire": "🆘 发送信号",
+    "sos.title": "🆘 SOS",
+    "sos.send": "🆘 发送警报",
+    "sos.stop": "✅ 取消警报",
+    "sos.sent": "警报已发给您的联系人。",
+
+    # --- 历史 ---
+    "history.title": "📖 历史",
+    "history.empty": "最近 30 天没有给您发送任何内容。",
+    "history.note": (
+        "这并不意味着机器人没有工作：而是说明"
+        "您的地址附近没有发生事件。"
+    ),
+    "history.trimmed": "显示最近的记录。",
+
+    # --- 设置 ---
+    "settings.title": "⚙️ 通知",
+    "settings.prompt": "选择要接收的事件和天气模式。",
+    "settings.quiet": "免打扰时段",
+    "settings.weather_mode": "天气模式",
+    "settings.weather_view": "天气显示方式",
+
+    # --- 通用 ---
+    "common.cancelled": "✅ 已取消。",
+    "common.only_superadmin": "⛔️ 仅限超级管理员。",
+    "common.error": "出了点问题 — 请稍后再试。",
+    "common.insufficient_rights": "权限不足。",
+
+    # --- 帮助 (/help) ---
+    "help.title": "使用说明",
+    "help.step1": (
+        "1. 发送您的位置（回形针 → 位置）— 即可添加一个地址。"
+        "地址数量不限。"
+    ),
+    "help.step2": (
+        "2. 军事威胁（无人机、导弹危险）会以一条全市范围的消息"
+        "发来，涵盖您在该城市的所有地址。"
+    ),
+    "help.step3": "3. 市政故障按地址查找 — 街道和门牌号。",
+    "help.step4": "4. 彼此距离不足 1 公里的地址会合并为一份汇总。",
+    "help.commands_title": "命令",
+    "help.cmd_basic": "/menu — 菜单 - /id — 您的 ID 和角色 - /cancel — 重置输入",
+    "help.cmd_partner": "/partner — 合作项目",
+    "help.cmd_assistant": "/ai &lt;问题&gt; — AI 助手 - /aireset — 清除上下文",
+    "help.cmd_quota": "/quota — Gemini 配额使用情况",
+    "help.cmd_admin1": "/stats — 系统统计 - /models — Gemini 模型",
+    "help.cmd_admin2": "/digest — 新闻摘要 - /sos — SOS 按钮",
+    "help.cmd_admin3": "/media — 通过链接下载视频 - /panel — 网页面板",
+    "help.cmd_super1": (
+        "/features — 系统功能\n"
+        "/logs — 日志 - /logtail — 最近几行 - /logclear — 清除"
+    ),
+    "help.cmd_super2": "/perf — 周期耗时与资源 - /bench — AI 服务商对比",
+    "help.cmd_super3": (
+        "/keys — 密钥与设置 - /provider — 选择服务商\n"
+        "/network — 网络与代理 - /backup — 备份"
+    ),
+
+    # --- 欢迎语与通用标题 ---
+    "app.title": "雷达",
+    "greeting.assistant": (
+        "🧠 <i>AI 助手已启用：直接在聊天中提问，"
+        "或使用 /ai。</i>"
+    ),
+    "greeting.no_key": (
+        "⚠️ <i>未设置 GEMINI_API_KEY — 当前使用不带 AI 的"
+        "启发式分析。</i>"
+    ),
+    "restart.missed": (
+        "🛠 <b>机器人因维护暂停了服务</b>\n\n"
+        "您的消息在重启期间到达，未被处理"
+        " — 请重新发送。\n\n"
+        "<i>危险警报没有丢失：每次重启后机器人都会重新读取"
+        "自己的信息源。</i>"
+    ),
+    "common.your_id": "🆔 您的 ID",
+    "common.role": "角色",
+    "common.pinned_buttons": (
+        "<b>菜单</b>和 <b>HydraSite</b> 按钮固定在"
+        "输入框下方。"
+    ),
+
+    # --- 角色 ---
+    "role.user": "👤 用户",
+    "role.moderator": "🛡 版主",
+    "role.admin": "👑 管理员",
+    "role.superadmin": "⭐️ 超级管理员",
+
+    # --- 警报类别 ---
+    "category.bpla": "无人机 / 导弹危险",
+    "category.mchs": "应急部门警报",
+    "category.jkh": "市政设施与网络故障",
+    "category.whitelist": "提醒白名单模式",
+
+    # --- 设置：天气 ---
+    "settings.weather_button": "🌤 天气",
+    "settings.weather_mode.title": "⏱ <b>天气模式</b>",
+    "settings.weather_mode.prompt": "选择间隔，或设置自己的数值。",
+    "settings.weather.off": "关闭",
+    "settings.weather.every": "每",
+    "settings.weather.at": "于",
+    "settings.weather.minutes": "分钟",
+    "settings.weather.hours_short": "小时",
+    "settings.weather.hour": "每小时",
+    "settings.weather.hours3": "每 3 小时",
+    "settings.weather.hours6": "每 6 小时",
+    "settings.weather.disable": "关闭",
+    "settings.weather.own_interval": "自定义间隔",
+    "settings.weather.fixed_time": "固定时间",
+    "settings.weather.disabled": "天气已关闭",
+    "settings.weather.interval_set": "间隔",
+    "settings.weather.ask_time": (
+        "⏰ 请按 <code>HH:MM</code> 格式输入时间（例如 08:30）："
+    ),
+    "settings.weather.ask_interval": (
+        "⏱ 请输入间隔：<code>45</code>（分钟）或 <code>2h</code>（小时）："
+    ),
+    "settings.weather.bad_time": (
+        "❌ 格式不对。示例：<code>08:30</code>。/cancel 取消。"
+    ),
+    "settings.weather.bad_interval": (
+        "❌ 请输入分钟数，或类似 <code>2h</code> 的值。"
+    ),
+    "settings.weather.range": "❌ 间隔必须在 15 分钟到 24 小时之间。",
+    "settings.weather.daily_at": "✅ 天气将每天发送，时间为",
+    "settings.weather.interval_ok": "✅ 间隔",
+
+    # --- 设置：天气显示方式 ---
+    "settings.wformat.title": "🖼 <b>天气汇总格式</b>",
+    "settings.wformat.now": "当前",
+    "settings.wformat.text": "文字",
+    "settings.wformat.image": "图片",
+    "settings.wformat.image_all": "图片（对所有人）",
+    "settings.wformat.as_text": "📄 文字",
+    "settings.wformat.as_image": "🖼 图片",
+    "settings.wformat.forced": (
+        "个人选择暂时不可用。管理员取消全局设置后，"
+        "您之前的选择会恢复。"
+    ),
+    "settings.wformat.why": (
+        "图片更直观，但在移动网络受限时无法加载 — 而本系统"
+        "正是为这种情况而设。文字总能送达。"
+    ),
+    "settings.wformat.off": "图片形式的天气已关闭。",
+    "settings.wformat.label": "🖼 天气格式",
+
+    # --- 设置：免打扰时段 ---
+    "settings.quiet.title": "🌙 <b>免打扰时段</b>",
+    "settings.quiet.label": "🌙 免打扰时段",
+    "settings.quiet.prompt": (
+        "发送一个时间段，例如 <code>23:00-07:00</code>。\n"
+        "发送“-”可关闭免打扰时段。"
+    ),
+    "settings.quiet.always": (
+        "<b>军事威胁和紧急警报始终会送达</b> — "
+        "只暂缓市政和天气消息。"
+    ),
+    "settings.quiet.bad_format": (
+        "❌ 格式：<code>23:00-07:00</code>。“-”表示关闭。/cancel 取消。"
+    ),
+    "settings.quiet.cleared": "✅ 免打扰时段已关闭。",
+    "settings.quiet.set": "✅ 免打扰时段",
+    "settings.quiet.note": (
+        "<i>军事威胁和紧急警报在任何时间都会送达。</i>"
+    ),
+    "settings.quiet.disabled": "免打扰时段已关闭。",
+    "settings.quiet.none": "关闭",
+
+    # --- 推荐信息源 ---
+    "suggest.title": "📢 <b>推荐信息源</b>",
+    "suggest.prompt": (
+        "发送公开频道的用户名，例如 "
+        "<code>saratovzhkh</code>，或其链接。"
+    ),
+    "suggest.thematic": (
+        "<i>主题频道也可以 — 游戏、体育、科学：它们会进入"
+        "新闻摘要。</i>"
+    ),
+    "suggest.closed": (
+        "目前不接受推荐 — 信息源列表由管理方维护。"
+    ),
+    "suggest.sent": "✅ 频道 @{channel} 已发送给版主。",
+    "suggest.already": "ℹ️ 该信息源已在列表或队列中。",
+    "suggest.bad": "❌ 频道用户名无效。",
+
+    # --- 通用（续） ---
+    "common.on": "已启用",
+    "common.off": "已停用",
+    "common.user_not_found": "未找到用户。",
+    "common.cancel": "取消",
+    "common.back": "◀️ 返回",
+    "common.cancel_x": "❌ 取消",
+    "common.yes": "✅ 是",
+
+    # --- 版主界面：用户（自 4.9.9.3） ---
+    "users.no_rights": "权限不足。",
+    "users.not_found": "未找到用户。",
+    "users.list_title": "👥 <b>用户</b> — 共 {total} 位（第 {page}/{pages} 页）",
+    "users.locations_count": "地址：{count}",
+    "users.open_hint": "点按用户可打开其卡片。",
+    "users.none": "无",
+    "users.card_title": "👤 <b>用户</b>",
+    "users.nick": "用户名",
+    "users.role": "角色",
+    "users.locations": "地址",
+    "users.categories": "警报类别",
+    "users.weather": "天气",
+    "users.settings_title": "⚙️ <b>用户的警报</b>",
+    "users.self_role": "不能更改自己的角色。",
+    "users.role_denied": "权限不足，无法设置此角色。",
+    "users.role_changed": "角色已更改：{role}",
+    "users.role_notice": "ℹ️ 您在“雷达”中的角色已更改为 {role}。",
+    "users.delete_admins": "删除功能仅限管理员。",
+    "users.delete_ask": "⚠️ 删除用户 {id}（{role}）及其所有地址？",
+    "users.deleted_short": "用户已删除",
+    "users.deleted": "✅ 用户 {id} 已删除。",
+    "users.invite_title": "🔗 <b>邀请链接</b>",
+    "users.invite_hint": "通过它加入的人获得“用户”角色：自己的"
+                         "地址和警报。只有管理方可以提升角色。",
+    "users.default_city": "默认城市是 {city}。",
+    "users.add_loc_title": "➕ <b>为以下用户添加地址</b>",
+    "users.add_loc_prompt": "以文字发送地址，例如 "
+                            "<code>恰帕耶夫街 12 号</code>。",
+    "users.add_loc_geo": "也可以转发或发送位置 — 它会"
+                         "添加给该用户。",
+    "users.cancel_hint": "/cancel — 取消。",
+    "users.loc_added_notice": "📍 管理员为您添加了一个地址：{name}。\n"
+                              "它的警报已开启 — 可在“我的地址”中管理。",
+    "users.loc_added": "✅ 地址 {name} 已添加给用户 {id}。",
+    "users.no_street": "未识别出街道 — 该地址的市政故障"
+                       "警报可能不够准确。",
+    "users.back_to_user": "◀️ 返回用户",
+    "users.gone_or_denied": "未找到用户或权限不足。",
+    "users.address_not_found": "未找到地址。请写得更具体 — 例如 "
+                               "<code>萨拉托夫, 恰帕耶夫街 12 号</code>。"
+                               "/cancel — 取消。",
+    "users.variants": "🔎 <b>找到匹配项：{count}</b>",
+    "users.pick_one": "请选择正确的一项。",
+    "users.list_stale": "列表已过期，请重新开始。",
+    "users.adding": "正在添加…",
+
+    # --- 版主键盘（自 4.9.9.3） ---
+    "ucard.locs": "📍 地址",
+    "ucard.alerts": "⚙️ 警报",
+    "ucard.add_loc": "➕ 添加地址",
+    "ucard.weather": "🌤 用户的天气",
+    "ucard.delete": "🔨 删除用户",
+    "ucard.back": "◀️ 返回列表",
+    "ucard.locs_short": "址",
+    "mod.queue": "📥 信息源队列",
+    "mod.list": "📋 信息源列表",
+    "mod.check": "🔍 检查可用性",
+    "mod.add_channel": "➕ 添加频道",
+    "mod.add_rss": "🌐 添加新闻 RSS 订阅源",
+    "mod.export": "⬇️ 下载列表",
+    "mod.import": "⬆️ 上传列表",
+    "mod.back": "◀️ 返回管理",
+    "mod.approve": "✅ 接受",
+    "mod.reject": "❌ 拒绝",
+
+    # --- 受管理的群聊，管理方部分（自 4.9.9.3） ---
+    "chats.title": "🛡 <b>受管理的群聊</b>",
+    "chats.mod_on": "管理已开启",
+    "chats.mod_off": "管理已关闭",
+    "chats.tap_hint": "点按群组即可打开。",
+    "chats.mod_disabled": "管理已关闭 — 请在“功能”中开启。",
+    "chats.admins_only": "仅限管理方。",
+    "chats.add_hint": (
+        "🛡 <b>受管理的群聊</b>\n\n"
+        "还没有群组。\n\n"
+        "<b>如何添加机器人：</b>\n"
+        "1. 打开群组 → “成员” → “添加”。\n"
+        "2. 按名称找到机器人并添加。\n"
+        "3. 在群里将其设为管理员，并开启"
+        "<b>“删除消息”</b>和<b>“封禁用户”</b>。\n"
+        "4. 在群里发送 <code>/modon</code> — 群聊会出现在这里。\n\n"
+        "<b>机器人已经在群里了？</b>那就无需再添加："
+        "确认它是具备这些权限的管理员，然后在群里发送 "
+        "<code>/modon</code>。机器人之前被加入的群组"
+        "不会自行上报 — Telegram 只会把变化通知机器人。\n\n"
+        "<i>无需在 @BotFather 中更改隐私模式：管理员"
+        "本来就会收到所有消息。机器人不会向已经在群里的人"
+        "发送任何内容 — 检查只针对开启之后加入的人。</i>"
+    ),
+
+    # --- 版主界面：信息源（自 4.9.9.3） ---
+    "src.menu_text": "📡 <b>信息源</b>\n\n在这里添加频道和订阅源、"
+                     "检查其可用性，并审核用户的推荐。",
+    "src.queue_empty": "📥 队列为空。",
+    "src.queue_item": "📥 <b>队列：{count}</b>\n正在审核：{channel}",
+    "src.approved": "已接受",
+    "src.rejected": "已拒绝",
+    "src.empty": "— 空 —",
+    "src.list_channels": "📋 <b>Telegram 频道</b>",
+    "src.list_feeds": "🌐 <b>RSS 订阅源</b>",
+    "src.add_prompt": "➕ 发送频道用户名。可一次发送多个 — 用"
+                      "逗号或换行分隔。",
+    "src.added": "✅ 已添加：",
+    "src.skipped": "⚠️ 已跳过：",
+    "src.nothing_added": "未添加任何内容",
+    "src.rss_prompt": "🌐 发送新闻或官方 RSS 订阅源的地址"
+                      "（例如 <code>https://example.ru/rss</code>）。",
+    "src.feeds_added": "✅ 已添加的订阅源：",
+    "src.no_valid": "⚠️ 未找到有效地址。",
+    "src.export_off": "信息源导出已关闭。",
+    "src.preparing": "正在准备文件…",
+    "src.import_off": "信息源导入已关闭。",
+    "src.import_admins": "导入功能仅限管理员。",
+    "src.import_denied": "⛔️ 导入信息源仅限管理员。",
+    "src.none": "没有信息源。",
+    "src.check_start": "开始检查…",
+    "src.checking": "🔍 正在检查信息源：<b>{total}</b>…",
+    "src.check_denied": "⛔️ 检查信息源仅限版主及以上。",
+    "src.drop_hint": "不可用的信息源可用下方按钮移除。",
+    "src.drop_button": "🗑 移除不可用项（{count}）",
+    "src.stale": "列表已过期 — 请重新运行检查。",
+    "src.removed_short": "已移除信息源：{count}",
+    "src.removed": "🗑 已移除不可用的信息源：<b>{removed}</b>。\n"
+                   "剩余：频道 {channels}，订阅源 {feeds}。",
+
+    # --- “管理”部分 ---
+    "manage.sources": "📡 信息源",
+    "manage.users": "👥 用户",
+    "manage.stats": "📊 统计",
+    "manage.metrics": "🩺 指标与健康状况",
+    "manage.links": "🔗 链接",
+    "manage.features": "⚙️ 功能",
+    "manage.keys": "🔑 访问密钥",
+    "manage.ai": "🧠 AI 管理",
+    "manage.backups": "💾 备份",
+    "manage.network": "🌐 网络访问",
+    "manage.logs": "📋 日志",
+    "manage.panel": "🖥 网页面板",
+    "manage.role_line": "您的角色",
+    "manage.all_sections": "所有部分均可使用，包括访问密钥和日志。",
+    "manage.admin_sections": "可使用信息源、用户、统计、链接和邀请。",
+    "manage.mod_sections": "可编辑信息源和用户设置。",
+    # --- 代码用到但词典里缺少的键（自 5.9.6） ---
+    "img.too_slow": "🖼 站点两分钟内没有提供图片 — 已停止。\n"
+                    "<i>帖子已关闭，或站点对陌生访客限速时会这样。请稍后再试。</i>",
+    "settings.back": "◀️ 返回设置",
+    "settings.tz.whole": "◀️ 整点时区",
+    "settings.tz.fractional": "⏱ 半小时时区",
+    "settings.tz.bad": "无法识别该时区。",
+    "settings.tz.now": "当前",
+    "settings.tz.saved": "时区",
+    "settings.tz.title": "🕓 <b>时区</b>",
+    "settings.tz.prompt": "偏移量以 UTC 为准。免打扰时段、天气时间和摘要发送"
+                          "都按您在此选择的时区计算。",
+}
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mediaquota.py"
-cat > "radar/mediaquota.py" <<'RADAR_FILE_35'
+cat > "radar/mediaquota.py" <<'RADAR_FILE_38'
 """Квоты загрузки видео.
 
 Загрузка открыта всем, но не безгранично: двадцать роликов в сутки
@@ -15205,9 +17664,9 @@ def describe(quota: Quota, lang: str = "ru") -> str:
         "media.quota.left", lang,
         f"Осталось сегодня: {left} из {FREE_PER_DAY}",
     )
-RADAR_FILE_35
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/subscription.py"
-cat > "radar/subscription.py" <<'RADAR_FILE_36'
+cat > "radar/subscription.py" <<'RADAR_FILE_39'
 """Единая подписка.
 
 Подписок в системе две — на новостные подборки и на загрузку видео без
@@ -15400,9 +17859,9 @@ def describe(user: dict[str, Any] | None, role: str | None = None) -> str:
     if trial_used(user):
         return "Подписка не оформлена, пробный период уже был."
     return f"Подписка не оформлена. Есть пробный период — {TRIAL_DAYS} дней."
-RADAR_FILE_36
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_37'
+cat > "radar/backup.py" <<'RADAR_FILE_40'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -15713,9 +18172,9 @@ async def run_scheduled(now: datetime) -> str:
     removed = rotate()
     log.info("Копия по расписанию: %s, удалено старых: %d", path.name, len(removed))
     return path.name
-RADAR_FILE_37
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dbcare.py"
-cat > "radar/dbcare.py" <<'RADAR_FILE_38'
+cat > "radar/dbcare.py" <<'RADAR_FILE_41'
 """Компактность базы: чистка истории, сжатие файла, контроль размера.
 
 Пункт 5 раздела 4.8. Три отдельные задачи, и каждая нужна по своей
@@ -15934,9 +18393,9 @@ async def run_scheduled(now: datetime) -> str:
         log.warning("Отметка об обслуживании базы не сохранилась")
 
     return "; ".join(parts)
-RADAR_FILE_38
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_39'
+cat > "radar/weather_image.py" <<'RADAR_FILE_42'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -16538,9 +18997,9 @@ def _strip_tags(text: str) -> str:
         elif not inside:
             result.append(char)
     return "".join(result).strip()
-RADAR_FILE_39
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_40'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_43'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -16555,9 +19014,9 @@ from . import audit, auth
 from .panel import create_app, run, shutdown
 
 __all__ = ["audit", "auth", "create_app", "run", "shutdown"]
-RADAR_FILE_40
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_41'
+cat > "radar/web/auth.py" <<'RADAR_FILE_44'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -16898,9 +19357,9 @@ def csrf_valid(session: Session | None, value: str) -> bool:
     if not expected or not value:
         return False
     return hmac.compare_digest(expected, str(value))
-RADAR_FILE_41
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_42'
+cat > "radar/web/audit.py" <<'RADAR_FILE_45'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -16967,9 +19426,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_42
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_43'
+cat > "radar/web/panel.py" <<'RADAR_FILE_46'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -18689,7 +21148,7 @@ def _users_body(session, message: str = "", failed: str = "") -> str:
         cities = ", ".join(
             sorted({str(loc.get("city") or "") for loc in locations if loc.get("city")})
         )
-        lang = "en" if str(item.get("lang") or "").startswith("en") else "ru"
+        lang = "ru" if not item.get("lang") else str(item.get("lang"))[:2]
         zone = timezones.user_label(item, lang)
         if not timezones.chosen(item):
             zone += " (серверный)"
@@ -20896,9 +23355,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_43
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/appapi.py"
-cat > "radar/web/appapi.py" <<'RADAR_FILE_44'
+cat > "radar/web/appapi.py" <<'RADAR_FILE_47'
 """HTTP-маршруты API для приложений (5.9.1). Логика — в `radar/appapi.py`.
 
 Все ответы — JSON, ошибки — `{"error": "текст"}`. Работает в той же
@@ -21026,9 +23485,9 @@ def routes(web: Any) -> list[Any]:
         web.get("/api/v1/app/subscriptions", subscriptions),
         web.delete("/api/v1/app/session", logout),
     ]
-RADAR_FILE_44
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/adminpages.py"
-cat > "radar/web/adminpages.py" <<'RADAR_FILE_45'
+cat > "radar/web/adminpages.py" <<'RADAR_FILE_48'
 """Страницы веб-панели: VPN-панели, доступы и заказы, подписка бота (5.9.2.1).
 
 Вынесено из panel.py, где уже три с половиной тысячи строк. Здесь только
@@ -21549,9 +24008,9 @@ async def subscriptions_act(form: Any) -> tuple[str, str]:
         await storage.save(uid)
         return ("Срок снят.", "") if had else ("", "Оплаченного срока не было.")
     return "", "Неизвестное действие."
-RADAR_FILE_45
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/settingspages.py"
-cat > "radar/web/settingspages.py" <<'RADAR_FILE_46'
+cat > "radar/web/settingspages.py" <<'RADAR_FILE_49'
 """Раздел «Настройки» веб-панели: всё, что раньше жило в «Ключах» и «Возможностях» (5.9.2.2).
 
 Человек думает темами — «Discord», «медиа», «журнал», — а не списком
@@ -21825,9 +24284,9 @@ def overview_body(token: str, message: str = "", failed: str = "",
                  f"<table>{rows}</table>"
                  '<p class="muted">Эти значения задаёт установщик при установке и переезде.</p></details>')
     return "".join(parts)
-RADAR_FILE_46
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_47'
+cat > "radar/web/backup.py" <<'RADAR_FILE_50'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -21874,9 +24333,9 @@ def body(csrf: str = "") -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_47
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_48'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_51'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -21909,9 +24368,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_48
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_49'
+cat > "radar/db/models.py" <<'RADAR_FILE_52'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -22286,9 +24745,9 @@ class ChatWarning(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-RADAR_FILE_49
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_50'
+cat > "radar/db/engine.py" <<'RADAR_FILE_53'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -22802,9 +25261,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_50
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_51'
+cat > "radar/db/repo.py" <<'RADAR_FILE_54'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -23702,9 +26161,9 @@ async def warn_reset(chat_id: int, user_id: int) -> None:
         )).first()
         if row is not None:
             row.count = 0
-RADAR_FILE_51
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_52'
+cat > "radar/db/importer.py" <<'RADAR_FILE_55'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -23853,9 +26312,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_52
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/transfer.py"
-cat > "radar/db/transfer.py" <<'RADAR_FILE_53'
+cat > "radar/db/transfer.py" <<'RADAR_FILE_56'
 """Перенос данных между SQLite и PostgreSQL (с 5.9).
 
 До 5.9 смена базы в установщике давала пустую новую базу: старая
@@ -24048,9 +26507,9 @@ async def _reset_sequences(connection: Any) -> None:
                 f"SELECT setval(:sequence, GREATEST(COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 1), 1), COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 0) >= 1)"), {"sequence": sequence})
-RADAR_FILE_53
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_54'
+cat > "radar/doctor.py" <<'RADAR_FILE_57'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -24582,9 +27041,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_54
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_55'
+cat > "migrations/env.py" <<'RADAR_FILE_58'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -24644,9 +27103,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_55
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_56'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_59'
 """${message}
 
 Revision ID: ${up_revision}
@@ -24671,9 +27130,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_56
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_57'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_60'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -24840,9 +27299,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_57
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_58'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_61'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -24882,9 +27341,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_58
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_59'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_62'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -24932,9 +27391,9 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_59
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
-cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_60'
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_63'
 """Язык интерфейса и квоты загрузки видео.
 
 Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
@@ -24979,9 +27438,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("media_quota")
     op.drop_column("users", "lang")
-RADAR_FILE_60
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_61'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_64'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -25007,9 +27466,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_61
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_62'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_65'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -25134,9 +27593,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_62
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_63'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_66'
 """Адаптер мессенджера MAX.
 
 ⚠️ НАПИСАН ПО ДОКУМЕНТАЦИИ, НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН.
@@ -25577,9 +28036,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_63
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/maxbot.py"
-cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_64'
+cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_67'
 """Ответчик MAX (4.9.9.4; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН — как и весь адаптер MAX.
@@ -25698,9 +28157,9 @@ def enabled() -> bool:
     from .. import features
 
     return features.enabled("platform_max") and bool(config.MAX_BOT_TOKEN)
-RADAR_FILE_64
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discord.py"
-cat > "radar/platforms/discord.py" <<'RADAR_FILE_65'
+cat > "radar/platforms/discord.py" <<'RADAR_FILE_68'
 """Адаптер Discord (с 5.5): канал сообщества, а не оповещения по адресам.
 
 ⚠️ НАПИСАН ПО ИСХОДНИКАМ discord.py, С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -26248,9 +28707,9 @@ class DiscordTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_65
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discordbot.py"
-cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_66'
+cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_69'
 """Discord как канал сообщества: сводки и статус системы (с 5.5).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -26696,9 +29155,9 @@ async def community(transport: Any) -> None:
         except Exception:  # noqa: BLE001
             log.warning("Discord: публикация в канал не удалась", exc_info=True)
         await asyncio.sleep(CHECK_EVERY)
-RADAR_FILE_66
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vk.py"
-cat > "radar/platforms/vk.py" <<'RADAR_FILE_67'
+cat > "radar/platforms/vk.py" <<'RADAR_FILE_70'
 """Адаптер ВКонтакте как мессенджера (с 5.6, раздел 7.0 дорожной карты).
 
 ⚠️ СВЕРЕН С ИСХОДНИКАМИ vkbottle, С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -26960,9 +29419,9 @@ class VkTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_67
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vkbot.py"
-cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_68'
+cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_71'
 """Ответчик ВКонтакте (5.6; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -27022,9 +29481,9 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     text = await answer(event)
     if text and not await transport.send(event.chat_id, OutboundMessage(text=text)):
         log.warning("VK: ответ не доставлен")
-RADAR_FILE_68
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/textbot.py"
-cat > "radar/platforms/textbot.py" <<'RADAR_FILE_69'
+cat > "radar/platforms/textbot.py" <<'RADAR_FILE_72'
 """Общий текстовый ответчик для сетей без Telegram-интерфейса (с 5.7).
 
 ⚠️ С ЖИВЫМИ ВК И MAX НЕ ПРОВЕРЕН.
@@ -27073,7 +29532,7 @@ _pending: dict[str, tuple[dict[str, Any], float]] = {}
 
 _ADDRESS_RE = re.compile(r"^/?(?:address|адрес)\s+(.+)$", re.IGNORECASE | re.S)
 _REMOVE_RE = re.compile(r"^/?(?:remove|удалить)\s+(\d+)\s*$", re.IGNORECASE)
-_LANG_RE = re.compile(r"^/?(?:lang|язык)\s+(ru|en)\s*$", re.IGNORECASE)
+_LANG_RE = re.compile(r"^/?(?:lang|язык)\s+(ru|en|uk|fa|zh)\s*$", re.IGNORECASE)
 
 
 def _t(key: str, lang: str, default: str) -> str:
@@ -27184,7 +29643,9 @@ async def _save_place(owner: str, place: dict[str, Any], lang: str) -> str:
     user = storage.get_user(owner)
     if user is None:
         user = storage.register(owner)
-        user["lang"] = lang if lang in ("ru", "en") else "ru"
+        from .. import i18n
+
+        user["lang"] = lang if lang in i18n.LANGUAGES else "ru"
     if config.MAX_LOCATIONS and len(user["locs"]) >= config.MAX_LOCATIONS:
         return _t("text.limit", lang, "❌ Достигнут предел адресов ({limit}).").format(
             limit=config.MAX_LOCATIONS)
@@ -27299,9 +29760,9 @@ async def answer(platform: str, external_id: str | int, text: str = "", *,
         return status_text(lang) + "\n\n" + _t("text.disclaimer", lang, DISCLAIMER)
 
     return help_text(lang, bool((user or {}).get("locs")))
-RADAR_FILE_69
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/links.py"
-cat > "radar/links.py" <<'RADAR_FILE_70'
+cat > "radar/links.py" <<'RADAR_FILE_73'
 """Общий аккаунт одного человека в разных сетях (с 5.6, в обе стороны — с 5.7).
 
 Один человек — один профиль: адреса, настройки, роль и подписка. Telegram,
@@ -27367,8 +29828,10 @@ TITLES = {identity.TELEGRAM: "Telegram", identity.VK: "ВКонтакте",
 # Точки ближе этого при слиянии профилей — одна и та же локация.
 SAME_PLACE_M = 40
 
-YES = ("да", "yes", "д", "y", "ок", "ok")
-NO = ("нет", "no", "н", "n")
+YES = ("да", "yes", "д", "y", "ок", "ok",
+       "так", "т", "бажаю", "بله", "آره", "بلی", "是", "好", "确认")
+NO = ("нет", "no", "н", "n",
+      "ні", "نه", "خیر", "否", "不", "不是")
 
 _CODE_RE = re.compile(r"^\s*(?:/?link\s+)?(\d{6})\s*$", re.IGNORECASE)
 
@@ -27816,9 +30279,9 @@ async def handle_text(platform: str, external_id: str | int, text: str,
         return f"❌ {reason}"
     return proposal_text(theirs, lang) + "\n\n" + _t(
         "link.answer", lang, "Ответьте «да» или «нет».")
-RADAR_FILE_70
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mirror.py"
-cat > "radar/mirror.py" <<'RADAR_FILE_71'
+cat > "radar/mirror.py" <<'RADAR_FILE_74'
 """Доставка в сети кроме Telegram и копии тревог (с 5.6).
 
 Тревога, уже доставленная в Telegram, уходит копией на аккаунты ВК и MAX,
@@ -27928,9 +30391,9 @@ async def drain() -> None:
     """Дождаться отправленных копий — для тестов и корректной остановки."""
     while _tasks:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
-RADAR_FILE_71
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linking.py"
-cat > "radar/handlers/linking.py" <<'RADAR_FILE_72'
+cat > "radar/handlers/linking.py" <<'RADAR_FILE_75'
 """Общий аккаунт в Telegram-боте: привязка других сетей (5.6, в обе стороны — 5.7).
 
 Здесь можно и выдать код (его вводят в ВК, MAX или Discord), и ввести код,
@@ -28072,9 +30535,9 @@ async def decide(call: CallbackQuery, user: dict) -> None:
     await call.answer()
     asyncio.get_running_loop().create_task(links.announce(owner, links.TELEGRAM))
     await safe_edit(call, esc(links.linked_text(lang)), None)
-RADAR_FILE_72
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_73'
+cat > "radar/storage.py" <<'RADAR_FILE_76'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -28266,9 +30729,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_73
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_74'
+cat > "radar/exporting.py" <<'RADAR_FILE_77'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -28474,9 +30937,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_74
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_75'
+cat > "radar/ai.py" <<'RADAR_FILE_78'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -29342,9 +31805,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_75
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_76'
+cat > "radar/geocode.py" <<'RADAR_FILE_79'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -29583,9 +32046,9 @@ async def forward(
     # в Nominatim адреса появляются.
     _FORWARD.put(key, [dict(item) for item in results])
     return results
-RADAR_FILE_76
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_77'
+cat > "radar/weather.py" <<'RADAR_FILE_80'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -29659,6 +32122,12 @@ CODES: dict[int, tuple[str, str, str]] = {
 SPARK = "▁▂▃▄▅▆▇█"
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 WEEKDAYS_EN = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# Остальные языки интерфейса (5.9.6); чего нет здесь — английские.
+WEEKDAYS_BY = {
+    "uk": ("пн", "вт", "ср", "чт", "пт", "сб", "нд"),
+    "fa": ("د", "س", "چ", "پ", "ج", "ش", "ی"),
+    "zh": ("周一", "周二", "周三", "周四", "周五", "周六", "周日"),
+}
 
 def describe(code: int | None, day: bool = True, lang: str = "ru") -> tuple[str, str]:
     from . import i18n
@@ -29893,7 +32362,8 @@ def _day_label(date: str, index: int, lang: str = "ru") -> str:
         return i18n.t("weather.tomorrow", lang, "завтра")
     try:
         parsed = datetime.strptime(str(date)[:10], "%Y-%m-%d")
-        weekdays = WEEKDAYS_EN if i18n.normalize(lang) == i18n.EN else WEEKDAYS
+        code = i18n.normalize(lang)
+        weekdays = WEEKDAYS if code == i18n.RU else WEEKDAYS_BY.get(code, WEEKDAYS_EN)
         return f"{weekdays[parsed.weekday()]} {parsed.day}"
     except ValueError:
         return str(date)[:10]
@@ -30044,9 +32514,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title, lang), markup)
-RADAR_FILE_77
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_78'
+cat > "radar/sources.py" <<'RADAR_FILE_81'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -30425,9 +32895,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_78
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceedit.py"
-cat > "radar/sourceedit.py" <<'RADAR_FILE_79'
+cat > "radar/sourceedit.py" <<'RADAR_FILE_82'
 #!/usr/bin/env python3
 """Правка списка источников: добавление, удаление, проверка формата.
 
@@ -30571,9 +33041,9 @@ def listing(kind: str) -> list[str]:
 
 def counts() -> dict[str, int]:
     return {kind: len(_bucket(kind) or []) for kind in KINDS}
-RADAR_FILE_79
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/filedrop.py"
-cat > "radar/filedrop.py" <<'RADAR_FILE_80'
+cat > "radar/filedrop.py" <<'RADAR_FILE_83'
 #!/usr/bin/env python3
 """Выдача крупных файлов по ссылке.
 
@@ -30936,9 +33406,9 @@ def summary() -> str:
         lines.append(f"• {item.name} — {item.size_mb:.0f} МБ, "
                      f"осталось {item.hours_left:.0f} ч")
     return "\n".join(lines)
-RADAR_FILE_80
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/agents.py"
-cat > "radar/agents.py" <<'RADAR_FILE_81'
+cat > "radar/agents.py" <<'RADAR_FILE_84'
 #!/usr/bin/env python3
 """Свои агенты ИИ: несколько сервисов вместо одного.
 
@@ -31153,9 +33623,9 @@ def forget(slot: int) -> bool:
         secrets.write(LEGACY_KEY_ENV, "")
     log.info("Свой агент в слоте %s удалён", slot)
     return True
-RADAR_FILE_81
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/redeem.py"
-cat > "radar/redeem.py" <<'RADAR_FILE_82'
+cat > "radar/redeem.py" <<'RADAR_FILE_85'
 #!/usr/bin/env python3
 """Погашение кодов, выданных на стороне.
 
@@ -31316,9 +33786,9 @@ async def summary() -> str:
         return "Кодов пока нет."
     used = sum(1 for item in items if item.get("used_by"))
     return f"Кодов: {len(items)}, погашено: {used}, свободно: {len(items) - used}"
-RADAR_FILE_82
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_83'
+cat > "radar/tg.py" <<'RADAR_FILE_86'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -31498,9 +33968,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_83
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_84'
+cat > "radar/timezones.py" <<'RADAR_FILE_87'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -31602,7 +34072,8 @@ def _suffix(minutes: int) -> str:
 
 def label(minutes: int, lang: str = "ru") -> str:
     """Подпись пояса: «МСК+2» по-русски, «UTC+5» по-английски."""
-    if (lang or "ru").lower().startswith("en"):
+    if not (lang or "ru").lower().startswith("ru"):
+        # Московское время понятно по-русски; остальным — от UTC.
         return f"UTC{_suffix(minutes)}"
     return f"МСК{_suffix(minutes - MOSCOW)}"
 
@@ -31642,9 +34113,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_84
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_85'
+cat > "radar/keyboards.py" <<'RADAR_FILE_88'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -32293,9 +34764,9 @@ def queue_item(lang: str = "ru") -> InlineKeyboardMarkup:
                                   callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_85
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_86'
+cat > "radar/states.py" <<'RADAR_FILE_89'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -32330,9 +34801,9 @@ class Form(StatesGroup):
     quiet_hours = State()          # интервал тихих часов
     chat_message = State()         # объявление в группу (суперадминистратор)
     chat_invite = State()          # ссылка приглашения в группу
-RADAR_FILE_86
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_87'
+cat > "radar/middlewares.py" <<'RADAR_FILE_90'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -32527,9 +34998,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_87
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_88'
+cat > "radar/monitor.py" <<'RADAR_FILE_91'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -33485,9 +35956,9 @@ async def _run_once() -> None:
                     return
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_88
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/health.py"
-cat > "radar/health.py" <<'RADAR_FILE_89'
+cat > "radar/health.py" <<'RADAR_FILE_92'
 """Проверка жизни бота для HEALTHCHECK контейнера.
 
 Запускается снаружи процесса — `python -m radar.health` — и потому смотрит
@@ -33552,9 +36023,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_89
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netguard.py"
-cat > "radar/netguard.py" <<'RADAR_FILE_90'
+cat > "radar/netguard.py" <<'RADAR_FILE_93'
 """Куда боту можно ходить по ссылке, присланной человеком.
 
 Ссылку в бот присылает кто угодно, а запрос по ней делает бот — изнутри
@@ -33692,9 +36163,9 @@ async def allowed(url: str) -> bool:
     # Достаточно одного внутреннего адреса, чтобы отказать: имя с двумя
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
-RADAR_FILE_90
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dockerapi.py"
-cat > "radar/dockerapi.py" <<'RADAR_FILE_91'
+cat > "radar/dockerapi.py" <<'RADAR_FILE_94'
 """Общий клиент Docker Engine API поверх Unix-сокета.
 
 Вынесено из `radar/updater.py` в 4.9.8.4: `radar/rustdesk.py` управляет
@@ -33874,9 +36345,9 @@ async def list_containers(session_, prefix: str = "radar") -> list[dict]:
         })
     result.sort(key=lambda row: row["name"])
     return result
-RADAR_FILE_91
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/appapi.py"
-cat > "radar/appapi.py" <<'RADAR_FILE_92'
+cat > "radar/appapi.py" <<'RADAR_FILE_95'
 """API для приложений HydraVPN: вход по коду из бота и выдача подписок (5.9.1).
 
 Приложения — HydraVPN для Android и HydraVPN for Routers — не заводят
@@ -34145,9 +36616,9 @@ async def subscriptions(uid: str | int) -> list[dict[str, Any]]:
 
 __all__ = ["enabled", "issue_code", "exchange", "session_of", "devices", "all_devices", "revoke",
            "revoke_token", "profile", "subscriptions", "CODE_TTL", "MAX_DEVICES"]
-RADAR_FILE_92
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/settingsets.py"
-cat > "radar/settingsets.py" <<'RADAR_FILE_93'
+cat > "radar/settingsets.py" <<'RADAR_FILE_96'
 """Настройки, которые раньше правились только в .env (5.9.2.2).
 
 До 5.9.2.2 в панели можно было изменить ключи ИИ и несколько токенов, а всё
@@ -34386,9 +36857,9 @@ def refine(settings: tuple[Any, ...]) -> tuple[Any, ...]:
         changes.update(REFINE.get(item.key, {}))
         result.append(dataclasses.replace(item, **changes) if changes else item)
     return tuple(result)
-RADAR_FILE_93
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceprune.py"
-cat > "radar/sourceprune.py" <<'RADAR_FILE_94'
+cat > "radar/sourceprune.py" <<'RADAR_FILE_97'
 """Удаление молчащих источников (с 5.9.2.1).
 
 `sourcecheck` находит источники, которые умерли или затихли, но убирать их
@@ -34496,9 +36967,9 @@ def apply(candidates: list[Candidate]) -> list[Candidate]:
 
 
 __all__ = ["Candidate", "DEFAULT_DAYS", "silent_days", "select", "suspicious", "apply"]
-RADAR_FILE_94
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnslots.py"
-cat > "radar/vpnslots.py" <<'RADAR_FILE_95'
+cat > "radar/vpnslots.py" <<'RADAR_FILE_98'
 """Добавление, правка и удаление VPN-панелей (слотов) из веб-панели (5.9.2.1).
 
 До 5.9.2.1 панель можно было завести только правкой десяти отдельных
@@ -34691,9 +37162,9 @@ async def check(number: int) -> tuple[bool, str]:
 
 __all__ = ["KindInfo", "FIELDS", "SECRET_FIELDS", "kinds", "numbers", "read", "configured",
            "free_number", "validate", "save", "issued_on", "remove", "check"]
-RADAR_FILE_95
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
-cat > "radar/updater.py" <<'RADAR_FILE_96'
+cat > "radar/updater.py" <<'RADAR_FILE_99'
 """Обновление системы из веб-панели.
 
 Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
@@ -35014,9 +37485,9 @@ def progress(lines: int = 40) -> tuple[str, str]:
         return "", ""
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
-RADAR_FILE_96
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/uploads.py"
-cat > "radar/uploads.py" <<'RADAR_FILE_97'
+cat > "radar/uploads.py" <<'RADAR_FILE_100'
 """Приём присланных файлов: один вход для всех разделов бота.
 
 До 5.9.0.1 у каждого раздела был свой обработчик `F.document`, и работал
@@ -35116,9 +37587,9 @@ def reset() -> None:
 
 __all__ = ["COOKIES", "SOURCES", "EXPECT_TTL", "register", "handler_for",
            "expect", "expected", "done", "classify", "looks_like_cookies", "reset"]
-RADAR_FILE_97
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
-cat > "radar/wipe.py" <<'RADAR_FILE_98'
+cat > "radar/wipe.py" <<'RADAR_FILE_101'
 """Полное удаление системы с сервера, запускаемое из панели.
 
 Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
@@ -35286,9 +37757,9 @@ async def start(actor: str) -> tuple[bool, str]:
 
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
-RADAR_FILE_98
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
-cat > "radar/moderation.py" <<'RADAR_FILE_99'
+cat > "radar/moderation.py" <<'RADAR_FILE_102'
 """Правила модерации групп: решение отдельно от Telegram.
 
 Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
@@ -35480,9 +37951,9 @@ def describe(decision: Decision, settings: Settings) -> str:
     if decision.delete_message:
         return f"🧹 Удалено: {decision.reason}"
     return ""
-RADAR_FILE_99
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
-cat > "radar/chatlink.py" <<'RADAR_FILE_100'
+cat > "radar/chatlink.py" <<'RADAR_FILE_103'
 """Ссылка на группу, где бот работает модератором.
 
 Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
@@ -35654,9 +38125,9 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
         return False, "Telegram не вернул ссылку."
     _cache[chat_id] = link
     return True, link
-RADAR_FILE_100
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cloudstore.py"
-cat > "radar/cloudstore.py" <<'RADAR_FILE_101'
+cat > "radar/cloudstore.py" <<'RADAR_FILE_104'
 """Облачное хранилище музыки по WebDAV (с 4.9.9).
 
 Продолжение внешнего носителя из 4.9.5.4: там каталог музыки выносился
@@ -35919,9 +38390,9 @@ async def check() -> tuple[bool, str]:
     from .music import format_size
 
     return True, f"доступно, свободно {format_size(available)}"
-RADAR_FILE_101
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rclonerc.py"
-cat > "radar/rclonerc.py" <<'RADAR_FILE_102'
+cat > "radar/rclonerc.py" <<'RADAR_FILE_105'
 """Управляющее API rclone: подключение облаков без терминала (с 4.9.9.1).
 
 В 4.9.9 облако подключалось руками на сервере: `rclone config`, потом
@@ -36225,9 +38696,9 @@ async def check() -> tuple[bool, str]:
     if not ok:
         return False, str(body)
     return True, "управляющее API отвечает"
-RADAR_FILE_102
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/metrics.py"
-cat > "radar/metrics.py" <<'RADAR_FILE_103'
+cat > "radar/metrics.py" <<'RADAR_FILE_106'
 """Метрики и здоровье системы в одном месте (с 4.9.9.3).
 
 Закрывает два пункта раздела 4.9 дорожной карты:
@@ -36528,9 +38999,9 @@ def render(data: dict[str, Any]) -> str:
             lines.append(f"{icon} {esc(row['name'])} — {esc(state)}{esc(tail)}")
 
     return "\n".join(lines)
-RADAR_FILE_103
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adfilter.py"
-cat > "radar/adfilter.py" <<'RADAR_FILE_104'
+cat > "radar/adfilter.py" <<'RADAR_FILE_107'
 """Реклама VPN-сервисов в пересылаемых текстах (с 4.9.9.3).
 
 Городские каналы и СМИ всё чаще вставляют в посты рекламу VPN:
@@ -36676,9 +39147,9 @@ def split_entries(entries: Iterable[Item]) -> tuple[list[Item], int]:
         if text.strip():
             clean.append(replace(entry, summary=text.strip()))
     return clean, removed
-RADAR_FILE_104
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicmeta.py"
-cat > "radar/musicmeta.py" <<'RADAR_FILE_105'
+cat > "radar/musicmeta.py" <<'RADAR_FILE_108'
 """Метаданные треков из открытых баз (с 4.9.9.3).
 
 Пункт 3 раздела 4.9.5 дорожной карты: «источники для подбора». Подбор
@@ -36893,9 +39364,9 @@ def apply(track: dict, meta: dict[str, Any]) -> bool:
         track["related"] = related
         changed = True
     return changed
-RADAR_FILE_105
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_106'
+cat > "radar/chatpost.py" <<'RADAR_FILE_109'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -36999,9 +39470,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_106
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_107'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_110'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -37583,9 +40054,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_107
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_108'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_111'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -38069,9 +40540,9 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
             )
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_108
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adminsock.py"
-cat > "radar/adminsock.py" <<'RADAR_FILE_109'
+cat > "radar/adminsock.py" <<'RADAR_FILE_112'
 """Канал управления в работающий процесс бота (с 5.9.3).
 
 **Поломка, ради которой он нужен.** Командная строка запускается через
@@ -38279,9 +40750,9 @@ def call(argv: list[str]) -> tuple[int, str, str] | None:
         return 1, "", "Связь с ботом прервалась; результат неизвестен — проверьте командой list.\n"
     finally:
         client.close()
-RADAR_FILE_109
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/accounts.py"
-cat > "radar/accounts.py" <<'RADAR_FILE_110'
+cat > "radar/accounts.py" <<'RADAR_FILE_113'
 """Живые и мёртвые аккаунты в Telegram (с 5.9.4).
 
 Три разные задачи, и важно не путать, на что способен Bot API:
@@ -38495,9 +40966,9 @@ async def remove_deleted(bot: Any, chat_id: int, ids: list[int],
     if removed:
         log.info("Чат %s: исключено удалённых аккаунтов — %d", chat_id, removed)
     return removed
-RADAR_FILE_110
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_111'
+cat > "radar/cli.py" <<'RADAR_FILE_114'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -39272,9 +41743,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_111
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordverify.py"
-cat > "radar/discordverify.py" <<'RADAR_FILE_112'
+cat > "radar/discordverify.py" <<'RADAR_FILE_115'
 """Проверка участников Discord-сервера (с 5.9.5): логика без сети.
 
 Честно о том, что тут возможно. У Discord нет капчи для ботов, и надёжно
@@ -39460,9 +41931,9 @@ def evaluate(user_id: int | str, username: str = "", global_name: str = "",
     if suspicious_name(username, global_name):
         return Verdict("kick", "в имени реклама или приглашение")
     return Verdict("allow")
-RADAR_FILE_112
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
-cat > "radar/cli_admin.py" <<'RADAR_FILE_113'
+cat > "radar/cli_admin.py" <<'RADAR_FILE_116'
 """Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
 
 Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
@@ -39925,9 +42396,9 @@ def register(subparsers, common) -> None:
     audit_cmd.add_argument("--limit", type=int, default=50)
     audit_cmd.add_argument("--yes", action="store_true")
     audit_cmd.set_defaults(func=cmd_audit)
-RADAR_FILE_113
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
-cat > "radar/clitext.py" <<'RADAR_FILE_114'
+cat > "radar/clitext.py" <<'RADAR_FILE_117'
 """Язык командной строки: русский и английский (с 5.9.3.1).
 
 Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
@@ -39992,9 +42463,9 @@ def current() -> str:
 def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
     """Строка на языке консоли."""
     return ru if _current == RU else en
-RADAR_FILE_114
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_115'
+cat > "radar/__main__.py" <<'RADAR_FILE_118'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -40016,9 +42487,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_115
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_116'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_119'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -40160,9 +42631,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_116
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_117'
+cat > "tools/restore.sh" <<'RADAR_FILE_120'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -40404,9 +42875,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_117
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_118'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_121'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -40502,9 +42973,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_118
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_119'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_122'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -40697,9 +43168,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_119
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_120'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_123'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -42453,9 +44924,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_120
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_121'
+cat > "radar/vpn.py" <<'RADAR_FILE_124'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -43275,9 +45746,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_121
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_122'
+cat > "radar/payments.py" <<'RADAR_FILE_125'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -43506,9 +45977,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_122
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_123'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_126'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -43875,9 +46346,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_123
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_124'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_127'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -43998,9 +46469,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_124
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_128'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -44471,9 +46942,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_125
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_126'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_129'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -44639,9 +47110,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_126
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_130'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -45025,18 +47496,11 @@ async def ask_timezone(call: CallbackQuery, user: dict[str, Any]) -> None:
     extra = call.data.endswith(":extra")
     await call.answer()
 
-    if lang.startswith("en"):
-        explain = i18n.t(
-            "settings.tz.prompt_en", lang,
-            "Offsets are counted from UTC. Quiet hours, the weather time "
-            "and digest delivery all follow the zone you pick here.",
-        )
-    else:
-        explain = i18n.t(
-            "settings.tz.prompt", lang,
-            "Отсчёт от московского времени. По выбранному поясу считаются "
-            "тихие часы, время погоды и доставка подборок.",
-        )
+    explain = i18n.t(
+        "settings.tz.prompt", lang,
+        "Отсчёт от московского времени. По выбранному поясу считаются "
+        "тихие часы, время погоды и доставка подборок.",
+    )
 
     await safe_edit(
         call,
@@ -45146,9 +47610,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_127
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_131'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -45654,9 +48118,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_128
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_132'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -46100,9 +48564,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_129
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_133'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -46249,9 +48713,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_130
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_134'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -46539,9 +49003,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_131
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_135'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -46788,9 +49252,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_132
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_136'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -47161,9 +49625,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_133
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_137'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -47738,9 +50202,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_134
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_138'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -47841,9 +50305,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_135
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_139'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -47881,7 +50345,8 @@ log = logging.getLogger("radar.handlers.language")
 router = Router(name="language")
 
 ASK_TEXT = (
-    "🌍 <b>Choose your language / Выберите язык</b>\n\n"
+    "🌍 <b>Choose your language / Выберите язык / Оберіть мову / "
+    "زبان خود را انتخاب کنید / 请选择语言</b>\n\n"
     "You can change it later in the menu.\n"
     "Изменить можно позже в меню."
 )
@@ -47919,10 +50384,7 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
     await storage.save()
 
     await call.answer(i18n.t("lang.saved", code, "Язык переключён на русский."))
-    greeting = (
-        "Language set to English." if code == i18n.EN
-        else "Язык интерфейса — русский."
-    )
+    greeting = i18n.t("lang.saved", code, "Язык интерфейса — русский.")
     try:
         await call.message.edit_text(
             greeting, reply_markup=keyboards.main_menu(role, user)
@@ -47933,9 +50395,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_136
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_140'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -48356,9 +50818,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_137
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_141'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -49549,9 +52011,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_138
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_142'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -50305,9 +52767,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_139
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_143'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -50831,9 +53293,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_140
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_144'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -51041,9 +53503,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_141
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_145'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -52030,9 +54492,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_142
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_146'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -52445,9 +54907,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_143
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_144'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_147'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -52488,9 +54950,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_144
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_148'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -52753,9 +55215,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_145
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_146'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_149'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -52905,9 +55367,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_146
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_147'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_150'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -53375,9 +55837,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_147
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_148'
+cat > "radar/cookies.py" <<'RADAR_FILE_151'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -53510,9 +55972,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_148
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_149'
+cat > "radar/music.py" <<'RADAR_FILE_152'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -54316,9 +56778,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_149
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_150'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_153'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -54932,9 +57394,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_150
+RADAR_FILE_153
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_151'
+cat > "multitool/__init__.py" <<'RADAR_FILE_154'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -54960,9 +57422,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_151'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_151
+RADAR_FILE_154
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_152'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_155'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -54995,9 +57457,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_152'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_152
+RADAR_FILE_155
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_153'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_156'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -55404,9 +57866,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_153
+RADAR_FILE_156
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_154'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_157'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -55890,9 +58352,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_154
+RADAR_FILE_157
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_155'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_158'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -56132,7 +58594,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_155
+RADAR_FILE_158
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

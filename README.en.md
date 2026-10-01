@@ -1,4 +1,4 @@
-# Radar v5.9.5
+# Radar v5.9.6
 
 [Русская версия](README.md)
 
@@ -1040,6 +1040,27 @@ Superadministrator screens deliberately stay in Russian — keys, AI
 management, network, backups, logs, the partner project editor. Only the
 system's owner reads them, and translating them would double the
 maintenance burden without a single reader.
+
+### Interface languages (since 5.9.6)
+
+The languages match the HydraVPN app: **Russian, English, Ukrainian, Persian
+(فارسی) and Simplified Chinese (简体中文)**. The choice is made on first
+contact and in the "🌍 Language" menu; in text networks (VK, MAX, Discord) it
+is `/lang ru|en|uk|fa|zh`, and the answers "так"/"بله"/"是" and
+"ні"/"خیر"/"否" are understood like "yes" and "no".
+
+The tables are `radar/i18n_uk.py`, `radar/i18n_fa.py` and `radar/i18n_zh.py`:
+the same 530 keys as English. An untranslated string comes from the fallback
+language - Russian for Ukrainian, English for Persian and Chinese - and a raw
+key is never shown. A test guards completeness, that `{…}` placeholders and
+HTML tags match the English original, that commands stay Latin, and that each
+translation is in its own script. Weekdays, the wind rose and the time-zone
+label follow the language too.
+
+**The translations were made without native speakers** - Persian and Chinese
+especially deserve a look from people who read them; please send corrections.
+Superadministrator screens and the console (Russian and English there) were
+not translated.
 
 ## Moving to another server
 

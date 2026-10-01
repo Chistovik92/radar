@@ -35,7 +35,8 @@ log = logging.getLogger("radar.handlers.language")
 router = Router(name="language")
 
 ASK_TEXT = (
-    "🌍 <b>Choose your language / Выберите язык</b>\n\n"
+    "🌍 <b>Choose your language / Выберите язык / Оберіть мову / "
+    "زبان خود را انتخاب کنید / 请选择语言</b>\n\n"
     "You can change it later in the menu.\n"
     "Изменить можно позже в меню."
 )
@@ -73,10 +74,7 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
     await storage.save()
 
     await call.answer(i18n.t("lang.saved", code, "Язык переключён на русский."))
-    greeting = (
-        "Language set to English." if code == i18n.EN
-        else "Язык интерфейса — русский."
-    )
+    greeting = i18n.t("lang.saved", code, "Язык интерфейса — русский.")
     try:
         await call.message.edit_text(
             greeting, reply_markup=keyboards.main_menu(role, user)
