@@ -1730,6 +1730,25 @@ be changed in `.env`. Everything must be configurable from the panel.
 
 ---
 
+## 5.9.3 — the console drives the live bot ⚠️ code written
+
+At the author's request: managing the bot from the server terminal, with full
+duplication of the bot's and the panel's functions. Plan:
+[PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md) (Russian).
+
+1. **A channel into the running process.** `radarctl.sh features on ...` changed
+   the database while the bot reads flags at startup; the bot could overwrite
+   a source edit with its own save. Now the bot listens on the socket
+   `data/admin.sock` (mode 600), the console hands it the command line, and
+   the command runs in its memory through the same `radar.cli`. There is no
+   second implementation.
+2. **Without the bot - directly.** No socket means working on the database,
+   with a warning; `--local` always works directly.
+3. **Next (5.9.3.x):** the remaining commands per the parity matrix, bilingual
+   output (Russian and English), `lint_cli_parity.py`.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2
