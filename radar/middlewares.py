@@ -16,7 +16,7 @@ from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from . import features, i18n, roles, storage
+from . import accounts, features, i18n, roles, storage
 
 log = logging.getLogger("radar.access")
 
@@ -130,6 +130,11 @@ class AccessMiddleware(BaseMiddleware):
 
         if user.username and record.get("username") != user.username:
             record["username"] = user.username
+
+        # Человек пишет — значит, бота он разблокировал (сделать это можно
+        # только заново нажав /start) и отправки ему можно возобновить.
+        if accounts.mark_alive(user.id):
+            await storage.save(user.id)
 
         role = record.get("role", "user")
 

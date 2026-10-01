@@ -136,6 +136,7 @@ MANIFEST = [
     "radar/handlers/group.py",
     "radar/handlers/chats.py",
     "radar/adminsock.py",
+    "radar/accounts.py",
     "radar/cli.py",
     "radar/cli_admin.py",
     "radar/clitext.py",

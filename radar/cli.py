@@ -52,7 +52,7 @@ _LOOP: asyncio.AbstractEventLoop | None = None
 LOCAL_ONLY = {"doctor", "version"}
 # Что только читает: для них молчание о неработающем боте не страшно.
 READ_ACTIONS = {"list", "size", "check", "info", "connections", "show", "get",
-                "tail", "pending"}
+                "tail", "pending", "stale"}
 
 
 def attach(loop: asyncio.AbstractEventLoop | None) -> None:
@@ -417,6 +417,8 @@ def cmd_chats(args) -> int:
             return FAILED
 
         chat_id = int(args.chat_id)
+        if args.action == "clean":
+            return await _clean_deleted(chat_id, args)
         if args.action == "forget":
             done = await repo.chat_forget(chat_id)
             print(L("забыт", "forgotten") if done
@@ -432,6 +434,61 @@ def cmd_chats(args) -> int:
         return OK
 
     return _run(_with_storage(run))
+
+
+async def _clean_deleted(chat_id: int, args) -> int:
+    """Чистка удалённых аккаунтов в группе (5.9.4): как /cleandeleted.
+
+    Нужен работающий бот: проверка идёт через его Bot API, а известных
+    участников бот копит сам, пока работает.
+    """
+    from . import accounts, features
+    from .db import repo
+
+    if not in_bot():
+        _err(L("Нужен работающий бот: проверка идёт через его соединение "
+               "с Telegram. Запустите бота и повторите.",
+               "A running bot is required: the check goes through its Telegram "
+               "connection. Start the bot and repeat."))
+        return FAILED
+    if not features.enabled("deleted_cleanup"):
+        _err(L("Возможность «Чистка удалённых аккаунтов» выключена: "
+               "features on deleted_cleanup.",
+               "The “Deleted account cleanup” feature is off: "
+               "features on deleted_cleanup."))
+        return FAILED
+    from .tg import bot
+
+    ids = await repo.member_ids(chat_id)
+    if not ids:
+        _err(L("Бот пока не видел в этом чате ни одного участника.",
+               "The bot has not seen any members in this chat yet."))
+        return FAILED
+    scan = await accounts.scan_chat(bot, chat_id, ids)
+    payload = {"chat": chat_id, "known": scan.known, "members": scan.members_total,
+               "checked": scan.checked, "failed": scan.failed,
+               "deleted": scan.deleted, "removed": 0}
+
+    def show(d):
+        print(L(f"Известно участников: {scan.coverage}; проверено {d['checked']}, "
+                f"не удалось {d['failed']}; удалённых: {len(d['deleted'])}.",
+                f"Known members: {scan.coverage}; checked {d['checked']}, "
+                f"failed {d['failed']}; deleted: {len(d['deleted'])}."))
+        if d["removed"]:
+            print(L(f"Исключено: {d['removed']}.", f"Removed: {d['removed']}."))
+
+    if not scan.deleted:
+        _out(payload, args.json, show)
+        return OK
+    if not args.yes:
+        _out(payload, args.json, show)
+        _err(L(f"Ничего не исключено. Убрать {len(scan.deleted)} — повторите с --yes.",
+               f"Nothing removed. To remove {len(scan.deleted)}, repeat with --yes."))
+        return NEEDS_YES
+    payload["removed"] = await accounts.remove_deleted(bot, chat_id, scan.deleted)
+    _audit("удалённые аккаунты исключены", f"{chat_id}: {payload['removed']}")
+    _out(payload, args.json, show)
+    return OK
 
 
 def cmd_files(args) -> int:
@@ -628,8 +685,11 @@ def build_parser() -> argparse.ArgumentParser:
     chats = subparsers.add_parser("chats", help=L("чаты под модерацией",
                                                   "moderated chats"),
                                   parents=[common])
-    chats.add_argument("action", choices=["list", "on", "off", "forget"])
+    chats.add_argument("action", choices=["list", "on", "off", "forget", "clean"],
+                       help=L("clean — найти и (с --yes) исключить удалённые аккаунты",
+                              "clean — find and (with --yes) remove deleted accounts"))
     chats.add_argument("chat_id", nargs="?", default="")
+    chats.add_argument("--yes", action="store_true")
     chats.set_defaults(func=cmd_chats)
 
     files = subparsers.add_parser("files", help=L("раздача файлов", "file sharing"),

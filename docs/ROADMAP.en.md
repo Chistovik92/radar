@@ -1756,6 +1756,24 @@ duplication of the bot's and the panel's functions. Plan:
 
 ---
 
+## 5.9.4 - live accounts in Telegram ⚠️ code written
+
+At the author's request, modelled on `@RemoveDeletedAccountsBot`. Plan:
+[PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md) (Russian), section 3.
+
+1. **Deleted-account cleanup** (`deleted_cleanup`): `/cleandeleted` and
+   `radarctl chats clean`. The Bot API does not return a member list, so
+   those the bot has seen (joining, messages) are checked; the report shows
+   the coverage.
+2. **Captcha timeout** (`captcha_kick`): one who has not pressed "I am not a
+   bot" is removed.
+3. **CAS check** (`cas_check`): an external service, only the numeric
+   identifier is sent; off.
+4. **Unreachable recipients:** alerts are not sent to those who blocked the
+   bot; `radarctl users stale`.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2

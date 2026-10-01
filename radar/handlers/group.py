@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -38,7 +39,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import chatlink, features, moderation
+from .. import accounts, chatlink, features, moderation
 from ..db import repo
 
 log = logging.getLogger("radar.group")
@@ -54,6 +55,16 @@ _joined: dict[tuple[int, int], float] = {}
 _complained: set[int] = set()
 # Кому выдана капча: до нажатия человек ограничен.
 _pending: dict[tuple[int, int], float] = {}
+# Сообщение с кнопкой — чтобы убрать его, когда время вышло (с 5.9.4).
+_captcha_msgs: dict[tuple[int, int], int] = {}
+# Кого уже записали в «известные участники» за время работы процесса:
+# без этого каждое сообщение чата стоило бы запроса к базе.
+_remembered: set[tuple[int, int]] = set()
+# Результат проверки на удалённые аккаунты до подтверждения:
+# чат → (когда, кто запросил, найденные).
+_scans: dict[int, tuple[float, int, list[int]]] = {}
+SCAN_TTL = 600
+CAPTCHA_SWEEP = 30
 
 MUTED = ChatPermissions(can_send_messages=False)
 UNMUTED = ChatPermissions(
@@ -208,6 +219,19 @@ async def greet_newcomers(message: Message) -> None:
     for member in message.new_chat_members or []:
         if member.is_bot:
             continue
+        await _remember(message.chat.id, member.id)
+
+        # Известные спамеры — до приветствия: незачем встречать того,
+        # кого в этот же миг исключат. Недоступность сервиса пускает
+        # человека дальше (капча остаётся).
+        if features.enabled("cas_check") and await accounts.cas_banned(member.id):
+            try:
+                await message.bot.ban_chat_member(message.chat.id, member.id)
+                log.info("CAS: %s исключён из %s", member.id, message.chat.id)
+                continue
+            except Exception:  # noqa: BLE001
+                await _complain_once(message, "блокировать участников")
+
         _joined[(message.chat.id, member.id)] = time.time()
         _pending[(message.chat.id, member.id)] = time.time()
         try:
@@ -216,7 +240,7 @@ async def greet_newcomers(message: Message) -> None:
         except Exception:  # noqa: BLE001
             await _complain_once(message, "ограничивать участников")
             continue
-        await message.answer(
+        sent = await message.answer(
             f"👋 {member.full_name}, добро пожаловать. "
             "Нажмите кнопку — так видно, что вы не бот.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -224,6 +248,7 @@ async def greet_newcomers(message: Message) -> None:
                                      callback_data=f"grp:ok:{member.id}")
             ]]),
         )
+        _captcha_msgs[(message.chat.id, member.id)] = sent.message_id
 
     # Служебное сообщение о входе убираем: оно засоряет чат.
     try:
@@ -242,6 +267,7 @@ async def confirm_human(call: CallbackQuery) -> None:
 
     chat_id = call.message.chat.id
     _pending.pop((chat_id, target), None)
+    _captcha_msgs.pop((chat_id, target), None)
     try:
         await call.bot.restrict_chat_member(chat_id, target,
                                             permissions=UNMUTED)
@@ -384,6 +410,134 @@ async def manual_action(message: Message) -> None:
     await message.answer(f"✅ {target.full_name} разблокирован")
 
 
+async def _remember(chat_id: int, user_id: int) -> None:
+    """Запоминает человека как известного участника чата (для чистки)."""
+    key = (chat_id, user_id)
+    if key in _remembered or not features.enabled("deleted_cleanup"):
+        return
+    _remembered.add(key)
+    try:
+        await repo.member_seen(chat_id, user_id)
+    except Exception:  # noqa: BLE001
+        _remembered.discard(key)
+        log.debug("Участник не записан", exc_info=True)
+
+
+def _scan_text(scan: accounts.Scan) -> str:
+    lines = [
+        "🧹 <b>Проверка удалённых аккаунтов</b>",
+        f"Известно боту участников: <b>{scan.coverage}</b>",
+        f"Проверено: <b>{scan.checked}</b>"
+        + (f", не удалось: {scan.failed}" if scan.failed else ""),
+        f"Удалённых аккаунтов: <b>{len(scan.deleted)}</b>",
+    ]
+    if scan.members_total and scan.known < scan.members_total:
+        lines.append(
+            "<i>Bot API не отдаёт список участников, поэтому бот проверяет "
+            "только тех, кого видел с момента подключения — по вступлению "
+            "или сообщению. Остальные попадут в проверку, когда напишут.</i>")
+    if scan.truncated:
+        lines.append(f"<i>За раз проверяется не больше {accounts.SCAN_LIMIT}.</i>")
+    return "\n".join(lines)
+
+
+@router.message(Command("cleandeleted"))
+async def clean_deleted(message: Message) -> None:
+    """Чистка удалённых аккаунтов: проверить и по кнопке исключить."""
+    if not features.enabled("deleted_cleanup"):
+        return
+    if not await _is_admin(message, message.from_user.id):
+        return
+    chat_id = message.chat.id
+    status = await message.answer("⏳ Проверяю известных боту участников…")
+    ids = await repo.member_ids(chat_id)
+    if not ids:
+        await status.edit_text(
+            "Бот пока не видел в этом чате ни одного участника. Список "
+            "наполняется по мере вступлений и сообщений — загляните позже.")
+        return
+    scan = await accounts.scan_chat(message.bot, chat_id, ids)
+    text = _scan_text(scan)
+    if not scan.deleted:
+        await status.edit_text(text)
+        return
+    _scans[chat_id] = (time.time(), message.from_user.id, scan.deleted)
+    await status.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"Исключить {len(scan.deleted)}",
+                                 callback_data=f"grp:purge:{chat_id}"),
+            InlineKeyboardButton(text="Отмена", callback_data=f"grp:keep:{chat_id}"),
+        ]]))
+
+
+@router.callback_query(F.data.startswith("grp:purge:") | F.data.startswith("grp:keep:"))
+async def clean_deleted_confirm(call: CallbackQuery) -> None:
+    action, _, raw = call.data.rpartition(":")
+    chat_id = int(raw)
+    if call.message is None or call.message.chat.id != chat_id:
+        await call.answer()
+        return
+    try:
+        member = await call.bot.get_chat_member(chat_id, call.from_user.id)
+        allowed = member.status in ("creator", "administrator")
+    except Exception:  # noqa: BLE001
+        allowed = False
+    if not allowed:
+        await call.answer("Только для администраторов чата.", show_alert=True)
+        return
+    stored = _scans.pop(chat_id, None)
+    if action.endswith("keep") or stored is None or time.time() - stored[0] > SCAN_TTL:
+        await call.answer("Отменено." if action.endswith("keep")
+                          else "Результат устарел — запустите проверку заново.")
+        try:
+            await call.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    await call.answer("Исключаю…")
+    removed = await accounts.remove_deleted(call.bot, chat_id, stored[2])
+    try:
+        await call.message.edit_text(f"✅ Исключено удалённых аккаунтов: <b>{removed}</b>")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def captcha_sweeper(bot) -> None:
+    """Исключает тех, кто не нажал кнопку за отведённое время (с 5.9.4).
+
+    До 5.9.4 запись о капче жила вечно: человек оставался немым, пока
+    не нажмёт, а бот-спамер, вошедший и замолчавший, оставался в группе
+    навсегда. Исключение — «бан и сразу разбан»: прийти снова можно.
+    """
+    while True:
+        await asyncio.sleep(CAPTCHA_SWEEP)
+        if not features.enabled("captcha_kick"):
+            continue
+        now = time.time()
+        for key, since in list(_pending.items()):
+            chat_id, user_id = key
+            try:
+                _enabled, settings = await _settings(chat_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if now - since < max(1, settings.captcha_minutes) * 60:
+                continue
+            try:
+                await bot.ban_chat_member(chat_id, user_id)
+                await bot.unban_chat_member(chat_id, user_id, only_if_banned=True)
+                log.info("Капча не пройдена: %s исключён из %s", user_id, chat_id)
+            except Exception:  # noqa: BLE001
+                log.debug("Не удалось исключить %s", user_id, exc_info=True)
+            finally:
+                _pending.pop(key, None)
+                message_id = _captcha_msgs.pop(key, None)
+                if message_id:
+                    try:
+                        await bot.delete_message(chat_id, message_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+
 @router.message(F.text)
 async def moderate(message: Message) -> None:
     """Главный путь: каждое текстовое сообщение группы."""
@@ -397,6 +551,7 @@ async def moderate(message: Message) -> None:
     user = message.from_user
     if user is None or user.is_bot:
         return
+    await _remember(message.chat.id, user.id)
 
     # Пока капча не пройдена, любое сообщение удаляется: ограничение
     # Telegram могло не примениться, если у бота не хватило прав.

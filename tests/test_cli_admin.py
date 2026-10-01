@@ -331,6 +331,38 @@ class Stats(unittest.TestCase):
             self.assertNotIn("monitor", data)
 
 
+class Accounts(unittest.TestCase):
+    def test_stale_lists_and_prune_needs_yes(self):
+        data = people()
+        data["2"]["dead"] = 1700000000
+        with FakeStore(data) as store:
+            code, out, _ = run(["users", "stale", "--json"])
+            self.assertEqual(code, cli.OK)
+            self.assertEqual([r["key"] for r in json.loads(out)], ["2"])
+            code, _o, err = run(["users", "stale", "--prune"])
+            self.assertEqual(code, cli.NEEDS_YES)
+            self.assertIn("--yes", err)
+            self.assertEqual(store.dropped, [])
+            code, _o, _e = run(["users", "stale", "--prune", "--yes"])
+            self.assertEqual(code, cli.OK)
+            self.assertEqual(store.dropped, ["2"])
+
+    def test_chats_clean_needs_running_bot(self):
+        # Проверка идёт через соединение бота: из отдельного процесса
+        # её нет, и консоль говорит об этом, а не падает.
+        from radar import features
+
+        was = features.enabled("deleted_cleanup")
+        features.set_local("deleted_cleanup", True)
+        try:
+            with FakeStore({}):
+                code, _o, err = run(["chats", "clean", "-100123"])
+        finally:
+            features.set_local("deleted_cleanup", was)
+        self.assertEqual(code, cli.FAILED)
+        self.assertIn("running bot", err)
+
+
 class Parity(unittest.TestCase):
     def test_parity_table_is_complete(self):
         """Новая команда бота или маршрут панели без решения про консоль —

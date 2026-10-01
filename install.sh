@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.3.1 — автономный установщик.
+# Система «Радар» v5.9.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.3.1"
+VERSION="5.9.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=154
+FILE_COUNT=155
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3292,6 +3292,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.4", [
+        "🧹 <b>Живые аккаунты в группах.</b> Команда /cleandeleted исключает удалённые аккаунты среди известных боту участников; не нажавший «Я не бот» новичок исключается по тайм-ауту; вступающих можно сверять с базой спамеров CAS. Всё — отдельными выключенными флагами. Заблокировавшие бота перестают получать запросы.",
+    ]),
     ("5.9.3.1", [
         "🌐 <b>Консоль на двух языках и новые команды.</b> Справка и сообщения radarctl — по-русски и по-английски (--lang, RADAR_LANG). Добавлены управление пользователями (роль, часовой пояс, удаление), значениями настроек с проверкой, журналами, журналом действий и статистикой.",
     ]),
@@ -5045,6 +5048,12 @@ async def main() -> None:
 
     spawn(adminsock.serve(), "admin-socket")
 
+    # Тайм-аут капчи в группах (5.9.4): задача живёт всегда и сама молчит,
+    # пока возможность «captcha_kick» выключена.
+    from radar.handlers import group as group_handlers
+
+    spawn(group_handlers.captcha_sweeper(bot), "captcha-sweeper")
+
     # Адаптер MAX. Пакет radar/platforms/ существовал с 4.4 и не
     # импортировался ни одним модулем — флаг «Мессенджер MAX» значился
     # в списке возможностей и не мог ничего включить.
@@ -5189,7 +5198,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.3.1"
+__version__ = "5.9.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7299,6 +7308,30 @@ FLAGS: tuple[Flag, ...] = (
          "По умолчанию выключено: ошибка в правилах стоит забаненного "
          "живого человека.",
          group="Модерация", since="4.9.8.11", default=False),
+    Flag("captcha_kick", "Тайм-аут капчи в группах",
+         "Новичок, не нажавший «Я не бот» за пять минут, исключается "
+         "(бан и сразу разбан — вернуться можно), а сообщение с кнопкой "
+         "убирается. Без этой возможности запись о капче живёт вечно: "
+         "бот-спамер, вошедший и замолчавший, остаётся в группе. Нужна "
+         "включённая модерация. По умолчанию выключено: ошибка во времени "
+         "стоит выгнанного живого человека.",
+         group="Модерация", since="5.9.4", default=False),
+    Flag("deleted_cleanup", "Чистка удалённых аккаунтов",
+         "Команда /cleandeleted у администратора группы и «chats clean» "
+         "в консоли: бот проверяет участников, которых видел сам, и по "
+         "кнопке исключает удалённые аккаунты («Deleted Account»). Bot API "
+         "не отдаёт список участников, поэтому проверяются только известные "
+         "боту — по вступлению и сообщению; отчёт показывает охват. "
+         "Включение начинает запоминать участников чатов. По умолчанию "
+         "выключено.",
+         group="Модерация", since="5.9.4", default=False),
+    Flag("cas_check", "Проверка новичков по базе CAS",
+         "Идентификатор вступившего отправляется во внешнюю базу "
+         "спамеров Combot Anti-Spam (api.cas.chat); найденного исключают "
+         "до приветствия. Это обмен данными с третьей стороной — только "
+         "числовой идентификатор, без имени и текста. Недоступность "
+         "сервиса человека не блокирует. По умолчанию выключено.",
+         group="Модерация", since="5.9.4", default=False),
     Flag("chat_post", "Сообщения в группы от имени бота",
          "Суперадминистратор пишет в администрируемые группы прямо "
          "из раздела «Чаты»: объявление уходит от имени бота, с показом "
@@ -21562,7 +21595,7 @@ SECTIONS: tuple[Section, ...] = (
         Card("Новости и подборки", flags=("digest", "digest_paid", "digest_suggestions",
                                           "digest_summaries"),
              links=(("/subscriptions", "Тарифы и подписка бота"),)),
-        Card("Экстренное и модерация", flags=("sos", "moderation", "chat_post"),
+        Card("Экстренное и модерация", flags=("sos", "moderation", "captcha_kick", "deleted_cleanup", "cas_check", "chat_post"),
              links=(("/chats", "Чаты под модерацией"),)),
         Card("Данные", flags=("backup_schedule", "history"),
              links=(("/backup", "Резервные копии"),)),
@@ -21942,6 +21975,12 @@ class User(Base):
     # Подписка на новостные подборки, см. radar/digest.py
     digest: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
+    # Когда бот узнал, что человеку не доставить (заблокировал бота или
+    # удалил аккаунт), секунды Unix; 0 — доступен. Не «blocked»: то поле —
+    # решение администратора, а это — состояние на стороне человека
+    # (с 5.9.4, см. radar/accounts.py).
+    dead_at: Mapped[int] = mapped_column(BigIntType, default=0)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     blocked: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -22166,6 +22205,27 @@ class ModeratedChat(Base):
     # владельца, затем своя.
     invite_link: Mapped[str] = mapped_column(String(300), default="")
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class ChatMember(Base):
+    """Кого бот видел в группе (с 5.9.4).
+
+    Нужна чистке удалённых аккаунтов: Bot API не умеет перечислять
+    участников чата, так что «проверить всех» можно только из тех, кого
+    бот встретил сам — по вступлению или по сообщению. Пара — первичный
+    ключ, а не отдельный номер: строка одна на человека в чате, и номера
+    тут не нужны.
+    """
+
+    __tablename__ = "chat_members"
+
+    chat_id: Mapped[int] = mapped_column(BigIntType, primary_key=True,
+                                         autoincrement=False)
+    user_id: Mapped[int] = mapped_column(BigIntType, primary_key=True,
+                                         autoincrement=False)
+    first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
 
@@ -22781,6 +22841,7 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         "quiet_to": "",
         "sos_contacts": [],
         "digest": {},
+        "dead": 0,
         "created": int(datetime.now(timezone.utc).timestamp()),
     }
 
@@ -22842,6 +22903,7 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "quiet_to": row.quiet_to,
         "sos_contacts": list(row.sos_contacts or []),
         "digest": dict(row.digest or {}),
+        "dead": int(row.dead_at or 0),
         "created": int(row.created_at.timestamp()) if row.created_at else 0,
     }
 
@@ -22895,6 +22957,7 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.quiet_to = data.get("quiet_to", "")
         row.sos_contacts = list(data.get("sos_contacts") or [])
         row.digest = dict(data.get("digest") or {})
+        row.dead_at = int(data.get("dead") or 0)
         row.seen_at = datetime.now(timezone.utc)
 
         await active.flush()
@@ -23526,6 +23589,44 @@ async def chat_forget(chat_id: int) -> bool:
             return False
         await active.delete(row)
         return True
+
+
+async def member_seen(chat_id: int, user_id: int) -> None:
+    """Запоминает, что человек есть в чате. Повтор безвреден."""
+    from .models import ChatMember
+
+    async with session() as active:
+        row = await active.get(ChatMember, (chat_id, user_id))
+        if row is None:
+            active.add(ChatMember(chat_id=chat_id, user_id=user_id))
+
+
+async def member_ids(chat_id: int) -> list[int]:
+    from .models import ChatMember
+
+    async with session() as active:
+        rows = await active.scalars(
+            select(ChatMember.user_id).where(ChatMember.chat_id == chat_id))
+        return [int(item) for item in rows]
+
+
+async def member_drop(chat_id: int, user_id: int) -> None:
+    from .models import ChatMember
+
+    async with session() as active:
+        row = await active.get(ChatMember, (chat_id, user_id))
+        if row is not None:
+            await active.delete(row)
+
+
+async def member_forget_chat(chat_id: int) -> int:
+    """Бота выгнали из чата — список его участников не нужен."""
+    from .models import ChatMember
+
+    async with session() as active:
+        result = await active.execute(
+            delete(ChatMember).where(ChatMember.chat_id == chat_id))
+        return int(result.rowcount or 0)
 
 
 async def warn_count(chat_id: int, user_id: int) -> int:
@@ -30954,7 +31055,7 @@ from aiogram.exceptions import (
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import config, identity
+from . import accounts, config, identity
 from .textutils import split_text, strip_tags
 
 log = logging.getLogger("radar.tg")
@@ -31025,6 +31126,11 @@ async def send_html(
         from . import mirror
 
         return await mirror.send_external(str(chat_id), text)
+    # Заблокировавшему бота и удалившему аккаунт слать нечего: запрос
+    # к API каждый цикл и предупреждение в журнале ничего не меняют.
+    # Отметка снимается, когда человек пишет боту (AccessMiddleware).
+    if accounts.is_dead(chat_id):
+        return False
     chunks = split_text(text)
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == len(chunks) - 1 else None
@@ -31041,6 +31147,13 @@ async def send_html(
                 await asyncio.sleep(min(exc.retry_after + 1, RETRY_CAP))
             except TelegramForbiddenError:
                 log.info("Пользователь %s недоступен (бот заблокирован)", chat_id)
+                if accounts.mark_dead(chat_id):
+                    from . import storage
+
+                    try:
+                        await storage.save(chat_id)
+                    except Exception:  # noqa: BLE001
+                        log.debug("Отметка о недоступности не сохранена", exc_info=True)
                 return False
             except TelegramBadRequest as exc:
                 log.warning("Ошибка разметки (%s), отправляю обычным текстом", exc)
@@ -31948,7 +32061,7 @@ from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from . import features, i18n, roles, storage
+from . import accounts, features, i18n, roles, storage
 
 log = logging.getLogger("radar.access")
 
@@ -32062,6 +32175,11 @@ class AccessMiddleware(BaseMiddleware):
 
         if user.username and record.get("username") != user.username:
             record["username"] = user.username
+
+        # Человек пишет — значит, бота он разблокировал (сделать это можно
+        # только заново нажав /start) и отправки ему можно возобновить.
+        if accounts.mark_alive(user.id):
+            await storage.save(user.id)
 
         role = record.get("role", "user")
 
@@ -34937,6 +35055,7 @@ class Settings:
     mute_minutes: int = 60
     warns_before_ban: int = 5
     newcomer_hours: int = 24            # сколько человек считается новичком
+    captcha_minutes: int = 5            # сколько ждать нажатия «Я не бот» (5.9.4)
 
 
 @dataclass
@@ -36617,6 +36736,7 @@ cat > "radar/handlers/group.py" <<'RADAR_FILE_107'
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -36633,7 +36753,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import chatlink, features, moderation
+from .. import accounts, chatlink, features, moderation
 from ..db import repo
 
 log = logging.getLogger("radar.group")
@@ -36649,6 +36769,16 @@ _joined: dict[tuple[int, int], float] = {}
 _complained: set[int] = set()
 # Кому выдана капча: до нажатия человек ограничен.
 _pending: dict[tuple[int, int], float] = {}
+# Сообщение с кнопкой — чтобы убрать его, когда время вышло (с 5.9.4).
+_captcha_msgs: dict[tuple[int, int], int] = {}
+# Кого уже записали в «известные участники» за время работы процесса:
+# без этого каждое сообщение чата стоило бы запроса к базе.
+_remembered: set[tuple[int, int]] = set()
+# Результат проверки на удалённые аккаунты до подтверждения:
+# чат → (когда, кто запросил, найденные).
+_scans: dict[int, tuple[float, int, list[int]]] = {}
+SCAN_TTL = 600
+CAPTCHA_SWEEP = 30
 
 MUTED = ChatPermissions(can_send_messages=False)
 UNMUTED = ChatPermissions(
@@ -36803,6 +36933,19 @@ async def greet_newcomers(message: Message) -> None:
     for member in message.new_chat_members or []:
         if member.is_bot:
             continue
+        await _remember(message.chat.id, member.id)
+
+        # Известные спамеры — до приветствия: незачем встречать того,
+        # кого в этот же миг исключат. Недоступность сервиса пускает
+        # человека дальше (капча остаётся).
+        if features.enabled("cas_check") and await accounts.cas_banned(member.id):
+            try:
+                await message.bot.ban_chat_member(message.chat.id, member.id)
+                log.info("CAS: %s исключён из %s", member.id, message.chat.id)
+                continue
+            except Exception:  # noqa: BLE001
+                await _complain_once(message, "блокировать участников")
+
         _joined[(message.chat.id, member.id)] = time.time()
         _pending[(message.chat.id, member.id)] = time.time()
         try:
@@ -36811,7 +36954,7 @@ async def greet_newcomers(message: Message) -> None:
         except Exception:  # noqa: BLE001
             await _complain_once(message, "ограничивать участников")
             continue
-        await message.answer(
+        sent = await message.answer(
             f"👋 {member.full_name}, добро пожаловать. "
             "Нажмите кнопку — так видно, что вы не бот.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -36819,6 +36962,7 @@ async def greet_newcomers(message: Message) -> None:
                                      callback_data=f"grp:ok:{member.id}")
             ]]),
         )
+        _captcha_msgs[(message.chat.id, member.id)] = sent.message_id
 
     # Служебное сообщение о входе убираем: оно засоряет чат.
     try:
@@ -36837,6 +36981,7 @@ async def confirm_human(call: CallbackQuery) -> None:
 
     chat_id = call.message.chat.id
     _pending.pop((chat_id, target), None)
+    _captcha_msgs.pop((chat_id, target), None)
     try:
         await call.bot.restrict_chat_member(chat_id, target,
                                             permissions=UNMUTED)
@@ -36979,6 +37124,134 @@ async def manual_action(message: Message) -> None:
     await message.answer(f"✅ {target.full_name} разблокирован")
 
 
+async def _remember(chat_id: int, user_id: int) -> None:
+    """Запоминает человека как известного участника чата (для чистки)."""
+    key = (chat_id, user_id)
+    if key in _remembered or not features.enabled("deleted_cleanup"):
+        return
+    _remembered.add(key)
+    try:
+        await repo.member_seen(chat_id, user_id)
+    except Exception:  # noqa: BLE001
+        _remembered.discard(key)
+        log.debug("Участник не записан", exc_info=True)
+
+
+def _scan_text(scan: accounts.Scan) -> str:
+    lines = [
+        "🧹 <b>Проверка удалённых аккаунтов</b>",
+        f"Известно боту участников: <b>{scan.coverage}</b>",
+        f"Проверено: <b>{scan.checked}</b>"
+        + (f", не удалось: {scan.failed}" if scan.failed else ""),
+        f"Удалённых аккаунтов: <b>{len(scan.deleted)}</b>",
+    ]
+    if scan.members_total and scan.known < scan.members_total:
+        lines.append(
+            "<i>Bot API не отдаёт список участников, поэтому бот проверяет "
+            "только тех, кого видел с момента подключения — по вступлению "
+            "или сообщению. Остальные попадут в проверку, когда напишут.</i>")
+    if scan.truncated:
+        lines.append(f"<i>За раз проверяется не больше {accounts.SCAN_LIMIT}.</i>")
+    return "\n".join(lines)
+
+
+@router.message(Command("cleandeleted"))
+async def clean_deleted(message: Message) -> None:
+    """Чистка удалённых аккаунтов: проверить и по кнопке исключить."""
+    if not features.enabled("deleted_cleanup"):
+        return
+    if not await _is_admin(message, message.from_user.id):
+        return
+    chat_id = message.chat.id
+    status = await message.answer("⏳ Проверяю известных боту участников…")
+    ids = await repo.member_ids(chat_id)
+    if not ids:
+        await status.edit_text(
+            "Бот пока не видел в этом чате ни одного участника. Список "
+            "наполняется по мере вступлений и сообщений — загляните позже.")
+        return
+    scan = await accounts.scan_chat(message.bot, chat_id, ids)
+    text = _scan_text(scan)
+    if not scan.deleted:
+        await status.edit_text(text)
+        return
+    _scans[chat_id] = (time.time(), message.from_user.id, scan.deleted)
+    await status.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"Исключить {len(scan.deleted)}",
+                                 callback_data=f"grp:purge:{chat_id}"),
+            InlineKeyboardButton(text="Отмена", callback_data=f"grp:keep:{chat_id}"),
+        ]]))
+
+
+@router.callback_query(F.data.startswith("grp:purge:") | F.data.startswith("grp:keep:"))
+async def clean_deleted_confirm(call: CallbackQuery) -> None:
+    action, _, raw = call.data.rpartition(":")
+    chat_id = int(raw)
+    if call.message is None or call.message.chat.id != chat_id:
+        await call.answer()
+        return
+    try:
+        member = await call.bot.get_chat_member(chat_id, call.from_user.id)
+        allowed = member.status in ("creator", "administrator")
+    except Exception:  # noqa: BLE001
+        allowed = False
+    if not allowed:
+        await call.answer("Только для администраторов чата.", show_alert=True)
+        return
+    stored = _scans.pop(chat_id, None)
+    if action.endswith("keep") or stored is None or time.time() - stored[0] > SCAN_TTL:
+        await call.answer("Отменено." if action.endswith("keep")
+                          else "Результат устарел — запустите проверку заново.")
+        try:
+            await call.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    await call.answer("Исключаю…")
+    removed = await accounts.remove_deleted(call.bot, chat_id, stored[2])
+    try:
+        await call.message.edit_text(f"✅ Исключено удалённых аккаунтов: <b>{removed}</b>")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def captcha_sweeper(bot) -> None:
+    """Исключает тех, кто не нажал кнопку за отведённое время (с 5.9.4).
+
+    До 5.9.4 запись о капче жила вечно: человек оставался немым, пока
+    не нажмёт, а бот-спамер, вошедший и замолчавший, оставался в группе
+    навсегда. Исключение — «бан и сразу разбан»: прийти снова можно.
+    """
+    while True:
+        await asyncio.sleep(CAPTCHA_SWEEP)
+        if not features.enabled("captcha_kick"):
+            continue
+        now = time.time()
+        for key, since in list(_pending.items()):
+            chat_id, user_id = key
+            try:
+                _enabled, settings = await _settings(chat_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if now - since < max(1, settings.captcha_minutes) * 60:
+                continue
+            try:
+                await bot.ban_chat_member(chat_id, user_id)
+                await bot.unban_chat_member(chat_id, user_id, only_if_banned=True)
+                log.info("Капча не пройдена: %s исключён из %s", user_id, chat_id)
+            except Exception:  # noqa: BLE001
+                log.debug("Не удалось исключить %s", user_id, exc_info=True)
+            finally:
+                _pending.pop(key, None)
+                message_id = _captcha_msgs.pop(key, None)
+                if message_id:
+                    try:
+                        await bot.delete_message(chat_id, message_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+
 @router.message(F.text)
 async def moderate(message: Message) -> None:
     """Главный путь: каждое текстовое сообщение группы."""
@@ -36992,6 +37265,7 @@ async def moderate(message: Message) -> None:
     user = message.from_user
     if user is None or user.is_bot:
         return
+    await _remember(message.chat.id, user.id)
 
     # Пока капча не пройдена, любое сообщение удаляется: ограничение
     # Telegram могло не примениться, если у бота не хватило прав.
@@ -37716,8 +37990,224 @@ def call(argv: list[str]) -> tuple[int, str, str] | None:
     finally:
         client.close()
 RADAR_FILE_109
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/accounts.py"
+cat > "radar/accounts.py" <<'RADAR_FILE_110'
+"""Живые и мёртвые аккаунты в Telegram (с 5.9.4).
+
+Три разные задачи, и важно не путать, на что способен Bot API:
+
+* **Удалённые участники группы.** Bot API не умеет перечислять участников
+  чата, поэтому чистка идёт по тем, кого бот видел сам (`ChatMember`:
+  вступление, сообщение). Про каждого спрашивается `getChatMember`;
+  удалённый аккаунт приходит как «Deleted Account». Тех, кто в чате давно
+  и молчит, бот не знает — отчёт честно говорит, сколько из скольких
+  участников проверено. Полный обход возможен только через MTProto
+  (пользовательская сессия), и это сознательно не делается: такие сессии
+  банят, а условия Telegram их не одобряют.
+* **Мёртвые получатели оповещений.** Заблокировал бота или удалил аккаунт —
+  `TelegramForbiddenError`. Отметка `dead` снимает повторные попытки: раньше
+  тревога для такого человека уходила в API каждый цикл, и каждый раз —
+  предупреждение в журнале. Снимается сама, когда человек пишет боту:
+  разблокировать бота можно только заново нажав /start.
+* **Новички по базе CAS** (Combot Anti-Spam). Это внешний сервис: ему
+  отправляется числовой идентификатор человека. Поэтому — только по флагу
+  `cas_check`, выключен по умолчанию, и об обмене сказано в README.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
+
+log = logging.getLogger("radar.accounts")
+
+# Так Bot API называет удалённый аккаунт. Список, а не одна строка: бот
+# видит имя в том виде, в каком его отдаёт сервер, и локализация иногда
+# проскакивает.
+DELETED_NAMES = {"deleted account", "удалённый аккаунт", "удаленный аккаунт"}
+
+CAS_URL = "https://api.cas.chat/check"
+CAS_TIMEOUT = 6
+
+# Пауза между запросами getChatMember: у Bot API общий предел около 30
+# запросов в секунду на бота, а чистка — не самое срочное, что он делает.
+SCAN_PAUSE = 0.06
+# Больше этого за один проход не проверяем: группа на десятки тысяч
+# заблокировала бы бота для всего остального на несколько минут.
+SCAN_LIMIT = 5000
+
+
+def is_deleted_user(user: Any) -> bool:
+    """Удалён ли аккаунт. У удалённого нет ни фамилии, ни имени пользователя."""
+    name = str(getattr(user, "first_name", "") or "").strip().lower()
+    if name not in DELETED_NAMES:
+        return False
+    return not getattr(user, "last_name", None) and not getattr(user, "username", None)
+
+
+# --------------------------------------------------------------------------
+#  Мёртвые получатели
+# --------------------------------------------------------------------------
+
+def _record(uid: int | str) -> dict[str, Any] | None:
+    from . import storage
+
+    return storage.get_user(uid)
+
+
+def mark_dead(uid: int | str) -> bool:
+    """Отмечает недоступного получателя. Только человек: у группы
+    `Forbidden` значит другое (бота исключили), и её это не касается."""
+    try:
+        if int(uid) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    record = _record(uid)
+    if record is None or record.get("dead"):
+        return False
+    record["dead"] = int(time.time())
+    log.info("Получатель %s недоступен — отправки ему приостановлены", uid)
+    return True
+
+
+def mark_alive(uid: int | str) -> bool:
+    record = _record(uid)
+    if record is None or not record.get("dead"):
+        return False
+    record.pop("dead", None)
+    log.info("Получатель %s снова на связи", uid)
+    return True
+
+
+def is_dead(uid: int | str) -> bool:
+    record = _record(uid)
+    return bool(record and record.get("dead"))
+
+
+def stale() -> list[tuple[str, int]]:
+    """Недоступные получатели: (ключ, когда отмечен)."""
+    from . import storage
+
+    return sorted(
+        ((key, int(item["dead"])) for key, item in storage.users().items()
+         if item.get("dead")),
+        key=lambda pair: pair[1])
+
+
+# --------------------------------------------------------------------------
+#  CAS
+# --------------------------------------------------------------------------
+
+async def _fetch_cas(user_id: int) -> dict[str, Any] | None:
+    import aiohttp
+
+    timeout = aiohttp.ClientTimeout(total=CAS_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(CAS_URL, params={"user_id": str(user_id)}) as response:
+            if response.status != 200:
+                return None
+            return await response.json(content_type=None)
+
+
+async def cas_banned(
+    user_id: int,
+    fetch: Callable[[int], Awaitable[dict[str, Any] | None]] | None = None,
+) -> bool | None:
+    """True — в базе, False — нет, None — не удалось узнать.
+
+    Недоступность сервиса — не повод ни банить, ни пускать «на всякий
+    случай»: вызывающий решает по None сам (у нас — пропускает).
+    """
+    try:
+        data = await (fetch or _fetch_cas)(user_id)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("CAS недоступен: %s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    return bool(data.get("ok"))
+
+
+# --------------------------------------------------------------------------
+#  Чистка удалённых аккаунтов в группе
+# --------------------------------------------------------------------------
+
+@dataclass
+class Scan:
+    chat_id: int
+    members_total: int | None = None   # сколько участников в чате по данным Telegram
+    known: int = 0                     # сколько из них бот видел
+    checked: int = 0
+    deleted: list[int] = field(default_factory=list)
+    failed: int = 0
+    truncated: bool = False
+
+    @property
+    def coverage(self) -> str:
+        if not self.members_total:
+            return f"{self.known}"
+        return f"{self.known} / {self.members_total}"
+
+
+async def scan_chat(bot: Any, chat_id: int, ids: list[int],
+                    pause: float = SCAN_PAUSE) -> Scan:
+    """Находит удалённые аккаунты среди известных боту участников."""
+    result = Scan(chat_id=chat_id, known=len(ids))
+    try:
+        result.members_total = int(await bot.get_chat_member_count(chat_id))
+    except Exception:  # noqa: BLE001
+        result.members_total = None
+
+    batch = ids[:SCAN_LIMIT]
+    result.truncated = len(ids) > len(batch)
+    for user_id in batch:
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+        except Exception:  # noqa: BLE001
+            # Вышел из чата или бот потерял права — не повод считать его
+            # удалённым, но и проверенным он не стал.
+            result.failed += 1
+        else:
+            result.checked += 1
+            if is_deleted_user(getattr(member, "user", None)):
+                result.deleted.append(user_id)
+        await asyncio.sleep(pause)
+    return result
+
+
+async def remove_deleted(bot: Any, chat_id: int, ids: list[int],
+                         pause: float = SCAN_PAUSE) -> int:
+    """Исключает найденных. Бан сразу снимается: человека нет, а запись
+    «заблокирован» в списке чата только засоряла бы его."""
+    from .db import repo
+
+    removed = 0
+    for user_id in ids:
+        try:
+            await bot.ban_chat_member(chat_id, user_id)
+            await bot.unban_chat_member(chat_id, user_id, only_if_banned=True)
+        except Exception:  # noqa: BLE001
+            log.debug("Не удалось исключить %s из %s", user_id, chat_id, exc_info=True)
+            continue
+        removed += 1
+        await repo.member_drop(chat_id, user_id)
+        await asyncio.sleep(pause)
+    if removed:
+        log.info("Чат %s: исключено удалённых аккаунтов — %d", chat_id, removed)
+    return removed
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_110'
+cat > "radar/cli.py" <<'RADAR_FILE_111'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -37772,7 +38262,7 @@ _LOOP: asyncio.AbstractEventLoop | None = None
 LOCAL_ONLY = {"doctor", "version"}
 # Что только читает: для них молчание о неработающем боте не страшно.
 READ_ACTIONS = {"list", "size", "check", "info", "connections", "show", "get",
-                "tail", "pending"}
+                "tail", "pending", "stale"}
 
 
 def attach(loop: asyncio.AbstractEventLoop | None) -> None:
@@ -38137,6 +38627,8 @@ def cmd_chats(args) -> int:
             return FAILED
 
         chat_id = int(args.chat_id)
+        if args.action == "clean":
+            return await _clean_deleted(chat_id, args)
         if args.action == "forget":
             done = await repo.chat_forget(chat_id)
             print(L("забыт", "forgotten") if done
@@ -38152,6 +38644,61 @@ def cmd_chats(args) -> int:
         return OK
 
     return _run(_with_storage(run))
+
+
+async def _clean_deleted(chat_id: int, args) -> int:
+    """Чистка удалённых аккаунтов в группе (5.9.4): как /cleandeleted.
+
+    Нужен работающий бот: проверка идёт через его Bot API, а известных
+    участников бот копит сам, пока работает.
+    """
+    from . import accounts, features
+    from .db import repo
+
+    if not in_bot():
+        _err(L("Нужен работающий бот: проверка идёт через его соединение "
+               "с Telegram. Запустите бота и повторите.",
+               "A running bot is required: the check goes through its Telegram "
+               "connection. Start the bot and repeat."))
+        return FAILED
+    if not features.enabled("deleted_cleanup"):
+        _err(L("Возможность «Чистка удалённых аккаунтов» выключена: "
+               "features on deleted_cleanup.",
+               "The “Deleted account cleanup” feature is off: "
+               "features on deleted_cleanup."))
+        return FAILED
+    from .tg import bot
+
+    ids = await repo.member_ids(chat_id)
+    if not ids:
+        _err(L("Бот пока не видел в этом чате ни одного участника.",
+               "The bot has not seen any members in this chat yet."))
+        return FAILED
+    scan = await accounts.scan_chat(bot, chat_id, ids)
+    payload = {"chat": chat_id, "known": scan.known, "members": scan.members_total,
+               "checked": scan.checked, "failed": scan.failed,
+               "deleted": scan.deleted, "removed": 0}
+
+    def show(d):
+        print(L(f"Известно участников: {scan.coverage}; проверено {d['checked']}, "
+                f"не удалось {d['failed']}; удалённых: {len(d['deleted'])}.",
+                f"Known members: {scan.coverage}; checked {d['checked']}, "
+                f"failed {d['failed']}; deleted: {len(d['deleted'])}."))
+        if d["removed"]:
+            print(L(f"Исключено: {d['removed']}.", f"Removed: {d['removed']}."))
+
+    if not scan.deleted:
+        _out(payload, args.json, show)
+        return OK
+    if not args.yes:
+        _out(payload, args.json, show)
+        _err(L(f"Ничего не исключено. Убрать {len(scan.deleted)} — повторите с --yes.",
+               f"Nothing removed. To remove {len(scan.deleted)}, repeat with --yes."))
+        return NEEDS_YES
+    payload["removed"] = await accounts.remove_deleted(bot, chat_id, scan.deleted)
+    _audit("удалённые аккаунты исключены", f"{chat_id}: {payload['removed']}")
+    _out(payload, args.json, show)
+    return OK
 
 
 def cmd_files(args) -> int:
@@ -38348,8 +38895,11 @@ def build_parser() -> argparse.ArgumentParser:
     chats = subparsers.add_parser("chats", help=L("чаты под модерацией",
                                                   "moderated chats"),
                                   parents=[common])
-    chats.add_argument("action", choices=["list", "on", "off", "forget"])
+    chats.add_argument("action", choices=["list", "on", "off", "forget", "clean"],
+                       help=L("clean — найти и (с --yes) исключить удалённые аккаунты",
+                              "clean — find and (with --yes) remove deleted accounts"))
     chats.add_argument("chat_id", nargs="?", default="")
+    chats.add_argument("--yes", action="store_true")
     chats.set_defaults(func=cmd_chats)
 
     files = subparsers.add_parser("files", help=L("раздача файлов", "file sharing"),
@@ -38432,9 +38982,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_110
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
-cat > "radar/cli_admin.py" <<'RADAR_FILE_111'
+cat > "radar/cli_admin.py" <<'RADAR_FILE_112'
 """Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
 
 Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
@@ -38526,6 +39076,29 @@ def cmd_users(args) -> int:
                       f"{word}: {row['locations']}")
                 for row in data
             ])
+            return OK
+
+        if args.action == "stale":
+            from . import accounts
+
+            rows = [{"key": key, "since": since} for key, since in accounts.stale()]
+            if args.prune and rows:
+                if not args.yes:
+                    cli._out(rows, args.json, lambda d: [
+                        print(f"{r['key']}  {r['since']}") for r in d])
+                    cli._err(L(f"Будут удалены {len(rows)} человек вместе с адресами. "
+                               "Повторите с --yes.",
+                               f"{len(rows)} people will be deleted with their addresses. "
+                               "Repeat with --yes."))
+                    return NEEDS_YES
+                for row in rows:
+                    await storage.drop_user(row["key"])
+                audit("недоступные получатели удалены", str(len(rows)))
+                print(L(f"Удалено: {len(rows)}", f"Deleted: {len(rows)}"))
+                return OK
+            cli._out(rows, args.json, lambda d: [
+                print(f"{r['key']:>14}  {r['since']}") for r in d
+            ] or print(L("недоступных получателей нет", "no unreachable recipients")))
             return OK
 
         if not args.key:
@@ -38701,6 +39274,7 @@ def cmd_stats(args) -> int:
             # Счётчики цикла живут в памяти бота: консоль отдельным
             # процессом видела бы нули и выдавала их за правду.
             "live": cli.in_bot(),
+            "unreachable": sum(1 for u in storage.users().values() if u.get("dead")),
         }
         if cli.in_bot():
             from . import monitor
@@ -38714,6 +39288,9 @@ def cmd_stats(args) -> int:
                 f"{roles.title(r, L('ru', 'en'))}: {c}"
                 for r, c in sorted(d["by_role"].items())) + ")")
             print(L(f"Локаций: {d['locations']}", f"Locations: {d['locations']}"))
+            if d["unreachable"]:
+                print(L(f"Недоступных получателей: {d['unreachable']} (users stale)",
+                        f"Unreachable recipients: {d['unreachable']} (users stale)"))
             print(L(f"Каналов: {d['channels']}, RSS: {d['rss']}, "
                     f"в очереди: {d['pending_sources']}",
                     f"Channels: {d['channels']}, RSS: {d['rss']}, "
@@ -38824,7 +39401,7 @@ def register(subparsers, common) -> None:
     users = subparsers.add_parser("users", help=L("пользователи", "users"),
                                   parents=[common])
     users.add_argument("action", nargs="?", default="list",
-                       choices=["list", "show", "role", "delete", "time"])
+                       choices=["list", "show", "role", "delete", "time", "stale"])
     users.add_argument("key", nargs="?", default="")
     users.add_argument("value", nargs="?", default="",
                        help=L("role: user | moderator | admin", "role: user | moderator | admin"))
@@ -38833,6 +39410,9 @@ def register(subparsers, common) -> None:
     users.add_argument("--tz", default="", help=L("time: часовой пояс", "time: time zone"))
     users.add_argument("--weather-time", dest="weather_time", default="",
                        help=L("time: время погоды ЧЧ:ММ", "time: weather time HH:MM"))
+    users.add_argument("--prune", action="store_true",
+                       help=L("stale: удалить недоступных (с --yes)",
+                              "stale: delete the unreachable (with --yes)"))
     users.add_argument("--yes", action="store_true")
     users.set_defaults(func=cmd_users)
 
@@ -38867,9 +39447,9 @@ def register(subparsers, common) -> None:
     audit_cmd.add_argument("--limit", type=int, default=50)
     audit_cmd.add_argument("--yes", action="store_true")
     audit_cmd.set_defaults(func=cmd_audit)
-RADAR_FILE_111
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
-cat > "radar/clitext.py" <<'RADAR_FILE_112'
+cat > "radar/clitext.py" <<'RADAR_FILE_113'
 """Язык командной строки: русский и английский (с 5.9.3.1).
 
 Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
@@ -38934,9 +39514,9 @@ def current() -> str:
 def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
     """Строка на языке консоли."""
     return ru if _current == RU else en
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_113'
+cat > "radar/__main__.py" <<'RADAR_FILE_114'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -38958,9 +39538,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_114'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_115'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -39102,9 +39682,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_114
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_115'
+cat > "tools/restore.sh" <<'RADAR_FILE_116'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -39346,9 +39926,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_115
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_116'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_117'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -39444,9 +40024,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_116
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_117'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_118'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -39639,9 +40219,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_117
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_118'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_119'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -41395,9 +41975,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_118
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_119'
+cat > "radar/vpn.py" <<'RADAR_FILE_120'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -42217,9 +42797,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_119
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_120'
+cat > "radar/payments.py" <<'RADAR_FILE_121'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -42448,9 +43028,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_120
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_121'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_122'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -42817,9 +43397,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_121
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_123'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -42940,9 +43520,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_122
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_123'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_124'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -43413,9 +43993,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_123
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_124'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_125'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -43581,9 +44161,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_124
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_126'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -44088,9 +44668,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_125
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_126'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_127'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -44596,9 +45176,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_126
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_128'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -45042,9 +45622,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_127
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_129'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -45191,9 +45771,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_128
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_130'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -45481,9 +46061,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_129
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_131'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -45730,9 +46310,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_130
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_132'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -46103,9 +46683,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_131
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_133'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -46680,9 +47260,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_132
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_134'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -46783,9 +47363,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_133
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_135'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -46875,9 +47455,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_134
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_136'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -47298,9 +47878,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_135
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_137'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -48491,9 +49071,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_136
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_138'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -49247,9 +49827,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_137
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_139'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -49773,9 +50353,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_138
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_140'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -49983,9 +50563,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_139
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_141'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -50972,9 +51552,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_140
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_142'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -51387,9 +51967,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_141
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_143'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -51430,9 +52010,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_142
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_144'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -51695,9 +52275,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_143
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_144'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_145'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -51847,9 +52427,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_144
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_146'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -52317,9 +52897,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_145
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_146'
+cat > "radar/cookies.py" <<'RADAR_FILE_147'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -52452,9 +53032,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_146
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_147'
+cat > "radar/music.py" <<'RADAR_FILE_148'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -53258,9 +53838,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_147
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_148'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_149'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -53874,9 +54454,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_148
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_149'
+cat > "multitool/__init__.py" <<'RADAR_FILE_150'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -53902,9 +54482,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_149'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_149
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_150'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_151'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -53937,9 +54517,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_150'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_150
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_151'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_152'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -54346,9 +54926,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_151
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_152'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_153'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -54832,9 +55412,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_152
+RADAR_FILE_153
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_153'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_154'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -55074,7 +55654,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_153
+RADAR_FILE_154
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
