@@ -137,6 +137,8 @@ MANIFEST = [
     "radar/handlers/chats.py",
     "radar/adminsock.py",
     "radar/cli.py",
+    "radar/cli_admin.py",
+    "radar/clitext.py",
     "radar/__main__.py",
     # Скрипты обслуживания теперь едут на сервер вместе с кодом.
     # До 4.9.8.10 установщик только печатал команду curl, и «запустить

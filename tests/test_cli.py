@@ -47,6 +47,8 @@ class Parser(unittest.TestCase):
             ["keys", "list"], ["backup", "list"], ["db", "size"],
             ["links", "list"], ["files", "list"],
             ["rustdesk", "info"], ["doctor"], ["version"],
+            ["stats"], ["logs", "list"], ["audit", "tail"],
+            ["users", "show", "1"], ["keys", "get", "X"],
         ):
             with self.subTest(argv=argv):
                 args = parser.parse_args(argv)

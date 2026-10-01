@@ -2317,29 +2317,8 @@ def _in_own_section(group: str) -> bool:
 
 
 def _validate_setting(key: str, value: str) -> str:
-    """Проверка значения до записи: опечатка в тарифах молча ломала бы продажу."""
-    if not value:
-        return ""
-    if key == "DIGEST_PLANS":
-        if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
-            return "Формат: 30:150, 90:400 — дни и звёзды через двоеточие."
-        for chunk in value.split(","):
-            days, _, stars = chunk.strip().partition(":")
-            if int(days) < 1 or int(stars) < 1:
-                return "Срок и цена — не меньше единицы (звезда — минимальная цена)."
-    elif key == "VPN_PLANS":
-        from .. import vpnsales
-
-        chunks = [c for c in value.split(";") if c.strip()]
-        if not chunks or len(vpnsales.parse_plans(value)) != len(chunks):
-            return ("Формат: дни:трафикГБ:устройства:цена через «;», например "
-                    "30:0:3:199; 90:0:3:499 — есть негодный тариф.")
-    elif key in ("VPN_DAYS", "VPN_TRAFFIC_GB", "VPN_DEVICES"):
-        if not value.isdigit():
-            return "Нужно целое число."
-        if key == "VPN_DAYS" and int(value) < 1:
-            return "Срок — не меньше одного дня."
-    return ""
+    """Проверка значения до записи — общая с консолью, см. secrets."""
+    return secrets_module.validate_extra(key, value)
 
 
 def _setting_input(setting, current: str) -> str:
