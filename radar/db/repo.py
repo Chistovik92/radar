@@ -70,6 +70,7 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         "quiet_to": "",
         "sos_contacts": [],
         "digest": {},
+        "dead": 0,
         "created": int(datetime.now(timezone.utc).timestamp()),
     }
 
@@ -131,6 +132,7 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "quiet_to": row.quiet_to,
         "sos_contacts": list(row.sos_contacts or []),
         "digest": dict(row.digest or {}),
+        "dead": int(row.dead_at or 0),
         "created": int(row.created_at.timestamp()) if row.created_at else 0,
     }
 
@@ -184,6 +186,7 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.quiet_to = data.get("quiet_to", "")
         row.sos_contacts = list(data.get("sos_contacts") or [])
         row.digest = dict(data.get("digest") or {})
+        row.dead_at = int(data.get("dead") or 0)
         row.seen_at = datetime.now(timezone.utc)
 
         await active.flush()
@@ -815,6 +818,44 @@ async def chat_forget(chat_id: int) -> bool:
             return False
         await active.delete(row)
         return True
+
+
+async def member_seen(chat_id: int, user_id: int) -> None:
+    """Запоминает, что человек есть в чате. Повтор безвреден."""
+    from .models import ChatMember
+
+    async with session() as active:
+        row = await active.get(ChatMember, (chat_id, user_id))
+        if row is None:
+            active.add(ChatMember(chat_id=chat_id, user_id=user_id))
+
+
+async def member_ids(chat_id: int) -> list[int]:
+    from .models import ChatMember
+
+    async with session() as active:
+        rows = await active.scalars(
+            select(ChatMember.user_id).where(ChatMember.chat_id == chat_id))
+        return [int(item) for item in rows]
+
+
+async def member_drop(chat_id: int, user_id: int) -> None:
+    from .models import ChatMember
+
+    async with session() as active:
+        row = await active.get(ChatMember, (chat_id, user_id))
+        if row is not None:
+            await active.delete(row)
+
+
+async def member_forget_chat(chat_id: int) -> int:
+    """Бота выгнали из чата — список его участников не нужен."""
+    from .models import ChatMember
+
+    async with session() as active:
+        result = await active.execute(
+            delete(ChatMember).where(ChatMember.chat_id == chat_id))
+        return int(result.rowcount or 0)
 
 
 async def warn_count(chat_id: int, user_id: int) -> int:

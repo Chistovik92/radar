@@ -77,7 +77,7 @@ scp radar-backup-*.tar.gz new-server:~/
 
 ## Состояние на момент передачи
 
-**Версия 5.9.3.1** (сентябрь 2026). Работает на ARM-одноплатнике (RK3318)
+**Версия 5.9.4** (сентябрь 2026). Работает на ARM-одноплатнике (RK3318)
 за домашним роутером с белым IP, база SQLite, бот `@SecretHeroBot`, город
 Саратов. Каждая версия выходит релизом на GitHub сама: `release.yml`
 после зелёного CI на `main` (с 5.0, по каждой версии истории — с 5.6).
@@ -116,6 +116,9 @@ scp radar-backup-*.tar.gz new-server:~/
 `data/admin.sock` (`radar/adminsock.py`); без бота — напрямую с базой.
 5.9.3.1 — консоль на двух языках (`radar/clitext.py`), команды users/keys/stats/logs/audit
 (`radar/cli_admin.py`), `tools/lint_cli_parity.py`.
+5.9.4 — удалённые аккаунты и мёртвые получатели (`radar/accounts.py`, флаги
+`captcha_kick`, `deleted_cleanup`, `cas_check`, столбец `users.dead_at`,
+таблица `chat_members`).
 
 **Дальше по карте:** пронумерованные пункты закрыты. Открыты
 Одноклассники (7.0, пункт 2 — по условию карты после сезона работы ВК)

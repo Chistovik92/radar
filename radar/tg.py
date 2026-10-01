@@ -24,7 +24,7 @@ from aiogram.exceptions import (
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import config, identity
+from . import accounts, config, identity
 from .textutils import split_text, strip_tags
 
 log = logging.getLogger("radar.tg")
@@ -95,6 +95,11 @@ async def send_html(
         from . import mirror
 
         return await mirror.send_external(str(chat_id), text)
+    # Заблокировавшему бота и удалившему аккаунт слать нечего: запрос
+    # к API каждый цикл и предупреждение в журнале ничего не меняют.
+    # Отметка снимается, когда человек пишет боту (AccessMiddleware).
+    if accounts.is_dead(chat_id):
+        return False
     chunks = split_text(text)
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == len(chunks) - 1 else None
@@ -111,6 +116,13 @@ async def send_html(
                 await asyncio.sleep(min(exc.retry_after + 1, RETRY_CAP))
             except TelegramForbiddenError:
                 log.info("Пользователь %s недоступен (бот заблокирован)", chat_id)
+                if accounts.mark_dead(chat_id):
+                    from . import storage
+
+                    try:
+                        await storage.save(chat_id)
+                    except Exception:  # noqa: BLE001
+                        log.debug("Отметка о недоступности не сохранена", exc_info=True)
                 return False
             except TelegramBadRequest as exc:
                 log.warning("Ошибка разметки (%s), отправляю обычным текстом", exc)

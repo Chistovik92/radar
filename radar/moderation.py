@@ -54,6 +54,7 @@ class Settings:
     mute_minutes: int = 60
     warns_before_ban: int = 5
     newcomer_hours: int = 24            # сколько человек считается новичком
+    captcha_minutes: int = 5            # сколько ждать нажатия «Я не бот» (5.9.4)
 
 
 @dataclass

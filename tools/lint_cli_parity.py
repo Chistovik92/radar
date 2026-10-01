@@ -48,6 +48,7 @@ BOT: dict[str, str] = {
     "logclear": "cli:logs", "stats": "cli:stats", "shorts": "cli:links",
     "shortclear": "cli:links", "modon": "cli:chats", "modstatus": "cli:chats",
     "checksources": "cli:sources", "id": "cli:users",
+    "cleandeleted": "cli:chats",
     "cancel": "na:сброс ввода в диалоге", "help": "na:справка бота",
     "menu": "na:меню бота", "language": "na:выбор языка пользователем",
     "link": "na:привязка аккаунта самим человеком",

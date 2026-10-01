@@ -77,7 +77,7 @@ SECTIONS: tuple[Section, ...] = (
         Card("Новости и подборки", flags=("digest", "digest_paid", "digest_suggestions",
                                           "digest_summaries"),
              links=(("/subscriptions", "Тарифы и подписка бота"),)),
-        Card("Экстренное и модерация", flags=("sos", "moderation", "chat_post"),
+        Card("Экстренное и модерация", flags=("sos", "moderation", "captcha_kick", "deleted_cleanup", "cas_check", "chat_post"),
              links=(("/chats", "Чаты под модерацией"),)),
         Card("Данные", flags=("backup_schedule", "history"),
              links=(("/backup", "Резервные копии"),)),

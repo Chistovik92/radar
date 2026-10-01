@@ -91,6 +91,29 @@ def cmd_users(args) -> int:
             ])
             return OK
 
+        if args.action == "stale":
+            from . import accounts
+
+            rows = [{"key": key, "since": since} for key, since in accounts.stale()]
+            if args.prune and rows:
+                if not args.yes:
+                    cli._out(rows, args.json, lambda d: [
+                        print(f"{r['key']}  {r['since']}") for r in d])
+                    cli._err(L(f"Будут удалены {len(rows)} человек вместе с адресами. "
+                               "Повторите с --yes.",
+                               f"{len(rows)} people will be deleted with their addresses. "
+                               "Repeat with --yes."))
+                    return NEEDS_YES
+                for row in rows:
+                    await storage.drop_user(row["key"])
+                audit("недоступные получатели удалены", str(len(rows)))
+                print(L(f"Удалено: {len(rows)}", f"Deleted: {len(rows)}"))
+                return OK
+            cli._out(rows, args.json, lambda d: [
+                print(f"{r['key']:>14}  {r['since']}") for r in d
+            ] or print(L("недоступных получателей нет", "no unreachable recipients")))
+            return OK
+
         if not args.key:
             cli._err(L("Нужен ключ пользователя (например 123456789 или vk:5).",
                        "A user key is required (for example 123456789 or vk:5)."))
@@ -264,6 +287,7 @@ def cmd_stats(args) -> int:
             # Счётчики цикла живут в памяти бота: консоль отдельным
             # процессом видела бы нули и выдавала их за правду.
             "live": cli.in_bot(),
+            "unreachable": sum(1 for u in storage.users().values() if u.get("dead")),
         }
         if cli.in_bot():
             from . import monitor
@@ -277,6 +301,9 @@ def cmd_stats(args) -> int:
                 f"{roles.title(r, L('ru', 'en'))}: {c}"
                 for r, c in sorted(d["by_role"].items())) + ")")
             print(L(f"Локаций: {d['locations']}", f"Locations: {d['locations']}"))
+            if d["unreachable"]:
+                print(L(f"Недоступных получателей: {d['unreachable']} (users stale)",
+                        f"Unreachable recipients: {d['unreachable']} (users stale)"))
             print(L(f"Каналов: {d['channels']}, RSS: {d['rss']}, "
                     f"в очереди: {d['pending_sources']}",
                     f"Channels: {d['channels']}, RSS: {d['rss']}, "
@@ -387,7 +414,7 @@ def register(subparsers, common) -> None:
     users = subparsers.add_parser("users", help=L("пользователи", "users"),
                                   parents=[common])
     users.add_argument("action", nargs="?", default="list",
-                       choices=["list", "show", "role", "delete", "time"])
+                       choices=["list", "show", "role", "delete", "time", "stale"])
     users.add_argument("key", nargs="?", default="")
     users.add_argument("value", nargs="?", default="",
                        help=L("role: user | moderator | admin", "role: user | moderator | admin"))
@@ -396,6 +423,9 @@ def register(subparsers, common) -> None:
     users.add_argument("--tz", default="", help=L("time: часовой пояс", "time: time zone"))
     users.add_argument("--weather-time", dest="weather_time", default="",
                        help=L("time: время погоды ЧЧ:ММ", "time: weather time HH:MM"))
+    users.add_argument("--prune", action="store_true",
+                       help=L("stale: удалить недоступных (с --yes)",
+                              "stale: delete the unreachable (with --yes)"))
     users.add_argument("--yes", action="store_true")
     users.set_defaults(func=cmd_users)
 

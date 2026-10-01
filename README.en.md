@@ -1,4 +1,4 @@
-# Radar v5.9.3.1
+# Radar v5.9.4
 
 [Русская версия](README.md)
 
@@ -941,6 +941,44 @@ contract and €115 a month plus a fee per message, and since July 2025
 WhatsApp charges for every template message and requires Meta business
 verification — details in the [roadmap](docs/ROADMAP.en.md). VK setup is
 in section 16 of [docs/API_SETUP.md](docs/API_SETUP.md).
+
+### Live and dead accounts (since 5.9.4)
+
+Three separate capabilities, each behind its own flag, all off:
+
+- **Captcha timeout** (`captcha_kick`). Before, a captcha record lived
+  forever: a newcomer stayed muted until pressing "I am not a bot", and a
+  spam bot that joined and went quiet stayed in the group. Now one who has
+  not pressed it within five minutes (`captcha_minutes` in the chat
+  settings) is removed - a ban lifted at once, so they can return - and the
+  button message is deleted.
+- **Deleted-account cleanup** (`deleted_cleanup`), like
+  `@RemoveDeletedAccountsBot`. In the group an administrator types
+  `/cleandeleted`: the bot checks members and shows the coverage; found
+  deleted accounts ("Deleted Account") are removed with the "Remove N"
+  button. From the console it is `radarctl.sh chats clean -100... [--yes]`
+  (without `--yes` it only reports). **An important limit:** the Bot API
+  does not return a chat's member list, so only people the bot saw itself -
+  on joining or by a message after the flag was enabled - are checked. The
+  report says "known X / Y". The rest join the check when they write. A full
+  sweep is possible only through a user MTProto session, which the bot does
+  not do: such sessions get banned and Telegram's terms do not approve them.
+- **CAS check** (`cas_check`). The joiner's identifier is sent to the
+  external Combot Anti-Spam service (`api.cas.chat`) - **this is data
+  sharing with a third party**; only the number goes, no name or text. A
+  listed account is removed before the greeting; if the service is down, the
+  person is not blocked.
+
+**Unreachable alert recipients** are not a flag but a fix. For someone who
+blocked the bot or deleted the account, an alert used to go to the API every
+cycle with a log warning. Now such a person is marked (`users.dead_at`) and
+skipped; the mark clears when they write to the bot. To view and remove:
+
+```bash
+bash tools/radarctl.sh users stale                # who is unreachable
+bash tools/radarctl.sh users stale --prune --yes  # delete them with their addresses
+bash tools/radarctl.sh stats                      # the counter is there too
+```
 
 ## Language
 

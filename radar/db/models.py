@@ -97,6 +97,12 @@ class User(Base):
     # Подписка на новостные подборки, см. radar/digest.py
     digest: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
+    # Когда бот узнал, что человеку не доставить (заблокировал бота или
+    # удалил аккаунт), секунды Unix; 0 — доступен. Не «blocked»: то поле —
+    # решение администратора, а это — состояние на стороне человека
+    # (с 5.9.4, см. radar/accounts.py).
+    dead_at: Mapped[int] = mapped_column(BigIntType, default=0)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     blocked: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -321,6 +327,27 @@ class ModeratedChat(Base):
     # владельца, затем своя.
     invite_link: Mapped[str] = mapped_column(String(300), default="")
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class ChatMember(Base):
+    """Кого бот видел в группе (с 5.9.4).
+
+    Нужна чистке удалённых аккаунтов: Bot API не умеет перечислять
+    участников чата, так что «проверить всех» можно только из тех, кого
+    бот встретил сам — по вступлению или по сообщению. Пара — первичный
+    ключ, а не отдельный номер: строка одна на человека в чате, и номера
+    тут не нужны.
+    """
+
+    __tablename__ = "chat_members"
+
+    chat_id: Mapped[int] = mapped_column(BigIntType, primary_key=True,
+                                         autoincrement=False)
+    user_id: Mapped[int] = mapped_column(BigIntType, primary_key=True,
+                                         autoincrement=False)
+    first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
 
