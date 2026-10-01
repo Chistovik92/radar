@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 5.9.10, она же выложена на GitHub.
+Текущая версия — 5.9.10.1, она же выложена на GitHub.
 
 ## Общение
 
@@ -161,7 +161,8 @@ for f in tests/test_*.py; do python3 -m unittest "tests.$(basename "$f" .py)" ||
 
 `docs/STATUS.md` — состояние и решения · `docs/ROADMAP.md` — план по версиям
 (+ `ROADMAP.en.md`) · `docs/API_SETUP.md` — настройка сервисов · `docs/API_APPS.md` — API для приложений HydraVPN ·
-`docs/HANDOFF.md` — передача проекта
+`docs/HANDOFF.md` — передача проекта · `docs/MANUAL.md` — инструкция по боту, панели и консоли
+(+ `MANUAL.en.md`) · `docs/PLAN_CLI_PLATFORMS.md` — план консоли и платформ
 
 ## Работа из Claude Code на Windows
 

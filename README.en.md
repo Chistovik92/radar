@@ -1,4 +1,4 @@
-# Radar v5.9.10
+# Radar v5.9.10.1
 
 [Русская версия](README.md)
 
@@ -756,6 +756,8 @@ bash install.sh
 After that the panel button works on its own.
 
 ### Command line
+
+The full manual for the bot, the panel and the console is [docs/MANUAL.en.md](docs/MANUAL.en.md).
 
 Everything the panel can do also works from a console — the wrapper sits
 next to the installation:

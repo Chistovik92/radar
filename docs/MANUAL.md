@@ -1,7 +1,8 @@
 # Радар — инструкция по использованию
 
 Бот, веб-панель и командная строка — три способа управлять одной системой.
-Документ собран по коду версии 5.9.10. Подробности установки, настроек и
+Документ собран по коду версии 5.9.10.1.
+Английский вариант — [MANUAL.en.md](MANUAL.en.md). Подробности установки, настроек и
 каждой возможности — в [README.md](../README.md); здесь — порядок работы и справочник.
 
 > Система не заменяет официальные каналы оповещения.
@@ -147,31 +148,28 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 | Команда | Действия | Примечания |
 |---|---|---|
 | `sources` | `list`, `add <вид> <значение>`, `remove <вид> <значение>`, `prune` | вид: `telegram`(`tg`) / `rss` / `vk`; у `prune`: `--days N` (30), `--dead`, `--yes`, `--force`, `--pause СЕК` (0.8) |
-| `users` | `list` | |
-| `features` | `list`, `on <ключ>`, `off <ключ>` | см. предупреждение ниже |
-| `keys` | `list`, `set <имя> <значение>` | |
+| `users` | `list [--role]`, `show`, `role`, `delete`, `time`, `stale [--prune]` | суперадмина изменить нельзя; `stale` — заблокировавшие бота |
+| `features` | `list`, `on <ключ>`, `off <ключ>` | действует сразу, если бот запущен |
+| `keys` | `list`, `get`, `set`, `unset`, `pending` | значения проверяются, как в панели; секреты — маской |
 | `backup` | `list`, `create` | |
 | `db` | `size`, `vacuum`, `copy` | у `copy`: `--from sqlite\|postgres`, `--to …`, `--replace`, `--yes` |
-| `links` | `list`, `remove <код>`, `clear` | `--yes` для разрушающих |
-| `chats` | `list`, `on <id>`, `off <id>`, `forget <id>` | |
-| `files` | `list` | |
+| `links` | `list`, `add <адрес>`, `remove <код>`, `clear` | `--yes` для разрушающих |
+| `chats` | `list`, `on`, `off`, `forget`, `clean`, `invite`, `announce`, `warns` | `clean` и `announce --yes` — только из запущенного бота |
+| `files` | `list`, `remove <токен>` | `--yes` |
 | `rustdesk` | `info`, `connections`, `start`, `stop`, `restart` | `--yes` |
-| `vpn` | `check`, `selftest` | `--yes` |
-| `doctor` | — | `--quick` |
-| `version` | — | |
-| `users` | `list`, `show`, `role`, `delete`, `time`, `stale` | см. README |
-| `keys` | `list`, `get`, `set`, `unset`, `pending` | значения проверяются, как в панели |
-| `stats`, `logs`, `audit` | `stats`; `logs list\|tail\|clear`; `audit tail\|clear` | |
+| `vpn` | `check`, `selftest`; `panels`, `panel-save\|remove\|check`; `access`, `issue`, `extend`, `on`, `off`, `revoke`, `deny`; `orders`, `order-confirm\|retry\|cancel`; `app-revoke` | см. README |
 | `subs` | `list`, `codes`, `grant`, `revoke`, `code-add`, `code-drop` | подписка бота |
-| `vpn` | `panels`, `panel-save\|remove\|check`, `access`, `issue`, `extend`, `on`, `off`, `revoke`, `deny`, `orders`, `order-*`, `app-revoke` | см. README |
 | `partners` | `list`, `show`, `save`, `remove`, `export` | `save --set поле=значение` |
-| `ai` | `status`, `models`, `set-model`, `provider`, `health`, `ask`, `reset`, `bench`, `agents`, `agent-*` | часть — только у запущенного бота |
+| `ai` | `status`, `models`, `set-model`, `provider`, `health`, `ask`, `reset`, `bench`, `agents`, `agent-save\|remove\|model` | часть — только у запущенного бота |
 | `metrics`, `perf`, `net` | — | `perf --reset` |
-| `check`, `cookies`, `history`, `events` | см. README | `check URL [--no-net]` |
-| `music`, `cloud`, `links add` | `music usage\|list`; `cloud list\|check\|add\|forget` | |
-| `chats` | `list`, `on`, `off`, `forget`, `clean`, `invite`, `announce`, `warns` | `announce --yes` отправляет |
-| `restart` | — | `--yes` |
+| `check`, `cookies`, `history`, `events` | `check URL [--no-net]`, `cookies status\|set ФАЙЛ`, `history UID`, `events` | |
+| `music`, `cloud` | `music usage\|list`; `cloud list\|check\|add\|forget` | |
+| `stats`, `logs`, `audit` | `stats`; `logs list\|tail\|clear`; `audit tail\|clear` | |
+| `restart` | — | `--yes`; на хосте — `radarctl.sh restart` |
+| `doctor`, `version` | `doctor --quick` | |
 | Хост | `update`, `restore ФАЙЛ`, `wipe --yes`, `restart` | не из контейнера |
+
+Язык вывода — `--lang ru|en` или `RADAR_LANG`; иначе язык системы (`C.UTF-8` — русский).
 
 У команд есть `--json`. Разрушающие действия без `--yes` ничего не делают и
 возвращают код **2**; ошибка — код **1**; успех — **0**. Так cron отличает
@@ -215,7 +213,51 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 
 ---
 
-## 5. Установка, обновление, откат
+## 5. Группы и платформы
+
+### Telegram: группы
+
+Бот добавляется администратором (права «Удаление сообщений» и «Блокировка
+участников»), затем в группе `/modon`. Модерация (`moderation`) удаляет спам и
+чужие ссылки, ведёт лестницу «предупреждение → мут → бан», встречает новичков
+кнопкой «Я не бот». Отдельными выключенными флагами (с 5.9.4):
+
+- `captcha_kick` — не нажавший за 5 минут исключается (бан и сразу разбан);
+- `deleted_cleanup` — `/cleandeleted` у администратора группы (или
+  `radarctl.sh chats clean -100…`): проверка **известных боту** участников и
+  исключение удалённых аккаунтов. Bot API не отдаёт список участников, поэтому
+  охват в отчёте — «известно X / Y»;
+- `cas_check` — сверка вступающих с внешней базой спамеров CAS (уходит только
+  числовой идентификатор).
+
+Заблокировавшим бота тревоги больше не отправляются; список —
+`radarctl.sh users stale`.
+
+### Discord
+
+Флаг `platform_discord` и токен бота — сводки и статус; тревоги по адресам — в личные
+сообщения связанного аккаунта (`/link`). Поверх (всё выключено по умолчанию):
+
+- **Проверка участников** (`discord_verify`, с 5.9.5): кнопка «Я человек» → вопрос в
+  окне → роль «проверен»; связанный через `/link` аккаунт проходит без вопроса;
+  при вступлении — возраст аккаунта и имена с рекламой; тайм-аут. Настройка на
+  стороне сервера Discord (роль, права бота, закрытые каналы, `/verifysetup`) — в
+  README. Надёжно доказать человека нельзя — это поднимает цену автоматического входа.
+- **Музыка по ссылке** (`discord_music`, с 5.9.7): `/play` (ссылка или слова),
+  `/skip`, `/pause`, `/resume`, `/stop`, `/queue`. Нужен `requirements-voice.txt`
+  (`discord.py[voice]`, шифрование DAVE), ffmpeg и права «Подключаться» и «Говорить».
+  Spotify, Apple Music, Deezer не открываются; проигрывание с YouTube нарушает его
+  условия.
+
+### Языки
+
+Русский, английский, украинский, персидский, китайский упрощённый — `/language`
+в Telegram, `/lang ru|en|uk|fa|zh` в ВК, MAX и Discord. Переводы сделаны без
+носителей языка: правки присылайте автору.
+
+---
+
+## 6. Установка, обновление, откат
 
 Установка — один скрипт `install.sh` (Debian/Ubuntu, Docker; бот работает
 в контейнере `radar_container`). Полная процедура и таблица переходов
@@ -230,7 +272,7 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 - **Не запускайте бота на Windows**: образ собирается под ARM, установщик —
   под Debian/Ubuntu.
 
-## 6. Если что-то не так
+## 7. Если что-то не так
 
 | Симптом | Что проверить |
 |---|---|
@@ -241,7 +283,7 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 | Тревога не пришла | есть ли подтверждённый адрес; включён ли флаг; не тихие ли часы; не режим ли обслуживания |
 | Ключ в панели «пропал» | панель показывает маску; значение в `.env` на сервере |
 
-## 7. Что не обсуждается
+## 8. Что не обсуждается
 
 1. Оповещения об угрозах бесплатны всегда.
 2. Реклама не появляется в тревожных сообщениях.
