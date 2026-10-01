@@ -19,8 +19,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt requirements-voice.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Голос Discord необязателен: нет колеса для платформы — собираем без него.
+RUN pip install --no-cache-dir -r requirements-voice.txt \
+ || echo "ВНИМАНИЕ: голос Discord не установлен, музыка будет недоступна"
 
 COPY main.py alembic.ini ./
 # Диагностика лежит внутри пакета: tools/ исключён из контекста сборки

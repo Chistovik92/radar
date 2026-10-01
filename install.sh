@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.6 — автономный установщик.
+# Система «Радар» v5.9.7 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.6"
+VERSION="5.9.7"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -1521,7 +1521,7 @@ make_snapshot() {
 
     info "Сохраняю снимок текущей установки (v$PREVIOUS_VERSION)"
     local items=""
-    for entry in radar migrations main.py requirements.txt Dockerfile \
+    for entry in radar migrations main.py requirements.txt requirements-voice.txt Dockerfile \
                  docker-compose.yml alembic.ini .env; do
         [ -e "$APP_DIR/$entry" ] && items="$items $entry"
     done
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=159
+FILE_COUNT=161
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -2874,8 +2874,16 @@ yt-dlp>=2024.8.6
 # автоматически используется текстовая сводка.
 Pillow>=10.0
 RADAR_FILE_00
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements-voice.txt"
+cat > "requirements-voice.txt" <<'RADAR_FILE_01'
+# Голос в Discord (флаг discord_music, с 5.9.7). Отдельным файлом и с
+# необязательной установкой: если для платформы нет готового колеса (davey —
+# шифрование DAVE, PyNaCl), образ всё равно соберётся, а музыка сообщит,
+# что голос недоступен. PyNaCl и davey приходят вместе с extras voice.
+discord.py[voice]>=2.7,<3
+RADAR_FILE_01
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "Dockerfile"
-cat > "Dockerfile" <<'RADAR_FILE_01'
+cat > "Dockerfile" <<'RADAR_FILE_02'
 FROM python:3.11-slim
 
 ARG TZ=Europe/Saratov
@@ -2897,8 +2905,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt requirements-voice.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Голос Discord необязателен: нет колеса для платформы — собираем без него.
+RUN pip install --no-cache-dir -r requirements-voice.txt \
+ || echo "ВНИМАНИЕ: голос Discord не установлен, музыка будет недоступна"
 
 COPY main.py alembic.ini ./
 # Диагностика лежит внутри пакета: tools/ исключён из контекста сборки
@@ -2918,9 +2929,9 @@ USER radar
 HEALTHCHECK --interval=60s --timeout=10s --start-period=180s --retries=3 CMD ["python", "-m", "radar.health"]
 
 CMD ["python", "-u", "main.py"]
-RADAR_FILE_01
+RADAR_FILE_02
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "docker-compose.yml"
-cat > "docker-compose.yml" <<'RADAR_FILE_02'
+cat > "docker-compose.yml" <<'RADAR_FILE_03'
 # Сборка рассчитана на одноплатник с 1–2 ГБ памяти.
 # По умолчанию база — SQLite: файл рядом с ботом, отдельный контейнер не нужен.
 # PostgreSQL включается профилем, когда бот переезжает на машину помощнее:
@@ -3199,9 +3210,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-RADAR_FILE_02
+RADAR_FILE_03
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "alembic.ini"
-cat > "alembic.ini" <<'RADAR_FILE_03'
+cat > "alembic.ini" <<'RADAR_FILE_04'
 [alembic]
 script_location = migrations
 prepend_sys_path = .
@@ -3240,9 +3251,9 @@ formatter = generic
 [formatter_generic]
 format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
-RADAR_FILE_03
+RADAR_FILE_04
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" ".dockerignore"
-cat > ".dockerignore" <<'RADAR_FILE_04'
+cat > ".dockerignore" <<'RADAR_FILE_05'
 .git
 .github
 .env
@@ -3257,9 +3268,9 @@ __pycache__
 
 # стенд сравнения провайдеров не нужен в образе
 bench
-RADAR_FILE_04
+RADAR_FILE_05
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "main.py"
-cat > "main.py" <<'RADAR_FILE_05'
+cat > "main.py" <<'RADAR_FILE_06'
 #!/usr/bin/env python3
 """Точка входа системы «Радар»."""
 
@@ -3292,6 +3303,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.7", [
+        "🎵 <b>Discord: музыка по ссылке.</b> Команда /play играет в голосовом канале то, на что дадут ссылку (YouTube, SoundCloud, Bandcamp, файл…) или найдёт по словам; ещё /skip, /pause, /resume, /stop, /queue. Выключено по умолчанию. Spotify и Apple Music не открываются; проигрывание с YouTube нарушает его условия.",
+    ]),
     ("5.9.6", [
         "🌍 <b>Бот заговорил на пяти языках.</b> К русскому и английскому добавились украинский, персидский и китайский — как в приложении HydraVPN. Язык выбирается в меню «🌍 Язык» (в ВК, MAX и Discord — /lang uk, /lang fa, /lang zh). Переводы сделаны без носителей языка: если увидите неточность — сообщите автору.",
     ]),
@@ -5192,9 +5206,9 @@ if __name__ == "__main__":
             "и логи radar_db: docker logs --tail 40 radar_db"
         )
         raise SystemExit(1)
-RADAR_FILE_05
+RADAR_FILE_06
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__init__.py"
-cat > "radar/__init__.py" <<'RADAR_FILE_06'
+cat > "radar/__init__.py" <<'RADAR_FILE_07'
 """Система «Радар» — мониторинг городских угроз и ЖКХ-аварий по локациям пользователя.
 
 Автор: SecretHero · https://github.com/Chistovik92/radar
@@ -5207,7 +5221,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.6"
+__version__ = "5.9.7"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -5215,9 +5229,9 @@ __url__ = "https://github.com/Chistovik92/radar"
 SIGNATURE = f"Система «Радар» v{__version__} · автор {__author__} · {__url__}"
 
 __all__ = ["__version__", "__author__", "__license__", "__url__", "SIGNATURE"]
-RADAR_FILE_06
+RADAR_FILE_07
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/config.py"
-cat > "radar/config.py" <<'RADAR_FILE_07'
+cat > "radar/config.py" <<'RADAR_FILE_08'
 """Конфигурация приложения: читается из переменных окружения (.env)."""
 
 # --------------------------------------------------------------------------
@@ -5531,9 +5545,9 @@ def validate() -> None:
             "GEMINI_API_KEY не задан: ИИ-ассистент отключён, "
             "анализ новостей переключён на эвристический режим."
         )
-RADAR_FILE_07
+RADAR_FILE_08
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/textutils.py"
-cat > "radar/textutils.py" <<'RADAR_FILE_08'
+cat > "radar/textutils.py" <<'RADAR_FILE_09'
 """Чистые утилиты: разметка, нормализация адресов, геометрия, кластеризация.
 
 Модуль намеренно не импортирует внешние пакеты — его можно тестировать
@@ -5794,9 +5808,9 @@ def cluster_center(cluster: Sequence[dict[str, Any]]) -> tuple[float, float]:
         sum(p[0] for p in points) / len(points),
         sum(p[1] for p in points) / len(points),
     )
-RADAR_FILE_08
+RADAR_FILE_09
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netcache.py"
-cat > "radar/netcache.py" <<'RADAR_FILE_09'
+cat > "radar/netcache.py" <<'RADAR_FILE_10'
 """Кэш ответов внешних служб.
 
 Пункт 4 раздела 4.8: экономия обращений к сети. Замер 4.7.6.5 показал,
@@ -5920,9 +5934,9 @@ def round_point(lat: float, lon: float, digits: int = 2) -> tuple[float, float]:
         return (round(float(lat), digits), round(float(lon), digits))
     except (TypeError, ValueError):
         return (0.0, 0.0)
-RADAR_FILE_09
+RADAR_FILE_10
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/roles.py"
-cat > "radar/roles.py" <<'RADAR_FILE_10'
+cat > "radar/roles.py" <<'RADAR_FILE_11'
 """Роли и права доступа.
 
 Иерархия: superadmin (3) > admin (2) > moderator (1) > user (0).
@@ -6047,9 +6061,9 @@ def can_use_assistant(actor_role: str | None) -> bool:
     if not features.enabled("ai_assistant"):
         return False
     return is_moderator(actor_role)
-RADAR_FILE_10
+RADAR_FILE_11
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ratelimit.py"
-cat > "radar/ratelimit.py" <<'RADAR_FILE_11'
+cat > "radar/ratelimit.py" <<'RADAR_FILE_12'
 """Учёт квот Gemini: запросы в минуту, запросы в сутки, резерв под ассистента.
 
 Бесплатный тариф Gemini ограничен по RPM и RPD (для 2.5-flash — порядка
@@ -6174,9 +6188,9 @@ class RateLimiter:
             "limit_minute": self.rpm,
             "paused": self.paused,
         }
-RADAR_FILE_11
+RADAR_FILE_12
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/matching.py"
-cat > "radar/matching.py" <<'RADAR_FILE_12'
+cat > "radar/matching.py" <<'RADAR_FILE_13'
 """Модель разобранной новости, правила сопоставления с локациями и сборка сообщений.
 
 Только стандартная библиотека — модуль полностью покрывается тестами офлайн.
@@ -7019,9 +7033,9 @@ def build_recap(
     lines.append("<i>Это сводка о том, что уже завершилось. "
                  "Об опасности прямо сейчас бот сообщает отдельно.</i>")
     return "\n".join(lines).strip()
-RADAR_FILE_12
+RADAR_FILE_13
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/identity.py"
-cat > "radar/identity.py" <<'RADAR_FILE_13'
+cat > "radar/identity.py" <<'RADAR_FILE_14'
 """Идентификация пользователя независимо от мессенджера.
 
 Ключ рабочего набора в памяти — строка вида `telegram:123456` или `max:987`.
@@ -7106,9 +7120,9 @@ def key_of(platform: str, external_id: str | int) -> str:
 
 def is_telegram(key: str | int) -> bool:
     return parse(key).platform == TELEGRAM
-RADAR_FILE_13
+RADAR_FILE_14
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/features.py"
-cat > "radar/features.py" <<'RADAR_FILE_14'
+cat > "radar/features.py" <<'RADAR_FILE_15'
 """Переключатели возможностей.
 
 Каждая заметная функция объявлена флагом. Значение по умолчанию задаётся здесь,
@@ -7391,6 +7405,17 @@ FLAGS: tuple[Flag, ...] = (
          "автоматического входа. Нужна платформа Discord. По умолчанию "
          "выключено: ошибка в правах выгоняет живых людей.",
          group="Платформы", since="5.9.5", default=False),
+    Flag("discord_music", "Discord: музыка по ссылке",
+         "Команда /play играет в голосовом канале то, на что дадут ссылку "
+         "(YouTube, SoundCloud, Bandcamp, файл…) или найдёт по словам; ещё "
+         "/skip, /pause, /resume, /stop, /queue. Нужен пакет discord.py[voice] "
+         "(requirements-voice.txt, шифрование DAVE обязательно у Discord с "
+         "2026-03-02), ffmpeg и права бота «Подключаться» и «Говорить». "
+         "Проигрывание с YouTube и подобных сервисов нарушает их условия, "
+         "такие боты блокируют — ответственность за ссылки на том, кто "
+         "включает. Spotify, Apple Music и Deezer не открываются. На "
+         "одноплатнике потянет один-два канала. По умолчанию выключено.",
+         group="Платформы", since="5.9.7", default=False),
     Flag("partners", "Партнёрские проекты", "Раздел меню со списком проектов автора.",
          group="Партнёры", since="4.4", default=False,
          aliases=("promo",)),
@@ -7489,9 +7514,9 @@ def by_group() -> dict[str, list[Flag]]:
     for flag in FLAGS:
         grouped[flag.group].append(flag)
     return grouped
-RADAR_FILE_14
+RADAR_FILE_15
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/logs.py"
-cat > "radar/logs.py" <<'RADAR_FILE_15'
+cat > "radar/logs.py" <<'RADAR_FILE_16'
 """Журналы системы: перечисление, выгрузка и очистка.
 
 Все журналы лежат в одном каталоге внутри `data/`, потому что это
@@ -7718,9 +7743,9 @@ def ensure_directory() -> None:
         os.makedirs(config.LOG_DIR, exist_ok=True)
     except OSError as exc:
         log.warning("Каталог журналов недоступен: %s", exc)
-RADAR_FILE_15
+RADAR_FILE_16
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/presets.py"
-cat > "radar/presets.py" <<'RADAR_FILE_16'
+cat > "radar/presets.py" <<'RADAR_FILE_17'
 """Наборы источников по городам.
 
 Списки — стартовые, не исчерпывающие: каналы переименовываются, закрываются
@@ -8044,9 +8069,9 @@ def thematic_sources(topics: set[str]) -> tuple[list[str], list[str], list[str]]
         list(dict.fromkeys(feeds)),
         list(dict.fromkeys(groups)),
     )
-RADAR_FILE_16
+RADAR_FILE_17
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourcecheck.py"
-cat > "radar/sourcecheck.py" <<'RADAR_FILE_17'
+cat > "radar/sourcecheck.py" <<'RADAR_FILE_18'
 """Проверка доступности источников: Telegram-каналы, RSS-ленты, сообщества VK.
 
 Списки источников устаревают молча: канал переименовали, издание закрылось,
@@ -8504,9 +8529,9 @@ async def run_scheduled(now: datetime) -> str:
     lines.append("<i>Убрать недоступные: Управление → Источники → "
                  "«Проверить доступность».</i>")
     return "\n".join(lines)
-RADAR_FILE_17
+RADAR_FILE_18
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sos.py"
-cat > "radar/sos.py" <<'RADAR_FILE_18'
+cat > "radar/sos.py" <<'RADAR_FILE_19'
 """Экстренная кнопка: отправка геопозиции доверенному контакту.
 
 Устройство и ограничение платформы
@@ -8778,9 +8803,9 @@ def due_alerts(now: float | None = None) -> list[ActiveAlert]:
 
 def active_count() -> int:
     return len(_active)
-RADAR_FILE_18
+RADAR_FILE_19
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/media.py"
-cat > "radar/media.py" <<'RADAR_FILE_19'
+cat > "radar/media.py" <<'RADAR_FILE_20'
 """Загрузка видео по ссылке: разбор форматов, прогресс, ограничения.
 
 Модуль отделён от сети и от Telegram: здесь только чистая логика — выбор
@@ -9450,9 +9475,9 @@ def choose_default(formats: Iterable[Format], limit_mb: int) -> Format | None:
         return max(known, key=lambda value: (value.height, not value.risky_codec))
     ordered = sorted(items, key=lambda value: value.height)
     return ordered[0] if ordered else None
-RADAR_FILE_19
+RADAR_FILE_20
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/transcode.py"
-cat > "radar/transcode.py" <<'RADAR_FILE_20'
+cat > "radar/transcode.py" <<'RADAR_FILE_21'
 """Сжатие ролика под предел отправки.
 
 Последнее средство из раздела 4.7.9 дорожной карты, и относиться к нему
@@ -9786,9 +9811,9 @@ def too_long_message(duration_s: int, target_mb: float) -> str:
         f"Скачайте часть ролика или поднимите собственный Bot API Server: "
         f"с ним предел станет 2 ГБ."
     )
-RADAR_FILE_20
+RADAR_FILE_21
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/images.py"
-cat > "radar/images.py" <<'RADAR_FILE_21'
+cat > "radar/images.py" <<'RADAR_FILE_22'
 """Скачивание картинок по ссылке.
 
 Отдельно от видео намеренно: механика другая. Видео проходит через
@@ -10315,9 +10340,9 @@ async def collect(url: str, limit_mb: int) -> list[tuple[bytes, str]]:
         if not links:
             return []
         return await download_all(session, links, limit_mb)
-RADAR_FILE_21
+RADAR_FILE_22
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/secrets.py"
-cat > "radar/secrets.py" <<'RADAR_FILE_22'
+cat > "radar/secrets.py" <<'RADAR_FILE_23'
 """Секреты, которые задаются из бота: ключи ИИ, доступы к площадкам, Bot API.
 
 Значения пишутся в `.env` рядом с ботом — тот же файл, что читает установщик.
@@ -10493,6 +10518,23 @@ SETTINGS: tuple[Setting, ...] = (
             "Вступившего с более молодым аккаунтом исключают сразу. 0 — не "
             "проверять (по умолчанию). Нужно намерение Server Members.",
             "Discord", secret=False, kind="int", low=0, high=365, default="0"),
+    Setting("DISCORD_DJ_ROLE_ID", "Discord: роль DJ",
+            "Числовой id роли, которой разрешено управлять музыкой. Пусто — "
+            "всем; управляющим сервером можно всегда.",
+            "Discord", secret=False, kind="int", low=1),
+    Setting("DISCORD_MUSIC_MAX_MINUTES", "Discord: длина трека, минут",
+            "Длиннее не ставится в очередь. По умолчанию 180.",
+            "Discord", restart=True, secret=False, kind="int", low=1, high=1440,
+            default="180"),
+    Setting("DISCORD_MUSIC_QUEUE", "Discord: длина очереди",
+            "Сколько треков держит очередь сервера. По умолчанию 50.",
+            "Discord", restart=True, secret=False, kind="int", low=1, high=200,
+            default="50"),
+    Setting("DISCORD_MUSIC_GUILDS", "Discord: серверов с музыкой разом",
+            "Сколько голосовых каналов бот держит одновременно. Каждый — "
+            "ffmpeg и сеть; на одноплатнике — один-два. По умолчанию 2.",
+            "Discord", restart=True, secret=False, kind="int", low=1, high=10,
+            default="2"),
     Setting("DISCORD_LOG_CHANNEL_ID", "Discord: канал журнала проверки",
             "Числовой id канала, куда бот пишет, кого исключил и почему. "
             "Пусто — только в журнал бота.",
@@ -10928,9 +10970,9 @@ def writable() -> bool:
     if os.path.exists(ENV_PATH):
         return os.access(ENV_PATH, os.W_OK)
     return os.access(target, os.W_OK)
-RADAR_FILE_22
+RADAR_FILE_23
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/aibench.py"
-cat > "radar/aibench.py" <<'RADAR_FILE_23'
+cat > "radar/aibench.py" <<'RADAR_FILE_24'
 """Сравнение провайдеров ИИ прямо из бота.
 
 Раньше это был отдельный стенд в `bench/`, который на сервере никто
@@ -11357,9 +11399,9 @@ def render(report: Report) -> str:
         lines.append("Ни один провайдер не ответил. Проверьте ключи и доступ в сеть.")
 
     return "\n".join(lines)
-RADAR_FILE_23
+RADAR_FILE_24
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/proxy.py"
-cat > "radar/proxy.py" <<'RADAR_FILE_24'
+cat > "radar/proxy.py" <<'RADAR_FILE_25'
 """Выход бота в интернет через внешний узел: подписки, ключи, выбор сервера.
 
 Как это устроено
@@ -11745,9 +11787,9 @@ def describe(state: ProxyState) -> str:
             "и протокол вручную.</i>"
         )
     return "\n".join(lines)
-RADAR_FILE_24
+RADAR_FILE_25
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/provider.py"
-cat > "radar/provider.py" <<'RADAR_FILE_25'
+cat > "radar/provider.py" <<'RADAR_FILE_26'
 """Выбор провайдера ИИ на лету и модели у него.
 
 Зачем
@@ -12251,9 +12293,9 @@ def render(results: dict[str, Health]) -> str:
         lines.append("⚠️ <i>Остаток на исходе — разбор скоро переключится "
                      "на эвристику по ключевым словам.</i>")
     return "\n".join(lines).strip()
-RADAR_FILE_25
+RADAR_FILE_26
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/digest.py"
-cat > "radar/digest.py" <<'RADAR_FILE_26'
+cat > "radar/digest.py" <<'RADAR_FILE_27'
 """Новостные подборки: тематики, подписки, сборка сообщения.
 
 Отличие от оповещений принципиальное. Оповещение означает «происходит
@@ -12779,9 +12821,9 @@ def describe(subscription: Subscription, lang: str = "ru") -> str:
         "всегда и от подписки не зависят.",
     ) + "</i>")
     return "\n".join(lines)
-RADAR_FILE_26
+RADAR_FILE_27
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/quiet.py"
-cat > "radar/quiet.py" <<'RADAR_FILE_27'
+cat > "radar/quiet.py" <<'RADAR_FILE_28'
 """Тихие часы и антиспам оповещений.
 
 Две разные задачи с общей целью — чтобы сигналы бота оставались значимыми.
@@ -13116,9 +13158,9 @@ def restore(rows: Any, now: float | None = None) -> int:
         _trim(user_key)
     _dirty = False
     return len(_held)
-RADAR_FILE_27
+RADAR_FILE_28
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/profiling.py"
-cat > "radar/profiling.py" <<'RADAR_FILE_28'
+cat > "radar/profiling.py" <<'RADAR_FILE_29'
 """Замер стадий цикла мониторинга и ресурсов контейнера.
 
 Оптимизировать наугад — тратить время не там. Модуль отвечает на один
@@ -13247,9 +13289,9 @@ def load_average() -> tuple[float, float, float]:
 
 def cpu_count() -> int:
     return os.cpu_count() or 1
-RADAR_FILE_28
+RADAR_FILE_29
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/astro.py"
-cat > "radar/astro.py" <<'RADAR_FILE_29'
+cat > "radar/astro.py" <<'RADAR_FILE_30'
 """Фаза луны и роза ветров.
 
 Расчёты вынесены отдельно: они чистые, не зависят ни от сети, ни от
@@ -13401,9 +13443,9 @@ def beaufort(speed: float | None, lang: str = "ru") -> str:
         if speed < limit:
             return i18n.t(key, lang, russian)
     return i18n.t(FORCE_TOP[1], lang, FORCE_TOP[0])
-RADAR_FILE_29
+RADAR_FILE_30
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/restartnotice.py"
-cat > "radar/restartnotice.py" <<'RADAR_FILE_30'
+cat > "radar/restartnotice.py" <<'RADAR_FILE_31'
 """Ответ тем, кто писал боту, пока он был выключен.
 
 Зачем это нужно. При обновлении контейнер останавливается на несколько
@@ -13520,9 +13562,9 @@ async def notify(bot: Any, users: dict[str, Any], sender: Any,
     if sent:
         log.info("Уведомлено о технических работах: %d", sent)
     return sent
-RADAR_FILE_30
+RADAR_FILE_31
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/shortener.py"
-cat > "radar/shortener.py" <<'RADAR_FILE_31'
+cat > "radar/shortener.py" <<'RADAR_FILE_32'
 """Сокращение ссылок.
 
 Служебный сервис, не публичный. Сокращаются два вида ссылок:
@@ -13625,9 +13667,9 @@ _CODE_RE = re.compile(r"^[" + ALPHABET + r"]{1,16}$")
 
 def valid_code(code: str) -> bool:
     return bool(_CODE_RE.match(code or ""))
-RADAR_FILE_31
+RADAR_FILE_32
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/partners.py"
-cat > "radar/partners.py" <<'RADAR_FILE_32'
+cat > "radar/partners.py" <<'RADAR_FILE_33'
 """Партнёрские проекты.
 
 Раздел со списком проектов автора вместо одной кнопки. Проекты хранятся
@@ -13983,9 +14025,9 @@ async def remember_click(slug: str) -> None:
             except Exception:  # noqa: BLE001
                 log.debug("Счётчик переходов не сохранился")
             return
-RADAR_FILE_32
+RADAR_FILE_33
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/promo.py"
-cat > "radar/promo.py" <<'RADAR_FILE_33'
+cat > "radar/promo.py" <<'RADAR_FILE_34'
 """Промокоды партнёрских проектов.
 
 Правило одно и жёсткое: **один код на человека на проект**. Повторное
@@ -14113,9 +14155,9 @@ def render_csv(rows: list[dict[str, str]]) -> str:
     lines = ["code,issued"]
     lines.extend(f"{row['code']},{row['issued']}" for row in rows)
     return "\n".join(lines) + "\n"
-RADAR_FILE_33
+RADAR_FILE_34
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n.py"
-cat > "radar/i18n.py" <<'RADAR_FILE_34'
+cat > "radar/i18n.py" <<'RADAR_FILE_35'
 """Язык интерфейса бота.
 
 Русский по умолчанию, английский по выбору. Выбор хранится у пользователя
@@ -15095,9 +15137,9 @@ async def translate(text: str, lang: str) -> str:
 def forget_translations() -> None:
     """Сбросить кэш — после правки описаний и в тестах."""
     _CACHE.clear()
-RADAR_FILE_34
+RADAR_FILE_35
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n_fa.py"
-cat > "radar/i18n_fa.py" <<'RADAR_FILE_35'
+cat > "radar/i18n_fa.py" <<'RADAR_FILE_36'
 """رابط ربات به فارسی (از نسخهٔ 5.9.6).
 
 کلیدها همان کلیدهای `i18n.EN_STRINGS` هستند؛ آزمون کامل بودن و برابری
@@ -15901,9 +15943,9 @@ STRINGS: dict[str, str] = {
     "settings.tz.prompt": "اختلاف‌ها از UTC محاسبه می‌شوند. ساعت‌های آرام، زمان آب‌وهوا "
                           "و ارسال خلاصه‌ها طبق منطقه‌ای که اینجا انتخاب می‌کنید است.",
 }
-RADAR_FILE_35
+RADAR_FILE_36
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n_uk.py"
-cat > "radar/i18n_uk.py" <<'RADAR_FILE_36'
+cat > "radar/i18n_uk.py" <<'RADAR_FILE_37'
 """Інтерфейс бота українською (з 5.9.6).
 
 Ключі — ті самі, що в `i18n.EN_STRINGS`; тест перевіряє повноту і те, що
@@ -16711,9 +16753,9 @@ STRINGS: dict[str, str] = {
     "settings.tz.prompt": "Відлік іде від UTC. За обраним поясом рахуються тихі години, "
                           "час погоди та доставка добірок.",
 }
-RADAR_FILE_36
+RADAR_FILE_37
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/i18n_zh.py"
-cat > "radar/i18n_zh.py" <<'RADAR_FILE_37'
+cat > "radar/i18n_zh.py" <<'RADAR_FILE_38'
 """机器人界面简体中文（自 5.9.6 起）。
 
 键与 `i18n.EN_STRINGS` 相同；测试会检查是否完整，以及 `{…}` 占位符和
@@ -17501,9 +17543,9 @@ STRINGS: dict[str, str] = {
     "settings.tz.prompt": "偏移量以 UTC 为准。免打扰时段、天气时间和摘要发送"
                           "都按您在此选择的时区计算。",
 }
-RADAR_FILE_37
+RADAR_FILE_38
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mediaquota.py"
-cat > "radar/mediaquota.py" <<'RADAR_FILE_38'
+cat > "radar/mediaquota.py" <<'RADAR_FILE_39'
 """Квоты загрузки видео.
 
 Загрузка открыта всем, но не безгранично: двадцать роликов в сутки
@@ -17664,9 +17706,9 @@ def describe(quota: Quota, lang: str = "ru") -> str:
         "media.quota.left", lang,
         f"Осталось сегодня: {left} из {FREE_PER_DAY}",
     )
-RADAR_FILE_38
+RADAR_FILE_39
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/subscription.py"
-cat > "radar/subscription.py" <<'RADAR_FILE_39'
+cat > "radar/subscription.py" <<'RADAR_FILE_40'
 """Единая подписка.
 
 Подписок в системе две — на новостные подборки и на загрузку видео без
@@ -17859,9 +17901,9 @@ def describe(user: dict[str, Any] | None, role: str | None = None) -> str:
     if trial_used(user):
         return "Подписка не оформлена, пробный период уже был."
     return f"Подписка не оформлена. Есть пробный период — {TRIAL_DAYS} дней."
-RADAR_FILE_39
+RADAR_FILE_40
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/backup.py"
-cat > "radar/backup.py" <<'RADAR_FILE_40'
+cat > "radar/backup.py" <<'RADAR_FILE_41'
 """Резервные копии проекта: база, настройки, данные.
 
 Один модуль на два контура — бот и веб-панель делают одно и то же, поэтому
@@ -18172,9 +18214,9 @@ async def run_scheduled(now: datetime) -> str:
     removed = rotate()
     log.info("Копия по расписанию: %s, удалено старых: %d", path.name, len(removed))
     return path.name
-RADAR_FILE_40
+RADAR_FILE_41
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dbcare.py"
-cat > "radar/dbcare.py" <<'RADAR_FILE_41'
+cat > "radar/dbcare.py" <<'RADAR_FILE_42'
 """Компактность базы: чистка истории, сжатие файла, контроль размера.
 
 Пункт 5 раздела 4.8. Три отдельные задачи, и каждая нужна по своей
@@ -18393,9 +18435,9 @@ async def run_scheduled(now: datetime) -> str:
         log.warning("Отметка об обслуживании базы не сохранилась")
 
     return "; ".join(parts)
-RADAR_FILE_41
+RADAR_FILE_42
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather_image.py"
-cat > "radar/weather_image.py" <<'RADAR_FILE_42'
+cat > "radar/weather_image.py" <<'RADAR_FILE_43'
 """Погода картинкой.
 
 Рисуется через Pillow, если он доступен. Библиотека объявлена необязательной
@@ -18997,9 +19039,9 @@ def _strip_tags(text: str) -> str:
         elif not inside:
             result.append(char)
     return "".join(result).strip()
-RADAR_FILE_42
+RADAR_FILE_43
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/__init__.py"
-cat > "radar/web/__init__.py" <<'RADAR_FILE_43'
+cat > "radar/web/__init__.py" <<'RADAR_FILE_44'
 """Веб-панель администратора: отдельный процесс, независимый от бота."""
 
 # --------------------------------------------------------------------------
@@ -19014,9 +19056,9 @@ from . import audit, auth
 from .panel import create_app, run, shutdown
 
 __all__ = ["audit", "auth", "create_app", "run", "shutdown"]
-RADAR_FILE_43
+RADAR_FILE_44
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/auth.py"
-cat > "radar/web/auth.py" <<'RADAR_FILE_44'
+cat > "radar/web/auth.py" <<'RADAR_FILE_45'
 """Аутентификация веб-панели через Telegram Login Widget.
 
 Пароли не заводим намеренно: у каждого пользователя уже есть подтверждённая
@@ -19357,9 +19399,9 @@ def csrf_valid(session: Session | None, value: str) -> bool:
     if not expected or not value:
         return False
     return hmac.compare_digest(expected, str(value))
-RADAR_FILE_44
+RADAR_FILE_45
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/audit.py"
-cat > "radar/web/audit.py" <<'RADAR_FILE_45'
+cat > "radar/web/audit.py" <<'RADAR_FILE_46'
 """Журнал действий в панели: кто, когда и что менял.
 
 Хранится в памяти процесса и в файле рядом с журналами бота. В базу
@@ -19426,9 +19468,9 @@ def clear() -> int:
     count = len(_records)
     _records.clear()
     return count
-RADAR_FILE_45
+RADAR_FILE_46
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/panel.py"
-cat > "radar/web/panel.py" <<'RADAR_FILE_46'
+cat > "radar/web/panel.py" <<'RADAR_FILE_47'
 """Веб-панель администратора: отдельный процесс поверх aiohttp.
 
 Панель запускается своей задачей и падает независимо от бота: исключение
@@ -23355,9 +23397,9 @@ async def run() -> None:
             )
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
-RADAR_FILE_46
+RADAR_FILE_47
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/appapi.py"
-cat > "radar/web/appapi.py" <<'RADAR_FILE_47'
+cat > "radar/web/appapi.py" <<'RADAR_FILE_48'
 """HTTP-маршруты API для приложений (5.9.1). Логика — в `radar/appapi.py`.
 
 Все ответы — JSON, ошибки — `{"error": "текст"}`. Работает в той же
@@ -23485,9 +23527,9 @@ def routes(web: Any) -> list[Any]:
         web.get("/api/v1/app/subscriptions", subscriptions),
         web.delete("/api/v1/app/session", logout),
     ]
-RADAR_FILE_47
+RADAR_FILE_48
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/adminpages.py"
-cat > "radar/web/adminpages.py" <<'RADAR_FILE_48'
+cat > "radar/web/adminpages.py" <<'RADAR_FILE_49'
 """Страницы веб-панели: VPN-панели, доступы и заказы, подписка бота (5.9.2.1).
 
 Вынесено из panel.py, где уже три с половиной тысячи строк. Здесь только
@@ -24008,9 +24050,9 @@ async def subscriptions_act(form: Any) -> tuple[str, str]:
         await storage.save(uid)
         return ("Срок снят.", "") if had else ("", "Оплаченного срока не было.")
     return "", "Неизвестное действие."
-RADAR_FILE_48
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/settingspages.py"
-cat > "radar/web/settingspages.py" <<'RADAR_FILE_49'
+cat > "radar/web/settingspages.py" <<'RADAR_FILE_50'
 """Раздел «Настройки» веб-панели: всё, что раньше жило в «Ключах» и «Возможностях» (5.9.2.2).
 
 Человек думает темами — «Discord», «медиа», «журнал», — а не списком
@@ -24063,7 +24105,8 @@ SECTIONS: tuple[Section, ...] = (
                   "для загрузки файлов."),
         Card("ВКонтакте", flags=("platform_vk",), groups=("ВКонтакте",),
              note="Бот сообщества и токен для чтения источников."),
-        Card("Discord", flags=("platform_discord", "discord_verify"), groups=("Discord",)),
+        Card("Discord", flags=("platform_discord", "discord_verify", "discord_music"),
+             groups=("Discord",)),
         Card("MAX", flags=("platform_max",), groups=("MAX",)),
         Card("Одноклассники", groups=("Одноклассники",),
              note="Ключи для чтения источников из Одноклассников."),
@@ -24284,9 +24327,9 @@ def overview_body(token: str, message: str = "", failed: str = "",
                  f"<table>{rows}</table>"
                  '<p class="muted">Эти значения задаёт установщик при установке и переезде.</p></details>')
     return "".join(parts)
-RADAR_FILE_49
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_50'
+cat > "radar/web/backup.py" <<'RADAR_FILE_51'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -24333,9 +24376,9 @@ def body(csrf: str = "") -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_50
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_51'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_52'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -24368,9 +24411,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_51
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_52'
+cat > "radar/db/models.py" <<'RADAR_FILE_53'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -24745,9 +24788,9 @@ class ChatWarning(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-RADAR_FILE_52
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_53'
+cat > "radar/db/engine.py" <<'RADAR_FILE_54'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -25261,9 +25304,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_53
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_54'
+cat > "radar/db/repo.py" <<'RADAR_FILE_55'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -26161,9 +26204,9 @@ async def warn_reset(chat_id: int, user_id: int) -> None:
         )).first()
         if row is not None:
             row.count = 0
-RADAR_FILE_54
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_55'
+cat > "radar/db/importer.py" <<'RADAR_FILE_56'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -26312,9 +26355,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_55
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/transfer.py"
-cat > "radar/db/transfer.py" <<'RADAR_FILE_56'
+cat > "radar/db/transfer.py" <<'RADAR_FILE_57'
 """Перенос данных между SQLite и PostgreSQL (с 5.9).
 
 До 5.9 смена базы в установщике давала пустую новую базу: старая
@@ -26507,9 +26550,9 @@ async def _reset_sequences(connection: Any) -> None:
                 f"SELECT setval(:sequence, GREATEST(COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 1), 1), COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 0) >= 1)"), {"sequence": sequence})
-RADAR_FILE_56
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_57'
+cat > "radar/doctor.py" <<'RADAR_FILE_58'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -27041,9 +27084,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_57
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_58'
+cat > "migrations/env.py" <<'RADAR_FILE_59'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -27103,9 +27146,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_58
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_59'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_60'
 """${message}
 
 Revision ID: ${up_revision}
@@ -27130,9 +27173,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_59
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_60'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_61'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -27299,9 +27342,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_60
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_61'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_62'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -27341,9 +27384,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_61
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_62'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_63'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -27391,9 +27434,9 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_62
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
-cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_63'
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_64'
 """Язык интерфейса и квоты загрузки видео.
 
 Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
@@ -27438,9 +27481,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("media_quota")
     op.drop_column("users", "lang")
-RADAR_FILE_63
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_64'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_65'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -27466,9 +27509,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_64
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_65'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_66'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -27593,9 +27636,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_65
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_66'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_67'
 """Адаптер мессенджера MAX.
 
 ⚠️ НАПИСАН ПО ДОКУМЕНТАЦИИ, НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН.
@@ -28036,9 +28079,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_66
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/maxbot.py"
-cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_67'
+cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_68'
 """Ответчик MAX (4.9.9.4; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН — как и весь адаптер MAX.
@@ -28157,9 +28200,9 @@ def enabled() -> bool:
     from .. import features
 
     return features.enabled("platform_max") and bool(config.MAX_BOT_TOKEN)
-RADAR_FILE_67
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discord.py"
-cat > "radar/platforms/discord.py" <<'RADAR_FILE_68'
+cat > "radar/platforms/discord.py" <<'RADAR_FILE_69'
 """Адаптер Discord (с 5.5): канал сообщества, а не оповещения по адресам.
 
 ⚠️ НАПИСАН ПО ИСХОДНИКАМ discord.py, С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -28518,6 +28561,29 @@ class DiscordTransport:
             await self.request("POST", f"/channels/{event.chat_id}/messages", body)
         return result is not None
 
+    async def edit_original(self, event: InboundEvent, message: OutboundMessage) -> bool:
+        """Правит ответ на взаимодействие — когда на «ищу…» ушло больше
+        трёх секунд и итог известен позже."""
+        raw = event.raw or {}
+        bodies = payloads(message)
+        if not self.application_id or not bodies:
+            return False
+        body = {key: value for key, value in bodies[0].items()
+                if key in ("content", "components", "allowed_mentions")}
+        result = await self.request(
+            "PATCH",
+            f"/webhooks/{self.application_id}/{raw.get('token')}/messages/@original", body)
+        return result is not None
+
+    async def voice_channel_of(self, guild_id: str, user_id: str) -> str:
+        """В каком голосовом канале сидит человек. Пусто — ни в каком.
+
+        Через REST, а не по кэшу: так не нужны ни намерение участников,
+        ни хранение голосовых состояний всех серверов.
+        """
+        state = await self.request("GET", f"/guilds/{guild_id}/voice-states/{user_id}")
+        return str((state or {}).get("channel_id") or "")
+
     async def respond_modal(self, event: InboundEvent, custom_id: str, title: str,
                             label: str, *, placeholder: str = "",
                             max_length: int = 40) -> bool:
@@ -28707,9 +28773,9 @@ class DiscordTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discordbot.py"
-cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_69'
+cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_70'
 """Discord как канал сообщества: сводки и статус системы (с 5.5).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -28789,6 +28855,18 @@ COMMANDS = (
     ("verifysetup", "Поставить кнопку проверки участников в этот канал"),
 )
 RESTRICTED = ("verifysetup",)
+
+# Музыка в голосовом канале (5.9.7).
+MUSIC_COMMANDS = (
+    ("play", "Играть музыку по ссылке или названию",
+     [("query", "Ссылка (YouTube, SoundCloud, файл…) или слова для поиска", True)]),
+    ("skip", "Пропустить трек"),
+    ("pause", "Пауза"),
+    ("resume", "Продолжить"),
+    ("stop", "Остановить и выйти из канала"),
+    ("queue", "Что в очереди"),
+)
+MUSIC_NAMES = tuple(item[0] for item in MUSIC_COMMANDS)
 
 # Команды общего аккаунта: личное, поэтому ответ видит только автор.
 PERSONAL = ("address", "addresses", "remove", "link", "unlink")
@@ -28887,6 +28965,9 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     """
     from .maxbot import telegram_username
 
+    if event.kind is EventKind.COMMAND and event.command in MUSIC_NAMES:
+        await music_command(event, transport)
+        return
     if (event.kind is EventKind.COMMAND and event.command == "verifysetup") or (
             event.kind is EventKind.CALLBACK and event.payload.startswith("dv:")):
         await verification(event, transport)
@@ -29092,14 +29173,116 @@ async def verify_sweeper(transport: Any) -> None:
             log.warning("Discord: сбой сторожа проверки", exc_info=True)
 
 
+# --------------------------------------------------------------------------
+#  Музыка (5.9.7)
+# --------------------------------------------------------------------------
+
+MUSIC: Any = None        # discordmusic.Manager, пока возможность включена
+
+
+def music_enabled() -> bool:
+    from .. import features
+
+    return features.enabled("discord_music")
+
+
+def _dj_allowed(raw: dict[str, Any]) -> bool:
+    """Ограничение по роли DJ. Не задана — музыкой управляют все."""
+    role = _setting("DISCORD_DJ_ROLE_ID")
+    if not role:
+        return True
+    roles_now = [str(item) for item in (raw.get("member") or {}).get("roles") or []]
+    return role in roles_now or _can_manage(raw)
+
+
+async def music_command(event: InboundEvent, transport: Any) -> None:
+    raw = event.raw or {}
+    guild = str(raw.get("guild_id") or "")
+    user = event.identity.external_id
+
+    async def say(text: str, *, ephemeral: bool = True) -> None:
+        await transport.respond(event, OutboundMessage(text=esc(text)), ephemeral=ephemeral)
+
+    if not guild:
+        await say("Музыка работает только на сервере.")
+        return
+    if MUSIC is None:
+        await say("Музыка выключена.")
+        return
+    if not _dj_allowed(raw):
+        await say("Музыкой управляют участники с ролью DJ.")
+        return
+
+    command = event.command
+    if command == "queue":
+        await say(MUSIC.queue_text(guild), ephemeral=False)
+    elif command in ("skip", "pause", "resume", "stop"):
+        outcome = await getattr(MUSIC, command)(guild)
+        await say(outcome.text, ephemeral=not outcome.ok)
+    else:
+        channel = await transport.voice_channel_of(guild, user)
+        if not channel:
+            await say("Зайдите в голосовой канал и повторите команду.")
+            return
+        # Ответ — сразу, у Discord три секунды; поиск может идти дольше.
+        await transport.respond(event, OutboundMessage(text="🔎 Ищу…"))
+        outcome = await MUSIC.add(guild, channel, user, event.args)
+        await transport.edit_original(event, OutboundMessage(text=esc(outcome.text)))
+
+
+def _build_music() -> tuple[Any, Any] | None:
+    """Очередь и голос, если возможность включена и `discord.py` стоит."""
+    from .. import config, discordmusic, features, netguard, secrets
+
+    if not features.enabled("discord_music"):
+        return None
+    try:
+        import discord  # noqa: F401
+    except ImportError:
+        log.warning("Discord: музыка включена, но discord.py не установлен "
+                    "(pip install -r requirements-voice.txt) — голос недоступен")
+        return None
+    host = discordmusic.DiscordPyHost(_setting("DISCORD_BOT_TOKEN"))
+    manager = discordmusic.Manager(
+        host, guard=netguard.allowed, proxy=config.EGRESS_PROXY,
+        cookies=lambda: (secrets.get("MEDIA_COOKIES") or config.MEDIA_COOKIES).strip(),
+        max_queue=_number("DISCORD_MUSIC_QUEUE", discordmusic.MAX_QUEUE) or discordmusic.MAX_QUEUE,
+        max_minutes=_number("DISCORD_MUSIC_MAX_MINUTES", discordmusic.MAX_MINUTES)
+        or discordmusic.MAX_MINUTES,
+        max_guilds=_number("DISCORD_MUSIC_GUILDS", discordmusic.MAX_GUILDS)
+        or discordmusic.MAX_GUILDS)
+    return host, manager
+
+
+async def music_sweeper(manager: Any) -> None:
+    from .. import discordmusic
+
+    while True:
+        await asyncio.sleep(discordmusic.SWEEP_EVERY)
+        try:
+            await manager.sweep()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.warning("Discord: сбой сторожа музыки", exc_info=True)
+
+
 async def run(transport: Any) -> None:
     """Всё, что делает Discord: команды, Gateway и публикации в канал."""
+    global MUSIC
     from .. import mirror
 
     # Тревоги общего аккаунта — в личные сообщения (5.7).
     mirror.register("discord", transport.send_text)
+    extra: list[Any] = []
+    music = _build_music()
+    commands = COMMANDS
+    if music is not None:
+        host, MUSIC = music
+        commands = COMMANDS + MUSIC_COMMANDS
+        extra += [host.start(), music_sweeper(MUSIC)]
     try:
-        await transport.set_commands(COMMANDS, restricted=RESTRICTED)
+        await transport.set_commands(commands, restricted=RESTRICTED)
     except Exception:  # noqa: BLE001
         log.warning("Discord: слеш-команды не заданы", exc_info=True)
 
@@ -29108,7 +29291,7 @@ async def run(transport: Any) -> None:
 
     transport.member_handler = member_added
     await asyncio.gather(transport.start(), community(transport),
-                         verify_sweeper(transport))
+                         verify_sweeper(transport), *extra)
 
 
 def due(now: datetime, when: str, last_date: str) -> bool:
@@ -29155,9 +29338,9 @@ async def community(transport: Any) -> None:
         except Exception:  # noqa: BLE001
             log.warning("Discord: публикация в канал не удалась", exc_info=True)
         await asyncio.sleep(CHECK_EVERY)
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vk.py"
-cat > "radar/platforms/vk.py" <<'RADAR_FILE_70'
+cat > "radar/platforms/vk.py" <<'RADAR_FILE_71'
 """Адаптер ВКонтакте как мессенджера (с 5.6, раздел 7.0 дорожной карты).
 
 ⚠️ СВЕРЕН С ИСХОДНИКАМИ vkbottle, С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -29419,9 +29602,9 @@ class VkTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vkbot.py"
-cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_71'
+cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_72'
 """Ответчик ВКонтакте (5.6; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -29481,9 +29664,9 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     text = await answer(event)
     if text and not await transport.send(event.chat_id, OutboundMessage(text=text)):
         log.warning("VK: ответ не доставлен")
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/textbot.py"
-cat > "radar/platforms/textbot.py" <<'RADAR_FILE_72'
+cat > "radar/platforms/textbot.py" <<'RADAR_FILE_73'
 """Общий текстовый ответчик для сетей без Telegram-интерфейса (с 5.7).
 
 ⚠️ С ЖИВЫМИ ВК И MAX НЕ ПРОВЕРЕН.
@@ -29760,9 +29943,9 @@ async def answer(platform: str, external_id: str | int, text: str = "", *,
         return status_text(lang) + "\n\n" + _t("text.disclaimer", lang, DISCLAIMER)
 
     return help_text(lang, bool((user or {}).get("locs")))
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/links.py"
-cat > "radar/links.py" <<'RADAR_FILE_73'
+cat > "radar/links.py" <<'RADAR_FILE_74'
 """Общий аккаунт одного человека в разных сетях (с 5.6, в обе стороны — с 5.7).
 
 Один человек — один профиль: адреса, настройки, роль и подписка. Telegram,
@@ -30279,9 +30462,9 @@ async def handle_text(platform: str, external_id: str | int, text: str,
         return f"❌ {reason}"
     return proposal_text(theirs, lang) + "\n\n" + _t(
         "link.answer", lang, "Ответьте «да» или «нет».")
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mirror.py"
-cat > "radar/mirror.py" <<'RADAR_FILE_74'
+cat > "radar/mirror.py" <<'RADAR_FILE_75'
 """Доставка в сети кроме Telegram и копии тревог (с 5.6).
 
 Тревога, уже доставленная в Telegram, уходит копией на аккаунты ВК и MAX,
@@ -30391,9 +30574,9 @@ async def drain() -> None:
     """Дождаться отправленных копий — для тестов и корректной остановки."""
     while _tasks:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linking.py"
-cat > "radar/handlers/linking.py" <<'RADAR_FILE_75'
+cat > "radar/handlers/linking.py" <<'RADAR_FILE_76'
 """Общий аккаунт в Telegram-боте: привязка других сетей (5.6, в обе стороны — 5.7).
 
 Здесь можно и выдать код (его вводят в ВК, MAX или Discord), и ввести код,
@@ -30535,9 +30718,9 @@ async def decide(call: CallbackQuery, user: dict) -> None:
     await call.answer()
     asyncio.get_running_loop().create_task(links.announce(owner, links.TELEGRAM))
     await safe_edit(call, esc(links.linked_text(lang)), None)
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_76'
+cat > "radar/storage.py" <<'RADAR_FILE_77'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -30729,9 +30912,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_77'
+cat > "radar/exporting.py" <<'RADAR_FILE_78'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -30937,9 +31120,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_78'
+cat > "radar/ai.py" <<'RADAR_FILE_79'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -31805,9 +31988,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_79'
+cat > "radar/geocode.py" <<'RADAR_FILE_80'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -32046,9 +32229,9 @@ async def forward(
     # в Nominatim адреса появляются.
     _FORWARD.put(key, [dict(item) for item in results])
     return results
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_80'
+cat > "radar/weather.py" <<'RADAR_FILE_81'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -32514,9 +32697,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title, lang), markup)
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_81'
+cat > "radar/sources.py" <<'RADAR_FILE_82'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -32895,9 +33078,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceedit.py"
-cat > "radar/sourceedit.py" <<'RADAR_FILE_82'
+cat > "radar/sourceedit.py" <<'RADAR_FILE_83'
 #!/usr/bin/env python3
 """Правка списка источников: добавление, удаление, проверка формата.
 
@@ -33041,9 +33224,9 @@ def listing(kind: str) -> list[str]:
 
 def counts() -> dict[str, int]:
     return {kind: len(_bucket(kind) or []) for kind in KINDS}
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/filedrop.py"
-cat > "radar/filedrop.py" <<'RADAR_FILE_83'
+cat > "radar/filedrop.py" <<'RADAR_FILE_84'
 #!/usr/bin/env python3
 """Выдача крупных файлов по ссылке.
 
@@ -33406,9 +33589,9 @@ def summary() -> str:
         lines.append(f"• {item.name} — {item.size_mb:.0f} МБ, "
                      f"осталось {item.hours_left:.0f} ч")
     return "\n".join(lines)
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/agents.py"
-cat > "radar/agents.py" <<'RADAR_FILE_84'
+cat > "radar/agents.py" <<'RADAR_FILE_85'
 #!/usr/bin/env python3
 """Свои агенты ИИ: несколько сервисов вместо одного.
 
@@ -33623,9 +33806,9 @@ def forget(slot: int) -> bool:
         secrets.write(LEGACY_KEY_ENV, "")
     log.info("Свой агент в слоте %s удалён", slot)
     return True
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/redeem.py"
-cat > "radar/redeem.py" <<'RADAR_FILE_85'
+cat > "radar/redeem.py" <<'RADAR_FILE_86'
 #!/usr/bin/env python3
 """Погашение кодов, выданных на стороне.
 
@@ -33786,9 +33969,9 @@ async def summary() -> str:
         return "Кодов пока нет."
     used = sum(1 for item in items if item.get("used_by"))
     return f"Кодов: {len(items)}, погашено: {used}, свободно: {len(items) - used}"
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_86'
+cat > "radar/tg.py" <<'RADAR_FILE_87'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -33968,9 +34151,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_87'
+cat > "radar/timezones.py" <<'RADAR_FILE_88'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -34113,9 +34296,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_88'
+cat > "radar/keyboards.py" <<'RADAR_FILE_89'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -34764,9 +34947,9 @@ def queue_item(lang: str = "ru") -> InlineKeyboardMarkup:
                                   callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_89'
+cat > "radar/states.py" <<'RADAR_FILE_90'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -34801,9 +34984,9 @@ class Form(StatesGroup):
     quiet_hours = State()          # интервал тихих часов
     chat_message = State()         # объявление в группу (суперадминистратор)
     chat_invite = State()          # ссылка приглашения в группу
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_90'
+cat > "radar/middlewares.py" <<'RADAR_FILE_91'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -34998,9 +35181,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_91'
+cat > "radar/monitor.py" <<'RADAR_FILE_92'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -35956,9 +36139,9 @@ async def _run_once() -> None:
                     return
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/health.py"
-cat > "radar/health.py" <<'RADAR_FILE_92'
+cat > "radar/health.py" <<'RADAR_FILE_93'
 """Проверка жизни бота для HEALTHCHECK контейнера.
 
 Запускается снаружи процесса — `python -m radar.health` — и потому смотрит
@@ -36023,9 +36206,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_92
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netguard.py"
-cat > "radar/netguard.py" <<'RADAR_FILE_93'
+cat > "radar/netguard.py" <<'RADAR_FILE_94'
 """Куда боту можно ходить по ссылке, присланной человеком.
 
 Ссылку в бот присылает кто угодно, а запрос по ней делает бот — изнутри
@@ -36163,9 +36346,9 @@ async def allowed(url: str) -> bool:
     # Достаточно одного внутреннего адреса, чтобы отказать: имя с двумя
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
-RADAR_FILE_93
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dockerapi.py"
-cat > "radar/dockerapi.py" <<'RADAR_FILE_94'
+cat > "radar/dockerapi.py" <<'RADAR_FILE_95'
 """Общий клиент Docker Engine API поверх Unix-сокета.
 
 Вынесено из `radar/updater.py` в 4.9.8.4: `radar/rustdesk.py` управляет
@@ -36345,9 +36528,9 @@ async def list_containers(session_, prefix: str = "radar") -> list[dict]:
         })
     result.sort(key=lambda row: row["name"])
     return result
-RADAR_FILE_94
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/appapi.py"
-cat > "radar/appapi.py" <<'RADAR_FILE_95'
+cat > "radar/appapi.py" <<'RADAR_FILE_96'
 """API для приложений HydraVPN: вход по коду из бота и выдача подписок (5.9.1).
 
 Приложения — HydraVPN для Android и HydraVPN for Routers — не заводят
@@ -36616,9 +36799,9 @@ async def subscriptions(uid: str | int) -> list[dict[str, Any]]:
 
 __all__ = ["enabled", "issue_code", "exchange", "session_of", "devices", "all_devices", "revoke",
            "revoke_token", "profile", "subscriptions", "CODE_TTL", "MAX_DEVICES"]
-RADAR_FILE_95
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/settingsets.py"
-cat > "radar/settingsets.py" <<'RADAR_FILE_96'
+cat > "radar/settingsets.py" <<'RADAR_FILE_97'
 """Настройки, которые раньше правились только в .env (5.9.2.2).
 
 До 5.9.2.2 в панели можно было изменить ключи ИИ и несколько токенов, а всё
@@ -36857,9 +37040,9 @@ def refine(settings: tuple[Any, ...]) -> tuple[Any, ...]:
         changes.update(REFINE.get(item.key, {}))
         result.append(dataclasses.replace(item, **changes) if changes else item)
     return tuple(result)
-RADAR_FILE_96
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceprune.py"
-cat > "radar/sourceprune.py" <<'RADAR_FILE_97'
+cat > "radar/sourceprune.py" <<'RADAR_FILE_98'
 """Удаление молчащих источников (с 5.9.2.1).
 
 `sourcecheck` находит источники, которые умерли или затихли, но убирать их
@@ -36967,9 +37150,9 @@ def apply(candidates: list[Candidate]) -> list[Candidate]:
 
 
 __all__ = ["Candidate", "DEFAULT_DAYS", "silent_days", "select", "suspicious", "apply"]
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnslots.py"
-cat > "radar/vpnslots.py" <<'RADAR_FILE_98'
+cat > "radar/vpnslots.py" <<'RADAR_FILE_99'
 """Добавление, правка и удаление VPN-панелей (слотов) из веб-панели (5.9.2.1).
 
 До 5.9.2.1 панель можно было завести только правкой десяти отдельных
@@ -37162,9 +37345,9 @@ async def check(number: int) -> tuple[bool, str]:
 
 __all__ = ["KindInfo", "FIELDS", "SECRET_FIELDS", "kinds", "numbers", "read", "configured",
            "free_number", "validate", "save", "issued_on", "remove", "check"]
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
-cat > "radar/updater.py" <<'RADAR_FILE_99'
+cat > "radar/updater.py" <<'RADAR_FILE_100'
 """Обновление системы из веб-панели.
 
 Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
@@ -37485,9 +37668,9 @@ def progress(lines: int = 40) -> tuple[str, str]:
         return "", ""
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/uploads.py"
-cat > "radar/uploads.py" <<'RADAR_FILE_100'
+cat > "radar/uploads.py" <<'RADAR_FILE_101'
 """Приём присланных файлов: один вход для всех разделов бота.
 
 До 5.9.0.1 у каждого раздела был свой обработчик `F.document`, и работал
@@ -37587,9 +37770,9 @@ def reset() -> None:
 
 __all__ = ["COOKIES", "SOURCES", "EXPECT_TTL", "register", "handler_for",
            "expect", "expected", "done", "classify", "looks_like_cookies", "reset"]
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
-cat > "radar/wipe.py" <<'RADAR_FILE_101'
+cat > "radar/wipe.py" <<'RADAR_FILE_102'
 """Полное удаление системы с сервера, запускаемое из панели.
 
 Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
@@ -37757,9 +37940,9 @@ async def start(actor: str) -> tuple[bool, str]:
 
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
-RADAR_FILE_101
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
-cat > "radar/moderation.py" <<'RADAR_FILE_102'
+cat > "radar/moderation.py" <<'RADAR_FILE_103'
 """Правила модерации групп: решение отдельно от Telegram.
 
 Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
@@ -37951,9 +38134,9 @@ def describe(decision: Decision, settings: Settings) -> str:
     if decision.delete_message:
         return f"🧹 Удалено: {decision.reason}"
     return ""
-RADAR_FILE_102
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
-cat > "radar/chatlink.py" <<'RADAR_FILE_103'
+cat > "radar/chatlink.py" <<'RADAR_FILE_104'
 """Ссылка на группу, где бот работает модератором.
 
 Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
@@ -38125,9 +38308,9 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
         return False, "Telegram не вернул ссылку."
     _cache[chat_id] = link
     return True, link
-RADAR_FILE_103
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cloudstore.py"
-cat > "radar/cloudstore.py" <<'RADAR_FILE_104'
+cat > "radar/cloudstore.py" <<'RADAR_FILE_105'
 """Облачное хранилище музыки по WebDAV (с 4.9.9).
 
 Продолжение внешнего носителя из 4.9.5.4: там каталог музыки выносился
@@ -38390,9 +38573,9 @@ async def check() -> tuple[bool, str]:
     from .music import format_size
 
     return True, f"доступно, свободно {format_size(available)}"
-RADAR_FILE_104
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rclonerc.py"
-cat > "radar/rclonerc.py" <<'RADAR_FILE_105'
+cat > "radar/rclonerc.py" <<'RADAR_FILE_106'
 """Управляющее API rclone: подключение облаков без терминала (с 4.9.9.1).
 
 В 4.9.9 облако подключалось руками на сервере: `rclone config`, потом
@@ -38696,9 +38879,9 @@ async def check() -> tuple[bool, str]:
     if not ok:
         return False, str(body)
     return True, "управляющее API отвечает"
-RADAR_FILE_105
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/metrics.py"
-cat > "radar/metrics.py" <<'RADAR_FILE_106'
+cat > "radar/metrics.py" <<'RADAR_FILE_107'
 """Метрики и здоровье системы в одном месте (с 4.9.9.3).
 
 Закрывает два пункта раздела 4.9 дорожной карты:
@@ -38999,9 +39182,9 @@ def render(data: dict[str, Any]) -> str:
             lines.append(f"{icon} {esc(row['name'])} — {esc(state)}{esc(tail)}")
 
     return "\n".join(lines)
-RADAR_FILE_106
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adfilter.py"
-cat > "radar/adfilter.py" <<'RADAR_FILE_107'
+cat > "radar/adfilter.py" <<'RADAR_FILE_108'
 """Реклама VPN-сервисов в пересылаемых текстах (с 4.9.9.3).
 
 Городские каналы и СМИ всё чаще вставляют в посты рекламу VPN:
@@ -39147,9 +39330,9 @@ def split_entries(entries: Iterable[Item]) -> tuple[list[Item], int]:
         if text.strip():
             clean.append(replace(entry, summary=text.strip()))
     return clean, removed
-RADAR_FILE_107
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicmeta.py"
-cat > "radar/musicmeta.py" <<'RADAR_FILE_108'
+cat > "radar/musicmeta.py" <<'RADAR_FILE_109'
 """Метаданные треков из открытых баз (с 4.9.9.3).
 
 Пункт 3 раздела 4.9.5 дорожной карты: «источники для подбора». Подбор
@@ -39364,9 +39547,9 @@ def apply(track: dict, meta: dict[str, Any]) -> bool:
         track["related"] = related
         changed = True
     return changed
-RADAR_FILE_108
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_109'
+cat > "radar/chatpost.py" <<'RADAR_FILE_110'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -39470,9 +39653,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_109
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_110'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_111'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -40054,9 +40237,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_110
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_112'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -40540,9 +40723,9 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
             )
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_111
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adminsock.py"
-cat > "radar/adminsock.py" <<'RADAR_FILE_112'
+cat > "radar/adminsock.py" <<'RADAR_FILE_113'
 """Канал управления в работающий процесс бота (с 5.9.3).
 
 **Поломка, ради которой он нужен.** Командная строка запускается через
@@ -40750,9 +40933,9 @@ def call(argv: list[str]) -> tuple[int, str, str] | None:
         return 1, "", "Связь с ботом прервалась; результат неизвестен — проверьте командой list.\n"
     finally:
         client.close()
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/accounts.py"
-cat > "radar/accounts.py" <<'RADAR_FILE_113'
+cat > "radar/accounts.py" <<'RADAR_FILE_114'
 """Живые и мёртвые аккаунты в Telegram (с 5.9.4).
 
 Три разные задачи, и важно не путать, на что способен Bot API:
@@ -40966,9 +41149,9 @@ async def remove_deleted(bot: Any, chat_id: int, ids: list[int],
     if removed:
         log.info("Чат %s: исключено удалённых аккаунтов — %d", chat_id, removed)
     return removed
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_114'
+cat > "radar/cli.py" <<'RADAR_FILE_115'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -41743,9 +41926,602 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_114
+RADAR_FILE_115
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordmusic.py"
+cat > "radar/discordmusic.py" <<'RADAR_FILE_116'
+"""Музыка в голосовом канале Discord по ссылке (с 5.9.7).
+
+⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕНО.
+
+Что умеет: `/play` принимает ссылку на трек, плейлист или файл —
+YouTube, SoundCloud, Bandcamp, Яндекс Музыка, прямые ссылки на аудио и всё,
+что открывает yt-dlp, — а также просто слова для поиска. Бот входит в тот
+голосовой канал, где сидит попросивший, ставит треки в очередь и играет.
+
+Почему `discord.py`. Голос — отдельный протокол (Voice Gateway, UDP,
+шифрование), а с 2026-03-02 Discord требует от всех голосовых клиентов,
+ботов в том числе, сквозное шифрование DAVE: клиент без него просто не
+подключится. `discord.py` 2.7 тянет DAVE через пакет `davey` (`pip install
+discord.py[voice]`), самописный клиент на `aiohttp` пришлось бы дополнять
+этим самим. Поэтому голос идёт отдельным соединением `discord.Client` с
+минимальными намерениями (серверы и голосовые состояния), а команды и кнопки
+по-прежнему обслуживает адаптер `platforms/discord.py` — решение автора
+допустить `discord.py` в зависимости действует только для голоса.
+
+Устройство. Логика очереди не знает про `discord.py`: она говорит с
+«хозяином голоса» через четыре метода (`connect`, `play`, `stop`,
+`disconnect`) — поэтому проверяется без Discord и без звука. Поток берётся
+у yt-dlp **в момент проигрывания**, а не при постановке в очередь: ссылки
+на поток живут часы, и трек, простоявший час в очереди, иначе не заиграл бы.
+Звук отдаётся ffmpeg-ом в Opus (`FFmpegOpusAudio`, копирование без
+перекодирования, когда источник уже Opus) — на одноплатнике это решает,
+потянет ли он голос вообще.
+
+О праве. Скачивание и проигрывание с YouTube и подобных сервисов нарушает их
+условия использования; такие боты регулярно блокируют. Возможность выключена
+по умолчанию, а ответственность за ссылки лежит на том, кто включает её на
+своём сервере.
+
+Чего нет: Spotify, Apple Music, Deezer и прочих сервисов с защитой (DRM) —
+yt-dlp их не открывает; бот так и отвечает.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import shlex
+import time
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
+from urllib.parse import parse_qs, urlparse
+
+log = logging.getLogger("radar.discordmusic")
+
+MAX_QUEUE = 50
+MAX_MINUTES = 180            # длиннее — не ставим: ролик на пять часов держит канал
+MAX_GUILDS = 2               # одновременных голосовых подключений: ARM, один процессор
+PLAYLIST_LIMIT = 25
+IDLE_LEAVE = 300             # секунд тишины, после которых бот выходит из канала
+SWEEP_EVERY = 30
+RESOLVE_TIMEOUT = 60
+LINK_LIMIT = 500
+SEARCH_LIMIT = 200
+
+PROTECTED = ("open.spotify.com", "spotify.link", "music.apple.com",
+             "deezer.com", "tidal.com", "music.amazon.com")
+PLAYLIST_HINT = re.compile(r"(/playlist\b|/sets/|/album/|/albums/|/artist/)", re.I)
+
+
+# --------------------------------------------------------------------------
+#  Ссылки и описание трека
+# --------------------------------------------------------------------------
+
+@dataclass
+class Track:
+    page: str                       # что просили: ссылка или слова для поиска
+    title: str = ""
+    duration: int = 0               # секунды; 0 — неизвестно (поток)
+    requester: str = ""
+    stream: str = ""                # прямой адрес потока — заполняется при проигрывании
+    headers: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def label(self) -> str:
+        return self.title or self.page
+
+
+def format_duration(seconds: int) -> str:
+    seconds = int(seconds or 0)
+    if seconds <= 0:
+        return "—"
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def clean_request(text: str) -> tuple[str, str]:
+    """Что просят сыграть: (вид, значение). Вид — «link», «search» или «»
+    (пусто — просьба не разобрана)."""
+    text = (text or "").strip()
+    if not text:
+        return "", ""
+    first = text.split()[0]
+    if re.match(r"^https?://", first, re.I):
+        if len(first) > LINK_LIMIT:
+            return "", ""
+        return "link", first
+    if "://" in first:
+        return "", ""
+    return "search", text[:SEARCH_LIMIT]
+
+
+def protected_service(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == name or host.endswith("." + name) for name in PROTECTED)
+
+
+def wants_playlist(url: str) -> bool:
+    """Просят весь список или один трек. Ролик внутри списка
+    (`watch?v=…&list=…`) — один трек: так ждёт человек, скопировавший
+    адрес из строки браузера."""
+    if PLAYLIST_HINT.search(urlparse(url).path):
+        return True
+    query = parse_qs(urlparse(url).query)
+    return "list" in query and "v" not in query
+
+
+def ffmpeg_before_options(track: Track) -> str:
+    """Параметры ffmpeg до источника: переподключение при обрыве и
+    заголовки, без которых часть площадок отдаёт 403."""
+    parts = ["-reconnect", "1", "-reconnect_streamed", "1",
+             "-reconnect_delay_max", "5"]
+    if track.headers:
+        # ffmpeg ждёт заголовки одной строкой, разделённой CRLF.
+        header = "".join(f"{key}: {value}\r\n" for key, value in track.headers.items()
+                         if key.lower() in ("user-agent", "referer", "origin",
+                                            "cookie", "accept", "accept-language")
+                         and "\n" not in str(value) and "\r" not in str(value))
+        if header:
+            parts += ["-headers", header]
+    return " ".join(shlex.quote(item) for item in parts)
+
+
+# --------------------------------------------------------------------------
+#  yt-dlp
+# --------------------------------------------------------------------------
+
+def _audio_options(proxy: str, cookies: str, clients: tuple[str, ...] | None,
+                   playlist: bool) -> dict[str, Any]:
+    from . import media
+
+    options = media.probe_options(proxy=proxy, cookies=cookies,
+                                  clients=clients)
+    options.update({
+        "format": "bestaudio/best",
+        "noplaylist": not playlist,
+        "skip_download": True,
+    })
+    if playlist:
+        # Плейлист разбирается плоско: заголовки без потоков — потоки берутся
+        # у каждого трека в момент проигрывания.
+        options["extract_flat"] = "in_playlist"
+        options["playlistend"] = PLAYLIST_LIMIT
+    return options
+
+
+def _extract_blocking(target: str, options: dict[str, Any]) -> dict[str, Any]:
+    import yt_dlp
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(target, download=False)
+    return info if isinstance(info, dict) else {}
+
+
+async def extract(target: str, *, playlist: bool = False, proxy: str = "",
+                  cookies: str = "",
+                  run: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None
+                  ) -> dict[str, Any]:
+    """Описание ссылки у yt-dlp. Каскад клиентов YouTube — тот же, что у
+    загрузки видео: сначала без cookies, при осечке — умолчания."""
+    from . import media
+
+    runner = run or _extract_blocking
+    loop = asyncio.get_running_loop()
+    last: BaseException | None = None
+    for clients in (media.YOUTUBE_COOKIELESS, None):
+        options = _audio_options(proxy, cookies, clients, playlist)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, runner, target, options), RESOLVE_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            last = exc
+            break
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if clients is None or not media.worth_client_retry(exc):
+                break
+    raise RuntimeError(str(last) if last else "не удалось открыть ссылку")
+
+
+def tracks_from(info: dict[str, Any], requester: str, page: str) -> list[Track]:
+    """Описание yt-dlp → треки. У плейлиста — по записи, у трека — один."""
+    entries = info.get("entries")
+    if entries is not None:
+        found = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            target = str(entry.get("webpage_url") or entry.get("url") or "")
+            if not target:
+                continue
+            found.append(Track(page=target, title=str(entry.get("title") or ""),
+                               duration=int(entry.get("duration") or 0),
+                               requester=requester))
+            if len(found) >= PLAYLIST_LIMIT:
+                break
+        return found
+    return [Track(page=str(info.get("webpage_url") or page),
+                  title=str(info.get("title") or ""),
+                  duration=int(info.get("duration") or 0), requester=requester,
+                  stream=str(info.get("url") or ""),
+                  headers=dict(info.get("http_headers") or {}))]
+
+
+# --------------------------------------------------------------------------
+#  Очередь и игрок
+# --------------------------------------------------------------------------
+
+class VoiceHost:
+    """Что нужно очереди от голоса. Настоящий — `DiscordPyHost`."""
+
+    async def connect(self, guild: str, channel: str) -> Any: ...
+    async def play(self, handle: Any, track: Track,
+                   after: Callable[[BaseException | None], None]) -> None: ...
+    def stop(self, handle: Any) -> None: ...
+    def pause(self, handle: Any) -> None: ...
+    def resume(self, handle: Any) -> None: ...
+    async def disconnect(self, handle: Any) -> None: ...
+    def channel_of(self, handle: Any) -> str: ...
+
+
+@dataclass
+class Player:
+    guild: str
+    channel: str
+    handle: Any
+    queue: list[Track] = field(default_factory=list)
+    current: Track | None = None
+    paused: bool = False
+    idle_since: float = 0.0
+
+
+@dataclass
+class Outcome:
+    ok: bool
+    text: str
+
+
+class Manager:
+    """Очереди по серверам. Всё, что меняет состояние, идёт под одной
+    блокировкой: нажатия приходят параллельно, а очередь — одна."""
+
+    def __init__(self, host: VoiceHost, *, clock: Callable[[], float] = time.time,
+                 extractor: Callable[..., Awaitable[dict[str, Any]]] = extract,
+                 guard: Callable[[str], Awaitable[bool]] | None = None,
+                 max_queue: int = MAX_QUEUE, max_minutes: int = MAX_MINUTES,
+                 max_guilds: int = MAX_GUILDS, proxy: str = "",
+                 cookies: Callable[[], str] | None = None) -> None:
+        self.host = host
+        self.clock = clock
+        self.extractor = extractor
+        self.guard = guard
+        self.max_queue = max_queue
+        self.max_minutes = max_minutes
+        self.max_guilds = max_guilds
+        self.proxy = proxy
+        self.cookies = cookies or (lambda: "")
+        self.players: dict[str, Player] = {}
+        self._lock = asyncio.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    # --- постановка -------------------------------------------------
+
+    async def add(self, guild: str, channel: str, user: str, request: str) -> Outcome:
+        kind, value = clean_request(request)
+        if not kind:
+            return Outcome(False, "Пришлите ссылку (http…) или слова для поиска.")
+        if kind == "link":
+            if protected_service(value):
+                return Outcome(False, "Spotify, Apple Music, Deezer и подобные "
+                                      "сервисы отдают защищённый поток — их не "
+                                      "открыть. Пришлите ссылку YouTube, SoundCloud, "
+                                      "Bandcamp или на аудиофайл — или слова для поиска.")
+            if self.guard is not None and not await self.guard(value):
+                return Outcome(False, "Эта ссылка ведёт во внутреннюю сеть — не открываю.")
+        target = value if kind == "link" else f"ytsearch1:{value}"
+        playlist = kind == "link" and wants_playlist(value)
+
+        try:
+            info = await self.extractor(target, playlist=playlist, proxy=self.proxy,
+                                        cookies=self.cookies())
+        except Exception as exc:  # noqa: BLE001
+            log.info("Музыка: ссылка не открылась: %s", exc)
+            return Outcome(False, f"Не удалось открыть ссылку: {_short(exc)}")
+
+        if info.get("_type") == "playlist" and "entries" in info and not playlist:
+            # Поиск вернул список — берём первый результат.
+            entries = [item for item in (info.get("entries") or []) if item]
+            info = entries[0] if entries else {}
+        tracks = tracks_from(info, user, value)
+        if not tracks:
+            return Outcome(False, "Ничего не нашлось по этому запросу.")
+
+        limit = self.max_minutes * 60
+        tracks = [t for t in tracks if not (limit and t.duration > limit)]
+        if not tracks:
+            return Outcome(False, f"Трек длиннее {self.max_minutes} мин — не ставлю.")
+
+        async with self._lock:
+            self._loop = asyncio.get_running_loop()
+            player = self.players.get(guild)
+            if player is None:
+                if len(self.players) >= self.max_guilds:
+                    return Outcome(False, "Бот уже играет на другом сервере — "
+                                          "одновременных каналов не больше "
+                                          f"{self.max_guilds}.")
+                try:
+                    handle = await self.host.connect(guild, channel)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Музыка: вход в канал не удался: %s", exc)
+                    return Outcome(False, "Не удалось войти в голосовой канал: "
+                                          "проверьте права «Подключаться» и «Говорить».")
+                player = Player(guild=guild, channel=channel, handle=handle)
+                self.players[guild] = player
+            elif player.channel != channel:
+                return Outcome(False, "Бот играет в другом голосовом канале этого сервера.")
+
+            room = self.max_queue - len(player.queue)
+            if room <= 0:
+                return Outcome(False, f"Очередь заполнена ({self.max_queue}).")
+            accepted = tracks[:room]
+            player.queue.extend(accepted)
+            player.idle_since = 0.0
+            if player.current is None:
+                await self._start_next(player)
+            position = len(player.queue)
+
+        first = accepted[0]
+        if len(accepted) > 1:
+            text = f"Добавлено треков: {len(accepted)} (первый: {first.label})."
+        elif player.current is first:
+            text = f"▶️ Играет: {first.label} [{format_duration(first.duration)}]"
+        else:
+            text = f"➕ В очереди №{position}: {first.label} [{format_duration(first.duration)}]"
+        return Outcome(True, text)
+
+    # --- проигрывание -----------------------------------------------
+
+    async def _start_next(self, player: Player) -> None:
+        """Запускает следующий трек. Вызывать под блокировкой."""
+        while player.queue:
+            track = player.queue.pop(0)
+            try:
+                if not track.stream:
+                    info = await self.extractor(track.page, playlist=False,
+                                                proxy=self.proxy, cookies=self.cookies())
+                    fresh = tracks_from(info, track.requester, track.page)
+                    if not fresh or not fresh[0].stream:
+                        raise RuntimeError("у ссылки нет аудиопотока")
+                    stream = fresh[0]
+                    track.stream, track.headers = stream.stream, stream.headers
+                    track.title = track.title or stream.title
+                    track.duration = track.duration or stream.duration
+                if self.guard is not None and not await self.guard(track.stream):
+                    raise RuntimeError("поток ведёт во внутреннюю сеть")
+                player.current, player.paused = track, False
+                await self.host.play(player.handle, track,
+                                     lambda error, g=player.guild: self._ended(g, error))
+                return
+            except Exception as exc:  # noqa: BLE001
+                # Негодный трек пропускаем и пробуем следующий: из-за одной
+                # битой ссылки очередь вставать не должна.
+                log.info("Музыка: трек %s не заиграл: %s", track.label, exc)
+                player.current = None
+        player.current = None
+        player.idle_since = self.clock()
+
+    def _ended(self, guild: str, error: BaseException | None) -> None:
+        """Вызывается из потока звука: возвращаемся в цикл событий."""
+        if error:
+            log.info("Музыка: трек закончился с ошибкой: %s", error)
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(self._advance(guild), loop)
+
+    async def _advance(self, guild: str) -> None:
+        async with self._lock:
+            player = self.players.get(guild)
+            if player is None:
+                return
+            player.current = None
+            await self._start_next(player)
+
+    # --- управление -------------------------------------------------
+
+    def _player(self, guild: str) -> Player | None:
+        return self.players.get(guild)
+
+    async def skip(self, guild: str) -> Outcome:
+        async with self._lock:
+            player = self._player(guild)
+            if player is None or player.current is None:
+                return Outcome(False, "Сейчас ничего не играет.")
+            title = player.current.label
+            # stop() вызовет обратный вызов, и очередь пойдёт дальше сама.
+            self.host.stop(player.handle)
+        return Outcome(True, f"⏭ Пропущено: {title}")
+
+    async def stop(self, guild: str) -> Outcome:
+        async with self._lock:
+            player = self.players.pop(guild, None)
+            if player is None:
+                return Outcome(False, "Бот не в голосовом канале.")
+            player.queue.clear()
+            player.current = None
+            self.host.stop(player.handle)
+            await self.host.disconnect(player.handle)
+        return Outcome(True, "⏹ Остановлено, очередь очищена.")
+
+    async def pause(self, guild: str) -> Outcome:
+        async with self._lock:
+            player = self._player(guild)
+            if player is None or player.current is None or player.paused:
+                return Outcome(False, "Нечего ставить на паузу.")
+            self.host.pause(player.handle)
+            player.paused = True
+        return Outcome(True, "⏸ Пауза.")
+
+    async def resume(self, guild: str) -> Outcome:
+        async with self._lock:
+            player = self._player(guild)
+            if player is None or not player.paused:
+                return Outcome(False, "Пауза не включена.")
+            self.host.resume(player.handle)
+            player.paused = False
+        return Outcome(True, "▶️ Продолжаю.")
+
+    def queue_text(self, guild: str) -> str:
+        player = self._player(guild)
+        if player is None or (player.current is None and not player.queue):
+            return "Очередь пуста."
+        lines = []
+        if player.current is not None:
+            mark = "⏸" if player.paused else "▶️"
+            lines.append(f"{mark} {player.current.label} [{format_duration(player.current.duration)}]")
+        for number, track in enumerate(player.queue[:10], 1):
+            lines.append(f"{number}. {track.label} [{format_duration(track.duration)}]")
+        if len(player.queue) > 10:
+            lines.append(f"… и ещё {len(player.queue) - 10}")
+        return "\n".join(lines)
+
+    # --- уход из канала ---------------------------------------------
+
+    async def sweep(self) -> list[str]:
+        """Выходит из каналов, где тихо дольше положенного. Возвращает серверы."""
+        left = []
+        async with self._lock:
+            now = self.clock()
+            for guild, player in list(self.players.items()):
+                playing = player.current is not None
+                if playing or player.queue:
+                    player.idle_since = 0.0
+                    continue
+                if not player.idle_since:
+                    player.idle_since = now
+                    continue
+                if now - player.idle_since >= IDLE_LEAVE:
+                    self.players.pop(guild, None)
+                    try:
+                        await self.host.disconnect(player.handle)
+                    except Exception:  # noqa: BLE001
+                        log.debug("Музыка: выход из канала не удался", exc_info=True)
+                    left.append(guild)
+        return left
+
+
+def _short(exc: BaseException) -> str:
+    text = re.sub(r"\x1b\[[0-9;]*m", "", str(exc)).strip().splitlines()
+    first = text[0] if text else type(exc).__name__
+    first = re.sub(r"^ERROR:\s*", "", first)
+    return first[:200]
+
+
+# --------------------------------------------------------------------------
+#  Настоящий голос: discord.py
+# --------------------------------------------------------------------------
+
+class DiscordPyHost(VoiceHost):
+    """Голосовое соединение на `discord.py` (с поддержкой DAVE через `davey`).
+
+    Отдельный `discord.Client` с минимальными намерениями: серверы и
+    голосовые состояния. Слеш-команды он не обслуживает — этим занят адаптер.
+    """
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self.client: Any = None
+        self.ready = asyncio.Event()
+
+    async def start(self) -> None:
+        import discord
+
+        intents = discord.Intents.none()
+        intents.guilds = True
+        intents.voice_states = True
+        self.client = discord.Client(intents=intents)
+
+        @self.client.event
+        async def on_ready() -> None:
+            log.info("Discord, голос: готов (%d серверов)", len(self.client.guilds))
+            self.ready.set()
+
+        await self.client.start(self.token)
+
+    async def close(self) -> None:
+        if self.client is not None:
+            await self.client.close()
+
+    async def connect(self, guild: str, channel: str) -> Any:
+        await asyncio.wait_for(self.ready.wait(), 30)
+        target = self.client.get_channel(int(channel))
+        if target is None:
+            target = await self.client.fetch_channel(int(channel))
+        voice = target.guild.voice_client
+        if voice is not None and voice.channel.id != target.id:
+            await voice.move_to(target)
+        elif voice is None:
+            voice = await target.connect(timeout=30, self_deaf=True)
+        return voice
+
+    async def play(self, handle: Any, track: Track,
+                   after: Callable[[BaseException | None], None]) -> None:
+        import discord
+
+        source = await self.open_source(discord, track)
+        if handle.is_playing() or handle.is_paused():
+            handle.stop()
+        handle.play(source, after=after)
+
+    @staticmethod
+    async def open_source(discord: Any, track: Track) -> Any:
+        """Звук трека в Opus. Источник уже Opus (webm с YouTube) — копируем без
+        перекодирования, это решает, потянет ли голос одноплатник.
+
+        `from_probe` не годится: битрейт для перекодирования он берёт у
+        источника, а у lossless-файла (wav, flac) это 700–1400 кбит/с —
+        libopus отказывается открываться при более чем 512, и трек молча
+        не играл (поймано `tools/discord_music_check.py` на wav). Поэтому
+        пробуем сами и ограничиваем битрейт.
+        """
+        codec: str | None = None
+        bitrate: int | None = None
+        try:
+            codec, bitrate = await discord.FFmpegOpusAudio.probe(
+                track.stream, method="fallback")
+        except Exception:  # noqa: BLE001
+            log.debug("Музыка: проба источника не удалась", exc_info=True)
+        kbps = min(max(int(bitrate or 128), 64), 256)
+        return discord.FFmpegOpusAudio(
+            track.stream, bitrate=kbps, codec=codec,
+            before_options=ffmpeg_before_options(track), options="-vn")
+
+    def stop(self, handle: Any) -> None:
+        handle.stop()
+
+    def pause(self, handle: Any) -> None:
+        handle.pause()
+
+    def resume(self, handle: Any) -> None:
+        handle.resume()
+
+    async def disconnect(self, handle: Any) -> None:
+        await handle.disconnect(force=True)
+
+    def channel_of(self, handle: Any) -> str:
+        channel = getattr(handle, "channel", None)
+        return str(getattr(channel, "id", "") or "")
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordverify.py"
-cat > "radar/discordverify.py" <<'RADAR_FILE_115'
+cat > "radar/discordverify.py" <<'RADAR_FILE_117'
 """Проверка участников Discord-сервера (с 5.9.5): логика без сети.
 
 Честно о том, что тут возможно. У Discord нет капчи для ботов, и надёжно
@@ -41931,9 +42707,9 @@ def evaluate(user_id: int | str, username: str = "", global_name: str = "",
     if suspicious_name(username, global_name):
         return Verdict("kick", "в имени реклама или приглашение")
     return Verdict("allow")
-RADAR_FILE_115
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
-cat > "radar/cli_admin.py" <<'RADAR_FILE_116'
+cat > "radar/cli_admin.py" <<'RADAR_FILE_118'
 """Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
 
 Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
@@ -42396,9 +43172,9 @@ def register(subparsers, common) -> None:
     audit_cmd.add_argument("--limit", type=int, default=50)
     audit_cmd.add_argument("--yes", action="store_true")
     audit_cmd.set_defaults(func=cmd_audit)
-RADAR_FILE_116
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
-cat > "radar/clitext.py" <<'RADAR_FILE_117'
+cat > "radar/clitext.py" <<'RADAR_FILE_119'
 """Язык командной строки: русский и английский (с 5.9.3.1).
 
 Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
@@ -42463,9 +43239,9 @@ def current() -> str:
 def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
     """Строка на языке консоли."""
     return ru if _current == RU else en
-RADAR_FILE_117
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_118'
+cat > "radar/__main__.py" <<'RADAR_FILE_120'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -42487,9 +43263,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_118
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_119'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_121'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -42631,9 +43407,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_119
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_120'
+cat > "tools/restore.sh" <<'RADAR_FILE_122'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -42875,9 +43651,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_120
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_121'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_123'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -42973,9 +43749,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_121
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_122'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_124'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -43168,9 +43944,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_122
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_123'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_125'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -44924,9 +45700,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_123
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_124'
+cat > "radar/vpn.py" <<'RADAR_FILE_126'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -45746,9 +46522,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_124
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_125'
+cat > "radar/payments.py" <<'RADAR_FILE_127'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -45977,9 +46753,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_125
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_126'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_128'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -46346,9 +47122,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_126
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_129'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -46469,9 +47245,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_127
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_130'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -46942,9 +47718,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_128
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_131'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -47110,9 +47886,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_129
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_132'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -47610,9 +48386,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_130
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_133'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -48118,9 +48894,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_131
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_134'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -48564,9 +49340,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_132
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_135'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -48713,9 +49489,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_133
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_136'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -49003,9 +49779,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_134
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_137'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -49252,9 +50028,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_135
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_138'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -49625,9 +50401,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_136
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_139'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -50202,9 +50978,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_137
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_140'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -50305,9 +51081,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_138
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_141'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -50395,9 +51171,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_139
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_142'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -50818,9 +51594,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_140
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_143'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -52011,9 +52787,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_141
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_144'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -52767,9 +53543,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_142
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_145'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -53293,9 +54069,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_143
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_144'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_146'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -53503,9 +54279,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_144
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_147'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -54492,9 +55268,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_145
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_146'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_148'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -54907,9 +55683,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_146
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_147'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_149'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -54950,9 +55726,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_147
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_148'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_150'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -55215,9 +55991,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_148
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_149'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_151'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -55367,9 +56143,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_149
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_150'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_152'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -55837,9 +56613,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_150
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_151'
+cat > "radar/cookies.py" <<'RADAR_FILE_153'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -55972,9 +56748,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_151
+RADAR_FILE_153
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_152'
+cat > "radar/music.py" <<'RADAR_FILE_154'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -56778,9 +57554,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_152
+RADAR_FILE_154
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_153'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_155'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -57394,9 +58170,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_153
+RADAR_FILE_155
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_154'
+cat > "multitool/__init__.py" <<'RADAR_FILE_156'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -57422,9 +58198,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_154'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_154
+RADAR_FILE_156
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_155'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_157'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -57457,9 +58233,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_155'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_155
+RADAR_FILE_157
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_156'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_158'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -57866,9 +58642,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_156
+RADAR_FILE_158
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_157'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_159'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -58352,9 +59128,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_157
+RADAR_FILE_159
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_158'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_160'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -58594,7 +59370,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_158
+RADAR_FILE_160
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

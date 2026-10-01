@@ -1806,6 +1806,20 @@ English, Ukrainian, Persian, Simplified Chinese.
 
 ---
 
+## 5.9.7 - Discord music ⚠️ code written
+
+At the author's request: playing music by link in a voice channel.
+
+1. **`/play`** by link or words, a queue, `/skip /pause /resume /stop /queue`.
+2. **`discord.py[voice]`** (the author's decision) for DAVE - the end-to-end
+   encryption required since 2026-03-02; as a separate optional requirements
+   file.
+3. **Not opened:** Spotify, Apple Music, Deezer, Tidal (DRM).
+4. **Verified without Discord:** the audio path on real yt-dlp and ffmpeg;
+   joining a channel and DAVE only on a live server.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2

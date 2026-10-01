@@ -27,6 +27,7 @@ OUTPUT = ROOT / "install.sh"
 # Порядок важен только для читаемости логов установки.
 MANIFEST = [
     "requirements.txt",
+    "requirements-voice.txt",
     "Dockerfile",
     "docker-compose.yml",
     "alembic.ini",
@@ -141,6 +142,7 @@ MANIFEST = [
     "radar/adminsock.py",
     "radar/accounts.py",
     "radar/cli.py",
+    "radar/discordmusic.py",
     "radar/discordverify.py",
     "radar/cli_admin.py",
     "radar/clitext.py",

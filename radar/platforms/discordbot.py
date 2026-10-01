@@ -78,6 +78,18 @@ COMMANDS = (
 )
 RESTRICTED = ("verifysetup",)
 
+# Музыка в голосовом канале (5.9.7).
+MUSIC_COMMANDS = (
+    ("play", "Играть музыку по ссылке или названию",
+     [("query", "Ссылка (YouTube, SoundCloud, файл…) или слова для поиска", True)]),
+    ("skip", "Пропустить трек"),
+    ("pause", "Пауза"),
+    ("resume", "Продолжить"),
+    ("stop", "Остановить и выйти из канала"),
+    ("queue", "Что в очереди"),
+)
+MUSIC_NAMES = tuple(item[0] for item in MUSIC_COMMANDS)
+
 # Команды общего аккаунта: личное, поэтому ответ видит только автор.
 PERSONAL = ("address", "addresses", "remove", "link", "unlink")
 YES_ID, NO_ID = "txt:yes", "txt:no"
@@ -175,6 +187,9 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     """
     from .maxbot import telegram_username
 
+    if event.kind is EventKind.COMMAND and event.command in MUSIC_NAMES:
+        await music_command(event, transport)
+        return
     if (event.kind is EventKind.COMMAND and event.command == "verifysetup") or (
             event.kind is EventKind.CALLBACK and event.payload.startswith("dv:")):
         await verification(event, transport)
@@ -380,14 +395,116 @@ async def verify_sweeper(transport: Any) -> None:
             log.warning("Discord: сбой сторожа проверки", exc_info=True)
 
 
+# --------------------------------------------------------------------------
+#  Музыка (5.9.7)
+# --------------------------------------------------------------------------
+
+MUSIC: Any = None        # discordmusic.Manager, пока возможность включена
+
+
+def music_enabled() -> bool:
+    from .. import features
+
+    return features.enabled("discord_music")
+
+
+def _dj_allowed(raw: dict[str, Any]) -> bool:
+    """Ограничение по роли DJ. Не задана — музыкой управляют все."""
+    role = _setting("DISCORD_DJ_ROLE_ID")
+    if not role:
+        return True
+    roles_now = [str(item) for item in (raw.get("member") or {}).get("roles") or []]
+    return role in roles_now or _can_manage(raw)
+
+
+async def music_command(event: InboundEvent, transport: Any) -> None:
+    raw = event.raw or {}
+    guild = str(raw.get("guild_id") or "")
+    user = event.identity.external_id
+
+    async def say(text: str, *, ephemeral: bool = True) -> None:
+        await transport.respond(event, OutboundMessage(text=esc(text)), ephemeral=ephemeral)
+
+    if not guild:
+        await say("Музыка работает только на сервере.")
+        return
+    if MUSIC is None:
+        await say("Музыка выключена.")
+        return
+    if not _dj_allowed(raw):
+        await say("Музыкой управляют участники с ролью DJ.")
+        return
+
+    command = event.command
+    if command == "queue":
+        await say(MUSIC.queue_text(guild), ephemeral=False)
+    elif command in ("skip", "pause", "resume", "stop"):
+        outcome = await getattr(MUSIC, command)(guild)
+        await say(outcome.text, ephemeral=not outcome.ok)
+    else:
+        channel = await transport.voice_channel_of(guild, user)
+        if not channel:
+            await say("Зайдите в голосовой канал и повторите команду.")
+            return
+        # Ответ — сразу, у Discord три секунды; поиск может идти дольше.
+        await transport.respond(event, OutboundMessage(text="🔎 Ищу…"))
+        outcome = await MUSIC.add(guild, channel, user, event.args)
+        await transport.edit_original(event, OutboundMessage(text=esc(outcome.text)))
+
+
+def _build_music() -> tuple[Any, Any] | None:
+    """Очередь и голос, если возможность включена и `discord.py` стоит."""
+    from .. import config, discordmusic, features, netguard, secrets
+
+    if not features.enabled("discord_music"):
+        return None
+    try:
+        import discord  # noqa: F401
+    except ImportError:
+        log.warning("Discord: музыка включена, но discord.py не установлен "
+                    "(pip install -r requirements-voice.txt) — голос недоступен")
+        return None
+    host = discordmusic.DiscordPyHost(_setting("DISCORD_BOT_TOKEN"))
+    manager = discordmusic.Manager(
+        host, guard=netguard.allowed, proxy=config.EGRESS_PROXY,
+        cookies=lambda: (secrets.get("MEDIA_COOKIES") or config.MEDIA_COOKIES).strip(),
+        max_queue=_number("DISCORD_MUSIC_QUEUE", discordmusic.MAX_QUEUE) or discordmusic.MAX_QUEUE,
+        max_minutes=_number("DISCORD_MUSIC_MAX_MINUTES", discordmusic.MAX_MINUTES)
+        or discordmusic.MAX_MINUTES,
+        max_guilds=_number("DISCORD_MUSIC_GUILDS", discordmusic.MAX_GUILDS)
+        or discordmusic.MAX_GUILDS)
+    return host, manager
+
+
+async def music_sweeper(manager: Any) -> None:
+    from .. import discordmusic
+
+    while True:
+        await asyncio.sleep(discordmusic.SWEEP_EVERY)
+        try:
+            await manager.sweep()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.warning("Discord: сбой сторожа музыки", exc_info=True)
+
+
 async def run(transport: Any) -> None:
     """Всё, что делает Discord: команды, Gateway и публикации в канал."""
+    global MUSIC
     from .. import mirror
 
     # Тревоги общего аккаунта — в личные сообщения (5.7).
     mirror.register("discord", transport.send_text)
+    extra: list[Any] = []
+    music = _build_music()
+    commands = COMMANDS
+    if music is not None:
+        host, MUSIC = music
+        commands = COMMANDS + MUSIC_COMMANDS
+        extra += [host.start(), music_sweeper(MUSIC)]
     try:
-        await transport.set_commands(COMMANDS, restricted=RESTRICTED)
+        await transport.set_commands(commands, restricted=RESTRICTED)
     except Exception:  # noqa: BLE001
         log.warning("Discord: слеш-команды не заданы", exc_info=True)
 
@@ -396,7 +513,7 @@ async def run(transport: Any) -> None:
 
     transport.member_handler = member_added
     await asyncio.gather(transport.start(), community(transport),
-                         verify_sweeper(transport))
+                         verify_sweeper(transport), *extra)
 
 
 def due(now: datetime, when: str, last_date: str) -> bool:

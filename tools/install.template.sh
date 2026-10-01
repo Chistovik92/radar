@@ -1521,7 +1521,7 @@ make_snapshot() {
 
     info "Сохраняю снимок текущей установки (v$PREVIOUS_VERSION)"
     local items=""
-    for entry in radar migrations main.py requirements.txt Dockerfile \
+    for entry in radar migrations main.py requirements.txt requirements-voice.txt Dockerfile \
                  docker-compose.yml alembic.ini .env; do
         [ -e "$APP_DIR/$entry" ] && items="$items $entry"
     done

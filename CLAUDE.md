@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 5.9.6, она же выложена на GitHub.
+Текущая версия — 5.9.7, она же выложена на GitHub.
 
 ## Общение
 
@@ -33,6 +33,12 @@ python3 tools/vk_http_check.py          # ВК и зеркало тревог п
 python3 tools/app_http_check.py         # API для приложений HydraVPN по HTTP (нужен aiohttp)
 python3 tools/db_transfer_check.py      # перенос SQLite ⇄ SQLite (PG_URL — и PostgreSQL)
 ```
+
+`tools/discord_music_check.py` (5.9.7) — не обязательный, но нужный при
+правке музыки: настоящие yt-dlp, ffmpeg и discord.py гоняют короткий звук
+по всему тракту (ссылка → очередь → Opus-кадры), кроме самого Discord. Нужны
+`pip install "discord.py[voice]" yt-dlp` и `ffmpeg`; в CI не запускается. Он
+поймал отказ libopus на lossless-файлах, невидимый офлайн-тестам.
 
 `db_transfer_check.py` (5.9) — перенос данных между базами на настоящих
 файлах SQLite, а с `PG_URL=postgresql+asyncpg://…` — и на PostgreSQL
