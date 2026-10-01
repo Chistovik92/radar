@@ -2296,10 +2296,6 @@ async def _agents_body(session, message: str = "", failed: str = "") -> str:
             + "".join(form(item) for item in items) + form(None) + picked)
 
 
-# Задачи, которые не должны исчезнуть до завершения (перезапуск по кнопке).
-_restart_tasks: set = set()
-
-
 def _settings_sections():
     from . import settingspages
 
@@ -3106,43 +3102,26 @@ async def create_app() -> Any:
         )
 
     async def partners_save(request):
-        from .. import partners
+        from .. import ops
 
         session, data = await _guarded_form(request, "superadmin")
-        projects = await partners.load()
-        slug = str(data.get("slug", "")).strip().lower()
-
-        existing = next((item for item in projects if item.slug == slug), None)
-        if existing is None and len(projects) >= partners.MAX_PROJECTS:
-            raise web.HTTPFound("/partners?err=" + quote(
-                f"Больше {partners.MAX_PROJECTS} проектов не бывает"))
-
-        # Разбор формы живёт в самом модуле партнёров: второй набор
-        # правил в панели разошёлся бы с ботом.
-        project = partners.from_form(data, existing)
-        if project is None:
-            raise web.HTTPFound("/partners?err=" + quote(
-                "Проверьте короткое имя, название и ссылку"))
-
-        rest = [item for item in projects if item.slug != project.slug]
-        await partners.save(rest + [project])
+        result = await ops.partner_save(data)
+        if not result.ok:
+            raise web.HTTPFound("/partners?err=" + quote(result.message))
+        kind, _, slug = result.extra.partition(":")
         audit.record(session.user_key,
-                     "партнёр изменён" if existing else "партнёр добавлен",
-                     project.slug)
-        raise web.HTTPFound("/partners?ok=" + quote(f"Сохранено: {project.title}"))
+                     "партнёр изменён" if kind == "changed" else "партнёр добавлен", slug)
+        raise web.HTTPFound("/partners?ok=" + quote(result.message))
 
     async def partners_remove(request):
-        from .. import partners
+        from .. import ops
 
         session, data = await _guarded_form(request, "superadmin")
-        slug = str(data.get("slug", "")).strip().lower()
-        projects = await partners.load()
-        rest = [item for item in projects if item.slug != slug]
-        if len(rest) == len(projects):
-            raise web.HTTPFound("/partners?err=" + quote("Такого проекта нет"))
-        await partners.save(rest)
-        audit.record(session.user_key, "партнёр удалён", slug)
-        raise web.HTTPFound("/partners?ok=" + quote("Проект удалён"))
+        result = await ops.partner_remove(str(data.get("slug", "")))
+        if not result.ok:
+            raise web.HTTPFound("/partners?err=" + quote(result.message))
+        audit.record(session.user_key, "партнёр удалён", result.extra)
+        raise web.HTTPFound("/partners?ok=" + quote(result.message))
 
     @owner_only
     async def partners_export(request, _session):
@@ -3555,32 +3534,15 @@ async def create_app() -> Any:
             content_type="text/html")
 
     async def settings_restart(request):
-        import asyncio
-        import socket
-
-        from .. import dockerapi
+        from .. import ops
 
         session, _data = await _guarded_form(request, "superadmin")
-        if not dockerapi.available():
-            raise web.HTTPFound("/settings?err=" + quote("Нет доступа к docker — перезапустите на сервере"))
+        result = await ops.restart_bot()
+        if not result.ok:
+            raise web.HTTPFound("/settings?err=" + quote(result.message))
         audit.record(session.user_key, "перезапуск бота из панели", "")
-
-        async def later() -> None:
-            # Ответ должен успеть уйти: перезапускается тот самый процесс, что отвечает.
-            await asyncio.sleep(2)
-            docker = await dockerapi.session()
-            try:
-                name = "radar_container"
-                if not await dockerapi.container_exists(docker, name):
-                    name = socket.gethostname()
-                await dockerapi.container_action(docker, name, "restart")
-            finally:
-                await docker.close()
-
-        task = asyncio.get_running_loop().create_task(later())
-        _restart_tasks.add(task)
-        task.add_done_callback(_restart_tasks.discard)
-        raise web.HTTPFound("/settings?ok=" + quote("Перезапуск начат — через полминуты обновите страницу"))
+        raise web.HTTPFound("/settings?ok=" + quote(
+            "Перезапуск начат — через полминуты обновите страницу"))
 
     @owner_only
     async def cloud_page(request, session):

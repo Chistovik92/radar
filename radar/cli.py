@@ -52,7 +52,8 @@ _LOOP: asyncio.AbstractEventLoop | None = None
 LOCAL_ONLY = {"doctor", "version"}
 # Что только читает: для них молчание о неработающем боте не страшно.
 READ_ACTIONS = {"list", "size", "check", "info", "connections", "show", "get",
-                "tail", "pending", "stale"}
+                "tail", "pending", "stale", "codes", "panels", "access", "orders",
+                "export", "panel-check"}
 
 
 def attach(loop: asyncio.AbstractEventLoop | None) -> None:
@@ -494,6 +495,11 @@ async def _clean_deleted(chat_id: int, args) -> int:
 def cmd_files(args) -> int:
     from . import filedrop
 
+    if args.action == "remove":
+        from . import cli_ops
+
+        return cli_ops.files_remove(args)
+
     rows = [{"token": drop.token, "name": drop.name} for drop in filedrop.listing()]
     _out(rows, args.json, lambda data: [
         print(f"{row['token']}  {row['name']}") for row in data
@@ -555,7 +561,10 @@ def cmd_vpn(args) -> int:
     запись radar_selftest, проходит полный круг и оставляет её выключенной.
     Поэтому он — только с --yes.
     """
-    from . import vpn
+    from . import cli_ops, vpn
+
+    if args.action in cli_ops.VPN_ADMIN:
+        return cli_ops.vpn_admin(args)
 
     if not vpn.slots():
         wrong = vpn.unknown_kinds()
@@ -694,7 +703,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     files = subparsers.add_parser("files", help=L("раздача файлов", "file sharing"),
                                   parents=[common])
-    files.add_argument("action", nargs="?", choices=["list"], default="list")
+    files.add_argument("action", nargs="?", choices=["list", "remove"], default="list")
+    files.add_argument("token", nargs="?", default="")
+    files.add_argument("--yes", action="store_true")
     files.set_defaults(func=cmd_files)
 
     rd = subparsers.add_parser("rustdesk",
@@ -708,7 +719,29 @@ def build_parser() -> argparse.ArgumentParser:
     vpn_cmd = subparsers.add_parser(
         "vpn", help=L("VPN-панели: проверка и полный круг", "VPN panels: check and full cycle"),
         parents=[common])
-    vpn_cmd.add_argument("action", choices=["check", "selftest"])
+    from . import cli_ops
+
+    vpn_cmd.add_argument(
+        "action", choices=["check", "selftest", *cli_ops.VPN_ADMIN],
+        help=L("check/selftest — проверка; panels, panel-save, panel-remove, panel-check — "
+               "панели; access, issue, deny, extend, on, off, revoke — доступы; orders, "
+               "order-confirm, order-retry, order-cancel — заказы; app-revoke — устройства "
+               "приложений",
+               "check/selftest — verification; panels, panel-save, panel-remove, panel-check — "
+               "panels; access, issue, deny, extend, on, off, revoke — access; orders, "
+               "order-confirm, order-retry, order-cancel — orders; app-revoke — app devices"))
+    vpn_cmd.add_argument("items", nargs="*", help=L("аргументы действия (UID, слот, дни, заказ)",
+                                                     "action arguments (UID, slot, days, order)"))
+    vpn_cmd.add_argument("--set", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ",
+                         help=L("panel-save: поле слота (KIND, TITLE, URL, TOKEN, USER, PASS, "
+                                "INBOUND, SUB_URL, GROUPS, CERT)",
+                                "panel-save: a slot field (KIND, TITLE, URL, TOKEN, USER, PASS, "
+                                "INBOUND, SUB_URL, GROUPS, CERT)"))
+    vpn_cmd.add_argument("--slot", action="append", default=[],
+                         help=L("issue: номер панели (можно несколько)",
+                                "issue: a panel number (repeatable)"))
+    vpn_cmd.add_argument("--device", default="", help=L("app-revoke: id устройства",
+                                                         "app-revoke: device id"))
     vpn_cmd.add_argument("--yes", action="store_true")
     vpn_cmd.set_defaults(func=cmd_vpn)
 
@@ -724,6 +757,10 @@ def build_parser() -> argparse.ArgumentParser:
     from . import cli_admin
 
     cli_admin.register(subparsers, common)
+
+    from . import cli_ops as _ops
+
+    _ops.register(subparsers, common)
 
     return parser
 
