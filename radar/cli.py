@@ -53,7 +53,8 @@ LOCAL_ONLY = {"doctor", "version"}
 # Что только читает: для них молчание о неработающем боте не страшно.
 READ_ACTIONS = {"list", "size", "check", "info", "connections", "show", "get",
                 "tail", "pending", "stale", "codes", "panels", "access", "orders",
-                "export", "panel-check", "status", "models", "health", "agents"}
+                "export", "panel-check", "status", "models", "health", "agents", "usage",
+                "warns"}
 
 
 def attach(loop: asyncio.AbstractEventLoop | None) -> None:
@@ -375,6 +376,11 @@ def cmd_links(args) -> int:
         return NEEDS_YES
 
     async def run():
+        if args.action == "add":
+            from . import cli_extra
+
+            return await cli_extra.short_add(args.code, args.json)
+
         if args.action == "list":
             rows = await repo.short_link_list()
             _out(rows, args.json, lambda data: [
@@ -420,6 +426,10 @@ def cmd_chats(args) -> int:
         chat_id = int(args.chat_id)
         if args.action == "clean":
             return await _clean_deleted(chat_id, args)
+        if args.action in ("invite", "announce", "warns"):
+            from . import cli_extra
+
+            return await cli_extra.chat_action(chat_id, args)
         if args.action == "forget":
             done = await repo.chat_forget(chat_id)
             print(L("забыт", "forgotten") if done
@@ -686,7 +696,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     links = subparsers.add_parser("links", help=L("короткие ссылки", "short links"),
                                   parents=[common])
-    links.add_argument("action", choices=["list", "remove", "clear"])
+    links.add_argument("action", choices=["list", "remove", "clear", "add"],
+                       help=L("add АДРЕС — создать короткую ссылку", "add URL — create a short link"))
     links.add_argument("code", nargs="?", default="")
     links.add_argument("--yes", action="store_true")
     links.set_defaults(func=cmd_links)
@@ -694,10 +705,19 @@ def build_parser() -> argparse.ArgumentParser:
     chats = subparsers.add_parser("chats", help=L("чаты под модерацией",
                                                   "moderated chats"),
                                   parents=[common])
-    chats.add_argument("action", choices=["list", "on", "off", "forget", "clean"],
-                       help=L("clean — найти и (с --yes) исключить удалённые аккаунты",
-                              "clean — find and (with --yes) remove deleted accounts"))
+    chats.add_argument("action", choices=["list", "on", "off", "forget", "clean", "invite",
+                                          "announce", "warns"],
+                       help=L("clean — удалённые аккаунты; invite ЧАТ [ССЫЛКА] — своя ссылка "
+                              "приглашения; announce ЧАТ ТЕКСТ — объявление от имени бота; "
+                              "warns ЧАТ ПОЛЬЗОВАТЕЛЬ — счётчик предупреждений",
+                              "clean — deleted accounts; invite CHAT [LINK] — a custom invite "
+                              "link; announce CHAT TEXT — an announcement in the bot's name; "
+                              "warns CHAT USER — the warning counter"))
     chats.add_argument("chat_id", nargs="?", default="")
+    chats.add_argument("rest", nargs="*", help=L("ссылка, текст или пользователь",
+                                                  "link, text or user"))
+    chats.add_argument("--reset", action="store_true", help=L("warns: сбросить счётчик",
+                                                              "warns: reset the counter"))
     chats.add_argument("--yes", action="store_true")
     chats.set_defaults(func=cmd_chats)
 
@@ -765,6 +785,10 @@ def build_parser() -> argparse.ArgumentParser:
     from . import cli_ai as _ai
 
     _ai.register(subparsers, common)
+
+    from . import cli_extra as _extra
+
+    _extra.register(subparsers, common)
 
     return parser
 
