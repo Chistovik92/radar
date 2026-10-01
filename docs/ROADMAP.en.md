@@ -1753,9 +1753,10 @@ duplication of the bot's and the panel's functions. Plan:
 4. **5.9.8 - subscriptions, VPN, partners, restart:** `subs`, `vpn panels|access|orders|
    app-revoke`, `partners`, `files remove`, `restart`; the actions shared by the panel and
    the console - `radar/ops.py`.
-5. **Next:** the rest of the parity table - AI (agents, models, provider, quota), digest,
-   history, link check, music and cloud, media, SOS, chats (announcements and messages),
-   events.
+5. **5.9.9 - AI and observability:** `ai` (status, models, provider, health, agents,
+   ask, reset, bench), `metrics`, `perf`, `net`.
+6. **Next:** the rest of the parity table - digest, history, link check, music and
+   cloud, media, SOS, chats (announcements and messages), events.
 
 ---
 

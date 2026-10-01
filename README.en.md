@@ -1,4 +1,4 @@
-# Radar v5.9.8
+# Radar v5.9.9
 
 [Русская версия](README.md)
 
@@ -855,6 +855,37 @@ radarctl.sh restart --yes                          # restart the bot (docker.soc
 description, order or click counter. The project limit and field parsing are
 shared with the panel (`radar/ops.py`, `radar/partners.py`). All of it is
 written to the action log as "console", without secrets or panel addresses.
+
+**AI, metrics, timing, network (since 5.9.9).** The same actions as in the bot
+(`/ai`, `/models`, `/setmodel`, `/provider`, `/quota`, `/bench`, `/metrics`, `/perf`,
+`/network`) and the panel's "Agents" section.
+
+```bash
+radarctl.sh ai status                              # quota, models, provider
+radarctl.sh ai models [--refresh]                  # models available to the key
+radarctl.sh ai set-model gemini-3.6-flash [--target analysis]
+radarctl.sh ai provider [name]                     # list / switch the analysis provider
+radarctl.sh ai health [name]                       # availability and balance of providers
+radarctl.sh ai ask "draft an alert about a water outage"
+radarctl.sh ai reset 123456789                     # clear a person's assistant context
+radarctl.sh ai bench --yes                         # compare providers (minutes, spends quota)
+radarctl.sh ai agents                              # own agents (keys are not printed)
+radarctl.sh ai agent-save 1 --set title=Mine --set url=https://llm.example/v1 --set key=…
+radarctl.sh ai agent-model gemini gemini-3.6-flash
+radarctl.sh ai agent-remove 1 --yes
+radarctl.sh metrics [--json]                       # memory, disks, containers, latency
+radarctl.sh perf [--reset]                         # cycle time by stage
+radarctl.sh net                                    # egress and proxy: status
+```
+
+Quota counters, cycle timing, the pinned model and assistant contexts live in
+the bot's memory, so `ai set-model`, `ai reset`, `ai bench`, `perf` and
+`ai models --refresh` work only while the bot runs (the console hands them to
+it over the socket) - without the bot they say so instead of showing zeros.
+The rules for pinning a model and saving an agent (an empty key means "keep")
+are shared with the panel (`radar/ops.py`). Adding and removing proxy servers
+stays in the bot (`/network`): it is a dialog with key entry, and the console
+has no sensible form for it.
 
 ### Removing the installation
 

@@ -1,4 +1,4 @@
-# Система «Радар» v5.9.8
+# Система «Радар» v5.9.9
 
 [English version](README.en.md)
 
@@ -1263,6 +1263,36 @@ radarctl.sh restart --yes                          # перезапустить 
 порядок и счётчик переходов. Лимит проектов и разбор полей — общие с панелью
 (`radar/ops.py`, `radar/partners.py`). Всё это пишется в журнал действий
 от имени «консоль», без секретов и адресов панелей.
+
+**ИИ, метрики, замеры, сеть (с 5.9.9).** Те же действия, что в боте
+(`/ai`, `/models`, `/setmodel`, `/provider`, `/quota`, `/bench`, `/metrics`, `/perf`,
+`/network`) и в разделе панели «Агенты».
+
+```bash
+radarctl.sh ai status                              # квота, модели, провайдер
+radarctl.sh ai models [--refresh]                  # доступные ключу модели
+radarctl.sh ai set-model gemini-3.6-flash [--target analysis]
+radarctl.sh ai provider [имя]                      # список / переключить провайдера разбора
+radarctl.sh ai health [имя]                        # доступность и остаток у провайдеров
+radarctl.sh ai ask "составь оповещение об отключении воды"
+radarctl.sh ai reset 123456789                     # очистить контекст ассистента человека
+radarctl.sh ai bench --yes                         # сравнить провайдеров (минуты, тратит квоту)
+radarctl.sh ai agents                              # свои агенты (ключи не печатаются)
+radarctl.sh ai agent-save 1 --set title=Мой --set url=https://llm.example/v1 --set key=…
+radarctl.sh ai agent-model gemini gemini-3.6-flash
+radarctl.sh ai agent-remove 1 --yes
+radarctl.sh metrics [--json]                       # память, диски, контейнеры, задержки
+radarctl.sh perf [--reset]                         # время цикла по стадиям
+radarctl.sh net                                    # выход в сеть и прокси: состояние
+```
+
+Счётчики квоты, замеры цикла, закреплённая модель и контексты ассистента
+живут в памяти бота, поэтому `ai set-model`, `ai reset`, `ai bench`, `perf` и
+`ai models --refresh` работают только когда бот запущен (консоль передаёт их ему
+по сокету) — без бота они так и говорят, а не показывают нули. Правила закрепления
+модели и сохранения агента (пустой ключ — «не менять») общие с панелью
+(`radar/ops.py`). Добавление и удаление прокси-серверов остаётся в боте (`/network`):
+это диалог с вводом ключа, у консоли для него нет осмысленной формы.
 
 ### Удаление установки
 

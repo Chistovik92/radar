@@ -147,6 +147,7 @@ MANIFEST = [
     "radar/discordmusic.py",
     "radar/discordverify.py",
     "radar/cli_admin.py",
+    "radar/cli_ai.py",
     "radar/clitext.py",
     "radar/__main__.py",
     # Скрипты обслуживания теперь едут на сервер вместе с кодом.

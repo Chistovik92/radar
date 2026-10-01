@@ -107,3 +107,62 @@ async def restart_bot(delay: float = 2.0) -> Result:
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return Result(True, "Перезапуск начат — через полминуты бот вернётся")
+
+
+# --------------------------------------------------------------------------
+#  ИИ: свои агенты, модели (с 5.9.9)
+# --------------------------------------------------------------------------
+
+async def agent_save(data: Any) -> Result:
+    """Свой ИИ-агент в слоте. Пустой ключ — «оставить прежний»: значение
+    показано маской, и заставлять вводить его заново при правке названия —
+    верный способ потерять рабочий ключ."""
+    from . import agents
+
+    slot = str(data.get("slot", ""))
+    if not agents.valid_slot(slot):
+        return Result(False, "Свободных слотов нет")
+    url = str(data.get("url", ""))
+    if not agents.valid_url(url):
+        return Result(False, "Адрес должен начинаться с http:// или https://")
+    key = str(data.get("key", "")).strip()
+    if not key:
+        existing = next((item for item in agents.load() if item.slot == int(slot)), None)
+        key = existing.key if existing else ""
+    if not agents.save(int(slot), str(data.get("title", "")), url, key,
+                       str(data.get("model", ""))):
+        return Result(False, "Записать не удалось — проверьте права на .env")
+    return Result(True, f"Агент в слоте {slot} сохранён", slot)
+
+
+async def agent_remove(slot: str) -> Result:
+    from . import agents
+
+    if not agents.valid_slot(slot) or not agents.forget(int(slot)):
+        return Result(False, "Такого слота нет")
+    return Result(True, "Агент удалён", str(slot))
+
+
+async def agent_model(name: str, model: str) -> Result:
+    from . import provider
+
+    if name not in provider.all_infos():
+        return Result(False, "Неизвестный провайдер")
+    if not provider.set_model(name, model):
+        return Result(False, "Записать не удалось")
+    return Result(True, f"Модель {name} сохранена", name)
+
+
+async def pin_model(name: str, target: str = "assistant") -> Result:
+    """Закрепить модель Gemini из доступных ключу (как /setmodel)."""
+    from . import ai
+
+    name = (name or "").strip()
+    role = ai.ANALYSIS if target.startswith("anal") else ai.ASSISTANT
+    available = ai.models_report()["available"]
+    if available and name not in available:
+        return Result(False, f"Модель {name} недоступна вашему ключу")
+    if not ai.pin_model(role, name):
+        return Result(False, "Не удалось закрепить модель")
+    return Result(True, f"Модель {'разбора новостей' if role == ai.ANALYSIS else 'ассистента'}: "
+                        f"{name}", role)

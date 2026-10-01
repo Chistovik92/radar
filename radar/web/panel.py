@@ -2919,55 +2919,34 @@ async def create_app() -> Any:
         )
 
     async def agents_save(request):
-        from .. import agents
+        from .. import ops
 
         session, data = await _guarded_form(request, "superadmin")
-        slot = str(data.get("slot", ""))
-        if not agents.valid_slot(slot):
-            raise web.HTTPFound("/agents?err=" + quote("Свободных слотов нет"))
-
-        url = str(data.get("url", ""))
-        if not agents.valid_url(url):
-            raise web.HTTPFound("/agents?err=" + quote(
-                "Адрес должен начинаться с http:// или https://"))
-
-        # Пустое поле ключа означает «оставить прежний», а не «стереть»:
-        # значение показано маской, и заставлять вводить его заново при
-        # правке названия — верный способ потерять рабочий ключ.
-        key = str(data.get("key", "")).strip()
-        if not key:
-            existing = next((item for item in agents.load()
-                             if item.slot == int(slot)), None)
-            key = existing.key if existing else ""
-
-        if not agents.save(int(slot), str(data.get("title", "")), url, key,
-                           str(data.get("model", ""))):
-            raise web.HTTPFound("/agents?err=" + quote(
-                "Записать не удалось — проверьте права на .env"))
-        audit.record(session.user_key, "свой агент сохранён", f"слот {slot}")
-        raise web.HTTPFound("/agents?ok=" + quote(f"Агент в слоте {slot} сохранён"))
+        result = await ops.agent_save(data)
+        if not result.ok:
+            raise web.HTTPFound("/agents?err=" + quote(result.message))
+        audit.record(session.user_key, "свой агент сохранён", f"слот {result.extra}")
+        raise web.HTTPFound("/agents?ok=" + quote(result.message))
 
     async def agents_model(request):
-        from .. import provider
+        from .. import ops
 
         session, data = await _guarded_form(request, "superadmin")
-        name = str(data.get("provider", ""))
-        if name not in provider.all_infos():
-            raise web.HTTPFound("/agents?err=" + quote("Неизвестный провайдер"))
-        if not provider.set_model(name, str(data.get("model", ""))):
-            raise web.HTTPFound("/agents?err=" + quote("Записать не удалось"))
-        audit.record(session.user_key, "модель провайдера изменена", name)
-        raise web.HTTPFound("/agents?ok=" + quote(f"Модель {name} сохранена"))
+        result = await ops.agent_model(str(data.get("provider", "")), str(data.get("model", "")))
+        if not result.ok:
+            raise web.HTTPFound("/agents?err=" + quote(result.message))
+        audit.record(session.user_key, "модель провайдера изменена", result.extra)
+        raise web.HTTPFound("/agents?ok=" + quote(result.message))
 
     async def agents_remove(request):
-        from .. import agents
+        from .. import ops
 
         session, data = await _guarded_form(request, "superadmin")
-        slot = str(data.get("slot", ""))
-        if not agents.valid_slot(slot) or not agents.forget(int(slot)):
-            raise web.HTTPFound("/agents?err=" + quote("Такого слота нет"))
-        audit.record(session.user_key, "свой агент удалён", f"слот {slot}")
-        raise web.HTTPFound("/agents?ok=" + quote("Агент удалён"))
+        result = await ops.agent_remove(str(data.get("slot", "")))
+        if not result.ok:
+            raise web.HTTPFound("/agents?err=" + quote(result.message))
+        audit.record(session.user_key, "свой агент удалён", f"слот {result.extra}")
+        raise web.HTTPFound("/agents?ok=" + quote(result.message))
 
     async def _guarded_form(request, minimum: str):
         """Общая часть записи: сессия, роль, токен формы.

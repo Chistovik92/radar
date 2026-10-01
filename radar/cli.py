@@ -53,7 +53,7 @@ LOCAL_ONLY = {"doctor", "version"}
 # Что только читает: для них молчание о неработающем боте не страшно.
 READ_ACTIONS = {"list", "size", "check", "info", "connections", "show", "get",
                 "tail", "pending", "stale", "codes", "panels", "access", "orders",
-                "export", "panel-check"}
+                "export", "panel-check", "status", "models", "health", "agents"}
 
 
 def attach(loop: asyncio.AbstractEventLoop | None) -> None:
@@ -761,6 +761,10 @@ def build_parser() -> argparse.ArgumentParser:
     from . import cli_ops as _ops
 
     _ops.register(subparsers, common)
+
+    from . import cli_ai as _ai
+
+    _ai.register(subparsers, common)
 
     return parser
 
