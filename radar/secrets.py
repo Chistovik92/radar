@@ -173,6 +173,23 @@ SETTINGS: tuple[Setting, ...] = (
             "Вступившего с более молодым аккаунтом исключают сразу. 0 — не "
             "проверять (по умолчанию). Нужно намерение Server Members.",
             "Discord", secret=False, kind="int", low=0, high=365, default="0"),
+    Setting("DISCORD_DJ_ROLE_ID", "Discord: роль DJ",
+            "Числовой id роли, которой разрешено управлять музыкой. Пусто — "
+            "всем; управляющим сервером можно всегда.",
+            "Discord", secret=False, kind="int", low=1),
+    Setting("DISCORD_MUSIC_MAX_MINUTES", "Discord: длина трека, минут",
+            "Длиннее не ставится в очередь. По умолчанию 180.",
+            "Discord", restart=True, secret=False, kind="int", low=1, high=1440,
+            default="180"),
+    Setting("DISCORD_MUSIC_QUEUE", "Discord: длина очереди",
+            "Сколько треков держит очередь сервера. По умолчанию 50.",
+            "Discord", restart=True, secret=False, kind="int", low=1, high=200,
+            default="50"),
+    Setting("DISCORD_MUSIC_GUILDS", "Discord: серверов с музыкой разом",
+            "Сколько голосовых каналов бот держит одновременно. Каждый — "
+            "ffmpeg и сеть; на одноплатнике — один-два. По умолчанию 2.",
+            "Discord", restart=True, secret=False, kind="int", low=1, high=10,
+            default="2"),
     Setting("DISCORD_LOG_CHANNEL_ID", "Discord: канал журнала проверки",
             "Числовой id канала, куда бот пишет, кого исключил и почему. "
             "Пусто — только в журнал бота.",

@@ -356,6 +356,29 @@ class DiscordTransport:
             await self.request("POST", f"/channels/{event.chat_id}/messages", body)
         return result is not None
 
+    async def edit_original(self, event: InboundEvent, message: OutboundMessage) -> bool:
+        """Правит ответ на взаимодействие — когда на «ищу…» ушло больше
+        трёх секунд и итог известен позже."""
+        raw = event.raw or {}
+        bodies = payloads(message)
+        if not self.application_id or not bodies:
+            return False
+        body = {key: value for key, value in bodies[0].items()
+                if key in ("content", "components", "allowed_mentions")}
+        result = await self.request(
+            "PATCH",
+            f"/webhooks/{self.application_id}/{raw.get('token')}/messages/@original", body)
+        return result is not None
+
+    async def voice_channel_of(self, guild_id: str, user_id: str) -> str:
+        """В каком голосовом канале сидит человек. Пусто — ни в каком.
+
+        Через REST, а не по кэшу: так не нужны ни намерение участников,
+        ни хранение голосовых состояний всех серверов.
+        """
+        state = await self.request("GET", f"/guilds/{guild_id}/voice-states/{user_id}")
+        return str((state or {}).get("channel_id") or "")
+
     async def respond_modal(self, event: InboundEvent, custom_id: str, title: str,
                             label: str, *, placeholder: str = "",
                             max_length: int = 40) -> bool:

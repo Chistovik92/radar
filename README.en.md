@@ -1,4 +1,4 @@
-# Radar v5.9.6
+# Radar v5.9.7
 
 [Русская версия](README.md)
 
@@ -933,6 +933,55 @@ verification state is kept in memory: after a restart those who had not
 finished go through the button again. An external captcha (Turnstile/hCaptcha)
 on the panel domain was not built: it needs a live domain, service keys and
 OAuth2.
+
+### Discord: music by link (since 5.9.7) ⚠️ not verified in operation
+
+Flag `discord_music`, off by default. Commands: **`/play`** (a link or search
+words), `/skip`, `/pause`, `/resume`, `/stop`, `/queue`. The bot joins the
+voice channel the requester is in, queues tracks and plays. It works with
+anything yt-dlp opens: YouTube, SoundCloud, Bandcamp, Yandex Music, direct
+links to audio files; a playlist link queues up to 25 tracks, while a video
+inside a list (`watch?v=…&list=…`) is a single track.
+
+**Spotify, Apple Music, Deezer and Tidal do not open** - they serve a
+protected (DRM) stream; the bot says so and suggests another link or a word
+search.
+
+**On rights.** Playing from YouTube and similar services violates their terms
+of use, and such bots are regularly blocked. The feature is off, and
+responsibility for the links lies with whoever turns it on for their server.
+
+What it needs:
+
+1. **`discord.py[voice]`** - a separate `requirements-voice.txt`; the image
+   installs it optionally: if no wheel exists for the platform the image still
+   builds and the log says "voice unavailable". Since 2026-03-02 Discord
+   requires end-to-end encryption (**DAVE**) from every voice client, bots
+   included: a hand-written client without it will not connect, while
+   `discord.py` 2.7 gets it from the `davey` package. So voice runs on a
+   separate `discord.Client` connection with minimal intents, and the
+   existing adapter keeps serving the commands.
+2. **ffmpeg** is already in the image (for video download).
+3. The bot needs "Connect" and "Speak" on the server.
+4. Turn on `discord_music` and restart the bot.
+
+Limits (settings under "Platforms" → Discord): `DISCORD_DJ_ROLE_ID` - who
+controls (empty - everyone; server managers always), `DISCORD_MUSIC_MAX_MINUTES`
+(180), `DISCORD_MUSIC_QUEUE` (50), `DISCORD_MUSIC_GUILDS` (2 - channels at once:
+each one is an ffmpeg and a stream, and the board is a single machine). The
+bot leaves the channel after 5 minutes of silence. Addresses on internal
+networks are refused; cookies and proxy are the video download's
+(`MEDIA_COOKIES`, `EGRESS_PROXY`) - YouTube from a datacenter address often asks
+for cookies.
+
+If everything plays except YouTube, that is YouTube's bot check: attach
+cookies with `/cookies`.
+
+Verified: the queue, limits, rights and protection by offline tests; the whole
+audio path (yt-dlp → ffmpeg → Opus frames, track change) by
+`tools/discord_music_check.py` on real yt-dlp, ffmpeg and discord.py, without
+Discord. **Not verified**: joining a real voice channel, DAVE in practice,
+running on the ARM board.
 
 ### One account in every network (since 5.7) ⚠️ not verified in operation
 
