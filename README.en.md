@@ -1,4 +1,4 @@
-# Radar v5.9.4
+# Radar v5.9.5
 
 [Русская версия](README.md)
 
@@ -893,6 +893,46 @@ source; the transport is exercised over a real WebSocket against an
 emulator (`tools/discord_http_check.py`, a CI step). It has never talked
 to real Discord. Setup is in section 15 of
 [docs/API_SETUP.md](docs/API_SETUP.md).
+
+### Discord: member verification (since 5.9.5) ⚠️ not verified in operation
+
+Flag `discord_verify`, off by default; the Discord platform must be on.
+**Proving that a human is behind an account is not possible**: Discord has no
+captcha for bots. The check raises the cost of automated joining - three steps:
+
+1. **Button and question.** A new member sees only the verification channel;
+   the "✅ I am human" button opens a window with a question (sum, difference,
+   a word backwards, letter count), three attempts; a correct answer grants
+   the "verified" role. A wrong answer burns the question, so the same one
+   cannot be brute-forced. Three misses mean removal.
+2. **Linking via `/link`.** A Discord account linked to one verified in
+   Telegram, VK or MAX (the shared account of 5.7) passes without a question.
+3. **Check on joining** (needs the Server Members intent): an account younger
+   than `DISCORD_MIN_ACCOUNT_DAYS` days or a name carrying an invite or ad is
+   removed at once; one who has not passed within `DISCORD_VERIFY_MINUTES`
+   (10) is removed on timeout.
+
+Server setup (done by the server administrator; the bot cannot do it):
+
+1. Create a "verified" role; put its id in `DISCORD_VERIFY_ROLE_ID` (the
+   "Settings" → "Platforms" section or `radarctl.sh keys set DISCORD_VERIFY_ROLE_ID …`).
+2. The bot's role must be **above** the "verified" role, and the bot needs
+   "Manage Roles" and "Kick Members".
+3. Close channels to `@everyone` and open them to the "verified" role; open
+   the verification channel to `@everyone` (read only).
+4. In the verification channel run `/verifysetup` (visible only to those who
+   manage the server) - the bot posts the message with the button.
+5. For step 3 turn on the **Server Members Intent** (Developer Portal → Bot →
+   Privileged Gateway Intents) and restart the bot. If it is off, Discord
+   closes the connection with code 4014; the bot rolls back to ordinary
+   intents by itself, logs the reason, and the button keeps working - without
+   the join check and timeout.
+
+The removal log goes to the channel `DISCORD_LOG_CHANNEL_ID` if set. The
+verification state is kept in memory: after a restart those who had not
+finished go through the button again. An external captcha (Turnstile/hCaptcha)
+on the panel domain was not built: it needs a live domain, service keys and
+OAuth2.
 
 ### One account in every network (since 5.7) ⚠️ not verified in operation
 

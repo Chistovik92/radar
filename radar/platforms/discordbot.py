@@ -33,6 +33,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from .. import discordverify
 from ..textutils import esc
 from .base import Button, EventKind, InboundEvent, OutboundMessage
 
@@ -72,7 +73,10 @@ COMMANDS = (
     ("remove", "Удалить адрес", [("number", "Номер из /addresses", True)]),
     ("link", "Связать с Telegram, ВК или MAX", [("code", "Код из другой сети", False)]),
     ("unlink", "Отвязать этот аккаунт от остальных"),
+    # Проверка участников (5.9.5): команда только для управляющих сервером.
+    ("verifysetup", "Поставить кнопку проверки участников в этот канал"),
 )
+RESTRICTED = ("verifysetup",)
 
 # Команды общего аккаунта: личное, поэтому ответ видит только автор.
 PERSONAL = ("address", "addresses", "remove", "link", "unlink")
@@ -171,6 +175,10 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     """
     from .maxbot import telegram_username
 
+    if (event.kind is EventKind.COMMAND and event.command == "verifysetup") or (
+            event.kind is EventKind.CALLBACK and event.payload.startswith("dv:")):
+        await verification(event, transport)
+        return
     if (event.kind is EventKind.COMMAND and event.command in PERSONAL) or (
             event.kind is EventKind.CALLBACK and event.payload in (YES_ID, NO_ID)):
         await personal(event, transport)
@@ -208,6 +216,170 @@ async def personal(event: InboundEvent, transport: Any) -> None:
                             update=event.kind is EventKind.CALLBACK, ephemeral=True)
 
 
+# --------------------------------------------------------------------------
+#  Проверка участников (5.9.5)
+# --------------------------------------------------------------------------
+
+GATE = discordverify.Gate()
+START_ID, ANSWER_ID = "dv:start", "dv:answer"
+SWEEP_EVERY = 60
+MANAGE_GUILD, ADMINISTRATOR = 0x20, 0x8
+
+
+def verify_enabled() -> bool:
+    """Включена ли проверка: флаг и роль «проверен» заданы."""
+    from .. import features
+
+    return features.enabled("discord_verify") and bool(_setting("DISCORD_VERIFY_ROLE_ID"))
+
+
+def _number(key: str, default: int = 0) -> int:
+    try:
+        return max(0, int(_setting(key) or default))
+    except ValueError:
+        return default
+
+
+def _can_manage(raw: dict[str, Any]) -> bool:
+    try:
+        bits = int((raw.get("member") or {}).get("permissions") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(bits & (MANAGE_GUILD | ADMINISTRATOR))
+
+
+async def _journal(transport: Any, text: str) -> None:
+    """Запись для модераторов в канал журнала, если он задан."""
+    channel = _setting("DISCORD_LOG_CHANNEL_ID")
+    log.info("Discord, проверка: %s", text)
+    if channel:
+        await transport.send(channel, OutboundMessage(text=text, silent=True))
+
+
+def _again(text: str) -> OutboundMessage:
+    return OutboundMessage(text=text, keyboard=[[Button(text="Попробовать снова",
+                                                        payload=START_ID)]])
+
+
+async def verification(event: InboundEvent, transport: Any) -> None:
+    """Кнопка «Я человек» → вопрос в окне → роль «проверен»."""
+    raw = event.raw or {}
+    guild = str(raw.get("guild_id") or "")
+    user = event.identity.external_id
+    role = _setting("DISCORD_VERIFY_ROLE_ID")
+
+    if event.kind is EventKind.COMMAND:
+        if not _can_manage(raw):
+            await transport.respond(event, OutboundMessage(
+                text="Команда только для управляющих сервером."), ephemeral=True)
+        elif not verify_enabled():
+            await transport.respond(event, OutboundMessage(
+                text="Проверка выключена: включите возможность «Discord: проверка "
+                     "участников» и задайте DISCORD_VERIFY_ROLE_ID."), ephemeral=True)
+        else:
+            await transport.respond(event, OutboundMessage(
+                text="<b>Проверка</b>\n\nНажмите кнопку и ответьте на короткий "
+                     "вопрос — так видно, что вы не скрипт. Без проверки остальные "
+                     "каналы закрыты.",
+                keyboard=[[Button(text="✅ Я человек", payload=START_ID)]]))
+        return
+
+    if not verify_enabled() or not guild:
+        await transport.respond(event, OutboundMessage(text="Проверка сейчас выключена."),
+                                ephemeral=True)
+        return
+
+    roles_now = [str(item) for item in (raw.get("member") or {}).get("roles") or []]
+    if role in roles_now:
+        GATE.passed(guild, user)
+        await transport.respond(event, OutboundMessage(text="Вы уже проверены."),
+                                ephemeral=True)
+        return
+
+    if event.payload == START_ID:
+        from .. import links
+
+        # Аккаунт уже связан с проверенным в другой сети — вопрос не нужен.
+        if await links.owner_of("discord", user):
+            if await transport.add_role(guild, user, role):
+                GATE.passed(guild, user)
+                await transport.respond(event, OutboundMessage(
+                    text="✅ Аккаунт связан с проверенным в другой сети — "
+                         "проверка пройдена."), ephemeral=True)
+                return
+        question = GATE.ask(guild, user)
+        await transport.respond_modal(event, ANSWER_ID, "Проверка", question,
+                                      placeholder="Ответ", max_length=20)
+        return
+
+    # ANSWER_ID
+    result = GATE.check(guild, user, event.text)
+    if result == discordverify.OK:
+        if await transport.add_role(guild, user, role):
+            await transport.respond(event, OutboundMessage(
+                text="✅ Проверка пройдена, добро пожаловать."), ephemeral=True)
+        else:
+            await transport.respond(event, OutboundMessage(
+                text="Ответ верный, но выдать роль не удалось — сообщите "
+                     "администрации (у бота нет права управлять ролями или его "
+                     "роль ниже роли «проверен»)."), ephemeral=True)
+            await _journal(transport, f"Не удалось выдать роль участнику {user}: "
+                                      "проверьте права бота.")
+    elif result == discordverify.WRONG:
+        left = GATE.attempts_left(guild, user)
+        await transport.respond(event, _again(f"Неверно. Осталось попыток: {left}."),
+                                ephemeral=True)
+    elif result == discordverify.LOCKED:
+        await transport.respond(event, OutboundMessage(
+            text="Попытки закончились. Вы можете вернуться по приглашению и "
+                 "пройти проверку заново."), ephemeral=True)
+        GATE.passed(guild, user)
+        if await transport.kick(guild, user):
+            await _journal(transport, f"Исключён {user}: не прошёл проверку "
+                                      f"за {discordverify.MAX_ATTEMPTS} попытки.")
+    else:
+        await transport.respond(event, _again("Вопрос устарел — нажмите ещё раз."),
+                                ephemeral=True)
+
+
+async def on_member_add(data: dict[str, Any], transport: Any) -> None:
+    """Вступление: сразу исключить явный мусор, остальных поставить на учёт."""
+    if not verify_enabled():
+        return
+    person = data.get("user") or {}
+    if person.get("bot"):
+        return
+    guild, user = str(data.get("guild_id") or ""), str(person.get("id") or "")
+    if not guild or not user:
+        return
+    verdict = discordverify.evaluate(
+        user, str(person.get("username") or ""), str(person.get("global_name") or ""),
+        min_days=_number("DISCORD_MIN_ACCOUNT_DAYS"))
+    if verdict.action == "kick":
+        if await transport.kick(guild, user):
+            await _journal(transport, f"Исключён {user} при вступлении: {verdict.reason}.")
+        return
+    GATE.joined(guild, user)
+
+
+async def verify_sweeper(transport: Any) -> None:
+    """Исключает тех, кто так и не прошёл проверку за отведённое время."""
+    while True:
+        await asyncio.sleep(SWEEP_EVERY)
+        if not verify_enabled():
+            continue
+        try:
+            for guild, user in GATE.overdue(_number("DISCORD_VERIFY_MINUTES", 10)):
+                GATE.passed(guild, user)
+                if await transport.kick(guild, user):
+                    await _journal(transport, f"Исключён {user}: не прошёл проверку "
+                                              "вовремя.")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.warning("Discord: сбой сторожа проверки", exc_info=True)
+
+
 async def run(transport: Any) -> None:
     """Всё, что делает Discord: команды, Gateway и публикации в канал."""
     from .. import mirror
@@ -215,10 +387,16 @@ async def run(transport: Any) -> None:
     # Тревоги общего аккаунта — в личные сообщения (5.7).
     mirror.register("discord", transport.send_text)
     try:
-        await transport.set_commands(COMMANDS)
+        await transport.set_commands(COMMANDS, restricted=RESTRICTED)
     except Exception:  # noqa: BLE001
         log.warning("Discord: слеш-команды не заданы", exc_info=True)
-    await asyncio.gather(transport.start(), community(transport))
+
+    async def member_added(data: dict[str, Any]) -> None:
+        await on_member_add(data, transport)
+
+    transport.member_handler = member_added
+    await asyncio.gather(transport.start(), community(transport),
+                         verify_sweeper(transport))
 
 
 def due(now: datetime, when: str, last_date: str) -> bool:

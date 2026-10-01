@@ -50,7 +50,7 @@ SECTIONS: tuple[Section, ...] = (
                   "для загрузки файлов."),
         Card("ВКонтакте", flags=("platform_vk",), groups=("ВКонтакте",),
              note="Бот сообщества и токен для чтения источников."),
-        Card("Discord", flags=("platform_discord",), groups=("Discord",)),
+        Card("Discord", flags=("platform_discord", "discord_verify"), groups=("Discord",)),
         Card("MAX", flags=("platform_max",), groups=("MAX",)),
         Card("Одноклассники", groups=("Одноклассники",),
              note="Ключи для чтения источников из Одноклассников."),
