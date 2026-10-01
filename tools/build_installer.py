@@ -138,6 +138,7 @@ MANIFEST = [
     "radar/adminsock.py",
     "radar/accounts.py",
     "radar/cli.py",
+    "radar/discordverify.py",
     "radar/cli_admin.py",
     "radar/clitext.py",
     "radar/__main__.py",

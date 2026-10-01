@@ -30,6 +30,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.5", [
+        "🛡 <b>Discord: проверка участников.</b> Новый участник нажимает кнопку и отвечает на короткий вопрос — так он получает роль «проверен»; связанный через /link аккаунт проходит без вопроса. Слишком молодые аккаунты и имена с рекламой исключаются при вступлении, не прошедшие вовремя — по тайм-ауту. Выключено по умолчанию, настраивается в панели. Доказать человека нельзя — это поднимает цену автоматического входа.",
+    ]),
     ("5.9.4", [
         "🧹 <b>Живые аккаунты в группах.</b> Команда /cleandeleted исключает удалённые аккаунты среди известных боту участников; не нажавший «Я не бот» новичок исключается по тайм-ауту; вступающих можно сверять с базой спамеров CAS. Всё — отдельными выключенными флагами. Заблокировавшие бота перестают получать запросы.",
     ]),
@@ -1842,8 +1845,11 @@ async def main() -> None:
         from radar.platforms import discordbot
         from radar.platforms.discord import DiscordTransport
 
+        # Намерение Server Members запрашивается, только когда включена
+        # проверка участников: оно привилегированное и без нужды не берётся.
         discord_transport = DiscordTransport(
-            secrets_module.get("DISCORD_BOT_TOKEN"), discordbot.reply)
+            secrets_module.get("DISCORD_BOT_TOKEN"), discordbot.reply,
+            member_events=discordbot.verify_enabled())
         if discord_transport.configured:
             spawn(discordbot.run(discord_transport), "discord")
             log.info("Адаптер Discord запущен")

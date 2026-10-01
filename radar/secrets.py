@@ -160,6 +160,23 @@ SETTINGS: tuple[Setting, ...] = (
             "Discord", secret=False),
     Setting("DISCORD_SUMMARY_TIME", "Discord: время сводки",
             "ЧЧ:ММ по времени сервера, по умолчанию 20:00.", "Discord", secret=False),
+    Setting("DISCORD_VERIFY_ROLE_ID", "Discord: роль «проверен»",
+            "Числовой id роли, которую бот выдаёт после проверки. Роль бота "
+            "должна стоять выше неё, а у бота — право управлять ролями. "
+            "Остальные каналы откройте только этой роли.",
+            "Discord", restart=True, secret=False, kind="int", low=1),
+    Setting("DISCORD_VERIFY_MINUTES", "Discord: время на проверку, минут",
+            "Не прошедший за это время исключается. 0 — не исключать. "
+            "По умолчанию 10. Работает при включённом намерении Server Members.",
+            "Discord", secret=False, kind="int", low=0, high=1440, default="10"),
+    Setting("DISCORD_MIN_ACCOUNT_DAYS", "Discord: возраст аккаунта, дней",
+            "Вступившего с более молодым аккаунтом исключают сразу. 0 — не "
+            "проверять (по умолчанию). Нужно намерение Server Members.",
+            "Discord", secret=False, kind="int", low=0, high=365, default="0"),
+    Setting("DISCORD_LOG_CHANNEL_ID", "Discord: канал журнала проверки",
+            "Числовой id канала, куда бот пишет, кого исключил и почему. "
+            "Пусто — только в журнал бота.",
+            "Discord", secret=False, kind="int", low=1),
 
     # --- VPN: общее для всех панелей (с 5.0) ---
     Setting("VPN_DAYS", "VPN: срок выдачи, дней",

@@ -1774,6 +1774,22 @@ At the author's request, modelled on `@RemoveDeletedAccountsBot`. Plan:
 
 ---
 
+## 5.9.5 - Discord member verification ⚠️ code written
+
+At the author's request. Plan: [PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md)
+(Russian), section 2.
+
+1. **Button and question.** "I am human" → a window with a question → the
+   "verified" role; three attempts, a wrong answer burns the question.
+2. **Linking via `/link`:** a linked account passes without a question.
+3. **Check on joining** (Server Members intent): account age, a name with an
+   ad, timeout; without the intent the bot falls back to ordinary ones and
+   the button keeps working.
+4. **Not done:** an external captcha on the panel domain (Turnstile/hCaptcha
+   + OAuth2). Music in a voice channel is a separate release.
+
+---
+
 ## 6.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2

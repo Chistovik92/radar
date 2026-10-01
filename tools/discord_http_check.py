@@ -187,6 +187,153 @@ class Emulator:
         return ws
 
 
+class VerifyEmulator(Emulator):
+    """Сервер для проверки участников (5.9.5): вступления, окно с вопросом,
+    выдача роли, исключение и отказ в привилегированном намерении."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.identifies: list[int] = []
+        self.kicked: list[str] = []
+        self.roles: list[tuple[str, str]] = []
+        self.young = ""
+        self.old = ""
+
+    def app(self) -> web.Application:
+        app = super().app()
+        app.router.add_delete("/api/v10/guilds/{guild}/members/{user}", self.kick)
+        app.router.add_put("/api/v10/guilds/{guild}/members/{user}/roles/{role}", self.grant)
+        return app
+
+    async def kick(self, request: web.Request) -> web.Response:
+        if not self.authed(request):
+            return web.json_response({}, status=401)
+        self.kicked.append(request.match_info["user"])
+        return web.Response(status=204)
+
+    async def grant(self, request: web.Request) -> web.Response:
+        if not self.authed(request):
+            return web.json_response({}, status=401)
+        self.roles.append((request.match_info["user"], request.match_info["role"]))
+        return web.Response(status=204)
+
+    async def script(self, ws: web.WebSocketResponse) -> None:
+        member = {"roles": [], "permissions": "0"}
+        await ws.send_json({"op": 0, "t": "READY", "s": 1, "d": {
+            "session_id": "S2", "application": {"id": "A1"},
+            "resume_gateway_url": self.base.replace("http", "ws") + "/resume"}})
+        await asyncio.sleep(0.3)
+        for number, (uid, name) in enumerate(((self.young, "молодой"), (self.old, "старый"))):
+            await ws.send_json({"op": 0, "t": "GUILD_MEMBER_ADD", "s": 2 + number, "d": {
+                "guild_id": "G1", "user": {"id": uid, "username": name}}})
+        await asyncio.sleep(0.3)
+        await ws.send_json({"op": 0, "t": "INTERACTION_CREATE", "s": 5, "d": {
+            "id": "I2", "token": "T2", "type": 3, "channel_id": "55", "guild_id": "G1",
+            "member": dict(member, user={"id": self.old, "username": "старый"}),
+            "data": {"custom_id": "dv:start"}}})
+        await asyncio.sleep(0.4)
+        pending = discordbot.GATE.pending.get(("G1", self.old))
+        answer = pending.answer if pending else "?"
+        await ws.send_json({"op": 0, "t": "INTERACTION_CREATE", "s": 6, "d": {
+            "id": "I3", "token": "T3", "type": 5, "channel_id": "55", "guild_id": "G1",
+            "member": dict(member, user={"id": self.old, "username": "старый"}),
+            "data": {"custom_id": "dv:answer", "components": [
+                {"type": 1, "components": [{"type": 4, "custom_id": "answer",
+                                            "value": answer}]}]}}})
+        await asyncio.sleep(0.4)
+        await ws.close(code=4004)
+        self.done.set()
+
+    async def gateway(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        self.connections += 1
+        await ws.send_json({"op": 10, "d": {"heartbeat_interval": 250}})
+        async for frame in ws:
+            if frame.type != WSMsgType.TEXT:
+                break
+            data = json.loads(frame.data)
+            if data.get("op") == 1:
+                await ws.send_json({"op": 11})
+            elif data.get("op") == 2:
+                intents = int(data["d"].get("intents") or 0)
+                self.identifies.append(intents)
+                if intents & discord.INTENT_MEMBERS and self.connections == 1:
+                    # Привилегированное намерение не включено в Developer Portal.
+                    await ws.close(code=4014)
+                    break
+                asyncio.ensure_future(self.script(ws))
+        return ws
+
+
+async def verify_checks() -> list[tuple[str, bool, str]]:
+    """Проверка участников на эмуляторе: настоящий транспорт и обработчики."""
+    import random
+
+    from radar import discordverify, features, links, secrets
+
+    emulator = VerifyEmulator()
+    now = time.time()
+    emulator.young = str((int((now - 86400) * 1000) - discordverify.DISCORD_EPOCH_MS) << 22)
+    emulator.old = str((int((now - 90 * 86400) * 1000) - discordverify.DISCORD_EPOCH_MS) << 22)
+    runner = web.AppRunner(emulator.app())
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    emulator.base = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"  # noqa: SLF001
+
+    values = {"DISCORD_VERIFY_ROLE_ID": "777", "DISCORD_MIN_ACCOUNT_DAYS": "3",
+              "DISCORD_VERIFY_MINUTES": "10", "DISCORD_LOG_CHANNEL_ID": ""}
+
+    async def no_link(platform, external_id):
+        return ""
+
+    discordbot.GATE = discordverify.Gate(rng=random.Random(7))
+    transport = discord.DiscordTransport(TOKEN, discordbot.reply,
+                                         member_events=True)
+
+    async def member_added(data):
+        await discordbot.on_member_add(data, transport)
+
+    transport.member_handler = member_added
+    features.set_local("discord_verify", True)
+    try:
+        with mock.patch.object(discord, "API", emulator.base + "/api/v10"), \
+                mock.patch.object(discord.random, "random", lambda: 0.0), \
+                mock.patch.object(secrets, "get", lambda key: values.get(key, "")), \
+                mock.patch.object(links, "owner_of", no_link):
+            await asyncio.wait_for(transport.start(), timeout=20)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        features.set_local("discord_verify", False)
+        await transport.stop()
+        await runner.cleanup()
+
+    modal = next((item for item in emulator.callbacks if item["token"] == "T2"), {})
+    modal_body = (modal.get("body") or {})
+    fields = ((modal_body.get("data") or {}).get("components") or [{}])[0].get("components") or [{}]
+    done = next((item for item in emulator.callbacks if item["token"] == "T3"), {})
+    return [
+        ("проверка: 4014 → откат намерений без остановки адаптера",
+         len(emulator.identifies) >= 2 and bool(emulator.identifies[0] & discord.INTENT_MEMBERS)
+         and not emulator.identifies[1] & discord.INTENT_MEMBERS
+         and transport.members_denied,
+         f"IDENTIFY: {emulator.identifies}"),
+        ("проверка: молодой аккаунт исключён при вступлении, старый — нет",
+         emulator.kicked == [emulator.young], f"исключены: {emulator.kicked}"),
+        ("проверка: кнопка открывает окно (тип 9) с вопросом ≤ 45 знаков",
+         modal_body.get("type") == 9
+         and (modal_body.get("data") or {}).get("custom_id") == "dv:answer"
+         and 0 < len(fields[0].get("label", "")) <= 45,
+         f"{fields[0].get('label', '')!r}"),
+        ("проверка: верный ответ из окна → роль выдана, ответ виден только ему",
+         emulator.roles == [(emulator.old, "777")]
+         and done.get("body", {}).get("data", {}).get("flags") == discord.EPHEMERAL,
+         f"роли: {emulator.roles}"),
+    ]
+
+
 async def main() -> int:
     emulator = Emulator()
     runner = web.AppRunner(emulator.app())
@@ -257,6 +404,8 @@ async def main() -> int:
                    and all(len(m.get("content", "")) <= 2000 for m in channel_messages)
                    and channel_messages[0]["content"].startswith("**Сводка**"),
                    f"сообщений: {len(channel_messages)}"))
+
+    checks.extend(await verify_checks())
 
     failures = 0
     print("Адаптер Discord по WebSocket и HTTP:\n")

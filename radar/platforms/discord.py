@@ -72,6 +72,10 @@ FATAL_CLOSE = {4004, 4010, 4011, 4012, 4013, 4014}
 # INTERACTION_CREATE без каких-либо намерений; содержимое чужих сообщений
 # (Message Content Intent) боту не нужно и не запрашивается.
 INTENTS = 1 << 0
+# Server Members — привилегированное: включается в Developer Portal.
+# Нужно только проверке участников (5.9.5); без него Discord закрывает
+# соединение кодом 4014, и адаптер откатывается к одним GUILDS.
+INTENT_MEMBERS = 1 << 1
 
 # Ответ на взаимодействие.
 CHANNEL_MESSAGE = 4
@@ -81,6 +85,10 @@ EPHEMERAL = 1 << 6
 # Типы взаимодействий.
 APPLICATION_COMMAND = 2
 MESSAGE_COMPONENT = 3
+MODAL_SUBMIT = 5
+
+# Ответ — окно с полем ввода.
+MODAL = 9
 
 TEXT_LIMIT = 2000
 BUTTONS_PER_ROW = 5
@@ -206,6 +214,20 @@ def parse_interaction(data: dict[str, Any]) -> InboundEvent | None:
     elif kind == MESSAGE_COMPONENT:
         event.kind = EventKind.CALLBACK
         event.payload = str(payload.get("custom_id") or "")
+    elif kind == MODAL_SUBMIT:
+        # Ответ из окна: значение первого поля — в text и args.
+        event.kind = EventKind.CALLBACK
+        event.payload = str(payload.get("custom_id") or "")
+        value = ""
+        for row in payload.get("components") or []:
+            for item in (row or {}).get("components") or []:
+                value = str((item or {}).get("value") or "").strip()
+                if value:
+                    break
+            if value:
+                break
+        event.args = value
+        event.text = value
     else:
         return None
     return event
@@ -230,9 +252,15 @@ class DiscordTransport:
 
     name = DISCORD
 
-    def __init__(self, token: str, handler: Handler | None = None) -> None:
+    def __init__(self, token: str, handler: Handler | None = None,
+                 member_events: bool = False) -> None:
         self.token = (token or "").strip()
         self.handler = handler
+        # Вступления участников (5.9.5): обработчик и намерение, которое
+        # нужно, чтобы их получать. Включаются вместе.
+        self.member_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        self.intents = INTENTS | (INTENT_MEMBERS if member_events else 0)
+        self.members_denied = False
         self.session: Any = None
         self.application_id = ""
         self.session_id = ""
@@ -328,7 +356,32 @@ class DiscordTransport:
             await self.request("POST", f"/channels/{event.chat_id}/messages", body)
         return result is not None
 
-    async def set_commands(self, commands: Sequence[tuple[str, str]]) -> None:
+    async def respond_modal(self, event: InboundEvent, custom_id: str, title: str,
+                            label: str, *, placeholder: str = "",
+                            max_length: int = 40) -> bool:
+        """Окно с одним полем ввода. Подпись поля — не длиннее 45 знаков."""
+        raw = event.raw or {}
+        field: dict[str, Any] = {
+            "type": 4, "custom_id": "answer", "style": 1, "label": label[:45],
+            "min_length": 1, "max_length": max_length, "required": True}
+        if placeholder:
+            field["placeholder"] = placeholder[:100]
+        result = await self.request(
+            "POST", f"/interactions/{raw.get('id')}/{raw.get('token')}/callback",
+            {"type": MODAL, "data": {"custom_id": custom_id, "title": title[:45],
+                                     "components": [{"type": 1, "components": [field]}]}})
+        return result is not None
+
+    async def add_role(self, guild_id: str, user_id: str, role_id: str) -> bool:
+        return await self.request(
+            "PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}") is not None
+
+    async def kick(self, guild_id: str, user_id: str) -> bool:
+        return await self.request(
+            "DELETE", f"/guilds/{guild_id}/members/{user_id}") is not None
+
+    async def set_commands(self, commands: Sequence[tuple[str, str]],
+                           restricted: Sequence[str] = ()) -> None:
         if not self.application_id:
             me = await self.request("GET", "/oauth2/applications/@me")
             self.application_id = str((me or {}).get("id") or "")
@@ -345,6 +398,11 @@ class DiscordTransport:
                     {"type": 3, "name": option, "description": text[:100],
                      "required": bool(required)}
                     for option, text, required in item[2]]
+            if name in restricted:
+                # Команда видна только тем, у кого есть право управлять
+                # сервером (бит 32); в личных сообщениях её нет.
+                command["default_member_permissions"] = "32"
+                command["dm_permission"] = False
             body.append(command)
         await self.request("PUT", f"/applications/{self.application_id}/commands", body)
 
@@ -359,7 +417,7 @@ class DiscordTransport:
 
     def identify(self) -> dict[str, Any]:
         return {"op": IDENTIFY, "d": {
-            "token": self.token, "intents": INTENTS,
+            "token": self.token, "intents": self.intents,
             "properties": {"os": "linux", "browser": "radar", "device": "radar"},
         }}
 
@@ -415,6 +473,12 @@ class DiscordTransport:
             log.info("Discord: сессия открыта")
         elif kind == "RESUMED":
             self._delay = 1.0
+        elif kind == "GUILD_MEMBER_ADD":
+            if self.member_handler is not None:
+                try:
+                    await self.member_handler(data)
+                except Exception:  # noqa: BLE001
+                    log.exception("Discord: сбой обработчика вступления")
         elif kind == "INTERACTION_CREATE":
             event = parse_interaction(data)
             if event is not None and self.handler is not None:
@@ -449,6 +513,18 @@ class DiscordTransport:
             try:
                 await self._run_once()
             except GatewayClosed as closed:
+                if closed.code == 4014 and self.intents & INTENT_MEMBERS:
+                    # Привилегированное намерение не включено в Developer
+                    # Portal. Остальная работа бота (сводки, команды,
+                    # кнопка проверки) от него не зависит — не останавливаем.
+                    self.intents &= ~INTENT_MEMBERS
+                    self.members_denied = True
+                    self.session_id, self.sequence = "", None
+                    log.error("Discord: намерение Server Members не включено "
+                              "(Developer Portal → Bot → Privileged Gateway "
+                              "Intents). Проверка при вступлении и тайм-аут "
+                              "отключены, кнопка проверки работает.")
+                    continue
                 if closed.code in FATAL_CLOSE:
                     log.error("Discord закрыл соединение кодом %s — проверьте токен "
                               "и намерения бота; адаптер остановлен", closed.code)

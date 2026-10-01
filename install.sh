@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.4 — автономный установщик.
+# Система «Радар» v5.9.5 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.4"
+VERSION="5.9.5"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=155
+FILE_COUNT=156
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3292,6 +3292,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.5", [
+        "🛡 <b>Discord: проверка участников.</b> Новый участник нажимает кнопку и отвечает на короткий вопрос — так он получает роль «проверен»; связанный через /link аккаунт проходит без вопроса. Слишком молодые аккаунты и имена с рекламой исключаются при вступлении, не прошедшие вовремя — по тайм-ауту. Выключено по умолчанию, настраивается в панели. Доказать человека нельзя — это поднимает цену автоматического входа.",
+    ]),
     ("5.9.4", [
         "🧹 <b>Живые аккаунты в группах.</b> Команда /cleandeleted исключает удалённые аккаунты среди известных боту участников; не нажавший «Я не бот» новичок исключается по тайм-ауту; вступающих можно сверять с базой спамеров CAS. Всё — отдельными выключенными флагами. Заблокировавшие бота перестают получать запросы.",
     ]),
@@ -5104,8 +5107,11 @@ async def main() -> None:
         from radar.platforms import discordbot
         from radar.platforms.discord import DiscordTransport
 
+        # Намерение Server Members запрашивается, только когда включена
+        # проверка участников: оно привилегированное и без нужды не берётся.
         discord_transport = DiscordTransport(
-            secrets_module.get("DISCORD_BOT_TOKEN"), discordbot.reply)
+            secrets_module.get("DISCORD_BOT_TOKEN"), discordbot.reply,
+            member_events=discordbot.verify_enabled())
         if discord_transport.configured:
             spawn(discordbot.run(discord_transport), "discord")
             log.info("Адаптер Discord запущен")
@@ -5198,7 +5204,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.4"
+__version__ = "5.9.5"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7369,6 +7375,19 @@ FLAGS: tuple[Flag, ...] = (
          group="Платформы", since="5.5", default=False),
 
     # --- партнёрские проекты ---
+    Flag("discord_verify", "Discord: проверка участников",
+         "Новый участник видит только канал проверки: по кнопке «Я человек» "
+         "отвечает на короткий вопрос (три попытки) и получает роль "
+         "«проверен» (DISCORD_VERIFY_ROLE_ID). Аккаунт, связанный через "
+         "/link с проверенным в другой сети, проходит без вопроса. Не "
+         "прошедший за DISCORD_VERIFY_MINUTES исключается; при включённом "
+         "намерении Server Members — ещё и проверка возраста аккаунта "
+         "(DISCORD_MIN_ACCOUNT_DAYS) и имён с рекламой. Каналы для "
+         "непроверенных закрывает администратор сервера правами роли. "
+         "Надёжно доказать человека нельзя — это поднимает цену "
+         "автоматического входа. Нужна платформа Discord. По умолчанию "
+         "выключено: ошибка в правах выгоняет живых людей.",
+         group="Платформы", since="5.9.5", default=False),
     Flag("partners", "Партнёрские проекты", "Раздел меню со списком проектов автора.",
          group="Партнёры", since="4.4", default=False,
          aliases=("promo",)),
@@ -10458,6 +10477,23 @@ SETTINGS: tuple[Setting, ...] = (
             "Discord", secret=False),
     Setting("DISCORD_SUMMARY_TIME", "Discord: время сводки",
             "ЧЧ:ММ по времени сервера, по умолчанию 20:00.", "Discord", secret=False),
+    Setting("DISCORD_VERIFY_ROLE_ID", "Discord: роль «проверен»",
+            "Числовой id роли, которую бот выдаёт после проверки. Роль бота "
+            "должна стоять выше неё, а у бота — право управлять ролями. "
+            "Остальные каналы откройте только этой роли.",
+            "Discord", restart=True, secret=False, kind="int", low=1),
+    Setting("DISCORD_VERIFY_MINUTES", "Discord: время на проверку, минут",
+            "Не прошедший за это время исключается. 0 — не исключать. "
+            "По умолчанию 10. Работает при включённом намерении Server Members.",
+            "Discord", secret=False, kind="int", low=0, high=1440, default="10"),
+    Setting("DISCORD_MIN_ACCOUNT_DAYS", "Discord: возраст аккаунта, дней",
+            "Вступившего с более молодым аккаунтом исключают сразу. 0 — не "
+            "проверять (по умолчанию). Нужно намерение Server Members.",
+            "Discord", secret=False, kind="int", low=0, high=365, default="0"),
+    Setting("DISCORD_LOG_CHANNEL_ID", "Discord: канал журнала проверки",
+            "Числовой id канала, куда бот пишет, кого исключил и почему. "
+            "Пусто — только в журнал бота.",
+            "Discord", secret=False, kind="int", low=1),
 
     # --- VPN: общее для всех панелей (с 5.0) ---
     Setting("VPN_DAYS", "VPN: срок выдачи, дней",
@@ -21568,7 +21604,7 @@ SECTIONS: tuple[Section, ...] = (
                   "для загрузки файлов."),
         Card("ВКонтакте", flags=("platform_vk",), groups=("ВКонтакте",),
              note="Бот сообщества и токен для чтения источников."),
-        Card("Discord", flags=("platform_discord",), groups=("Discord",)),
+        Card("Discord", flags=("platform_discord", "discord_verify"), groups=("Discord",)),
         Card("MAX", flags=("platform_max",), groups=("MAX",)),
         Card("Одноклассники", groups=("Одноклассники",),
              note="Ключи для чтения источников из Одноклассников."),
@@ -25739,6 +25775,10 @@ FATAL_CLOSE = {4004, 4010, 4011, 4012, 4013, 4014}
 # INTERACTION_CREATE без каких-либо намерений; содержимое чужих сообщений
 # (Message Content Intent) боту не нужно и не запрашивается.
 INTENTS = 1 << 0
+# Server Members — привилегированное: включается в Developer Portal.
+# Нужно только проверке участников (5.9.5); без него Discord закрывает
+# соединение кодом 4014, и адаптер откатывается к одним GUILDS.
+INTENT_MEMBERS = 1 << 1
 
 # Ответ на взаимодействие.
 CHANNEL_MESSAGE = 4
@@ -25748,6 +25788,10 @@ EPHEMERAL = 1 << 6
 # Типы взаимодействий.
 APPLICATION_COMMAND = 2
 MESSAGE_COMPONENT = 3
+MODAL_SUBMIT = 5
+
+# Ответ — окно с полем ввода.
+MODAL = 9
 
 TEXT_LIMIT = 2000
 BUTTONS_PER_ROW = 5
@@ -25873,6 +25917,20 @@ def parse_interaction(data: dict[str, Any]) -> InboundEvent | None:
     elif kind == MESSAGE_COMPONENT:
         event.kind = EventKind.CALLBACK
         event.payload = str(payload.get("custom_id") or "")
+    elif kind == MODAL_SUBMIT:
+        # Ответ из окна: значение первого поля — в text и args.
+        event.kind = EventKind.CALLBACK
+        event.payload = str(payload.get("custom_id") or "")
+        value = ""
+        for row in payload.get("components") or []:
+            for item in (row or {}).get("components") or []:
+                value = str((item or {}).get("value") or "").strip()
+                if value:
+                    break
+            if value:
+                break
+        event.args = value
+        event.text = value
     else:
         return None
     return event
@@ -25897,9 +25955,15 @@ class DiscordTransport:
 
     name = DISCORD
 
-    def __init__(self, token: str, handler: Handler | None = None) -> None:
+    def __init__(self, token: str, handler: Handler | None = None,
+                 member_events: bool = False) -> None:
         self.token = (token or "").strip()
         self.handler = handler
+        # Вступления участников (5.9.5): обработчик и намерение, которое
+        # нужно, чтобы их получать. Включаются вместе.
+        self.member_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        self.intents = INTENTS | (INTENT_MEMBERS if member_events else 0)
+        self.members_denied = False
         self.session: Any = None
         self.application_id = ""
         self.session_id = ""
@@ -25995,7 +26059,32 @@ class DiscordTransport:
             await self.request("POST", f"/channels/{event.chat_id}/messages", body)
         return result is not None
 
-    async def set_commands(self, commands: Sequence[tuple[str, str]]) -> None:
+    async def respond_modal(self, event: InboundEvent, custom_id: str, title: str,
+                            label: str, *, placeholder: str = "",
+                            max_length: int = 40) -> bool:
+        """Окно с одним полем ввода. Подпись поля — не длиннее 45 знаков."""
+        raw = event.raw or {}
+        field: dict[str, Any] = {
+            "type": 4, "custom_id": "answer", "style": 1, "label": label[:45],
+            "min_length": 1, "max_length": max_length, "required": True}
+        if placeholder:
+            field["placeholder"] = placeholder[:100]
+        result = await self.request(
+            "POST", f"/interactions/{raw.get('id')}/{raw.get('token')}/callback",
+            {"type": MODAL, "data": {"custom_id": custom_id, "title": title[:45],
+                                     "components": [{"type": 1, "components": [field]}]}})
+        return result is not None
+
+    async def add_role(self, guild_id: str, user_id: str, role_id: str) -> bool:
+        return await self.request(
+            "PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}") is not None
+
+    async def kick(self, guild_id: str, user_id: str) -> bool:
+        return await self.request(
+            "DELETE", f"/guilds/{guild_id}/members/{user_id}") is not None
+
+    async def set_commands(self, commands: Sequence[tuple[str, str]],
+                           restricted: Sequence[str] = ()) -> None:
         if not self.application_id:
             me = await self.request("GET", "/oauth2/applications/@me")
             self.application_id = str((me or {}).get("id") or "")
@@ -26012,6 +26101,11 @@ class DiscordTransport:
                     {"type": 3, "name": option, "description": text[:100],
                      "required": bool(required)}
                     for option, text, required in item[2]]
+            if name in restricted:
+                # Команда видна только тем, у кого есть право управлять
+                # сервером (бит 32); в личных сообщениях её нет.
+                command["default_member_permissions"] = "32"
+                command["dm_permission"] = False
             body.append(command)
         await self.request("PUT", f"/applications/{self.application_id}/commands", body)
 
@@ -26026,7 +26120,7 @@ class DiscordTransport:
 
     def identify(self) -> dict[str, Any]:
         return {"op": IDENTIFY, "d": {
-            "token": self.token, "intents": INTENTS,
+            "token": self.token, "intents": self.intents,
             "properties": {"os": "linux", "browser": "radar", "device": "radar"},
         }}
 
@@ -26082,6 +26176,12 @@ class DiscordTransport:
             log.info("Discord: сессия открыта")
         elif kind == "RESUMED":
             self._delay = 1.0
+        elif kind == "GUILD_MEMBER_ADD":
+            if self.member_handler is not None:
+                try:
+                    await self.member_handler(data)
+                except Exception:  # noqa: BLE001
+                    log.exception("Discord: сбой обработчика вступления")
         elif kind == "INTERACTION_CREATE":
             event = parse_interaction(data)
             if event is not None and self.handler is not None:
@@ -26116,6 +26216,18 @@ class DiscordTransport:
             try:
                 await self._run_once()
             except GatewayClosed as closed:
+                if closed.code == 4014 and self.intents & INTENT_MEMBERS:
+                    # Привилегированное намерение не включено в Developer
+                    # Portal. Остальная работа бота (сводки, команды,
+                    # кнопка проверки) от него не зависит — не останавливаем.
+                    self.intents &= ~INTENT_MEMBERS
+                    self.members_denied = True
+                    self.session_id, self.sequence = "", None
+                    log.error("Discord: намерение Server Members не включено "
+                              "(Developer Portal → Bot → Privileged Gateway "
+                              "Intents). Проверка при вступлении и тайм-аут "
+                              "отключены, кнопка проверки работает.")
+                    continue
                 if closed.code in FATAL_CLOSE:
                     log.error("Discord закрыл соединение кодом %s — проверьте токен "
                               "и намерения бота; адаптер остановлен", closed.code)
@@ -26174,6 +26286,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from .. import discordverify
 from ..textutils import esc
 from .base import Button, EventKind, InboundEvent, OutboundMessage
 
@@ -26213,7 +26326,10 @@ COMMANDS = (
     ("remove", "Удалить адрес", [("number", "Номер из /addresses", True)]),
     ("link", "Связать с Telegram, ВК или MAX", [("code", "Код из другой сети", False)]),
     ("unlink", "Отвязать этот аккаунт от остальных"),
+    # Проверка участников (5.9.5): команда только для управляющих сервером.
+    ("verifysetup", "Поставить кнопку проверки участников в этот канал"),
 )
+RESTRICTED = ("verifysetup",)
 
 # Команды общего аккаунта: личное, поэтому ответ видит только автор.
 PERSONAL = ("address", "addresses", "remove", "link", "unlink")
@@ -26312,6 +26428,10 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     """
     from .maxbot import telegram_username
 
+    if (event.kind is EventKind.COMMAND and event.command == "verifysetup") or (
+            event.kind is EventKind.CALLBACK and event.payload.startswith("dv:")):
+        await verification(event, transport)
+        return
     if (event.kind is EventKind.COMMAND and event.command in PERSONAL) or (
             event.kind is EventKind.CALLBACK and event.payload in (YES_ID, NO_ID)):
         await personal(event, transport)
@@ -26349,6 +26469,170 @@ async def personal(event: InboundEvent, transport: Any) -> None:
                             update=event.kind is EventKind.CALLBACK, ephemeral=True)
 
 
+# --------------------------------------------------------------------------
+#  Проверка участников (5.9.5)
+# --------------------------------------------------------------------------
+
+GATE = discordverify.Gate()
+START_ID, ANSWER_ID = "dv:start", "dv:answer"
+SWEEP_EVERY = 60
+MANAGE_GUILD, ADMINISTRATOR = 0x20, 0x8
+
+
+def verify_enabled() -> bool:
+    """Включена ли проверка: флаг и роль «проверен» заданы."""
+    from .. import features
+
+    return features.enabled("discord_verify") and bool(_setting("DISCORD_VERIFY_ROLE_ID"))
+
+
+def _number(key: str, default: int = 0) -> int:
+    try:
+        return max(0, int(_setting(key) or default))
+    except ValueError:
+        return default
+
+
+def _can_manage(raw: dict[str, Any]) -> bool:
+    try:
+        bits = int((raw.get("member") or {}).get("permissions") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(bits & (MANAGE_GUILD | ADMINISTRATOR))
+
+
+async def _journal(transport: Any, text: str) -> None:
+    """Запись для модераторов в канал журнала, если он задан."""
+    channel = _setting("DISCORD_LOG_CHANNEL_ID")
+    log.info("Discord, проверка: %s", text)
+    if channel:
+        await transport.send(channel, OutboundMessage(text=text, silent=True))
+
+
+def _again(text: str) -> OutboundMessage:
+    return OutboundMessage(text=text, keyboard=[[Button(text="Попробовать снова",
+                                                        payload=START_ID)]])
+
+
+async def verification(event: InboundEvent, transport: Any) -> None:
+    """Кнопка «Я человек» → вопрос в окне → роль «проверен»."""
+    raw = event.raw or {}
+    guild = str(raw.get("guild_id") or "")
+    user = event.identity.external_id
+    role = _setting("DISCORD_VERIFY_ROLE_ID")
+
+    if event.kind is EventKind.COMMAND:
+        if not _can_manage(raw):
+            await transport.respond(event, OutboundMessage(
+                text="Команда только для управляющих сервером."), ephemeral=True)
+        elif not verify_enabled():
+            await transport.respond(event, OutboundMessage(
+                text="Проверка выключена: включите возможность «Discord: проверка "
+                     "участников» и задайте DISCORD_VERIFY_ROLE_ID."), ephemeral=True)
+        else:
+            await transport.respond(event, OutboundMessage(
+                text="<b>Проверка</b>\n\nНажмите кнопку и ответьте на короткий "
+                     "вопрос — так видно, что вы не скрипт. Без проверки остальные "
+                     "каналы закрыты.",
+                keyboard=[[Button(text="✅ Я человек", payload=START_ID)]]))
+        return
+
+    if not verify_enabled() or not guild:
+        await transport.respond(event, OutboundMessage(text="Проверка сейчас выключена."),
+                                ephemeral=True)
+        return
+
+    roles_now = [str(item) for item in (raw.get("member") or {}).get("roles") or []]
+    if role in roles_now:
+        GATE.passed(guild, user)
+        await transport.respond(event, OutboundMessage(text="Вы уже проверены."),
+                                ephemeral=True)
+        return
+
+    if event.payload == START_ID:
+        from .. import links
+
+        # Аккаунт уже связан с проверенным в другой сети — вопрос не нужен.
+        if await links.owner_of("discord", user):
+            if await transport.add_role(guild, user, role):
+                GATE.passed(guild, user)
+                await transport.respond(event, OutboundMessage(
+                    text="✅ Аккаунт связан с проверенным в другой сети — "
+                         "проверка пройдена."), ephemeral=True)
+                return
+        question = GATE.ask(guild, user)
+        await transport.respond_modal(event, ANSWER_ID, "Проверка", question,
+                                      placeholder="Ответ", max_length=20)
+        return
+
+    # ANSWER_ID
+    result = GATE.check(guild, user, event.text)
+    if result == discordverify.OK:
+        if await transport.add_role(guild, user, role):
+            await transport.respond(event, OutboundMessage(
+                text="✅ Проверка пройдена, добро пожаловать."), ephemeral=True)
+        else:
+            await transport.respond(event, OutboundMessage(
+                text="Ответ верный, но выдать роль не удалось — сообщите "
+                     "администрации (у бота нет права управлять ролями или его "
+                     "роль ниже роли «проверен»)."), ephemeral=True)
+            await _journal(transport, f"Не удалось выдать роль участнику {user}: "
+                                      "проверьте права бота.")
+    elif result == discordverify.WRONG:
+        left = GATE.attempts_left(guild, user)
+        await transport.respond(event, _again(f"Неверно. Осталось попыток: {left}."),
+                                ephemeral=True)
+    elif result == discordverify.LOCKED:
+        await transport.respond(event, OutboundMessage(
+            text="Попытки закончились. Вы можете вернуться по приглашению и "
+                 "пройти проверку заново."), ephemeral=True)
+        GATE.passed(guild, user)
+        if await transport.kick(guild, user):
+            await _journal(transport, f"Исключён {user}: не прошёл проверку "
+                                      f"за {discordverify.MAX_ATTEMPTS} попытки.")
+    else:
+        await transport.respond(event, _again("Вопрос устарел — нажмите ещё раз."),
+                                ephemeral=True)
+
+
+async def on_member_add(data: dict[str, Any], transport: Any) -> None:
+    """Вступление: сразу исключить явный мусор, остальных поставить на учёт."""
+    if not verify_enabled():
+        return
+    person = data.get("user") or {}
+    if person.get("bot"):
+        return
+    guild, user = str(data.get("guild_id") or ""), str(person.get("id") or "")
+    if not guild or not user:
+        return
+    verdict = discordverify.evaluate(
+        user, str(person.get("username") or ""), str(person.get("global_name") or ""),
+        min_days=_number("DISCORD_MIN_ACCOUNT_DAYS"))
+    if verdict.action == "kick":
+        if await transport.kick(guild, user):
+            await _journal(transport, f"Исключён {user} при вступлении: {verdict.reason}.")
+        return
+    GATE.joined(guild, user)
+
+
+async def verify_sweeper(transport: Any) -> None:
+    """Исключает тех, кто так и не прошёл проверку за отведённое время."""
+    while True:
+        await asyncio.sleep(SWEEP_EVERY)
+        if not verify_enabled():
+            continue
+        try:
+            for guild, user in GATE.overdue(_number("DISCORD_VERIFY_MINUTES", 10)):
+                GATE.passed(guild, user)
+                if await transport.kick(guild, user):
+                    await _journal(transport, f"Исключён {user}: не прошёл проверку "
+                                              "вовремя.")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.warning("Discord: сбой сторожа проверки", exc_info=True)
+
+
 async def run(transport: Any) -> None:
     """Всё, что делает Discord: команды, Gateway и публикации в канал."""
     from .. import mirror
@@ -26356,10 +26640,16 @@ async def run(transport: Any) -> None:
     # Тревоги общего аккаунта — в личные сообщения (5.7).
     mirror.register("discord", transport.send_text)
     try:
-        await transport.set_commands(COMMANDS)
+        await transport.set_commands(COMMANDS, restricted=RESTRICTED)
     except Exception:  # noqa: BLE001
         log.warning("Discord: слеш-команды не заданы", exc_info=True)
-    await asyncio.gather(transport.start(), community(transport))
+
+    async def member_added(data: dict[str, Any]) -> None:
+        await on_member_add(data, transport)
+
+    transport.member_handler = member_added
+    await asyncio.gather(transport.start(), community(transport),
+                         verify_sweeper(transport))
 
 
 def due(now: datetime, when: str, last_date: str) -> bool:
@@ -38983,8 +39273,196 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 RADAR_FILE_111
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordverify.py"
+cat > "radar/discordverify.py" <<'RADAR_FILE_112'
+"""Проверка участников Discord-сервера (с 5.9.5): логика без сети.
+
+Честно о том, что тут возможно. У Discord нет капчи для ботов, и надёжно
+доказать, что за аккаунтом человек, нельзя. Реально — поднять цену
+автоматического входа. Здесь три ступени, от дешёвой к дорогой:
+
+1. **Кнопка и вопрос.** Новый участник видит только канал проверки; по
+   кнопке «Я человек» открывается окно с вопросом (сумма, слово наоборот,
+   число букв), три попытки. Останавливает примитивные скрипты, которые
+   умеют только вступать и нажимать.
+2. **Привязка через /link** (общий аккаунт 5.7). Аккаунт Discord, уже
+   связанный с проверенным Telegram, ВК или MAX, проходит без вопроса:
+   «живость» берётся от уже пройденной проверки.
+3. **Проверка при вступлении** — возраст аккаунта (из самого id: он
+   содержит время создания) и имя с приглашением на другой сервер. Нужно
+   намерение «Server Members» — привилегированное, его включают в Developer
+   Portal; без него шаг 3 и тайм-аут тихо отключаются, а кнопка работает.
+
+Внешняя капча (Turnstile/hCaptcha) на домене панели не делалась: она
+требует живого домена, ключей сервиса и привязки аккаунта через OAuth2.
+Состояние живёт в памяти: после перезапуска кто не успел, пройдёт кнопку
+заново — так проще и безопаснее, чем хранить ответы на вопросы.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import random
+import re
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+DISCORD_EPOCH_MS = 1420070400000
+
+MAX_ATTEMPTS = 3
+# Сколько живёт выданный вопрос: человек открыл окно и ушёл пить чай.
+QUESTION_TTL = 600
+
+# Слова для вопросов: короткие, без ё, чтобы не спорить о написании.
+WORDS = ("слон", "мост", "река", "дом", "лес", "ветер", "поле", "окно",
+         "стол", "море", "гора", "звезда", "облако", "ключ", "город")
+
+ADVERTISING = re.compile(
+    r"(discord\.gg|discord\.com/invite|dsc\.gg|t\.me/|https?://|free\s*nitro|"
+    r"@everyone|18\+)", re.IGNORECASE)
+
+
+def account_created(user_id: int | str) -> float:
+    """Когда создан аккаунт, секунды Unix: время зашито в старшие биты id."""
+    return ((int(user_id) >> 22) + DISCORD_EPOCH_MS) / 1000.0
+
+
+def account_age_days(user_id: int | str, now: float | None = None) -> float:
+    return ((now if now is not None else time.time()) - account_created(user_id)) / 86400.0
+
+
+def suspicious_name(*names: str) -> bool:
+    """Имя или отображаемое имя — реклама, а не имя."""
+    return any(ADVERTISING.search(name or "") for name in names)
+
+
+# --------------------------------------------------------------------------
+#  Вопросы
+# --------------------------------------------------------------------------
+
+def normalize(answer: str) -> str:
+    return re.sub(r"\s+", "", (answer or "").strip().lower())
+
+
+def make_question(rng: random.Random | None = None) -> tuple[str, str]:
+    """(вопрос, ожидаемый ответ). Вопрос ≤ 45 знаков: таков предел подписи
+    поля в окне Discord."""
+    rng = rng or random
+    kind = rng.choice(("sum", "diff", "reverse", "letters"))
+    if kind == "sum":
+        a, b = rng.randint(2, 19), rng.randint(2, 19)
+        return f"Сколько будет {a} + {b}?", str(a + b)
+    if kind == "diff":
+        a = rng.randint(10, 29)
+        b = rng.randint(2, 9)
+        return f"Сколько будет {a} − {b}?", str(a - b)
+    word = rng.choice(WORDS)
+    if kind == "reverse":
+        return f"Напишите слово «{word}» наоборот", word[::-1]
+    return f"Сколько букв в слове «{word}»?", str(len(word))
+
+
+# --------------------------------------------------------------------------
+#  Состояние проверки
+# --------------------------------------------------------------------------
+
+OK = "ok"
+WRONG = "wrong"
+LOCKED = "locked"
+EXPIRED = "expired"
+NONE = "none"
+
+
+@dataclass
+class Pending:
+    joined: float
+    answer: str = ""
+    issued: float = 0.0
+    attempts: int = 0
+
+
+class Gate:
+    """Кто вошёл и ещё не прошёл проверку. По (сервер, человек)."""
+
+    def __init__(self, clock: Callable[[], float] = time.time,
+                 rng: random.Random | None = None) -> None:
+        self.clock = clock
+        self.rng = rng
+        self.pending: dict[tuple[str, str], Pending] = {}
+
+    def joined(self, guild: str, user: str) -> None:
+        self.pending.setdefault((guild, user), Pending(joined=self.clock()))
+
+    def passed(self, guild: str, user: str) -> None:
+        self.pending.pop((guild, user), None)
+
+    def ask(self, guild: str, user: str) -> str:
+        """Выдаёт новый вопрос; число попыток при этом не сбрасывается."""
+        entry = self.pending.setdefault((guild, user), Pending(joined=self.clock()))
+        question, entry.answer = make_question(self.rng)
+        entry.issued = self.clock()
+        return question
+
+    def check(self, guild: str, user: str, answer: str) -> str:
+        entry = self.pending.get((guild, user))
+        if entry is None or not entry.answer:
+            return NONE
+        if self.clock() - entry.issued > QUESTION_TTL:
+            entry.answer = ""
+            return EXPIRED
+        if entry.attempts >= MAX_ATTEMPTS:
+            return LOCKED
+        if normalize(answer) == normalize(entry.answer):
+            self.pending.pop((guild, user), None)
+            return OK
+        entry.attempts += 1
+        entry.answer = ""          # на ту же попытку — новый вопрос, не подбор
+        return LOCKED if entry.attempts >= MAX_ATTEMPTS else WRONG
+
+    def attempts_left(self, guild: str, user: str) -> int:
+        entry = self.pending.get((guild, user))
+        return MAX_ATTEMPTS if entry is None else max(0, MAX_ATTEMPTS - entry.attempts)
+
+    def overdue(self, minutes: int) -> list[tuple[str, str]]:
+        """Не прошедшие за отведённое время. 0 — тайм-аута нет."""
+        if minutes <= 0:
+            return []
+        limit = self.clock() - minutes * 60
+        return [key for key, entry in self.pending.items() if entry.joined < limit]
+
+    def locked(self) -> list[tuple[str, str]]:
+        return [key for key, entry in self.pending.items()
+                if entry.attempts >= MAX_ATTEMPTS]
+
+
+# --------------------------------------------------------------------------
+#  Проверка при вступлении
+# --------------------------------------------------------------------------
+
+@dataclass
+class Verdict:
+    action: str          # allow | kick
+    reason: str = ""
+
+
+def evaluate(user_id: int | str, username: str = "", global_name: str = "",
+             min_days: int = 0, now: float | None = None) -> Verdict:
+    """Решение по вступившему: пропустить к кнопке или исключить сразу."""
+    if min_days > 0 and account_age_days(user_id, now) < min_days:
+        days = account_age_days(user_id, now)
+        return Verdict("kick", f"аккаунту {days:.1f} дн., нужно не меньше {min_days}")
+    if suspicious_name(username, global_name):
+        return Verdict("kick", "в имени реклама или приглашение")
+    return Verdict("allow")
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
-cat > "radar/cli_admin.py" <<'RADAR_FILE_112'
+cat > "radar/cli_admin.py" <<'RADAR_FILE_113'
 """Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
 
 Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
@@ -39447,9 +39925,9 @@ def register(subparsers, common) -> None:
     audit_cmd.add_argument("--limit", type=int, default=50)
     audit_cmd.add_argument("--yes", action="store_true")
     audit_cmd.set_defaults(func=cmd_audit)
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
-cat > "radar/clitext.py" <<'RADAR_FILE_113'
+cat > "radar/clitext.py" <<'RADAR_FILE_114'
 """Язык командной строки: русский и английский (с 5.9.3.1).
 
 Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
@@ -39514,9 +39992,9 @@ def current() -> str:
 def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
     """Строка на языке консоли."""
     return ru if _current == RU else en
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_114'
+cat > "radar/__main__.py" <<'RADAR_FILE_115'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -39538,9 +40016,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_114
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_115'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_116'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -39682,9 +40160,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_115
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_116'
+cat > "tools/restore.sh" <<'RADAR_FILE_117'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -39926,9 +40404,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_116
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_117'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_118'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -40024,9 +40502,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_117
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_118'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_119'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -40219,9 +40697,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_118
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_119'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_120'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -41975,9 +42453,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_119
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_120'
+cat > "radar/vpn.py" <<'RADAR_FILE_121'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -42797,9 +43275,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_120
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_121'
+cat > "radar/payments.py" <<'RADAR_FILE_122'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -43028,9 +43506,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_121
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_122'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_123'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -43397,9 +43875,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_122
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_123'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_124'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -43520,9 +43998,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_123
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_124'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_125'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -43993,9 +44471,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_124
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_126'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -44161,9 +44639,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_125
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_126'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_127'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -44668,9 +45146,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_126
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_128'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -45176,9 +45654,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_127
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_129'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -45622,9 +46100,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_128
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_130'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -45771,9 +46249,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_129
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_131'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -46061,9 +46539,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_130
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_132'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -46310,9 +46788,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_131
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_133'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -46683,9 +47161,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_132
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_134'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -47260,9 +47738,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_133
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_135'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -47363,9 +47841,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_134
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_136'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -47455,9 +47933,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_135
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_137'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -47878,9 +48356,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_136
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_138'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -49071,9 +49549,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_137
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_139'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -49827,9 +50305,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_138
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_140'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -50353,9 +50831,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_139
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_141'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -50563,9 +51041,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_140
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_142'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -51552,9 +52030,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_141
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_143'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -51967,9 +52445,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_142
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_144'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -52010,9 +52488,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_143
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_144'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_145'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -52275,9 +52753,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_144
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_146'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -52427,9 +52905,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_145
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_146'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_147'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -52897,9 +53375,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_146
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_147'
+cat > "radar/cookies.py" <<'RADAR_FILE_148'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -53032,9 +53510,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_147
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_148'
+cat > "radar/music.py" <<'RADAR_FILE_149'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -53838,9 +54316,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_148
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_149'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_150'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -54454,9 +54932,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_149
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_150'
+cat > "multitool/__init__.py" <<'RADAR_FILE_151'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -54482,9 +54960,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_150'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_150
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_151'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_152'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -54517,9 +54995,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_151'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_151
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_152'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_153'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -54926,9 +55404,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_152
+RADAR_FILE_153
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_153'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_154'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -55412,9 +55890,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_153
+RADAR_FILE_154
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_154'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_155'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -55654,7 +56132,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_154
+RADAR_FILE_155
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
