@@ -1,7 +1,7 @@
 # Радар — инструкция по использованию
 
 Бот, веб-панель и командная строка — три способа управлять одной системой.
-Документ собран по коду версии 5.9.8. Подробности установки, настроек и
+Документ собран по коду версии 5.9.9. Подробности установки, настроек и
 каждой возможности — в [README.md](../README.md); здесь — порядок работы и справочник.
 
 > Система не заменяет официальные каналы оповещения.
@@ -165,6 +165,8 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 | `subs` | `list`, `codes`, `grant`, `revoke`, `code-add`, `code-drop` | подписка бота |
 | `vpn` | `panels`, `panel-save\|remove\|check`, `access`, `issue`, `extend`, `on`, `off`, `revoke`, `deny`, `orders`, `order-*`, `app-revoke` | см. README |
 | `partners` | `list`, `show`, `save`, `remove`, `export` | `save --set поле=значение` |
+| `ai` | `status`, `models`, `set-model`, `provider`, `health`, `ask`, `reset`, `bench`, `agents`, `agent-*` | часть — только у запущенного бота |
+| `metrics`, `perf`, `net` | — | `perf --reset` |
 | `restart` | — | `--yes` |
 | Хост | `update`, `restore ФАЙЛ`, `wipe --yes`, `restart` | не из контейнера |
 
@@ -203,9 +205,9 @@ bash ~/radar_bot/tools/radarctl.sh <команда> [аргументы] [--json
 
 ### Чего в CLI пока нет
 
-ИИ (агенты, модели, провайдер, квота), дайджест, история, проверка ссылок,
-музыка и облако, медиа, SOS, чаты (объявления и сообщения), события. Полный
-список — `tools/lint_cli_parity.py`, план — [PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md).
+Дайджест, история, проверка ссылок, музыка и облако, медиа, SOS, чаты (объявления
+и сообщения), события, предупреждения участникам групп. Полный список —
+`tools/lint_cli_parity.py`, план — [PLAN_CLI_PLATFORMS.md](PLAN_CLI_PLATFORMS.md).
 
 ---
 
