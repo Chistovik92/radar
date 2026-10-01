@@ -1755,8 +1755,9 @@ duplication of the bot's and the panel's functions. Plan:
    the console - `radar/ops.py`.
 5. **5.9.9 - AI and observability:** `ai` (status, models, provider, health, agents,
    ask, reset, bench), `metrics`, `perf`, `net`.
-6. **Next:** the rest of the parity table - digest, history, link check, music and
-   cloud, media, SOS, chats (announcements and messages), events.
+6. **5.9.10 - parity closed:** `check`, `cookies`, `history`, `events`, `music`, `cloud`,
+   `chats invite|announce|warns`, `links add`. Done 88, left 0, outside the console 22
+   (panel sign-in, file downloads, host commands, a person's own actions - SOS).
 
 ---
 

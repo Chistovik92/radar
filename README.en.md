@@ -1,4 +1,4 @@
-# Radar v5.9.9
+# Radar v5.9.10
 
 [Русская версия](README.md)
 
@@ -886,6 +886,37 @@ The rules for pinning a model and saving an agent (an empty key means "keep")
 are shared with the panel (`radar/ops.py`). Adding and removing proxy servers
 stays in the bot (`/network`): it is a dialog with key entry, and the console
 has no sensible form for it.
+
+**The rest (since 5.9.10) - parity is closed.** Every bot command and every
+panel route is either in the console or excluded with a reason
+(`tools/lint_cli_parity.py`: done 88, left 0, outside the console 22 - panel
+sign-in, file downloads, host-side install commands and actions that only make
+sense for the person themselves).
+
+```bash
+radarctl.sh check https://example.org [--no-net]  # link check, like /check (no daily quota)
+radarctl.sh cookies status                         # the cookies file for video and music
+radarctl.sh cookies set /app/data/cookies.txt      # accept a Netscape export (validation shared with the bot)
+radarctl.sh history 123456789 [--days 30]          # what a person received
+radarctl.sh events [--days 7]                      # events and deliveries over a period
+radarctl.sh music usage                            # who uses how much music; music list UID
+radarctl.sh cloud list|check                       # the music cloud (rclone)
+radarctl.sh cloud add yd webdav --set url=https://… --set user=…
+radarctl.sh cloud forget yd --yes
+radarctl.sh chats invite -100… https://t.me/+…    # a custom invite link (no link - remove)
+radarctl.sh chats announce -100… Announcement text # shows how it will look; --yes sends it
+radarctl.sh chats warns -100… 55 [--reset]         # a member's warning counter
+radarctl.sh links add https://example.org/page     # a short link
+```
+
+`chats announce` has the panel's two steps: without `--yes` it only shows, sending
+goes through the bot's connection (so the bot must run and the "Messages to groups"
+feature must be on), and an announcement cannot be recalled. `chats warns` shows and
+resets the counter; warnings, mutes and bans can still only be issued inside the group,
+where Telegram checks the rights. Digest prices are set with `keys set DIGEST_PLANS …`
+(the same validation as `/digestprice`). The digest menu, video download and the SOS
+button are the person's own actions: the console has no sensible form for them, and
+an SOS cannot be sent on someone else's behalf.
 
 ### Removing the installation
 
