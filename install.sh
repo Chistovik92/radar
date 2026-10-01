@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.2.2 — автономный установщик.
+# Система «Радар» v5.9.2.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.2.2"
+VERSION="5.9.2.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3292,6 +3292,13 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.2.3", [
+        "🔧 <b>PasarGuard, Marzban и Marzneshin: адрес из браузера.</b> "
+        "Адрес панели вида https://хост:порт/dashboard/ раньше давал "
+        "«HTTP 404» и «405 Method Not Allowed»: запросы шли в веб-интерфейс, "
+        "а не в API. Теперь лишний путь отсекается сам, а ошибка называет "
+        "запрос и подсказывает, где искать причину.",
+    ]),
     ("5.9.2.2", [
         "⚙️ <b>Все настройки — в веб-панели.</b> Новый раздел «Настройки»: "
         "платформы (Telegram, ВКонтакте, Discord, MAX, Одноклассники), ИИ, "
@@ -5166,7 +5173,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.2.2"
+__version__ = "5.9.2.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -21079,8 +21086,9 @@ async def panels_body(token: str, message: str = "", failed: str = "",
         f"{_hidden(token, slot=str(number))}"
         f'<label><b>Вид панели</b><br><select name="KIND">{options}</select></label>'
         + field("TITLE", "Название", hint="Как панель подписана для людей, например «Нидерланды».")
-        + field("URL", "Адрес панели", hint="Вместе с секретным путём, если он есть. "
-                "Для Outline — apiUrl целиком, для Hiddify — с путём администратора.")
+        + field("URL", "Адрес панели", hint="Корень панели, как в браузере до /dashboard (https://хост:порт) — "
+                "лишний путь отсекается сам. Секретный путь 3x-ui и x-ui нужен целиком; "
+                "для Outline — apiUrl целиком, для Hiddify — с путём администратора.")
         + field("TOKEN", "Токен или ключ API", secret=True)
         + field("USER", "Логин (вместо токена)")
         + field("PASS", "Пароль (вместо токена)", secret=True)
@@ -34204,6 +34212,10 @@ def save(number: int, form: dict[str, str]) -> str:
         merged[field] = value
     merged["KIND"] = vpnpanels.normalize_kind(merged["KIND"])
     merged["CERT"] = merged["CERT"].replace(":", "").lower()
+    # Адрес из браузера приходит с /dashboard/: храним корень API (5.9.2.3).
+    cls = vpnpanels.KINDS.get(merged["KIND"])
+    if cls is not None and cls.url_stop:
+        merged["URL"] = vpnpanels.api_root(merged["URL"], cls.url_stop)
 
     problem = validate(merged)
     if problem:
@@ -38858,6 +38870,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger("radar.vpnpanels")
 
@@ -38996,6 +39009,33 @@ def _json(text: str) -> Any:
         return None
 
 
+def api_root(url: str, stop: tuple[str, ...]) -> str:
+    """Корень API: адрес без пути веб-интерфейса и документации (5.9.2.3).
+
+    Люди копируют адрес из браузера, а там `https://хост:порт/dashboard/`
+    (веб-интерфейс Marzban и PasarGuard) или `/docs`. Клиент дописывал
+    `/api/...` к такому адресу, и панель отвечала 404 на чтение и 405 на
+    создание: путь вёл в раздачу страниц, а не в API. Отсекается всё
+    начиная с первого известного сегмента; префикс обратного прокси
+    (`https://хост/panel/dashboard` → `https://хост/panel`) сохраняется.
+    """
+    text = (url or "").strip()
+    if not text:
+        return ""
+    parts = urlsplit(text)
+    if not parts.scheme or not parts.netloc:
+        return text.rstrip("/")
+    kept: list[str] = []
+    for segment in parts.path.split("/"):
+        if not segment:
+            continue
+        if segment.lower() in stop:
+            break
+        kept.append(segment)
+    path = "/" + "/".join(kept) if kept else ""
+    return urlunsplit((parts.scheme, parts.netloc, path, "", "")).rstrip("/")
+
+
 def _detail(payload: Any) -> str:
     """Текст ошибки из ответа панели, коротко."""
     if isinstance(payload, dict):
@@ -39042,7 +39082,7 @@ class Panel:
     def __init__(self, url: str, *, token: str = "", user: str = "",
                  password: str = "", groups: tuple[str, ...] = (),
                  inbound: int = 0, sub_url: str = "", cert: str = "") -> None:
-        self.url = (url or "").strip().rstrip("/")
+        self.url = self._clean_url((url or "").strip().rstrip("/"))
         self.token = (token or "").strip()
         self.user = (user or "").strip()
         self.password = password or ""
@@ -39053,6 +39093,13 @@ class Panel:
         self._session: Any = None
         self._headers: dict[str, str] = {}
         self._depth = 0
+
+    # Сегменты адреса, с которых начинается не API, а веб-интерфейс.
+    # Пусто — адрес не трогаем (у 3x-ui секретный путь произволен).
+    url_stop: tuple[str, ...] = ()
+
+    def _clean_url(self, url: str) -> str:
+        return api_root(url, self.url_stop) if self.url_stop else url
 
     # --- то, что обязаны задать наследники ---
 
@@ -39201,6 +39248,16 @@ class Panel:
             raise PanelError("Панель не приняла вход: проверьте токен или пароль.",
                              status)
         payload = _json(raw)
+        if status in (404, 405) and _detail(payload) == "без пояснения":
+            # 404 на чтении и 405 на записи без текста — это не «нет записи»,
+            # а запрос в раздачу страниц: в адресе панели лишний или неверный
+            # путь. Без подсказки человек видел только «HTTP 404» (5.9.2.2).
+            route = path.split("?")[0].lstrip("/")
+            raise PanelError(
+                f"Панель ответила HTTP {status} на {method} /{route} без пояснения — "
+                "похоже, в адресе панели лишний или неверный путь. Нужен корень "
+                "панели, как в браузере до /dashboard (например https://хост:порт).",
+                status)
         if status >= 400:
             raise PanelError(f"Панель ответила HTTP {status}: {_detail(payload)}", status)
         if text:
@@ -39716,6 +39773,7 @@ class MarzbanPanel(Panel):
 
     kind = "marzban"
     title = "Marzban"
+    url_stop = ("dashboard", "docs", "redoc", "openapi.json", "api")
     token_path = "api/admin/token"
     admin_path = "api/admin"
 
@@ -39787,8 +39845,36 @@ class MarzbanPanel(Panel):
                 break
         return found
 
+    async def _probe_root(self) -> str:
+        """Где на самом деле API: пробуем корень сайта. Пусто — не нашли.
+
+        Нужен только для подсказки при 404/405: «API найден по адресу …»
+        экономит человеку перебор. Отвечает любой признак живого API —
+        200 или отказ во входе JSON-ом: страница-заглушка так не отвечает.
+        """
+        parts = urlsplit(self.url)
+        origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+        if not origin or origin == self.url:
+            return ""
+        try:
+            status, raw = await self._request("GET", f"{origin}/{self.admin_path}")
+        except PanelError:
+            return ""
+        if status in (200, 401, 403) and isinstance(_json(raw), dict):
+            return origin
+        return ""
+
     async def check(self) -> str:
-        payload = await self._call("GET", self.admin_path)
+        try:
+            payload = await self._call("GET", self.admin_path)
+        except PanelError as exc:
+            if exc.status in (404, 405):
+                found = await self._probe_root()
+                if found:
+                    raise PanelError(
+                        f"{exc} API найден по адресу {found} — укажите его "
+                        "в настройках панели.", exc.status)
+            raise
         who = payload.get("username") if isinstance(payload, dict) else ""
         return f"{self.title} отвечает, вход как {who or 'администратор'}"
 

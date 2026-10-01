@@ -144,6 +144,10 @@ def save(number: int, form: dict[str, str]) -> str:
         merged[field] = value
     merged["KIND"] = vpnpanels.normalize_kind(merged["KIND"])
     merged["CERT"] = merged["CERT"].replace(":", "").lower()
+    # Адрес из браузера приходит с /dashboard/: храним корень API (5.9.2.3).
+    cls = vpnpanels.KINDS.get(merged["KIND"])
+    if cls is not None and cls.url_stop:
+        merged["URL"] = vpnpanels.api_root(merged["URL"], cls.url_stop)
 
     problem = validate(merged)
     if problem:

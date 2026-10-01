@@ -149,8 +149,9 @@ async def panels_body(token: str, message: str = "", failed: str = "",
         f"{_hidden(token, slot=str(number))}"
         f'<label><b>Вид панели</b><br><select name="KIND">{options}</select></label>'
         + field("TITLE", "Название", hint="Как панель подписана для людей, например «Нидерланды».")
-        + field("URL", "Адрес панели", hint="Вместе с секретным путём, если он есть. "
-                "Для Outline — apiUrl целиком, для Hiddify — с путём администратора.")
+        + field("URL", "Адрес панели", hint="Корень панели, как в браузере до /dashboard (https://хост:порт) — "
+                "лишний путь отсекается сам. Секретный путь 3x-ui и x-ui нужен целиком; "
+                "для Outline — apiUrl целиком, для Hiddify — с путём администратора.")
         + field("TOKEN", "Токен или ключ API", secret=True)
         + field("USER", "Логин (вместо токена)")
         + field("PASS", "Пароль (вместо токена)", secret=True)

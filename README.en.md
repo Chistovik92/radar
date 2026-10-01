@@ -1,4 +1,4 @@
-# Radar v5.9.2.2
+# Radar v5.9.2.3
 
 [Русская версия](README.md)
 
@@ -94,6 +94,15 @@ memory (`PG_SHARED_BUFFERS` and friends in `.env`): `shared_buffers` is an
 eighth of the memory but no more than 128 MB, so the database does not hit
 its own container limit. Values set by hand are left alone; without these
 lines the database starts with the old defaults.
+
+**VPN panel address (since 5.9.2.3).** For Marzban, PasarGuard and Marzneshin
+use the panel root as in the browser up to `/dashboard` (for example
+`https://host:port`). An address copied with `/dashboard/`, `/docs` or `/api`
+is now reduced to the root by the bot; before, it gave "HTTP 404" on the
+check and "405 Method Not Allowed" on issue. If it still fails, the message
+names the request (`POST /api/user`) and "check" in "VPN" → "Panels" points
+to the address where the API answers. Addresses of 3x-ui, x-ui and other
+panels with a secret path are left alone.
 
 **All settings in the web panel (since 5.9.2.2).** The "Settings" section
 (superadmin): platforms (Telegram, VK, Discord, MAX, Odnoklassniki), AI
