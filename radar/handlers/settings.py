@@ -381,18 +381,11 @@ async def ask_timezone(call: CallbackQuery, user: dict[str, Any]) -> None:
     extra = call.data.endswith(":extra")
     await call.answer()
 
-    if lang.startswith("en"):
-        explain = i18n.t(
-            "settings.tz.prompt_en", lang,
-            "Offsets are counted from UTC. Quiet hours, the weather time "
-            "and digest delivery all follow the zone you pick here.",
-        )
-    else:
-        explain = i18n.t(
-            "settings.tz.prompt", lang,
-            "Отсчёт от московского времени. По выбранному поясу считаются "
-            "тихие часы, время погоды и доставка подборок.",
-        )
+    explain = i18n.t(
+        "settings.tz.prompt", lang,
+        "Отсчёт от московского времени. По выбранному поясу считаются "
+        "тихие часы, время погоды и доставка подборок.",
+    )
 
     await safe_edit(
         call,

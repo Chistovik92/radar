@@ -93,6 +93,12 @@ ROSE_KEYS = ("wind.n", "wind.ne", "wind.e", "wind.se",
              "wind.s", "wind.sw", "wind.w", "wind.nw")
 ROSE_SHORT = ("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
 ROSE_SHORT_EN = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+# Короткие подписи по языкам (5.9.6); чего нет здесь — английские.
+ROSE_SHORT_BY = {
+    "uk": ("Пн", "ПнСх", "Сх", "ПдСх", "Пд", "ПдЗх", "Зх", "ПнЗх"),
+    "fa": ("ش", "ش‌ق", "ق", "ج‌ق", "ج", "ج‌غ", "غ", "ش‌غ"),
+    "zh": ("北", "东北", "东", "东南", "南", "西南", "西", "西北"),
+}
 
 # Границы шкалы Бофорта в м/с и названия: русское — запасной вариант.
 FORCE = (
@@ -127,8 +133,10 @@ def wind_short(degrees: float | None, lang: str = "ru") -> str:
     sector = wind_sector(degrees)
     if sector is None:
         return ""
-    table = ROSE_SHORT_EN if i18n.normalize(lang) == i18n.EN else ROSE_SHORT
-    return table[sector]
+    code = i18n.normalize(lang)
+    if code == i18n.RU:
+        return ROSE_SHORT[sector]
+    return ROSE_SHORT_BY.get(code, ROSE_SHORT_EN)[sector]
 
 
 def beaufort(speed: float | None, lang: str = "ru") -> str:

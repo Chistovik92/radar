@@ -99,7 +99,8 @@ def _suffix(minutes: int) -> str:
 
 def label(minutes: int, lang: str = "ru") -> str:
     """Подпись пояса: «МСК+2» по-русски, «UTC+5» по-английски."""
-    if (lang or "ru").lower().startswith("en"):
+    if not (lang or "ru").lower().startswith("ru"):
+        # Московское время понятно по-русски; остальным — от UTC.
         return f"UTC{_suffix(minutes)}"
     return f"МСК{_suffix(minutes - MOSCOW)}"
 

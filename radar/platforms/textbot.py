@@ -46,7 +46,7 @@ _pending: dict[str, tuple[dict[str, Any], float]] = {}
 
 _ADDRESS_RE = re.compile(r"^/?(?:address|адрес)\s+(.+)$", re.IGNORECASE | re.S)
 _REMOVE_RE = re.compile(r"^/?(?:remove|удалить)\s+(\d+)\s*$", re.IGNORECASE)
-_LANG_RE = re.compile(r"^/?(?:lang|язык)\s+(ru|en)\s*$", re.IGNORECASE)
+_LANG_RE = re.compile(r"^/?(?:lang|язык)\s+(ru|en|uk|fa|zh)\s*$", re.IGNORECASE)
 
 
 def _t(key: str, lang: str, default: str) -> str:
@@ -157,7 +157,9 @@ async def _save_place(owner: str, place: dict[str, Any], lang: str) -> str:
     user = storage.get_user(owner)
     if user is None:
         user = storage.register(owner)
-        user["lang"] = lang if lang in ("ru", "en") else "ru"
+        from .. import i18n
+
+        user["lang"] = lang if lang in i18n.LANGUAGES else "ru"
     if config.MAX_LOCATIONS and len(user["locs"]) >= config.MAX_LOCATIONS:
         return _t("text.limit", lang, "❌ Достигнут предел адресов ({limit}).").format(
             limit=config.MAX_LOCATIONS)
