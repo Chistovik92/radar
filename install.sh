@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.2.3 — автономный установщик.
+# Система «Радар» v5.9.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.2.3"
+VERSION="5.9.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=151
+FILE_COUNT=152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3292,6 +3292,13 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.3", [
+        "🖥 <b>Консоль управляет работающим ботом.</b> Команды radarctl "
+        "(например, включение возможности) теперь выполняет сам бот через "
+        "защищённый сокет и применяет сразу, без перезапуска; раньше они "
+        "меняли только базу. Если бот не запущен, консоль по-прежнему "
+        "работает с базой напрямую.",
+    ]),
     ("5.9.2.3", [
         "🔧 <b>PasarGuard, Marzban и Marzneshin: адрес из браузера.</b> "
         "Адрес панели вида https://хост:порт/dashboard/ раньше давал "
@@ -5029,6 +5036,12 @@ async def main() -> None:
         panel_started = True
     spawn(announce(), "announce")
 
+    # Канал управления для командной строки (5.9.3): без него radarctl
+    # менял бы только базу, а бот держит всё в памяти и затирал бы правки.
+    from radar import adminsock
+
+    spawn(adminsock.serve(), "admin-socket")
+
     # Адаптер MAX. Пакет radar/platforms/ существовал с 4.4 и не
     # импортировался ни одним модулем — флаг «Мессенджер MAX» значился
     # в списке возможностей и не мог ничего включить.
@@ -5173,7 +5186,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.2.3"
+__version__ = "5.9.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -37481,8 +37494,218 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
 RADAR_FILE_108
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adminsock.py"
+cat > "radar/adminsock.py" <<'RADAR_FILE_109'
+"""Канал управления в работающий процесс бота (с 5.9.3).
+
+**Поломка, ради которой он нужен.** Командная строка запускается через
+`docker exec` — это отдельный процесс рядом с ботом, а не он сам. До 5.9.3
+`radarctl.sh features on digest` менял флаг в базе и в памяти этого короткого
+процесса, а бот читает флаги из базы один раз при старте: возможность
+не включалась до перезапуска. Хуже того, источники и пользователи лежат
+в памяти бота целиком (`storage`), и бот при очередном сохранении затирал
+правку, сделанную из консоли.
+
+**Как устроено.** Бот слушает Unix-сокет `data/admin.sock` (права 600,
+владелец — тот, кто запустил бота). Командная строка отправляет ему свои
+аргументы, бот разбирает их тем же `radar.cli` и выполняет у себя — в той
+же памяти, с той же базой, — а вывод и код возврата отдаёт обратно. Второй
+реализации нет: сокет не знает ни одной команды, он лишь переносит строку
+запуска. Если бот не запущен, сокета нет, и командная строка работает
+с базой напрямую, как раньше.
+
+Почему сокет, а не порт. Терминала сервера в веб-панели нет и не будет:
+канал не должен стать его обходом. Файл с правами 600 внутри каталога
+данных недоступен ни из сети, ни другому пользователю хоста.
+
+Протокол: одна строка JSON в обе стороны.
+    →  {"argv": ["features", "on", "digest"]}
+    ←  {"code": 0, "out": "…", "err": "…"}
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import logging
+import os
+import socket
+from contextlib import redirect_stderr, redirect_stdout
+
+log = logging.getLogger("radar.adminsock")
+
+# Запрос — это строка аргументов, больше нескольких килобайт не бывает.
+MAX_REQUEST = 64 * 1024
+
+# Команды идут по одной: вывод перехватывается через sys.stdout, а он один
+# на процесс, и две одновременные команды перемешали бы ответы.
+_lock: asyncio.Lock | None = None
+
+
+def path() -> str:
+    """Где лежит сокет: рядом с базой, в каталоге данных."""
+    explicit = (os.getenv("ADMIN_SOCKET") or "").strip()
+    if explicit:
+        return explicit
+    from . import config
+
+    folder = os.path.dirname(os.path.abspath(config.DB_FILE)) or "data"
+    return os.path.join(folder, "admin.sock")
+
+
+def supported() -> bool:
+    return hasattr(socket, "AF_UNIX") and hasattr(asyncio, "start_unix_server")
+
+
+# --------------------------------------------------------------------------
+#  Сторона бота
+# --------------------------------------------------------------------------
+
+def _worker(loop: asyncio.AbstractEventLoop, argv: list[str]) -> tuple[int, str, str]:
+    """Выполняет команду в отдельном потоке: часть команд блокирует
+    (копия, обслуживание базы), а бот не должен вставать из-за них."""
+    from . import cli
+
+    out, err = io.StringIO(), io.StringIO()
+    cli.attach(loop)
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            try:
+                code = cli.main(argv)
+            except SystemExit as exc:
+                # argparse выходит сам при неверных аргументах.
+                code = exc.code if isinstance(exc.code, int) else cli.FAILED
+    finally:
+        cli.attach(None)
+    return int(code), out.getvalue(), err.getvalue()
+
+
+async def execute(argv: list[str]) -> tuple[int, str, str]:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    loop = asyncio.get_running_loop()
+    async with _lock:
+        return await asyncio.to_thread(_worker, loop, argv)
+
+
+async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        raw = await reader.readline()
+        if not raw or len(raw) > MAX_REQUEST:
+            return
+        request = json.loads(raw.decode("utf-8"))
+        argv = request.get("argv")
+        if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+            reply = {"code": 1, "out": "", "err": "bad request\n"}
+        else:
+            code, out, err = await execute(argv)
+            reply = {"code": code, "out": out, "err": err}
+        writer.write((json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8"))
+        await writer.drain()
+    except Exception:  # noqa: BLE001
+        log.exception("Запрос к каналу управления не выполнен")
+    finally:
+        try:
+            writer.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _clear_stale(target: str) -> bool:
+    """Убирает сокет, оставшийся от упавшего процесса. Живой не трогает."""
+    if not os.path.exists(target):
+        return True
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(1)
+    try:
+        probe.connect(target)
+    except OSError:
+        try:
+            os.unlink(target)
+            return True
+        except OSError:
+            return False
+    finally:
+        probe.close()
+    return False   # слушает другой экземпляр
+
+
+async def serve() -> None:
+    """Запускается задачей рядом с ботом и живёт до его остановки."""
+    if not supported():
+        log.info("Канал управления недоступен на этой системе")
+        return
+    target = path()
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    if not _clear_stale(target):
+        log.warning("Канал управления занят другим процессом: %s", target)
+        return
+    # Права назначаются при создании файла, а не после: между bind и chmod
+    # сокет был бы открыт всем, кто успеет подключиться.
+    old_mask = os.umask(0o177)
+    try:
+        server = await asyncio.start_unix_server(_handle, path=target)
+    finally:
+        os.umask(old_mask)
+    log.info("Канал управления: %s", target)
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        try:
+            os.unlink(target)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------
+#  Сторона командной строки
+# --------------------------------------------------------------------------
+
+def call(argv: list[str]) -> tuple[int, str, str] | None:
+    """Отправляет команду работающему боту. None — бот недоступен."""
+    if not supported():
+        return None
+    target = path()
+    if not os.path.exists(target):
+        return None
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.settimeout(3)
+        client.connect(target)
+    except OSError:
+        client.close()
+        return None
+    try:
+        # Подключились — дальше ждём сколько нужно: проверка источников
+        # занимает минуты.
+        client.settimeout(None)
+        client.sendall((json.dumps({"argv": argv}, ensure_ascii=False) + "\n").encode("utf-8"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        reply = json.loads(data.decode("utf-8"))
+        return int(reply["code"]), str(reply.get("out", "")), str(reply.get("err", ""))
+    except (OSError, ValueError, KeyError):
+        # Команда уже отправлена и могла выполниться: повторять её
+        # напрямую нельзя, иначе «add» или «prune» сработают дважды.
+        return 1, "", "Связь с ботом прервалась; результат неизвестен — проверьте командой list.\n"
+    finally:
+        client.close()
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_109'
+cat > "radar/cli.py" <<'RADAR_FILE_110'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -37514,6 +37737,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from typing import Any, Callable
 
@@ -37521,6 +37745,28 @@ from typing import Any, Callable
 OK = 0
 FAILED = 1
 NEEDS_YES = 2   # разрушающее действие без --yes
+
+
+# Цикл событий бота, пока команду выполняет он сам (см. adminsock).
+# None — обычный запуск из консоли.
+_LOOP: asyncio.AbstractEventLoop | None = None
+
+# Команды, которым бот не нужен: они диагностируют окружение.
+LOCAL_ONLY = {"doctor", "version"}
+# Что только читает: для них молчание о неработающем боте не страшно.
+READ_ACTIONS = {"list", "size", "check", "info", "connections"}
+
+
+def attach(loop: asyncio.AbstractEventLoop | None) -> None:
+    global _LOOP
+    _LOOP = loop
+
+
+def _run(coro: Any) -> Any:
+    """asyncio.run для консоли и вызов в цикле бота — изнутри бота."""
+    if _LOOP is not None:
+        return asyncio.run_coroutine_threadsafe(coro, _LOOP).result()
+    return asyncio.run(coro)
 
 
 def _out(payload: Any, as_json: bool, plain: Callable[[Any], None]) -> None:
@@ -37540,6 +37786,15 @@ async def _with_storage(action: Callable[[], Any]) -> Any:
     """
     from . import storage
     from .db import engine as db_engine
+
+    if _LOOP is not None:
+        # Внутри бота база уже поднята, а память — та самая, что видят
+        # пользователи. Загрузка с диска затёрла бы несохранённое,
+        # а закрытие движка оставило бы бота без базы.
+        result = action()
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
 
     await db_engine.wait_ready()
     await storage.load()
@@ -37613,7 +37868,7 @@ def _prune_sources(args) -> int:
             show(d), print(f"Удалено: {len(d['removed'])}.")))
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 def cmd_sources(args) -> int:
@@ -37655,7 +37910,7 @@ def cmd_sources(args) -> int:
              lambda d: print("удалено" if d["removed"] else "не найдено"))
         return OK if removed else FAILED
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 # --------------------------------------------------------------------------
@@ -37682,7 +37937,7 @@ def cmd_users(args) -> int:
         ])
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 # --------------------------------------------------------------------------
@@ -37719,7 +37974,7 @@ def cmd_features(args) -> int:
         print(f"{flag.title}: {'включено' if value else 'выключено'}")
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 # --------------------------------------------------------------------------
@@ -37795,7 +38050,7 @@ def cmd_db(args) -> int:
               file=sys.stderr)
         return NEEDS_YES
 
-    before, after, note = asyncio.run(dbcare.vacuum_sqlite())
+    before, after, note = _run(dbcare.vacuum_sqlite())
     payload = {"before": before, "after": after, "note": note}
     _out(payload, args.json, lambda d: print(
         f"{dbcare.format_size(d['before'])} → {dbcare.format_size(d['after'])}"
@@ -37817,7 +38072,7 @@ def _db_copy(args) -> int:
         return NEEDS_YES
     try:
         source, target = transfer.url_for(args.source), transfer.url_for(args.target)
-        copied = asyncio.run(transfer.copy(source, target, replace=args.replace))
+        copied = _run(transfer.copy(source, target, replace=args.replace))
     except transfer.TransferError as exc:
         print(f"Перенос не выполнен: {exc}", file=sys.stderr)
         return FAILED
@@ -37858,7 +38113,7 @@ def cmd_links(args) -> int:
         print(f"удалено ссылок: {count}")
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 def cmd_chats(args) -> int:
@@ -37892,7 +38147,7 @@ def cmd_chats(args) -> int:
               f"{'включена' if args.action == 'on' else 'выключена'}")
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 def cmd_files(args) -> int:
@@ -37929,7 +38184,7 @@ def cmd_rustdesk(args) -> int:
         return OK
 
     if args.action == "connections":
-        ok, payload = asyncio.run(rustdesk.connection_counts())
+        ok, payload = _run(rustdesk.connection_counts())
         if not ok:
             print(payload, file=sys.stderr)
             return FAILED
@@ -37942,7 +38197,7 @@ def cmd_rustdesk(args) -> int:
               "Повторите с --yes.", file=sys.stderr)
         return NEEDS_YES
 
-    ok, reason = asyncio.run(rustdesk.control(args.action))
+    ok, reason = _run(rustdesk.control(args.action))
     print(reason or "готово", file=sys.stderr if not ok else sys.stdout)
     return OK if ok else FAILED
 
@@ -37972,7 +38227,7 @@ def cmd_vpn(args) -> int:
 
     titles = {item.key: f"{item.title} ({item.client.kind})" for item in vpn.slots()}
     runner = vpn.check_all if args.action == "check" else vpn.selftest_all
-    results = asyncio.run(runner())
+    results = _run(runner())
     payload = {titles.get(key, key): {"ok": ok, "note": note}
                for key, (ok, note) in sorted(results.items(), key=lambda i: int(i[0]))}
     _out(payload, args.json, lambda d: [
@@ -38004,6 +38259,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="radar", description="Управление «Радаром» из командной строки")
     parser.add_argument("--json", action="store_true",
                         help="машиночитаемый вывод")
+    parser.add_argument("--local", action="store_true",
+                        help="не обращаться к работающему боту, работать с базой напрямую")
 
     # --json принимается и до подкоманды, и после неё: писать
     # «radar --json version» помнит не каждый, а «radar version --json»
@@ -38102,9 +38359,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _via_bot(args) -> bool:
+    if _LOOP is not None or getattr(args, "local", False):
+        return False
+    if os.getenv("RADAR_CLI_LOCAL"):
+        return False
+    if args.command in LOCAL_ONLY:
+        return False
+    # Перенос между базами поднимает собственные подключения.
+    return not (args.command == "db" and args.action == "copy")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if _via_bot(args):
+        from . import adminsock
+
+        raw = list(sys.argv[1:] if argv is None else argv)
+        reply = adminsock.call(raw)
+        if reply is not None:
+            code, out, err = reply
+            sys.stdout.write(out)
+            sys.stderr.write(err)
+            return code
+        if getattr(args, "action", "list") not in READ_ACTIONS:
+            print("Бот не запущен — правка пойдёт прямо в базу и подхватится "
+                  "при его запуске.", file=sys.stderr)
     try:
         return int(args.func(args))
     except KeyboardInterrupt:
@@ -38116,9 +38397,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_109
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_110'
+cat > "radar/__main__.py" <<'RADAR_FILE_111'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -38140,9 +38421,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_110
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_111'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_112'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -38284,9 +38565,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_111
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_112'
+cat > "tools/restore.sh" <<'RADAR_FILE_113'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -38528,9 +38809,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_113'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_114'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -38626,9 +38907,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_114'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_115'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -38821,9 +39102,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_114
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_115'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_116'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -40577,9 +40858,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_115
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_116'
+cat > "radar/vpn.py" <<'RADAR_FILE_117'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -41399,9 +41680,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_116
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_117'
+cat > "radar/payments.py" <<'RADAR_FILE_118'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -41630,9 +41911,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_117
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_118'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_119'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -41999,9 +42280,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_118
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_119'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_120'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -42122,9 +42403,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_119
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_120'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_121'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -42595,9 +42876,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_120
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_121'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_122'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -42763,9 +43044,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_121
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_123'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -43270,9 +43551,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_122
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_123'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_124'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -43778,9 +44059,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_123
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_124'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_125'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -44224,9 +44505,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_124
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_126'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -44373,9 +44654,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_125
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_126'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_127'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -44663,9 +44944,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_126
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_128'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -44912,9 +45193,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_127
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_129'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -45285,9 +45566,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_128
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_130'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -45862,9 +46143,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_129
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_131'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -45965,9 +46246,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_130
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_132'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -46057,9 +46338,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_131
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_133'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -46480,9 +46761,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_132
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_134'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -47673,9 +47954,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_133
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_135'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -48429,9 +48710,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_134
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_136'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -48955,9 +49236,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_135
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_137'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -49165,9 +49446,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_136
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_138'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -50154,9 +50435,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_137
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_139'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -50569,9 +50850,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_138
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_140'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -50612,9 +50893,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_139
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_141'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -50877,9 +51158,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_140
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_142'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -51029,9 +51310,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_141
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_143'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -51499,9 +51780,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_142
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_143'
+cat > "radar/cookies.py" <<'RADAR_FILE_144'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -51634,9 +51915,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_143
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_144'
+cat > "radar/music.py" <<'RADAR_FILE_145'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -52440,9 +52721,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_144
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_146'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -53056,9 +53337,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_145
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_146'
+cat > "multitool/__init__.py" <<'RADAR_FILE_147'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -53084,9 +53365,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_146'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_146
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_147'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_148'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -53119,9 +53400,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_147'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_147
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_148'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_149'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -53528,9 +53809,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_148
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_149'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_150'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -54014,9 +54295,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_149
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_150'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_151'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -54256,7 +54537,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_150
+RADAR_FILE_151
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

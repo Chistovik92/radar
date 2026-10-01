@@ -1,4 +1,4 @@
-# Radar v5.9.2.3
+# Radar v5.9.3
 
 [Русская версия](README.md)
 
@@ -774,6 +774,17 @@ Bot commands run inside the container (that is where the database and
 `wipe`. Reading commands accept `--json`; destructive ones do nothing
 without `--yes` and return code `2`, distinct from the error code — so
 that `cron` never confuses "not confirmed" with "broken".
+
+**The bot runs the commands itself (since 5.9.3).** The command line used to
+be a separate process: `features on digest` changed the database, while the
+running bot reads flags once at startup - the feature did not switch on until
+a restart, and a source edit could be overwritten at the bot's next save. Now
+the bot listens on the socket `data/admin.sock` (mode 600), the console hands
+it the command line, and the command runs in the bot's memory; output and exit
+code come back. If the bot is not running there is no socket - the command
+works on the database directly and says so. `--local` or `RADAR_CLI_LOCAL=1`
+always works on the database directly. `doctor`, `version` and `db copy` do
+not involve the bot.
 
 ### Removing the installation
 

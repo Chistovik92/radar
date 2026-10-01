@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from typing import Any, Callable
 
@@ -36,6 +37,28 @@ from typing import Any, Callable
 OK = 0
 FAILED = 1
 NEEDS_YES = 2   # разрушающее действие без --yes
+
+
+# Цикл событий бота, пока команду выполняет он сам (см. adminsock).
+# None — обычный запуск из консоли.
+_LOOP: asyncio.AbstractEventLoop | None = None
+
+# Команды, которым бот не нужен: они диагностируют окружение.
+LOCAL_ONLY = {"doctor", "version"}
+# Что только читает: для них молчание о неработающем боте не страшно.
+READ_ACTIONS = {"list", "size", "check", "info", "connections"}
+
+
+def attach(loop: asyncio.AbstractEventLoop | None) -> None:
+    global _LOOP
+    _LOOP = loop
+
+
+def _run(coro: Any) -> Any:
+    """asyncio.run для консоли и вызов в цикле бота — изнутри бота."""
+    if _LOOP is not None:
+        return asyncio.run_coroutine_threadsafe(coro, _LOOP).result()
+    return asyncio.run(coro)
 
 
 def _out(payload: Any, as_json: bool, plain: Callable[[Any], None]) -> None:
@@ -55,6 +78,15 @@ async def _with_storage(action: Callable[[], Any]) -> Any:
     """
     from . import storage
     from .db import engine as db_engine
+
+    if _LOOP is not None:
+        # Внутри бота база уже поднята, а память — та самая, что видят
+        # пользователи. Загрузка с диска затёрла бы несохранённое,
+        # а закрытие движка оставило бы бота без базы.
+        result = action()
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
 
     await db_engine.wait_ready()
     await storage.load()
@@ -128,7 +160,7 @@ def _prune_sources(args) -> int:
             show(d), print(f"Удалено: {len(d['removed'])}.")))
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 def cmd_sources(args) -> int:
@@ -170,7 +202,7 @@ def cmd_sources(args) -> int:
              lambda d: print("удалено" if d["removed"] else "не найдено"))
         return OK if removed else FAILED
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 # --------------------------------------------------------------------------
@@ -197,7 +229,7 @@ def cmd_users(args) -> int:
         ])
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 # --------------------------------------------------------------------------
@@ -234,7 +266,7 @@ def cmd_features(args) -> int:
         print(f"{flag.title}: {'включено' if value else 'выключено'}")
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 # --------------------------------------------------------------------------
@@ -310,7 +342,7 @@ def cmd_db(args) -> int:
               file=sys.stderr)
         return NEEDS_YES
 
-    before, after, note = asyncio.run(dbcare.vacuum_sqlite())
+    before, after, note = _run(dbcare.vacuum_sqlite())
     payload = {"before": before, "after": after, "note": note}
     _out(payload, args.json, lambda d: print(
         f"{dbcare.format_size(d['before'])} → {dbcare.format_size(d['after'])}"
@@ -332,7 +364,7 @@ def _db_copy(args) -> int:
         return NEEDS_YES
     try:
         source, target = transfer.url_for(args.source), transfer.url_for(args.target)
-        copied = asyncio.run(transfer.copy(source, target, replace=args.replace))
+        copied = _run(transfer.copy(source, target, replace=args.replace))
     except transfer.TransferError as exc:
         print(f"Перенос не выполнен: {exc}", file=sys.stderr)
         return FAILED
@@ -373,7 +405,7 @@ def cmd_links(args) -> int:
         print(f"удалено ссылок: {count}")
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 def cmd_chats(args) -> int:
@@ -407,7 +439,7 @@ def cmd_chats(args) -> int:
               f"{'включена' if args.action == 'on' else 'выключена'}")
         return OK
 
-    return asyncio.run(_with_storage(run))
+    return _run(_with_storage(run))
 
 
 def cmd_files(args) -> int:
@@ -444,7 +476,7 @@ def cmd_rustdesk(args) -> int:
         return OK
 
     if args.action == "connections":
-        ok, payload = asyncio.run(rustdesk.connection_counts())
+        ok, payload = _run(rustdesk.connection_counts())
         if not ok:
             print(payload, file=sys.stderr)
             return FAILED
@@ -457,7 +489,7 @@ def cmd_rustdesk(args) -> int:
               "Повторите с --yes.", file=sys.stderr)
         return NEEDS_YES
 
-    ok, reason = asyncio.run(rustdesk.control(args.action))
+    ok, reason = _run(rustdesk.control(args.action))
     print(reason or "готово", file=sys.stderr if not ok else sys.stdout)
     return OK if ok else FAILED
 
@@ -487,7 +519,7 @@ def cmd_vpn(args) -> int:
 
     titles = {item.key: f"{item.title} ({item.client.kind})" for item in vpn.slots()}
     runner = vpn.check_all if args.action == "check" else vpn.selftest_all
-    results = asyncio.run(runner())
+    results = _run(runner())
     payload = {titles.get(key, key): {"ok": ok, "note": note}
                for key, (ok, note) in sorted(results.items(), key=lambda i: int(i[0]))}
     _out(payload, args.json, lambda d: [
@@ -519,6 +551,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="radar", description="Управление «Радаром» из командной строки")
     parser.add_argument("--json", action="store_true",
                         help="машиночитаемый вывод")
+    parser.add_argument("--local", action="store_true",
+                        help="не обращаться к работающему боту, работать с базой напрямую")
 
     # --json принимается и до подкоманды, и после неё: писать
     # «radar --json version» помнит не каждый, а «radar version --json»
@@ -617,9 +651,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _via_bot(args) -> bool:
+    if _LOOP is not None or getattr(args, "local", False):
+        return False
+    if os.getenv("RADAR_CLI_LOCAL"):
+        return False
+    if args.command in LOCAL_ONLY:
+        return False
+    # Перенос между базами поднимает собственные подключения.
+    return not (args.command == "db" and args.action == "copy")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if _via_bot(args):
+        from . import adminsock
+
+        raw = list(sys.argv[1:] if argv is None else argv)
+        reply = adminsock.call(raw)
+        if reply is not None:
+            code, out, err = reply
+            sys.stdout.write(out)
+            sys.stderr.write(err)
+            return code
+        if getattr(args, "action", "list") not in READ_ACTIONS:
+            print("Бот не запущен — правка пойдёт прямо в базу и подхватится "
+                  "при его запуске.", file=sys.stderr)
     try:
         return int(args.func(args))
     except KeyboardInterrupt:
