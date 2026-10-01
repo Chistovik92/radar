@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.3 — автономный установщик.
+# Система «Радар» v5.9.3.1 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.3"
+VERSION="5.9.3.1"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=152
+FILE_COUNT=154
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3292,6 +3292,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.9.3.1", [
+        "🌐 <b>Консоль на двух языках и новые команды.</b> Справка и сообщения radarctl — по-русски и по-английски (--lang, RADAR_LANG). Добавлены управление пользователями (роль, часовой пояс, удаление), значениями настроек с проверкой, журналами, журналом действий и статистикой.",
+    ]),
     ("5.9.3", [
         "🖥 <b>Консоль управляет работающим ботом.</b> Команды radarctl "
         "(например, включение возможности) теперь выполняет сам бот через "
@@ -5186,7 +5189,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_06'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.3"
+__version__ = "5.9.3.1"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -10782,6 +10785,36 @@ def check_value(setting: "Setting", value: str) -> str:
         match = re.fullmatch(r"(\d{2}):(\d{2})", text)
         if not match or int(match.group(1)) > 23 or int(match.group(2)) > 59:
             return "Время — ЧЧ:ММ, например 20:00."
+    return ""
+
+
+def validate_extra(key: str, value: str) -> str:
+    """Проверка значения до записи: опечатка в тарифах молча ломала бы продажу.
+
+    Общая для панели и консоли (5.9.3.1): две проверки разошлись бы
+    на первом же новом ключе.
+    """
+    if not value:
+        return ""
+    if key == "DIGEST_PLANS":
+        if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
+            return "Формат: 30:150, 90:400 — дни и звёзды через двоеточие."
+        for chunk in value.split(","):
+            days, _, stars = chunk.strip().partition(":")
+            if int(days) < 1 or int(stars) < 1:
+                return "Срок и цена — не меньше единицы (звезда — минимальная цена)."
+    elif key == "VPN_PLANS":
+        from . import vpnsales
+
+        chunks = [c for c in value.split(";") if c.strip()]
+        if not chunks or len(vpnsales.parse_plans(value)) != len(chunks):
+            return ("Формат: дни:трафикГБ:устройства:цена через «;», например "
+                    "30:0:3:199; 90:0:3:499 — есть негодный тариф.")
+    elif key in ("VPN_DAYS", "VPN_TRAFFIC_GB", "VPN_DEVICES"):
+        if not value.isdigit():
+            return "Нужно целое число."
+        if key == "VPN_DAYS" and int(value) < 1:
+            return "Срок — не меньше одного дня."
     return ""
 
 
@@ -19187,29 +19220,8 @@ def _in_own_section(group: str) -> bool:
 
 
 def _validate_setting(key: str, value: str) -> str:
-    """Проверка значения до записи: опечатка в тарифах молча ломала бы продажу."""
-    if not value:
-        return ""
-    if key == "DIGEST_PLANS":
-        if not re.fullmatch(r"\s*\d+:\d+\s*(,\s*\d+:\d+\s*)*", value):
-            return "Формат: 30:150, 90:400 — дни и звёзды через двоеточие."
-        for chunk in value.split(","):
-            days, _, stars = chunk.strip().partition(":")
-            if int(days) < 1 or int(stars) < 1:
-                return "Срок и цена — не меньше единицы (звезда — минимальная цена)."
-    elif key == "VPN_PLANS":
-        from .. import vpnsales
-
-        chunks = [c for c in value.split(";") if c.strip()]
-        if not chunks or len(vpnsales.parse_plans(value)) != len(chunks):
-            return ("Формат: дни:трафикГБ:устройства:цена через «;», например "
-                    "30:0:3:199; 90:0:3:499 — есть негодный тариф.")
-    elif key in ("VPN_DAYS", "VPN_TRAFFIC_GB", "VPN_DEVICES"):
-        if not value.isdigit():
-            return "Нужно целое число."
-        if key == "VPN_DAYS" and int(value) < 1:
-            return "Срок — не меньше одного дня."
-    return ""
+    """Проверка значения до записи — общая с консолью, см. secrets."""
+    return secrets_module.validate_extra(key, value)
 
 
 def _setting_input(setting, current: str) -> str:
@@ -37724,6 +37736,9 @@ cat > "radar/cli.py" <<'RADAR_FILE_110'
     python -m radar.cli backup create --yes
 
 Снаружи, с хоста, — через обёртку: bash radarctl.sh …
+
+С 5.9.3 команды выполняет сам работающий бот (см. `adminsock`), а с 5.9.3.1
+консоль говорит по-русски и по-английски (`--lang`, см. `clitext`).
 """
 
 # --------------------------------------------------------------------------
@@ -37741,6 +37756,8 @@ import os
 import sys
 from typing import Any, Callable
 
+from .clitext import L
+
 # Коды возврата: годится для cron и для скриптов.
 OK = 0
 FAILED = 1
@@ -37754,12 +37771,18 @@ _LOOP: asyncio.AbstractEventLoop | None = None
 # Команды, которым бот не нужен: они диагностируют окружение.
 LOCAL_ONLY = {"doctor", "version"}
 # Что только читает: для них молчание о неработающем боте не страшно.
-READ_ACTIONS = {"list", "size", "check", "info", "connections"}
+READ_ACTIONS = {"list", "size", "check", "info", "connections", "show", "get",
+                "tail", "pending"}
 
 
 def attach(loop: asyncio.AbstractEventLoop | None) -> None:
     global _LOOP
     _LOOP = loop
+
+
+def in_bot() -> bool:
+    """Выполняется ли команда внутри работающего бота."""
+    return _LOOP is not None
 
 
 def _run(coro: Any) -> Any:
@@ -37775,6 +37798,17 @@ def _out(payload: Any, as_json: bool, plain: Callable[[Any], None]) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         plain(payload)
+
+
+def _err(text: str) -> None:
+    print(text, file=sys.stderr)
+
+
+def _audit(action: str, detail: str = "") -> None:
+    """Запись в журнал действий — как делает панель."""
+    from .cli_admin import audit
+
+    audit(action, detail)
 
 
 async def _with_storage(action: Callable[[], Any]) -> Any:
@@ -37822,10 +37856,12 @@ def _prune_sources(args) -> int:
     async def run():
         channels, feeds = se.listing(se.TELEGRAM), se.listing(se.RSS)
         if not channels and not feeds:
-            print("Источников нет.", file=sys.stderr)
+            _err(L("Источников нет.", "No sources."))
             return FAILED
-        print(f"Проверяю: каналов {len(channels)}, лент {len(feeds)} "
-              f"(пауза {args.pause} с — это займёт время)", file=sys.stderr)
+        _err(L(f"Проверяю: каналов {len(channels)}, лент {len(feeds)} "
+               f"(пауза {args.pause} с — это займёт время)",
+               f"Checking: {len(channels)} channels, {len(feeds)} feeds "
+               f"(pause {args.pause} s — this takes a while)"))
         report = await sourcecheck.check_all(channels, feeds, pause=args.pause)
 
         chosen = sourceprune.select(report, args.days, dead=args.dead)
@@ -37839,33 +37875,38 @@ def _prune_sources(args) -> int:
         }
 
         def show(d):
-            print(f"Проверено {d['checked']}: живых {d['alive']}, затихших "
-                  f"{d['stale']}, недоступных {d['dead']}.")
+            print(L(f"Проверено {d['checked']}: живых {d['alive']}, затихших "
+                    f"{d['stale']}, недоступных {d['dead']}.",
+                    f"Checked {d['checked']}: alive {d['alive']}, quiet "
+                    f"{d['stale']}, unreachable {d['dead']}."))
             for item in d["candidates"]:
                 print(f"  ✗ {item['kind']} {item['ref']} — {item['reason']}")
             if not d["candidates"]:
-                print("Молчащих источников нет.")
+                print(L("Молчащих источников нет.", "No silent sources."))
             if d["warning"]:
                 print("⚠️ " + d["warning"])
 
         if doubt and not args.force:
             _out(payload, args.json, show)
-            print("Удаление отменено. Если уверены — повторите с --force.", file=sys.stderr)
+            _err(L("Удаление отменено. Если уверены — повторите с --force.",
+                   "Removal cancelled. If you are sure, repeat with --force."))
             return FAILED
         if not chosen:
             _out(payload, args.json, show)
             return OK
         if not args.yes:
             _out(payload, args.json, show)
-            print(f"Ничего не удалено. Убрать {len(chosen)} — повторите с --yes.",
-                  file=sys.stderr)
+            _err(L(f"Ничего не удалено. Убрать {len(chosen)} — повторите с --yes.",
+                   f"Nothing removed. To remove {len(chosen)}, repeat with --yes."))
             return NEEDS_YES
 
         removed = sourceprune.apply(chosen)
         await storage.save()
+        _audit("источники убраны", str(len(removed)))
         payload["removed"] = [{"kind": c.kind, "ref": c.ref} for c in removed]
         _out(payload, args.json, lambda d: (
-            show(d), print(f"Удалено: {len(d['removed'])}.")))
+            show(d), print(L(f"Удалено: {len(d['removed'])}.",
+                             f"Removed: {len(d['removed'])}."))))
         return OK
 
     return _run(_with_storage(run))
@@ -37888,8 +37929,9 @@ def cmd_sources(args) -> int:
 
         if args.action == "list":
             data = {kind: se.listing(kind) for kind in kinds}
+            empty = L("пусто", "empty")
             _out(data, args.json, lambda d: [
-                print(f"{kind}: {', '.join(items) or 'пусто'}")
+                print(f"{kind}: {', '.join(items) or empty}")
                 for kind, items in d.items()
             ])
             return OK
@@ -37899,43 +37941,21 @@ def cmd_sources(args) -> int:
             # Без сохранения правка жила только в памяти процесса и пропадала
             # при выходе (до 5.9.2.1).
             await storage.save()
+            _audit("источник добавлен", f"{args.kind} {', '.join(added)}")
             _out({"added": added, "skipped": skipped}, args.json, lambda d: print(
-                f"добавлено: {', '.join(d['added']) or '—'}; "
-                f"пропущено: {', '.join(d['skipped']) or '—'}"))
+                L(f"добавлено: {', '.join(d['added']) or '—'}; "
+                  f"пропущено: {', '.join(d['skipped']) or '—'}",
+                  f"added: {', '.join(d['added']) or '—'}; "
+                  f"skipped: {', '.join(d['skipped']) or '—'}")))
             return OK if added else FAILED
 
         removed = se.remove(args.kind, args.value)
         await storage.save()
+        _audit("источник удалён", f"{args.kind} {args.value}")
         _out({"removed": removed}, args.json,
-             lambda d: print("удалено" if d["removed"] else "не найдено"))
+             lambda d: print(L("удалено", "removed") if d["removed"]
+                             else L("не найдено", "not found")))
         return OK if removed else FAILED
-
-    return _run(_with_storage(run))
-
-
-# --------------------------------------------------------------------------
-#  Пользователи
-# --------------------------------------------------------------------------
-
-def cmd_users(args) -> int:
-    from . import roles, storage
-
-    async def run():
-        people = storage.users()
-        rows = [
-            {
-                "key": key,
-                "role": item.get("role", "user"),
-                "locations": len(item.get("locations") or []),
-            }
-            for key, item in people.items()
-        ]
-        _out(rows, args.json, lambda data: [
-            print(f"{row['key']:>12}  {roles.title(row['role']):<22} "
-                  f"локаций: {row['locations']}")
-            for row in data
-        ])
-        return OK
 
     return _run(_with_storage(run))
 
@@ -37951,19 +37971,21 @@ def cmd_features(args) -> int:
     async def run():
         if args.action == "list":
             data = features.snapshot()
+            on, off = L("вкл ", "on  "), L("выкл", "off ")
             _out(data, args.json, lambda d: [
-                print(f"{'вкл ' if value else 'выкл'}  {key}")
+                print(f"{on if value else off}  {key}")
                 for key, value in sorted(d.items())
             ])
             return OK
 
         flag = features.resolve(args.key)
         if flag is None:
-            print(f"Неизвестная возможность: {args.key}", file=sys.stderr)
+            _err(L(f"Неизвестная возможность: {args.key}",
+                   f"Unknown feature: {args.key}"))
             return FAILED
         if flag.locked:
-            print(f"{flag.title} — ядро системы, выключить нельзя",
-                  file=sys.stderr)
+            _err(L(f"{flag.title} — ядро системы, выключить нельзя",
+                   f"{flag.title} is part of the core and cannot be switched off"))
             return FAILED
 
         value = args.action == "on"
@@ -37971,41 +37993,12 @@ def cmd_features(args) -> int:
         # и база. Одной записи мало — переживёт только до перезапуска.
         features.set_local(flag.key, value)
         await repo.set_feature(flag.key, value, "командная строка")
-        print(f"{flag.title}: {'включено' if value else 'выключено'}")
+        _audit("возможность включена" if value else "возможность выключена", flag.key)
+        print(f"{flag.title}: " + (L("включено", "enabled") if value
+                                   else L("выключено", "disabled")))
         return OK
 
     return _run(_with_storage(run))
-
-
-# --------------------------------------------------------------------------
-#  Ключи
-# --------------------------------------------------------------------------
-
-def cmd_keys(args) -> int:
-    from . import secrets
-
-    if args.action == "list":
-        data = {
-            group: [
-                {"name": item.name, "value": secrets.display(item)}
-                for item in items
-            ]
-            for group, items in secrets.by_group().items()
-        }
-        _out(data, args.json, lambda d: [
-            print(f"[{group}] {item['name']}: {item['value']}")
-            for group, items in d.items() for item in items
-        ])
-        return OK
-
-    if not secrets.writable():
-        print("Файл .env недоступен на запись", file=sys.stderr)
-        return FAILED
-    if not secrets.write(args.name, args.value):
-        print(f"Не удалось записать {args.name}", file=sys.stderr)
-        return FAILED
-    print(f"{args.name}: записано ({secrets.mask(args.value)})")
-    return OK
 
 
 # --------------------------------------------------------------------------
@@ -38021,14 +38014,15 @@ def cmd_backup(args) -> int:
         _out(rows, args.json, lambda data: [
             print(f"{row['when']}  {row['name']}  {row['size']}")
             for row in data
-        ] or print("копий нет"))
+        ] or print(L("копий нет", "no backups")))
         return OK
 
     path, error = backup.create_sync("командная строка")
     if error or path is None:
-        print(f"Копия не создана: {error}", file=sys.stderr)
+        _err(L(f"Копия не создана: {error}", f"Backup not created: {error}"))
         return FAILED
-    print(f"Копия создана: {path}")
+    _audit("копия создана", str(path))
+    print(L(f"Копия создана: {path}", f"Backup created: {path}"))
     return OK
 
 
@@ -38042,12 +38036,13 @@ def cmd_db(args) -> int:
         # Тот же источник пути, что у самого dbcare.vacuum_sqlite.
         size = dbcare.measure_sqlite(config.DB_FILE)
         payload = {"bytes": size, "human": dbcare.format_size(size)}
-        _out(payload, args.json, lambda d: print(f"база: {d['human']}"))
+        _out(payload, args.json, lambda d: print(L(f"база: {d['human']}",
+                                                   f"database: {d['human']}")))
         return OK
 
     if not args.yes:
-        print("Уплотнение базы останавливает запись. Повторите с --yes.",
-              file=sys.stderr)
+        _err(L("Уплотнение базы останавливает запись. Повторите с --yes.",
+               "Vacuuming the database pauses writes. Repeat with --yes."))
         return NEEDS_YES
 
     before, after, note = _run(dbcare.vacuum_sqlite())
@@ -38065,19 +38060,21 @@ def _db_copy(args) -> int:
     from .db import transfer
 
     if not args.source or not args.target:
-        print("Укажите --from и --to: sqlite или postgres.", file=sys.stderr)
+        _err(L("Укажите --from и --to: sqlite или postgres.",
+               "Specify --from and --to: sqlite or postgres."))
         return FAILED
     if args.replace and not args.yes:
-        print("--replace сотрёт данные в целевой базе. Повторите с --yes.", file=sys.stderr)
+        _err(L("--replace сотрёт данные в целевой базе. Повторите с --yes.",
+               "--replace will erase the target database. Repeat with --yes."))
         return NEEDS_YES
     try:
         source, target = transfer.url_for(args.source), transfer.url_for(args.target)
         copied = _run(transfer.copy(source, target, replace=args.replace))
     except transfer.TransferError as exc:
-        print(f"Перенос не выполнен: {exc}", file=sys.stderr)
+        _err(L(f"Перенос не выполнен: {exc}", f"Transfer failed: {exc}"))
         return FAILED
     _out(copied, args.json, lambda d: print(
-        "Перенесено: " + ", ".join(f"{k} {v}" for k, v in d.items() if v)))
+        L("Перенесено: ", "Copied: ") + ", ".join(f"{k} {v}" for k, v in d.items() if v)))
     return OK
 
 
@@ -38092,8 +38089,8 @@ def cmd_links(args) -> int:
     # поднятой базы «забыл --yes» выглядело бы как поломка: код 1
     # вместо 2, и cron не отличил бы одно от другого.
     if args.action == "clear" and not args.yes:
-        print("Будут удалены ВСЕ короткие ссылки. Повторите с --yes.",
-              file=sys.stderr)
+        _err(L("Будут удалены ВСЕ короткие ссылки. Повторите с --yes.",
+               "ALL short links will be deleted. Repeat with --yes."))
         return NEEDS_YES
 
     async def run():
@@ -38101,16 +38098,18 @@ def cmd_links(args) -> int:
             rows = await repo.short_link_list()
             _out(rows, args.json, lambda data: [
                 print(f"{row.get('code')}  →  {row.get('url')}") for row in data
-            ] or print("ссылок нет"))
+            ] or print(L("ссылок нет", "no links")))
             return OK
 
         if args.action == "remove":
             done = await repo.remove_short_link(args.code)
-            print("удалено" if done else "не найдено")
+            _audit("короткая ссылка удалена", args.code)
+            print(L("удалено", "removed") if done else L("не найдено", "not found"))
             return OK if done else FAILED
 
         count = await repo.clear_short_links()
-        print(f"удалено ссылок: {count}")
+        _audit("короткие ссылки очищены", str(count))
+        print(L(f"удалено ссылок: {count}", f"links removed: {count}"))
         return OK
 
     return _run(_with_storage(run))
@@ -38123,28 +38122,33 @@ def cmd_chats(args) -> int:
     async def run():
         if args.action == "list":
             rows = await repo.chat_list()
+            on, off = L("вкл ", "on  "), L("выкл", "off ")
             _out(rows, args.json, lambda data: [
                 print(f"{row['chat_id']:>15}  "
-                      f"{'вкл ' if row['enabled'] else 'выкл'}  "
+                      f"{on if row['enabled'] else off}  "
                       f"{row['title'] or '—'}")
                 for row in data
-            ] or print("чатов нет"))
+            ] or print(L("чатов нет", "no chats")))
             return OK
 
         if not args.chat_id:
-            print("Нужен идентификатор чата: radar chats on -100…",
-                  file=sys.stderr)
+            _err(L("Нужен идентификатор чата: radar chats on -100…",
+                   "A chat id is required: radar chats on -100…"))
             return FAILED
 
         chat_id = int(args.chat_id)
         if args.action == "forget":
             done = await repo.chat_forget(chat_id)
-            print("забыт" if done else "такого чата нет")
+            print(L("забыт", "forgotten") if done
+                  else L("такого чата нет", "no such chat"))
             return OK if done else FAILED
 
         await repo.chat_save(chat_id, enabled=args.action == "on")
-        print(f"{chat_id}: модерация "
-              f"{'включена' if args.action == 'on' else 'выключена'}")
+        _audit("модерация чата " + ("включена" if args.action == "on" else "выключена"),
+               str(chat_id))
+        print(f"{chat_id}: " + (
+            L("модерация включена", "moderation enabled") if args.action == "on"
+            else L("модерация выключена", "moderation disabled")))
         return OK
 
     return _run(_with_storage(run))
@@ -38156,7 +38160,7 @@ def cmd_files(args) -> int:
     rows = [{"token": drop.token, "name": drop.name} for drop in filedrop.listing()]
     _out(rows, args.json, lambda data: [
         print(f"{row['token']}  {row['name']}") for row in data
-    ] or print("раздач нет"))
+    ] or print(L("раздач нет", "no shared files")))
     return OK
 
 
@@ -38169,13 +38173,13 @@ def cmd_rustdesk(args) -> int:
 
     allowed, reason = rustdesk.ready()
     if not allowed:
-        print(reason, file=sys.stderr)
+        _err(reason)
         return FAILED
 
     if args.action == "info":
         ok, payload = rustdesk.client_info()
         if not ok:
-            print(payload, file=sys.stderr)
+            _err(payload)
             return FAILED
         _out(payload, args.json, lambda d: print(
             f"ID Server:    {d['host']}:{d['id_port']}\n"
@@ -38186,19 +38190,20 @@ def cmd_rustdesk(args) -> int:
     if args.action == "connections":
         ok, payload = _run(rustdesk.connection_counts())
         if not ok:
-            print(payload, file=sys.stderr)
+            _err(payload)
             return FAILED
         _out(payload, args.json, lambda d: print(
-            f"hbbs: {d['hbbs']} онлайн, hbbr: {d['hbbr']} активных сессий"))
+            L(f"hbbs: {d['hbbs']} онлайн, hbbr: {d['hbbr']} активных сессий",
+              f"hbbs: {d['hbbs']} online, hbbr: {d['hbbr']} active sessions")))
         return OK
 
     if args.action in ("stop", "restart") and not args.yes:
-        print(f"Действие «{args.action}» прервёт подключения. "
-              "Повторите с --yes.", file=sys.stderr)
+        _err(L(f"Действие «{args.action}» прервёт подключения. Повторите с --yes.",
+               f"“{args.action}” will drop connections. Repeat with --yes."))
         return NEEDS_YES
 
     ok, reason = _run(rustdesk.control(args.action))
-    print(reason or "готово", file=sys.stderr if not ok else sys.stdout)
+    print(reason or L("готово", "done"), file=sys.stderr if not ok else sys.stdout)
     return OK if ok else FAILED
 
 
@@ -38217,12 +38222,15 @@ def cmd_vpn(args) -> int:
 
     if not vpn.slots():
         wrong = vpn.unknown_kinds()
-        print("Незнакомый вид панели: " + ", ".join(wrong) if wrong
-              else "Ни одна панель не настроена (VPN1_KIND …).", file=sys.stderr)
+        _err((L("Незнакомый вид панели: ", "Unknown panel kind: ") + ", ".join(wrong))
+             if wrong else L("Ни одна панель не настроена (VPN1_KIND …).",
+                             "No panel is configured (VPN1_KIND …)."))
         return FAILED
     if args.action == "selftest" and not args.yes:
-        print("selftest заведёт в каждой панели запись radar_selftest и оставит "
-              "её выключенной. Повторите с --yes.", file=sys.stderr)
+        _err(L("selftest заведёт в каждой панели запись radar_selftest и оставит "
+               "её выключенной. Повторите с --yes.",
+               "selftest creates a radar_selftest entry on every panel and leaves "
+               "it disabled. Repeat with --yes."))
         return NEEDS_YES
 
     titles = {item.key: f"{item.title} ({item.client.kind})" for item in vpn.slots()}
@@ -38256,11 +38264,17 @@ def cmd_version(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="radar", description="Управление «Радаром» из командной строки")
+        prog="radar",
+        description=L("Управление «Радаром» из командной строки",
+                      "Manage Radar from the command line"))
     parser.add_argument("--json", action="store_true",
-                        help="машиночитаемый вывод")
+                        help=L("машиночитаемый вывод", "machine-readable output"))
     parser.add_argument("--local", action="store_true",
-                        help="не обращаться к работающему боту, работать с базой напрямую")
+                        help=L("не обращаться к работающему боту, работать с базой напрямую",
+                               "do not contact the running bot, work on the database directly"))
+    parser.add_argument("--lang", choices=("ru", "en"), default=argparse.SUPPRESS,
+                        help=L("язык вывода (по умолчанию — из RADAR_LANG/LANG, иначе русский)",
+                               "output language (default: from RADAR_LANG/LANG, else Russian)"))
 
     # --json принимается и до подкоманды, и после неё: писать
     # «radar --json version» помнит не каждый, а «radar version --json»
@@ -38269,92 +38283,107 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true",
                         default=argparse.SUPPRESS,
-                        help="машиночитаемый вывод")
+                        help=L("машиночитаемый вывод", "machine-readable output"))
 
     subparsers = parser.add_subparsers(dest="command", required=True,
                                        parser_class=argparse.ArgumentParser)
 
-    sources = subparsers.add_parser("sources", help="источники", parents=[common])
+    sources = subparsers.add_parser("sources", help=L("источники", "sources"),
+                                    parents=[common])
     sources.add_argument("action", choices=["list", "add", "remove", "prune"],
-                         help="prune — проверить и убрать молчащие (без --yes только показать)")
+                         help=L("prune — проверить и убрать молчащие (без --yes только показать)",
+                                "prune — check and remove silent ones (without --yes only shows)"))
     sources.add_argument("kind", nargs="?", default="",
                          help="telegram (tg) | rss | vk")
     sources.add_argument("value", nargs="?", default="")
     sources.add_argument("--days", type=int, default=30,
-                         help="prune: молчит дольше стольких дней (по умолчанию 30)")
+                         help=L("prune: молчит дольше стольких дней (по умолчанию 30)",
+                                "prune: silent for more than this many days (default 30)"))
     sources.add_argument("--dead", action="store_true",
-                         help="prune: убирать и недоступные, не только молчащие")
-    sources.add_argument("--yes", action="store_true", help="prune: действительно удалить")
+                         help=L("prune: убирать и недоступные, не только молчащие",
+                                "prune: also remove unreachable ones, not only silent"))
+    sources.add_argument("--yes", action="store_true",
+                         help=L("prune: действительно удалить", "prune: really delete"))
     sources.add_argument("--force", action="store_true",
-                         help="prune: удалять, даже если недоступна большая часть списка")
+                         help=L("prune: удалять, даже если недоступна большая часть списка",
+                                "prune: delete even if most of the list is unreachable"))
     sources.add_argument("--pause", type=float, default=0.8,
-                         help="prune: пауза между запросами, секунд")
+                         help=L("prune: пауза между запросами, секунд",
+                                "prune: pause between requests, seconds"))
     sources.set_defaults(func=cmd_sources)
 
-    users = subparsers.add_parser("users", help="пользователи", parents=[common])
-    users.add_argument("action", nargs="?", choices=["list"], default="list")
-    users.set_defaults(func=cmd_users)
-
-    feats = subparsers.add_parser("features", help="возможности", parents=[common])
+    feats = subparsers.add_parser("features", help=L("возможности", "features"),
+                                  parents=[common])
     feats.add_argument("action", choices=["list", "on", "off"])
     feats.add_argument("key", nargs="?", default="")
     feats.set_defaults(func=cmd_features)
 
-    keys = subparsers.add_parser("keys", help="ключи и токены", parents=[common])
-    keys.add_argument("action", choices=["list", "set"])
-    keys.add_argument("name", nargs="?", default="")
-    keys.add_argument("value", nargs="?", default="")
-    keys.set_defaults(func=cmd_keys)
-
-    backup_cmd = subparsers.add_parser("backup", help="резервные копии", parents=[common])
+    backup_cmd = subparsers.add_parser("backup", help=L("резервные копии", "backups"),
+                                       parents=[common])
     backup_cmd.add_argument("action", choices=["list", "create"])
     backup_cmd.set_defaults(func=cmd_backup)
 
-    db_cmd = subparsers.add_parser("db", help="обслуживание базы", parents=[common])
+    db_cmd = subparsers.add_parser("db", help=L("обслуживание базы", "database upkeep"),
+                                   parents=[common])
     db_cmd.add_argument("action", choices=["size", "vacuum", "copy"])
     db_cmd.add_argument("--yes", action="store_true")
     db_cmd.add_argument("--from", dest="source", default="",
-                        help="откуда переносить: sqlite или postgres (db copy)")
+                        help=L("откуда переносить: sqlite или postgres (db copy)",
+                               "copy from: sqlite or postgres (db copy)"))
     db_cmd.add_argument("--to", dest="target", default="",
-                        help="куда переносить: sqlite или postgres (db copy)")
+                        help=L("куда переносить: sqlite или postgres (db copy)",
+                               "copy to: sqlite or postgres (db copy)"))
     db_cmd.add_argument("--replace", action="store_true",
-                        help="заменить непустую целевую базу (с --yes)")
+                        help=L("заменить непустую целевую базу (с --yes)",
+                               "replace a non-empty target database (with --yes)"))
     db_cmd.set_defaults(func=cmd_db)
 
-    links = subparsers.add_parser("links", help="короткие ссылки", parents=[common])
+    links = subparsers.add_parser("links", help=L("короткие ссылки", "short links"),
+                                  parents=[common])
     links.add_argument("action", choices=["list", "remove", "clear"])
     links.add_argument("code", nargs="?", default="")
     links.add_argument("--yes", action="store_true")
     links.set_defaults(func=cmd_links)
 
-    chats = subparsers.add_parser("chats", help="чаты под модерацией",
+    chats = subparsers.add_parser("chats", help=L("чаты под модерацией",
+                                                  "moderated chats"),
                                   parents=[common])
     chats.add_argument("action", choices=["list", "on", "off", "forget"])
     chats.add_argument("chat_id", nargs="?", default="")
     chats.set_defaults(func=cmd_chats)
 
-    files = subparsers.add_parser("files", help="раздача файлов", parents=[common])
+    files = subparsers.add_parser("files", help=L("раздача файлов", "file sharing"),
+                                  parents=[common])
     files.add_argument("action", nargs="?", choices=["list"], default="list")
     files.set_defaults(func=cmd_files)
 
-    rd = subparsers.add_parser("rustdesk", help="сервер удалённого доступа", parents=[common])
+    rd = subparsers.add_parser("rustdesk",
+                               help=L("сервер удалённого доступа", "remote access server"),
+                               parents=[common])
     rd.add_argument("action",
                     choices=["info", "connections", "start", "stop", "restart"])
     rd.add_argument("--yes", action="store_true")
     rd.set_defaults(func=cmd_rustdesk)
 
-    vpn_cmd = subparsers.add_parser("vpn", help="VPN-панели: проверка и полный круг",
-                                    parents=[common])
+    vpn_cmd = subparsers.add_parser(
+        "vpn", help=L("VPN-панели: проверка и полный круг", "VPN panels: check and full cycle"),
+        parents=[common])
     vpn_cmd.add_argument("action", choices=["check", "selftest"])
     vpn_cmd.add_argument("--yes", action="store_true")
     vpn_cmd.set_defaults(func=cmd_vpn)
 
-    doc = subparsers.add_parser("doctor", help="диагностика", parents=[common])
+    doc = subparsers.add_parser("doctor", help=L("диагностика", "diagnostics"),
+                                parents=[common])
     doc.add_argument("--quick", action="store_true")
     doc.set_defaults(func=cmd_doctor)
 
-    ver = subparsers.add_parser("version", help="версия", parents=[common])
+    ver = subparsers.add_parser("version", help=L("версия", "version"), parents=[common])
     ver.set_defaults(func=cmd_version)
+
+    # Остальные области — в отдельном модуле, чтобы этот не рос бесконечно.
+    from . import cli_admin
+
+    cli_admin.register(subparsers, common)
 
     return parser
 
@@ -38371,35 +38400,543 @@ def _via_bot(args) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import clitext
+
+    raw = list(sys.argv[1:] if argv is None else argv)
+    clitext.set_lang(clitext.detect(raw))
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     if _via_bot(args):
         from . import adminsock
 
-        raw = list(sys.argv[1:] if argv is None else argv)
-        reply = adminsock.call(raw)
+        # Язык оператора передаётся явно: окружение бота — не его.
+        reply = adminsock.call(["--lang", clitext.current()] + raw)
         if reply is not None:
             code, out, err = reply
             sys.stdout.write(out)
             sys.stderr.write(err)
             return code
         if getattr(args, "action", "list") not in READ_ACTIONS:
-            print("Бот не запущен — правка пойдёт прямо в базу и подхватится "
-                  "при его запуске.", file=sys.stderr)
+            _err(L("Бот не запущен — правка пойдёт прямо в базу и подхватится "
+                   "при его запуске.",
+                   "The bot is not running — the change goes straight to the "
+                   "database and is picked up at its start."))
     try:
         return int(args.func(args))
     except KeyboardInterrupt:
         return FAILED
     except Exception as exc:  # noqa: BLE001
-        print(f"Ошибка: {exc}", file=sys.stderr)
+        _err(L(f"Ошибка: {exc}", f"Error: {exc}"))
         return FAILED
 
 
 if __name__ == "__main__":
     sys.exit(main())
 RADAR_FILE_110
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
+cat > "radar/cli_admin.py" <<'RADAR_FILE_111'
+"""Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
+
+Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
+что обработчики бота и панели (`roles`, `storage`, `secrets`, `logs`,
+`audit`), а не повторяют их логику. Права: консоль на сервере — это
+владелец установки, то есть суперадминистратор; но правила ролей остаются
+теми же, что в боте: суперадминистратора изменить нельзя никому,
+а сам для себя консоль «пользователем» не является.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import os
+import sys
+from typing import Any
+
+from . import cli
+from .clitext import L
+
+OK, FAILED, NEEDS_YES = cli.OK, cli.FAILED, cli.NEEDS_YES
+
+# Кто записан в журнал действий, когда правку сделала консоль.
+ACTOR = "консоль"
+ACTOR_EN = "console"
+# Роль консоли для проверок прав — как у владельца установки.
+CONSOLE_ROLE = "superadmin"
+
+
+def audit(action: str, detail: str = "") -> None:
+    """Запись в журнал действий — тот же, что у панели. Значения секретов
+    сюда не попадают: только имя и действие."""
+    try:
+        from .web import audit as journal
+
+        journal.record(ACTOR, action, detail)
+    except Exception:  # noqa: BLE001
+        # Журнал вторичен: упавшая запись не должна отменять уже сделанное.
+        pass
+
+
+# --------------------------------------------------------------------------
+#  Пользователи
+# --------------------------------------------------------------------------
+
+def _card(key: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Что показываем о человеке. Без контактов SOS и без подборок: это
+    личное, и в консольный вывод (а оттуда — в журналы cron) не должно
+    попадать."""
+    return {
+        "key": key,
+        "role": record.get("role", "user"),
+        "username": record.get("username", ""),
+        "lang": record.get("lang", ""),
+        "tz": record.get("tz", ""),
+        "weather_mode": record.get("weather_mode", ""),
+        "weather_time": record.get("weather_time", ""),
+        "quiet": [record.get("quiet_from", ""), record.get("quiet_to", "")],
+        "created": record.get("created", 0),
+        "locations": [
+            {"id": item.get("id", ""), "name": item.get("name", ""),
+             "city": item.get("city", "")}
+            for item in (record.get("locs") or [])
+        ],
+    }
+
+
+def cmd_users(args) -> int:
+    from . import roles, storage
+
+    async def run():
+        people = storage.users()
+
+        if args.action == "list":
+            rows = [
+                {"key": key, "role": item.get("role", "user"),
+                 "locations": len(item.get("locs") or [])}
+                for key, item in people.items()
+                if not args.role or item.get("role", "user") == args.role
+            ]
+            word = L("локаций", "locations")
+            cli._out(rows, args.json, lambda data: [
+                print(f"{row['key']:>12}  {roles.title(row['role'], L('ru', 'en')):<22} "
+                      f"{word}: {row['locations']}")
+                for row in data
+            ])
+            return OK
+
+        if not args.key:
+            cli._err(L("Нужен ключ пользователя (например 123456789 или vk:5).",
+                       "A user key is required (for example 123456789 or vk:5)."))
+            return FAILED
+        record = storage.get_user(args.key)
+        if record is None:
+            cli._err(L("Пользователь не найден.", "User not found."))
+            return FAILED
+        role = record.get("role")
+
+        if args.action == "show":
+            def show(card):
+                for name, value in card.items():
+                    if name != "locations":
+                        print(f"{name}: {value}")
+                for item in card["locations"]:
+                    print(f"  • {item['name']} {item['city']} [{item['id']}]")
+
+            cli._out(_card(args.key, record), args.json, show)
+            return OK
+
+        if args.action == "role":
+            if args.value not in (roles.USER, roles.MODERATOR, roles.ADMIN):
+                cli._err(L("Роль: user, moderator или admin (суперадмина "
+                           "выдаёт только установка).",
+                           "Role: user, moderator or admin (superadmin is set "
+                           "only by the installation)."))
+                return FAILED
+            if not roles.can_assign(CONSOLE_ROLE, role, args.value):
+                cli._err(L("Роль этого пользователя изменить нельзя.",
+                           "This user's role cannot be changed."))
+                return FAILED
+            record["role"] = args.value
+            await storage.save()
+            audit("роль изменена", f"{args.key}: {args.value}")
+            print(L(f"{args.key}: роль — {args.value}", f"{args.key}: role is {args.value}"))
+            return OK
+
+        if args.action == "delete":
+            if not roles.can_delete_user(CONSOLE_ROLE, role):
+                cli._err(L("Этого пользователя удалить нельзя.",
+                           "This user cannot be deleted."))
+                return FAILED
+            if not args.yes:
+                cli._err(L("Удаление уберёт человека вместе с адресами. Повторите с --yes.",
+                           "Deleting removes the person with all addresses. Repeat with --yes."))
+                return NEEDS_YES
+            await storage.drop_user(args.key)
+            audit("пользователь удалён", args.key)
+            print(L(f"{args.key}: удалён", f"{args.key}: deleted"))
+            return OK
+
+        # time: часовой пояс и время погоды (как в панели).
+        from . import timezones
+        from .quiet import parse_time
+
+        changed = []
+        if args.tz:
+            if timezones.parse(args.tz) is None:
+                cli._err(L("Часовой пояс не разобран.", "Time zone not understood."))
+                return FAILED
+            record["tz"] = args.tz
+            changed.append(L("пояс", "zone"))
+        if args.weather_time:
+            if parse_time(args.weather_time) is None:
+                cli._err(L("Время нужно в виде 08:00.", "Time must look like 08:00."))
+                return FAILED
+            record["weather_time"] = args.weather_time
+            record["weather_mode"] = "time"
+            changed.append(L("время погоды", "weather time"))
+        if not changed:
+            cli._err(L("Нечего менять: укажите --tz и/или --weather-time.",
+                       "Nothing to change: give --tz and/or --weather-time."))
+            return FAILED
+        await storage.save()
+        audit("время пользователя изменено", f"{args.key}: {', '.join(changed)}")
+        print(L("Сохранено: ", "Saved: ") + ", ".join(changed))
+        return OK
+
+    return cli._run(cli._with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  Ключи и значения .env
+# --------------------------------------------------------------------------
+
+def cmd_keys(args) -> int:
+    from . import secrets
+
+    if args.action == "list":
+        data = {
+            group: [
+                {"name": item.key, "title": item.title,
+                 "value": secrets.display(item)}
+                for item in items
+            ]
+            for group, items in secrets.by_group().items()
+        }
+        cli._out(data, args.json, lambda d: [
+            print(f"[{group}] {item['name']}: {item['value']}")
+            for group, items in d.items() for item in items
+        ])
+        return OK
+
+    if args.action == "pending":
+        names = sorted(secrets.PENDING_RESTART)
+        cli._out(names, args.json, lambda d: [print(n) for n in d] or print(
+            L("Всё применено.", "Everything is applied.")))
+        return OK
+
+    setting = secrets.BY_KEY.get(args.name)
+    if setting is None:
+        cli._err(L(f"Неизвестный ключ: {args.name}", f"Unknown key: {args.name}"))
+        return FAILED
+
+    if args.action == "get":
+        # Секретное значение консоль не печатает: журналы cron и история
+        # терминала читаются не только владельцем. Полное — в .env.
+        value = secrets.display(setting)
+        cli._out({"name": args.name, "value": value}, args.json,
+                 lambda d: print(f"{d['name']}: {d['value']}"))
+        return OK
+
+    if not secrets.writable():
+        cli._err(L("Файл .env недоступен на запись", ".env is not writable"))
+        return FAILED
+
+    value = "" if args.action == "unset" else secrets.normalize_value(setting, args.value)
+    problem = secrets.check_value(setting, value) or secrets.validate_extra(args.name, value)
+    if problem:
+        cli._err(problem)
+        return FAILED
+    if not secrets.write(args.name, value):
+        cli._err(L(f"Не удалось записать {args.name}", f"Could not write {args.name}"))
+        return FAILED
+    # Имя ключа — в журнал, значение — никогда.
+    audit("ключ очищен" if not value else "ключ изменён", args.name)
+    if not value:
+        print(L(f"{args.name}: очищено", f"{args.name}: cleared"))
+    else:
+        print(L(f"{args.name}: записано ({secrets.mask(value)})",
+                f"{args.name}: saved ({secrets.mask(value)})"))
+    if args.name in secrets.PENDING_RESTART:
+        print(L("Применится после перезапуска бота.",
+                "Takes effect after the bot restarts."), file=sys.stderr)
+    return OK
+
+
+# --------------------------------------------------------------------------
+#  Статистика
+# --------------------------------------------------------------------------
+
+def cmd_stats(args) -> int:
+    from . import __version__, roles, storage
+
+    async def run():
+        counters: dict[str, int] = {}
+        locations = 0
+        for user in storage.users().values():
+            role = user.get("role", "user")
+            counters[role] = counters.get(role, 0) + 1
+            locations += len(user.get("locs") or [])
+        payload: dict[str, Any] = {
+            "version": __version__,
+            "users": len(storage.users()),
+            "by_role": counters,
+            "locations": locations,
+            "channels": len(storage.channels()),
+            "rss": len(storage.rss_feeds()),
+            "pending_sources": len(storage.pending()),
+            # Счётчики цикла живут в памяти бота: консоль отдельным
+            # процессом видела бы нули и выдавала их за правду.
+            "live": cli.in_bot(),
+        }
+        if cli.in_bot():
+            from . import monitor
+
+            payload["monitor"] = monitor.stats()
+
+        def show(d):
+            print(L(f"Радар v{d['version']}", f"Radar v{d['version']}"))
+            print(L(f"Пользователей: {d['users']} (",
+                    f"Users: {d['users']} (") + ", ".join(
+                f"{roles.title(r, L('ru', 'en'))}: {c}"
+                for r, c in sorted(d["by_role"].items())) + ")")
+            print(L(f"Локаций: {d['locations']}", f"Locations: {d['locations']}"))
+            print(L(f"Каналов: {d['channels']}, RSS: {d['rss']}, "
+                    f"в очереди: {d['pending_sources']}",
+                    f"Channels: {d['channels']}, RSS: {d['rss']}, "
+                    f"queued: {d['pending_sources']}"))
+            if "monitor" in d:
+                m = d["monitor"]
+                print(L(f"Циклов: {m.get('cycles')}, сообщений: {m.get('items')}, "
+                        f"оповещений: {m.get('alerts')}",
+                        f"Cycles: {m.get('cycles')}, messages: {m.get('items')}, "
+                        f"alerts: {m.get('alerts')}"))
+            else:
+                print(L("Счётчики мониторинга — только у запущенного бота.",
+                        "Monitoring counters exist only in a running bot."))
+
+        cli._out(payload, args.json, show)
+        return OK
+
+    return cli._run(cli._with_storage(run))
+
+
+# --------------------------------------------------------------------------
+#  Журналы
+# --------------------------------------------------------------------------
+
+def cmd_logs(args) -> int:
+    from . import logs
+
+    if args.action == "list":
+        rows = [{"name": item.name, "kind": item.kind, "size": item.size_human,
+                 "age": item.age_human} for item in logs.collect()]
+        cli._out(rows, args.json, lambda data: [
+            print(f"{row['name']:<28} {row['kind']:<10} {row['size']:>9}  {row['age']}")
+            for row in data
+        ] or print(L("журналов нет", "no logs")))
+        return OK
+
+    if args.action == "tail":
+        item = logs.find(args.name or "bot.log")
+        if item is None:
+            cli._err(L("Такого журнала нет.", "No such log."))
+            return FAILED
+        print(logs.tail(item, max(1, min(args.lines, 2000))), end="")
+        return OK
+
+    # clear
+    kinds = {args.kind} if args.kind else None
+    if not args.yes:
+        cli._err(L("Журналы будут удалены (текущий bot.log остаётся). Повторите с --yes.",
+                   "Logs will be deleted (the current bot.log stays). Repeat with --yes."))
+        return NEEDS_YES
+    removed, freed = logs.purge(kinds)
+    audit("журналы очищены", f"{removed}")
+    print(L(f"Удалено файлов: {removed}, освобождено {freed // 1024} КБ",
+            f"Files removed: {removed}, freed {freed // 1024} KB"))
+    return OK
+
+
+# --------------------------------------------------------------------------
+#  Журнал действий
+# --------------------------------------------------------------------------
+
+def _audit_lines(limit: int) -> list[dict[str, str]]:
+    """Читает файл журнала, а не память: консоль — отдельный процесс."""
+    from . import config
+
+    path = os.path.join(config.LOG_DIR, "audit.log")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()[-limit:]
+    except OSError:
+        return []
+    rows = []
+    for line in reversed(lines):
+        parts = line.split("\t")
+        parts += [""] * (4 - len(parts))
+        rows.append({"when": parts[0], "actor": parts[1],
+                     "action": parts[2], "detail": parts[3]})
+    return rows
+
+
+def cmd_audit(args) -> int:
+    from .web import audit as journal
+
+    if args.action == "tail":
+        rows = _audit_lines(max(1, min(args.limit, 1000)))
+        cli._out(rows, args.json, lambda data: [
+            print(f"{r['when']}  {r['actor']:<10} {r['action']} {r['detail']}")
+            for r in data
+        ] or print(L("записей нет", "no entries")))
+        return OK
+
+    if not args.yes:
+        cli._err(L("Журнал действий в памяти будет очищен (файл audit.log "
+                   "остаётся). Повторите с --yes.",
+                   "The in-memory action log will be cleared (audit.log stays). "
+                   "Repeat with --yes."))
+        return NEEDS_YES
+    print(L(f"Очищено записей в памяти: {journal.clear()}",
+            f"In-memory entries cleared: {journal.clear()}"))
+    return OK
+
+
+# --------------------------------------------------------------------------
+#  Разбор аргументов
+# --------------------------------------------------------------------------
+
+def register(subparsers, common) -> None:
+    users = subparsers.add_parser("users", help=L("пользователи", "users"),
+                                  parents=[common])
+    users.add_argument("action", nargs="?", default="list",
+                       choices=["list", "show", "role", "delete", "time"])
+    users.add_argument("key", nargs="?", default="")
+    users.add_argument("value", nargs="?", default="",
+                       help=L("role: user | moderator | admin", "role: user | moderator | admin"))
+    users.add_argument("--role", default="",
+                       help=L("list: только эта роль", "list: only this role"))
+    users.add_argument("--tz", default="", help=L("time: часовой пояс", "time: time zone"))
+    users.add_argument("--weather-time", dest="weather_time", default="",
+                       help=L("time: время погоды ЧЧ:ММ", "time: weather time HH:MM"))
+    users.add_argument("--yes", action="store_true")
+    users.set_defaults(func=cmd_users)
+
+    keys = subparsers.add_parser("keys", help=L("ключи, токены и значения .env",
+                                                "keys, tokens and .env values"),
+                                 parents=[common])
+    keys.add_argument("action", choices=["list", "get", "set", "unset", "pending"])
+    keys.add_argument("name", nargs="?", default="")
+    keys.add_argument("value", nargs="?", default="")
+    keys.set_defaults(func=cmd_keys)
+
+    stats = subparsers.add_parser("stats", help=L("статистика", "statistics"),
+                                  parents=[common])
+    stats.set_defaults(func=cmd_stats)
+
+    logs_cmd = subparsers.add_parser("logs", help=L("журналы бота", "bot logs"),
+                                 parents=[common])
+    logs_cmd.add_argument("action", choices=["list", "tail", "clear"])
+    logs_cmd.add_argument("name", nargs="?", default="",
+                      help=L("tail: имя файла (по умолчанию bot.log)",
+                             "tail: file name (default bot.log)"))
+    logs_cmd.add_argument("--lines", type=int, default=60)
+    logs_cmd.add_argument("--kind", default="",
+                      help=L("clear: bot | installer | doctor | other",
+                             "clear: bot | installer | doctor | other"))
+    logs_cmd.add_argument("--yes", action="store_true")
+    logs_cmd.set_defaults(func=cmd_logs)
+
+    audit_cmd = subparsers.add_parser("audit", help=L("журнал действий", "action log"),
+                                    parents=[common])
+    audit_cmd.add_argument("action", choices=["tail", "clear"])
+    audit_cmd.add_argument("--limit", type=int, default=50)
+    audit_cmd.add_argument("--yes", action="store_true")
+    audit_cmd.set_defaults(func=cmd_audit)
+RADAR_FILE_111
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
+cat > "radar/clitext.py" <<'RADAR_FILE_112'
+"""Язык командной строки: русский и английский (с 5.9.3.1).
+
+Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
+привязан к языку пользователя из базы, а у консоли пользователя нет. Здесь
+язык выбирает оператор, и пара «русский — английский» лежит прямо в вызове:
+перевод нельзя забыть, потому что без него вызов не написать, и нельзя
+рассинхронизировать — обе строки видны рядом.
+
+Порядок выбора: `--lang` в командной строке, затем `RADAR_LANG`, затем
+`LANG`/`LC_ALL` (начинается с `ru` — русский, иначе английский), иначе
+русский — язык проекта по умолчанию.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import os
+
+RU, EN = "ru", "en"
+LANGUAGES = (RU, EN)
+
+_current = RU
+
+
+def detect(argv: list[str], env: dict[str, str] | None = None) -> str:
+    """Язык по аргументам и окружению. Аргументы не разбираются целиком —
+    справка и ошибки argparse тоже должны выйти на нужном языке, а парсер
+    ещё не построен."""
+    env = os.environ if env is None else env
+    for index, item in enumerate(argv):
+        if item == "--lang" and index + 1 < len(argv):
+            value = argv[index + 1].lower()
+            if value in LANGUAGES:
+                return value
+        if item.startswith("--lang="):
+            value = item.split("=", 1)[1].lower()
+            if value in LANGUAGES:
+                return value
+    explicit = (env.get("RADAR_LANG") or "").strip().lower()
+    if explicit in LANGUAGES:
+        return explicit
+    system = (env.get("LC_ALL") or env.get("LANG") or "").strip().lower()
+    if system and system not in ("c", "posix") and not system.startswith("c."):
+        return RU if system.startswith("ru") else EN
+    return RU
+
+
+def set_lang(code: str) -> None:
+    global _current
+    _current = code if code in LANGUAGES else RU
+
+
+def current() -> str:
+    return _current
+
+
+def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
+    """Строка на языке консоли."""
+    return ru if _current == RU else en
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_111'
+cat > "radar/__main__.py" <<'RADAR_FILE_113'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -38421,9 +38958,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_111
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_112'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_114'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -38565,9 +39102,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_112
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_113'
+cat > "tools/restore.sh" <<'RADAR_FILE_115'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -38809,9 +39346,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_113
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_114'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_116'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -38907,9 +39444,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_114
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_115'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_117'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -39102,9 +39639,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_115
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_116'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_118'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -40858,9 +41395,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_116
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_117'
+cat > "radar/vpn.py" <<'RADAR_FILE_119'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -41680,9 +42217,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_117
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_118'
+cat > "radar/payments.py" <<'RADAR_FILE_120'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -41911,9 +42448,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_118
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_119'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_121'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -42280,9 +42817,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_119
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_120'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_122'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -42403,9 +42940,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_120
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_121'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_123'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -42876,9 +43413,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_121
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_124'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -43044,9 +43581,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_122
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_123'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_125'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -43551,9 +44088,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_123
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_124'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_126'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -44059,9 +44596,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_124
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_125'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_127'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -44505,9 +45042,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_125
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_126'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_128'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -44654,9 +45191,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_126
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_127'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_129'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -44944,9 +45481,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_127
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_128'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_130'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -45193,9 +45730,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_128
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_129'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_131'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -45566,9 +46103,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_129
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_130'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_132'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -46143,9 +46680,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_130
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_131'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_133'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -46246,9 +46783,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_131
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_132'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_134'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -46338,9 +46875,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_132
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_135'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -46761,9 +47298,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_133
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_136'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -47954,9 +48491,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_134
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_137'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -48710,9 +49247,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_135
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_138'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -49236,9 +49773,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_136
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_139'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -49446,9 +49983,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_137
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_140'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -50435,9 +50972,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_138
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_141'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -50850,9 +51387,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_139
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_142'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -50893,9 +51430,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_140
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_143'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -51158,9 +51695,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_141
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_144'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -51310,9 +51847,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_142
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_145'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -51780,9 +52317,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_143
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_144'
+cat > "radar/cookies.py" <<'RADAR_FILE_146'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -51915,9 +52452,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_144
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_145'
+cat > "radar/music.py" <<'RADAR_FILE_147'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -52721,9 +53258,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_145
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_146'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_148'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -53337,9 +53874,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_146
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_147'
+cat > "multitool/__init__.py" <<'RADAR_FILE_149'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -53365,9 +53902,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_147'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_147
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_148'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_150'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -53400,9 +53937,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_148'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_148
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_149'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_151'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -53809,9 +54346,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_149
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_150'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_152'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -54295,9 +54832,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_150
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_151'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_153'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -54537,7 +55074,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_151
+RADAR_FILE_153
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

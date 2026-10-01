@@ -1,4 +1,4 @@
-# Radar v5.9.3
+# Radar v5.9.3.1
 
 [Русская версия](README.md)
 
@@ -785,6 +785,37 @@ code come back. If the bot is not running there is no socket - the command
 works on the database directly and says so. `--local` or `RADAR_CLI_LOCAL=1`
 always works on the database directly. `doctor`, `version` and `db copy` do
 not involve the bot.
+
+**Console language (since 5.9.3.1).** Help and messages come in Russian and
+English: `--lang ru|en`, the `RADAR_LANG` variable, otherwise the system
+language (`LANG=en_…` is English; `C.UTF-8`, as in the image, is Russian).
+`--json` does not depend on the language.
+
+**New commands (since 5.9.3.1).**
+
+```bash
+radarctl.sh users list --role moderator        # users by role
+radarctl.sh users show 123456789               # card (without SOS contacts)
+radarctl.sh users role 123456789 moderator     # user | moderator | admin
+radarctl.sh users time 123456789 --tz Europe/Saratov --weather-time 07:30
+radarctl.sh users delete 123456789 --yes
+radarctl.sh keys get GEMINI_API_KEY            # value masked only
+radarctl.sh keys set POLL_INTERVAL 60          # same validation as the panel
+radarctl.sh keys unset GEMINI_API_KEY
+radarctl.sh keys pending                       # what waits for a restart
+radarctl.sh stats                              # cycle counters need a running bot
+radarctl.sh logs tail --lines 100              # bot log (bot.log)
+radarctl.sh logs clear --kind installer --yes
+radarctl.sh audit tail --limit 20              # action log, as in the panel
+```
+
+Role rules are the bot's: the superadmin cannot be changed or deleted, and
+the console cannot grant that role. Console changes go to the panel's action
+log as "console" (key values are never logged). Before, `keys list` crashed on
+a missing field and `keys set` wrote without validation — now numbers, choices,
+addresses and plans are checked by the panel's own rules.
+`tools/lint_cli_parity.py` makes sure every bot command and panel route is
+accounted for: done in the console, postponed with a reason, or outside it.
 
 ### Removing the installation
 

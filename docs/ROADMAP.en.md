@@ -1744,8 +1744,15 @@ duplication of the bot's and the panel's functions. Plan:
    second implementation.
 2. **Without the bot - directly.** No socket means working on the database,
    with a warning; `--local` always works directly.
-3. **Next (5.9.3.x):** the remaining commands per the parity matrix, bilingual
-   output (Russian and English), `lint_cli_parity.py`.
+3. **5.9.3.1 - two languages and the first batch.** The console speaks Russian
+   and English (`--lang`, `RADAR_LANG`). Commands: `users`
+   (list/show/role/delete/time), `keys` (get/set/unset/pending, with value
+   validation), `stats`, `logs`, `audit`. `tools/lint_cli_parity.py` checks
+   every bot command and panel route against a "done / postponed / outside
+   the console" table.
+4. **Next (5.9.3.x):** the rest of the parity table - AI, subscriptions, VPN
+   panels and access, partners, music and cloud, media, digest, chats
+   (announcements and messages).
 
 ---
 

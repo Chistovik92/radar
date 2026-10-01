@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 5.9.3, она же выложена на GitHub.
+Текущая версия — 5.9.3.1, она же выложена на GitHub.
 
 ## Общение
 
@@ -26,6 +26,7 @@ python3 tools/lint_shellorder.py        # вызов функции раньше
 python3 tools/lint_installer.py         # числовые подстановки и полнота словаря
 python3 tools/lint_release.py           # версия поднята везде, включая RELEASES
 python3 tools/lint_manifest.py          # новые модули попали в манифест установщика
+python3 tools/lint_cli_parity.py        # каждая команда бота и маршрут панели учтены в консоли
 python3 tools/vpn_http_check.py         # VPN-клиенты по HTTP (нужен aiohttp)
 python3 tools/discord_http_check.py     # адаптер Discord по WebSocket (нужен aiohttp)
 python3 tools/vk_http_check.py          # ВК и зеркало тревог по HTTP (нужен aiohttp)
@@ -58,6 +59,11 @@ aiohttp: обмен кода на токен, Bearer, коды 401/404, выхо
 v4.9*) создаёт и наполняет базу, текущий поднимает её, как main.py,
 и сверяет данные; `--postgres` — то же на PostgreSQL. Нужны теги
 и зависимости из requirements.txt.
+
+`lint_cli_parity.py` (5.9.3.1) — паритет консоли с ботом и панелью:
+новая команда бота или маршрут панели должны быть внесены в таблицу
+(`cli:` — есть подкоманда, `pending:` — ещё нет, `na:` — вне консоли).
+Без записи в таблице проверка падает: расхождение не копится молча.
 
 `lint_manifest.py` добавлен в 4.8.4.5: модуль `radar/timezones.py`
 из 4.8.4.4 не попал в `MANIFEST`, и установщик не разворачивал его

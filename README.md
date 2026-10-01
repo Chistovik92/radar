@@ -1,4 +1,4 @@
-# Система «Радар» v5.9.3
+# Система «Радар» v5.9.3.1
 
 [English version](README.en.md)
 
@@ -1052,6 +1052,38 @@ bash tools/radarctl.sh doctor --quick
 приходят обратно. Если бот не запущен, сокета нет — команда работает с базой
 напрямую и говорит об этом. `--local` или `RADAR_CLI_LOCAL=1` — работать
 с базой напрямую всегда. `doctor`, `version` и `db copy` бота не касаются.
+
+**Язык консоли (с 5.9.3.1).** Справка и сообщения — на русском и английском:
+`--lang ru|en`, переменная `RADAR_LANG`, иначе язык системы (`LANG=en_…` —
+английский; `C.UTF-8`, как в образе, — русский). Английский нужен тем, кто
+ставит бота не по-русски; `--json` от языка не зависит.
+
+**Новые команды (с 5.9.3.1).**
+
+```bash
+radarctl.sh users list --role moderator        # пользователи по роли
+radarctl.sh users show 123456789               # карточка (без контактов SOS)
+radarctl.sh users role 123456789 moderator     # user | moderator | admin
+radarctl.sh users time 123456789 --tz Europe/Saratov --weather-time 07:30
+radarctl.sh users delete 123456789 --yes
+radarctl.sh keys get GEMINI_API_KEY            # значение только маской
+radarctl.sh keys set POLL_INTERVAL 60          # с той же проверкой, что в панели
+radarctl.sh keys unset GEMINI_API_KEY
+radarctl.sh keys pending                       # что ждёт перезапуска
+radarctl.sh stats                              # счётчики цикла — у запущенного бота
+radarctl.sh logs tail --lines 100              # журнал бота (bot.log)
+radarctl.sh logs clear --kind installer --yes
+radarctl.sh audit tail --limit 20              # журнал действий, как в панели
+```
+
+Правила ролей те же, что в боте: суперадминистратора изменить и удалить
+нельзя, выдать его роль консолью нельзя. Изменения из консоли пишутся
+в журнал действий панели от имени «консоль» (значения ключей не пишутся).
+Раньше `keys list` падал на обращении к несуществующему полю, а `keys set`
+записывал значение без проверки — теперь число, выбор, адрес и тарифы
+проверяются теми же правилами, что в панели.
+`tools/lint_cli_parity.py` следит, чтобы каждая команда бота и маршрут панели
+были учтены: сделаны в консоли, отложены с причиной или вне консоли.
 
 ### Удаление установки
 
