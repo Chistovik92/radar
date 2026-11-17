@@ -507,6 +507,47 @@ async def event_breakdown(hours: int = 24) -> dict[str, int]:
     return counts
 
 
+async def recent_events(
+    limit: int = 20,
+    hours: int = 48,
+    categories: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Последние события для публичных виджетов (5.10.0).
+
+    Отдаётся только то, что допустимо показывать без авторизации: сводка,
+    источник, ссылка, категории и серьёзность. Адреса, улицы и районы
+    сюда не попадают — они привязывают событие к месту и поднимаются
+    только в истории конкретного пользователя.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    async with session() as active:
+        query = (
+            select(Event)
+            .where(Event.created_at >= since)
+            .order_by(Event.created_at.desc())
+            .limit(limit)
+        )
+        rows = (await active.scalars(query)).all()
+
+    wanted = set(categories or [])
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if wanted and not (wanted & set(row.categories or [])):
+            continue
+        result.append({
+            "id": row.id,
+            "title": row.summary or row.raw[:160],
+            "summary": row.summary,
+            "source": row.source,
+            "url": row.link,
+            "categories": list(row.categories or []),
+            "severity": row.severity,
+            "city": row.city,
+            "published_at": row.created_at.isoformat() if row.created_at else "",
+        })
+    return result
+
+
 async def purge_old_events(days: int | None = None) -> int:
     """Чистка истории. Возвращает число удалённых событий."""
     keep = config.EVENT_RETENTION_DAYS if days is None else days

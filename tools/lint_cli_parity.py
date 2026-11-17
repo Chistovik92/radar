@@ -106,6 +106,16 @@ PANEL: dict[str, str] = {
     "/cloud/add": "cli:cloud", "/cloud/forget": "cli:cloud",
     "/partners": "cli:partners", "/partners/save": "cli:partners",
     "/partners/remove": "cli:partners", "/partners/export": "cli:partners",
+    "/dashboard": "na:публичная страница дашборда",
+    "/privacy": "na:публичная страница политики конфиденциальности",
+    "/terms": "na:публичная страница условий использования",
+    "/support": "na:публичная страница поддержки",
+    "/pricing": "na:публичная страница цен",
+    "/profile": "na:личный кабинет человека (свои локации, подписка)",
+    "/profile/loc/add": "na:личный кабинет — добавление локации",
+    "/profile/loc/remove": "na:личный кабинет — удаление локации",
+    "/profile/suggest": "na:личный кабинет — предложение источника",
+    "/profile/trial": "na:личный кабинет — пробный период подписки",
 }
 
 

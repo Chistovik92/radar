@@ -1744,6 +1744,33 @@ Crypto Pay по-прежнему не проверены** — это нужно
 
 ---
 
+## 5.10.0 — лендинг, публичные страницы и Telegram Mini App виджеты ⚠️ код написан
+
+По запросу автора: публичная страница проекта, обязательные для платёжной
+системы Platega страницы и виджеты для Telegram Mini Apps. Полная
+совместимость с Platega: на публичных страницах нет упоминаний VPN,
+обхода блокировок и персональных данных, предел транзакции — 10 000 ₽.
+
+1. **Лендинг** `radar/web/landing.py` (`/`, без авторизации): Hero, Features
+   (8 возможностей), How it works (3 шага), Demo, Documents (кнопки на
+   Privacy/Terms/Support/Pricing), Installation (Bash / Docker / ручная),
+   TG Login Widget (`data-size="large"`), Footer (GitHub, лицензия, автор,
+   скрытое кодовое слово для модерации).
+2. **Публичные страницы** `radar/web/public_pages.py` (без авторизации):
+   `/privacy`, `/terms`, `/support` (контакты — ticket-бот или
+   username/email, не группа), `/pricing` (лимит 10 000 ₽/транзакция).
+3. **Виджеты Mini App** `radar/web/widgets.py` (`/api/widget/*`): погода,
+   новости, статус опасности; используют Telegram Web App JS SDK.
+4. **TG Login Widget с ролевым редиректом** в `radar/web/panel.py`:
+   `user→/profile`, `moderator→/sources`, `admin→/users`,
+   `superadmin→/settings`; маршруты публичных страниц в `create_app()`.
+5. **Требуется настройка BotFather:** Menu Button → Web App URL, Domain,
+   Privacy Policy URL, Terms of Service URL.
+6. **Не сделано:** сами приложения Mini App (отдельные репозитории);
+   контракт для них — тот же, что в `docs/API_APPS.md`.
+
+---
+
 ## 6.0 — MAX ⚠️ написан по документации
 
 1. **Адаптер переписан по действующему API** в 4.9.9.4. В 4.2 он был

@@ -26,7 +26,7 @@ from urllib.parse import quote
 
 from .. import config, features, roles, shortener, storage
 from .. import secrets as secrets_module
-from . import auth
+from . import auth, landing, public_pages, widgets
 
 log = logging.getLogger("radar.web")
 
@@ -679,7 +679,7 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     admin = roles.is_admin(role)
     owner = roles.is_superadmin(role)
 
-    overview = [("/", "Сводка", "home")]
+    overview = [("/dashboard", "Сводка", "home")]
     if admin:
         overview.append(("/events", "События", "events"))
         overview.append(("/chats", "Чаты", "chats"))
@@ -710,7 +710,7 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
         agent_items.append(("/keys", "Ключи", "keys"))
 
     groups: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
-        ("/", "Обзор", "home", overview),
+        ("/dashboard", "Обзор", "home", overview),
     ]
     if owner:
         # Подписка бота — управление людьми: рядом с их списком (5.9.2.1).
@@ -1618,6 +1618,107 @@ def _overview_body() -> str:
         f"{_bot_and_server()}"
         f'<div class="card"><h3>Роли</h3><table>'
         f"<tr><th>Роль</th><th>Человек</th></tr>{roles_rows}</table></div>"
+    )
+
+
+def _profile_body(user, session, message: str = "", failed: str = "") -> str:
+    """Личный кабинет обычного пользователя.
+
+    Показывает то, что человеку важно знать про себя: подписку, способы
+    оплаты, свои локации и предложение источника. Прав администрации здесь
+    нет — это вход для роли `user`, а не обход панели.
+    """
+    from .. import subscription
+    from ..handlers.digest import _plans
+
+    token = auth.csrf_token(session)
+    role = session.role
+
+    # --- подписка ---
+    status = html.escape(subscription.describe(user, role))
+    if subscription.days_left(user) > 0:
+        status += f" (до {html.escape(subscription.paid_until(user)[:10])})"
+    sub_extra = ""
+    if not subscription.active(user, role):
+        if not subscription.trial_used(user):
+            sub_extra = (
+                f'<form method="post" action="/profile/trial">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<button type="submit">🎁 Начать пробный период '
+                f'({subscription.TRIAL_DAYS} дней)</button></form>'
+            )
+        else:
+            sub_extra = '<p class="muted">Пробный период уже был.</p>'
+
+    # --- способы оплаты ---
+    plans_rows = "".join(
+        f"<tr><td>{days} дней</td><td>{stars} ⭐️</td></tr>"
+        for days, stars in _plans()
+    )
+    manual_note = str(secrets_module.get("PAY_MANUAL_NOTE") or "").strip()
+    manual = (f'<p class="muted">{html.escape(manual_note)}</p>'
+              if manual_note else "")
+
+    # --- локации ---
+    locs = user.get("locs") or []
+    if locs:
+        loc_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(item.get('name') or '')}"
+            + (f" <span class=\"muted\">({html.escape(item.get('city'))})</span>"
+               if item.get("city") else "")
+            + "</td>"
+            '<td style="text-align:right;width:1%">'
+            f'<form method="post" action="/profile/loc/remove" '
+            'style="display:inline">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="loc_id" value="{html.escape(item.get("id") or "")}">'
+            '<button class="ghost" type="submit">удалить</button></form>'
+            "</td></tr>"
+            for item in locs
+        )
+    else:
+        loc_rows = '<tr><td class="muted">локаций нет</td></tr>'
+
+    # --- предложение источника ---
+    suggest_form = ""
+    if features.enabled("digest_suggestions"):
+        suggest_form = (
+            '<form class="inline" method="post" action="/profile/suggest">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<input type="text" name="value" '
+            'placeholder="@канал или https://t.me/…" required autocomplete="off">'
+            '<button type="submit">Предложить</button></form>'
+        )
+    else:
+        suggest_form = '<p class="muted">Приём предложений сейчас закрыт.</p>'
+
+    return (
+        _note("ok", message)
+        + _note("bad", failed)
+        + '<div class="card"><h3>💳 Подписка</h3>'
+        f'<p>{status}</p>{sub_extra}</div>'
+        + '<div class="card"><h3>Оплата</h3>'
+        '<p class="muted">Подписка одна: открывает новостные подборки и '
+        'загрузку видео без дневного предела. Оплата — звёздами Telegram.</p>'
+        f'<table><tr><th>Срок</th><th>Цена</th></tr>{plans_rows}</table>{manual}</div>'
+        + '<div class="card"><h3>📍 Мои локации</h3>'
+        f'<table>{loc_rows}</table>'
+        '<form class="inline" method="post" action="/profile/loc/add">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        '<input type="text" name="address" '
+        'placeholder="город, улица, дом" required autocomplete="off">'
+        '<button type="submit">Добавить</button></form>'
+        '<p class="muted">Добавление по адресу: бот найдёт координаты '
+        'и привяжет оповещения.</p></div>'
+        + '<div class="card"><h3>📢 Предложить источник</h3>'
+        '<p class="muted">Подойдут каналы про город, ЖКХ, новости и тематические '
+        'каналы. Попадут в очередь модерации.</p>'
+        f'{suggest_form}</div>'
+        + '<div class="card"><h3>Поддержка</h3>'
+        '<p><a class="btn ghost" href="https://t.me/SecretHeroSupport" '
+        'target="_blank" rel="noopener">@SecretHeroSupport</a></p>'
+        '<p class="muted">По вопросам оплаты, локаций и источников.</p></div>'
     )
 
 
@@ -2728,6 +2829,16 @@ async def create_app() -> Any:
             content_type="text/html",
         )
 
+    def _redirect_for_role(role: str) -> str:
+        """Стартовая страница по роли: у каждой своя точка входа."""
+        if roles.at_least(role, "superadmin"):
+            return "/settings"
+        if roles.at_least(role, "admin"):
+            return "/users"
+        if roles.at_least(role, "moderator"):
+            return "/sources"
+        return "/profile"
+
     async def authenticate(request):
         data = dict(request.query)
         # Заголовку верим только когда панель заведомо стоит за обратным
@@ -2752,7 +2863,7 @@ async def create_app() -> Any:
             raise web.HTTPFound(f"/login?error={reason}")
 
         audit.record(session.user_key, "вход в панель", session.role)
-        response = web.HTTPFound("/")
+        response = web.HTTPFound(_redirect_for_role(session.role))
         response.set_cookie(
             auth.SESSION_COOKIE, session.token,
             max_age=auth.SESSION_TTL, httponly=True, samesite="Lax",
@@ -2779,7 +2890,7 @@ async def create_app() -> Any:
             audit.record("—", "неудачный вход по коду", reason)
             raise web.HTTPFound(f"/login?error={reason}")
         audit.record(session.user_key, "вход в панель по коду", session.role)
-        response = web.HTTPFound("/")
+        response = web.HTTPFound(_redirect_for_role(session.role))
         response.set_cookie(
             auth.SESSION_COOKIE, session.token,
             max_age=auth.SESSION_TTL, httponly=True, samesite="Lax",
@@ -2797,12 +2908,134 @@ async def create_app() -> Any:
         response.del_cookie(auth.SESSION_COOKIE)
         raise response
 
+    # ============================================================
+    # PUBLIC PAGES (no auth required)
+    # ============================================================
+
+    async def landing_page(request):
+        """Public landing page with Hero, Features, TG Login Widget, etc."""
+        from .. import shortener
+
+        public = shortener.base_url()
+        if not public:
+            host = request.headers.get("Host", "")
+            if host and not host.replace(".", "").replace(":", "").isdigit():
+                scheme = request.headers.get("X-Forwarded-Proto", "https")
+                public = f"{scheme}://{host}"
+
+        html_content = landing.render_landing_page(bot_username["value"], public)
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def privacy_page(request):
+        """Privacy policy page (Platega compliance)."""
+        html_content = public_pages.render_privacy_page()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def terms_page(request):
+        """Terms of service page (Platega compliance)."""
+        html_content = public_pages.render_terms_page()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def support_page(request):
+        """Support page with contact form (Platega compliance)."""
+        html_content = public_pages.render_support_page()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def pricing_page(request):
+        """Pricing page (Platega compliance)."""
+        html_content = public_pages.render_pricing_page()
+        return web.Response(text=html_content, content_type="text/html")
+
     @guard
     async def overview(_request, session):
         return web.Response(
             text=_layout("Обзор", _overview_body(), "home", roles.title(session.role), session.role),
             content_type="text/html",
         )
+
+    # Личный кабинет доступен обычному пользователю (роль «user»), а не
+    # только модераторам: это его стартовая страница после входа.
+    async def profile_page(request, session):
+        user = storage.get_user(session.user_key) or {}
+        return web.Response(
+            text=_layout("Личный кабинет",
+                         _profile_body(user, session,
+                                       request.query.get("ok", ""),
+                                       request.query.get("err", "")),
+                         "profile", roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    async def profile_loc_add(request):
+        """Добавление локации по адресу из личного кабинета."""
+        from .. import geocode
+
+        session, data = await _guarded_form(request, "user")
+        user = storage.get_user(session.user_key) or {}
+        if config.MAX_LOCATIONS and len(user.get("locs") or []) >= config.MAX_LOCATIONS:
+            raise web.HTTPFound(f"/profile?err=" + quote(
+                f"Достигнут лимит локаций ({config.MAX_LOCATIONS})"))
+        address = str(data.get("address", "")).strip()
+        if len(address) < 3:
+            raise web.HTTPFound("/profile?err=" + quote("Слишком короткий адрес"))
+        import aiohttp
+
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=25),
+            headers={"User-Agent": config.USER_AGENT},
+        ) as http:
+            found = await geocode.forward(http, address, config.DEFAULT_CITY)
+        if not found:
+            raise web.HTTPFound("/profile?err=" + quote("Адрес не найден"))
+        pick = found[0]
+        location = storage.new_location(
+            pick["name"], pick["lat"], pick["lon"],
+            street=pick["street"], house=pick["house"],
+            city=pick["city"], district=pick["district"], region=pick["region"],
+        )
+        user["locs"].append(location)
+        await storage.save(session.user_key)
+        audit.record(session.user_key, "локация добавлена", pick["name"])
+        raise web.HTTPFound("/profile?ok=" + quote(f"Локация добавлена: {pick['name']}"))
+
+    async def profile_loc_remove(request):
+        session, data = await _guarded_form(request, "user")
+        loc_id = str(data.get("loc_id", ""))
+        if storage.remove_location(session.user_key, loc_id):
+            await storage.save(session.user_key)
+            audit.record(session.user_key, "локация удалена", loc_id)
+            raise web.HTTPFound("/profile?ok=" + quote("Локация удалена"))
+        raise web.HTTPFound("/profile?err=" + quote("Локация не найдена"))
+
+    async def profile_suggest(request):
+        """Предложение источника из личного кабинета (в очередь модерации)."""
+        from .. import sourceedit as se
+
+        session, data = await _guarded_form(request, "user")
+        if not features.enabled("digest_suggestions"):
+            raise web.HTTPFound("/profile?err=" + quote("Приём предложений закрыт"))
+        channel = se.normalize_channel(str(data.get("value", "")))
+        if not se.valid(se.TELEGRAM, channel):
+            raise web.HTTPFound("/profile?err=" + quote("Некорректный юзернейм канала"))
+        if channel in storage.channels() or channel in storage.pending():
+            raise web.HTTPFound("/profile?err=" + quote("Источник уже в базе или в очереди"))
+        storage.pending().append(channel)
+        await storage.save()
+        audit.record(session.user_key, "предложен источник", channel)
+        raise web.HTTPFound("/profile?ok=" + quote(f"Канал @{channel} отправлен модераторам"))
+
+    async def profile_trial(request):
+        """Пробный период подписки из личного кабинета."""
+        from .. import subscription
+
+        session, data = await _guarded_form(request, "user")
+        user = storage.get_user(session.user_key) or {}
+        if not subscription.start_trial(user):
+            raise web.HTTPFound("/profile?err=" + quote("Пробный период уже был"))
+        await storage.save(session.user_key)
+        audit.record(session.user_key, "пробный период начат", "")
+        raise web.HTTPFound("/profile?ok=" + quote(
+            f"Пробный период на {subscription.TRIAL_DAYS} дней включён"))
 
     @guard
     async def users_page(request, session):
@@ -3745,7 +3978,20 @@ async def create_app() -> Any:
         web.get("/auth", authenticate),
         web.post("/login/code", authenticate_code),
         web.get("/logout", logout),
-        web.get("/", overview),
+        # Public landing page
+        web.get("/", landing_page),
+        # Public pages (Platega compliance)
+        web.get("/privacy", privacy_page),
+        web.get("/terms", terms_page),
+        web.get("/support", support_page),
+        web.get("/pricing", pricing_page),
+        # Authenticated dashboard
+        web.get("/dashboard", overview),
+        web.get("/profile", guard(profile_page, "user")),
+        web.post("/profile/loc/add", profile_loc_add),
+        web.post("/profile/loc/remove", profile_loc_remove),
+        web.post("/profile/suggest", profile_suggest),
+        web.post("/profile/trial", profile_trial),
         web.get("/users", users_page),
         web.get("/sources", sources_page),
         web.post("/sources/add", sources_add),
@@ -3812,6 +4058,8 @@ async def create_app() -> Any:
     from . import appapi as app_routes
 
     application.add_routes(app_routes.routes(web))
+    # Telegram Mini App Widgets API
+    application.add_routes(widgets.routes(web))
     return application
 
 
