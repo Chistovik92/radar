@@ -105,6 +105,36 @@ for f in tests/test_*.py; do python3 -m unittest "tests.$(basename "$f" .py)" ||
   (README, README.en.md, ROADMAP.en.md). Журналы, `STATUS.md`,
   `HANDOFF.md` и этот файл переводить не нужно — их читает только автор.
 
+## Публичная поверхность (лендинг, страницы, виджеты) — с 5.10.0
+
+Публичные страницы сайта — то, что видит посторонний без авторизации,
+включая модерацию платёжной системы (Platega). Их содержимое ограничено:
+
+- **VPN на внешних страницах называется «аренда приватного сервера».**
+  Упоминания обхода блокировок, протоколов/панелей (VLESS, 3x-ui, Marzban
+  и т.п.), «белых списков» в смысле обхода, обфускации и персональных
+  данных на внешних страницах запрещены. Техническая реализация VPN
+  в боте и админ-панели не меняется — правило касается только
+  `radar/web/landing.py`, `radar/web/public_pages.py` и `radar/web/widgets.py`.
+- Публичные модули импортируют базовый стиль `PAGE_STYLE` из `panel.py`
+  **лениво, внутри функции рендера** (циклический импорт: `panel` сам
+  импортирует их наверху). Импорт `PAGE_STYLE` на уровне модуля замкнёт цикл.
+- Маршруты: `/` — лендинг, `/privacy` `/terms` `/support` `/pricing` —
+  публичные страницы (без авторизации), `/profile` — личный кабинет
+  обычного пользователя (роль `user`, `guard(..., "user")`), `/dashboard` —
+  обзор для модератора и выше. Вход редиректит по роли: `user→/profile`,
+  `moderator→/sources`, `admin→/users`, `superadmin→/settings`
+  (`_redirect_for_role`).
+- Виджеты Mini App (`/api/widget/*`) читают данные из реальных API:
+  погода — `weather.fetch` + `geocode.forward`, новости и статус опасности —
+  `repo.recent_events` / `repo.event_breakdown`. Не выдумывать несуществующие
+  функции хранилища (в 5.10.0 виджеты ссылались на несуществующие
+  `storage.get_news` и `storage.get_active_alerts` — `lint_names` это ловит).
+- Описание лендинга редактируется суперадмином: `LANDING_DESCRIPTION`
+  (группа «Визитка», карточка «Сайт-визитка» в «Настройках»).
+- Для лендинга и Mini App нужна настройка BotFather: Menu Button Web App URL,
+  Domain, Privacy Policy URL (`/privacy`), Terms of Service URL (`/terms`).
+
 ## Версии и выпуски
 
 Любое изменение — законченный выпуск, а не просто коммит:
@@ -162,7 +192,12 @@ for f in tests/test_*.py; do python3 -m unittest "tests.$(basename "$f" .py)" ||
 `docs/STATUS.md` — состояние и решения · `docs/ROADMAP.md` — план по версиям
 (+ `ROADMAP.en.md`) · `docs/API_SETUP.md` — настройка сервисов · `docs/API_APPS.md` — API для приложений HydraVPN ·
 `docs/HANDOFF.md` — передача проекта · `docs/MANUAL.md` — инструкция по боту, панели и консоли
-(+ `MANUAL.en.md`) · `docs/PLAN_CLI_PLATFORMS.md` — план консоли и платформ
+(+ `MANUAL.en.md`) · `docs/PLAN_CLI_PLATFORMS.md` — план консоли и платформ ·
+`docs/releases/<версия>.md` — текст релиза · `docs/LANDING_PAGE_PLAN_5_10.md` — план лендинга (внутренний)
+
+`AGENTS.md` — указатель на локальную историю диалогов с агентами
+(`claude-history/`, в `.gitignore`): roadmap, принятые решения, известные
+баги и их фиксы. Использовать как дополнительную память при доработке.
 
 ## Работа из Claude Code на Windows
 

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v5.9.10.1 — автономный установщик.
+# Система «Радар» v5.10.0 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="5.9.10.1"
+VERSION="5.10.0"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "tools"
-FILE_COUNT=165
+FILE_COUNT=168
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3303,6 +3303,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.10.0", [
+        "🌐 <b>Лендинг, публичные страницы и виджеты.</b> Публичная страница проекта с описанием, входом через Telegram и разделением по ролям; обязательные для платёжной системы страницы (конфиденциальность, условия, поддержка, цены) и личный кабинет /profile. Telegram Mini App виджеты погоды, новостей и статуса опасности.",
+    ]),
     ("5.9.10.1", [
         "📘 <b>Инструкция по боту, панели и консоли.</b> В репозитории появилась полная инструкция (docs/MANUAL.md) и её английский вариант — роли, команды, разделы панели, справочник консоли, группы Telegram, Discord и языки. Код не менялся.",
     ]),
@@ -5233,7 +5236,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_07'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "5.9.10.1"
+__version__ = "5.10.0"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -10484,6 +10487,10 @@ SETTINGS: tuple[Setting, ...] = (
             "https://example.ru. Показывается в /panel. Пусто — панель "
             "считается доступной только с сервера.",
             "Панель", secret=False),
+    Setting("LANDING_DESCRIPTION", "Описание сайта-визитки",
+            "Текст, который показывается в шапке публичной страницы (лендинга). "
+            "Пусто — показывается текст по умолчанию.",
+            "Визитка", secret=False),
 
     # --- сокращение ссылок ---
     Setting("SHORT_BASE_URL", "Адрес для коротких ссылок",
@@ -19511,7 +19518,7 @@ from urllib.parse import quote
 
 from .. import config, features, roles, shortener, storage
 from .. import secrets as secrets_module
-from . import auth
+from . import auth, landing, public_pages, widgets
 
 log = logging.getLogger("radar.web")
 
@@ -20164,7 +20171,7 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     admin = roles.is_admin(role)
     owner = roles.is_superadmin(role)
 
-    overview = [("/", "Сводка", "home")]
+    overview = [("/dashboard", "Сводка", "home")]
     if admin:
         overview.append(("/events", "События", "events"))
         overview.append(("/chats", "Чаты", "chats"))
@@ -20195,7 +20202,7 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
         agent_items.append(("/keys", "Ключи", "keys"))
 
     groups: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
-        ("/", "Обзор", "home", overview),
+        ("/dashboard", "Обзор", "home", overview),
     ]
     if owner:
         # Подписка бота — управление людьми: рядом с их списком (5.9.2.1).
@@ -21103,6 +21110,107 @@ def _overview_body() -> str:
         f"{_bot_and_server()}"
         f'<div class="card"><h3>Роли</h3><table>'
         f"<tr><th>Роль</th><th>Человек</th></tr>{roles_rows}</table></div>"
+    )
+
+
+def _profile_body(user, session, message: str = "", failed: str = "") -> str:
+    """Личный кабинет обычного пользователя.
+
+    Показывает то, что человеку важно знать про себя: подписку, способы
+    оплаты, свои локации и предложение источника. Прав администрации здесь
+    нет — это вход для роли `user`, а не обход панели.
+    """
+    from .. import subscription
+    from ..handlers.digest import _plans
+
+    token = auth.csrf_token(session)
+    role = session.role
+
+    # --- подписка ---
+    status = html.escape(subscription.describe(user, role))
+    if subscription.days_left(user) > 0:
+        status += f" (до {html.escape(subscription.paid_until(user)[:10])})"
+    sub_extra = ""
+    if not subscription.active(user, role):
+        if not subscription.trial_used(user):
+            sub_extra = (
+                f'<form method="post" action="/profile/trial">'
+                f'<input type="hidden" name="csrf" value="{token}">'
+                f'<button type="submit">🎁 Начать пробный период '
+                f'({subscription.TRIAL_DAYS} дней)</button></form>'
+            )
+        else:
+            sub_extra = '<p class="muted">Пробный период уже был.</p>'
+
+    # --- способы оплаты ---
+    plans_rows = "".join(
+        f"<tr><td>{days} дней</td><td>{stars} ⭐️</td></tr>"
+        for days, stars in _plans()
+    )
+    manual_note = str(secrets_module.get("PAY_MANUAL_NOTE") or "").strip()
+    manual = (f'<p class="muted">{html.escape(manual_note)}</p>'
+              if manual_note else "")
+
+    # --- локации ---
+    locs = user.get("locs") or []
+    if locs:
+        loc_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(item.get('name') or '')}"
+            + (f" <span class=\"muted\">({html.escape(item.get('city'))})</span>"
+               if item.get("city") else "")
+            + "</td>"
+            '<td style="text-align:right;width:1%">'
+            f'<form method="post" action="/profile/loc/remove" '
+            'style="display:inline">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            f'<input type="hidden" name="loc_id" value="{html.escape(item.get("id") or "")}">'
+            '<button class="ghost" type="submit">удалить</button></form>'
+            "</td></tr>"
+            for item in locs
+        )
+    else:
+        loc_rows = '<tr><td class="muted">локаций нет</td></tr>'
+
+    # --- предложение источника ---
+    suggest_form = ""
+    if features.enabled("digest_suggestions"):
+        suggest_form = (
+            '<form class="inline" method="post" action="/profile/suggest">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<input type="text" name="value" '
+            'placeholder="@канал или https://t.me/…" required autocomplete="off">'
+            '<button type="submit">Предложить</button></form>'
+        )
+    else:
+        suggest_form = '<p class="muted">Приём предложений сейчас закрыт.</p>'
+
+    return (
+        _note("ok", message)
+        + _note("bad", failed)
+        + '<div class="card"><h3>💳 Подписка</h3>'
+        f'<p>{status}</p>{sub_extra}</div>'
+        + '<div class="card"><h3>Оплата</h3>'
+        '<p class="muted">Подписка одна: открывает новостные подборки и '
+        'загрузку видео без дневного предела. Оплата — звёздами Telegram.</p>'
+        f'<table><tr><th>Срок</th><th>Цена</th></tr>{plans_rows}</table>{manual}</div>'
+        + '<div class="card"><h3>📍 Мои локации</h3>'
+        f'<table>{loc_rows}</table>'
+        '<form class="inline" method="post" action="/profile/loc/add">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        '<input type="text" name="address" '
+        'placeholder="город, улица, дом" required autocomplete="off">'
+        '<button type="submit">Добавить</button></form>'
+        '<p class="muted">Добавление по адресу: бот найдёт координаты '
+        'и привяжет оповещения.</p></div>'
+        + '<div class="card"><h3>📢 Предложить источник</h3>'
+        '<p class="muted">Подойдут каналы про город, ЖКХ, новости и тематические '
+        'каналы. Попадут в очередь модерации.</p>'
+        f'{suggest_form}</div>'
+        + '<div class="card"><h3>Поддержка</h3>'
+        '<p><a class="btn ghost" href="https://t.me/SecretHeroSupport" '
+        'target="_blank" rel="noopener">@SecretHeroSupport</a></p>'
+        '<p class="muted">По вопросам оплаты, локаций и источников.</p></div>'
     )
 
 
@@ -22213,6 +22321,16 @@ async def create_app() -> Any:
             content_type="text/html",
         )
 
+    def _redirect_for_role(role: str) -> str:
+        """Стартовая страница по роли: у каждой своя точка входа."""
+        if roles.at_least(role, "superadmin"):
+            return "/settings"
+        if roles.at_least(role, "admin"):
+            return "/users"
+        if roles.at_least(role, "moderator"):
+            return "/sources"
+        return "/profile"
+
     async def authenticate(request):
         data = dict(request.query)
         # Заголовку верим только когда панель заведомо стоит за обратным
@@ -22237,7 +22355,7 @@ async def create_app() -> Any:
             raise web.HTTPFound(f"/login?error={reason}")
 
         audit.record(session.user_key, "вход в панель", session.role)
-        response = web.HTTPFound("/")
+        response = web.HTTPFound(_redirect_for_role(session.role))
         response.set_cookie(
             auth.SESSION_COOKIE, session.token,
             max_age=auth.SESSION_TTL, httponly=True, samesite="Lax",
@@ -22264,7 +22382,7 @@ async def create_app() -> Any:
             audit.record("—", "неудачный вход по коду", reason)
             raise web.HTTPFound(f"/login?error={reason}")
         audit.record(session.user_key, "вход в панель по коду", session.role)
-        response = web.HTTPFound("/")
+        response = web.HTTPFound(_redirect_for_role(session.role))
         response.set_cookie(
             auth.SESSION_COOKIE, session.token,
             max_age=auth.SESSION_TTL, httponly=True, samesite="Lax",
@@ -22282,12 +22400,134 @@ async def create_app() -> Any:
         response.del_cookie(auth.SESSION_COOKIE)
         raise response
 
+    # ============================================================
+    # PUBLIC PAGES (no auth required)
+    # ============================================================
+
+    async def landing_page(request):
+        """Public landing page with Hero, Features, TG Login Widget, etc."""
+        from .. import shortener
+
+        public = shortener.base_url()
+        if not public:
+            host = request.headers.get("Host", "")
+            if host and not host.replace(".", "").replace(":", "").isdigit():
+                scheme = request.headers.get("X-Forwarded-Proto", "https")
+                public = f"{scheme}://{host}"
+
+        html_content = landing.render_landing_page(bot_username["value"], public)
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def privacy_page(request):
+        """Privacy policy page (Platega compliance)."""
+        html_content = public_pages.render_privacy_page()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def terms_page(request):
+        """Terms of service page (Platega compliance)."""
+        html_content = public_pages.render_terms_page()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def support_page(request):
+        """Support page with contact form (Platega compliance)."""
+        html_content = public_pages.render_support_page()
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def pricing_page(request):
+        """Pricing page (Platega compliance)."""
+        html_content = public_pages.render_pricing_page()
+        return web.Response(text=html_content, content_type="text/html")
+
     @guard
     async def overview(_request, session):
         return web.Response(
             text=_layout("Обзор", _overview_body(), "home", roles.title(session.role), session.role),
             content_type="text/html",
         )
+
+    # Личный кабинет доступен обычному пользователю (роль «user»), а не
+    # только модераторам: это его стартовая страница после входа.
+    async def profile_page(request, session):
+        user = storage.get_user(session.user_key) or {}
+        return web.Response(
+            text=_layout("Личный кабинет",
+                         _profile_body(user, session,
+                                       request.query.get("ok", ""),
+                                       request.query.get("err", "")),
+                         "profile", roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    async def profile_loc_add(request):
+        """Добавление локации по адресу из личного кабинета."""
+        from .. import geocode
+
+        session, data = await _guarded_form(request, "user")
+        user = storage.get_user(session.user_key) or {}
+        if config.MAX_LOCATIONS and len(user.get("locs") or []) >= config.MAX_LOCATIONS:
+            raise web.HTTPFound(f"/profile?err=" + quote(
+                f"Достигнут лимит локаций ({config.MAX_LOCATIONS})"))
+        address = str(data.get("address", "")).strip()
+        if len(address) < 3:
+            raise web.HTTPFound("/profile?err=" + quote("Слишком короткий адрес"))
+        import aiohttp
+
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=25),
+            headers={"User-Agent": config.USER_AGENT},
+        ) as http:
+            found = await geocode.forward(http, address, config.DEFAULT_CITY)
+        if not found:
+            raise web.HTTPFound("/profile?err=" + quote("Адрес не найден"))
+        pick = found[0]
+        location = storage.new_location(
+            pick["name"], pick["lat"], pick["lon"],
+            street=pick["street"], house=pick["house"],
+            city=pick["city"], district=pick["district"], region=pick["region"],
+        )
+        user["locs"].append(location)
+        await storage.save(session.user_key)
+        audit.record(session.user_key, "локация добавлена", pick["name"])
+        raise web.HTTPFound("/profile?ok=" + quote(f"Локация добавлена: {pick['name']}"))
+
+    async def profile_loc_remove(request):
+        session, data = await _guarded_form(request, "user")
+        loc_id = str(data.get("loc_id", ""))
+        if storage.remove_location(session.user_key, loc_id):
+            await storage.save(session.user_key)
+            audit.record(session.user_key, "локация удалена", loc_id)
+            raise web.HTTPFound("/profile?ok=" + quote("Локация удалена"))
+        raise web.HTTPFound("/profile?err=" + quote("Локация не найдена"))
+
+    async def profile_suggest(request):
+        """Предложение источника из личного кабинета (в очередь модерации)."""
+        from .. import sourceedit as se
+
+        session, data = await _guarded_form(request, "user")
+        if not features.enabled("digest_suggestions"):
+            raise web.HTTPFound("/profile?err=" + quote("Приём предложений закрыт"))
+        channel = se.normalize_channel(str(data.get("value", "")))
+        if not se.valid(se.TELEGRAM, channel):
+            raise web.HTTPFound("/profile?err=" + quote("Некорректный юзернейм канала"))
+        if channel in storage.channels() or channel in storage.pending():
+            raise web.HTTPFound("/profile?err=" + quote("Источник уже в базе или в очереди"))
+        storage.pending().append(channel)
+        await storage.save()
+        audit.record(session.user_key, "предложен источник", channel)
+        raise web.HTTPFound("/profile?ok=" + quote(f"Канал @{channel} отправлен модераторам"))
+
+    async def profile_trial(request):
+        """Пробный период подписки из личного кабинета."""
+        from .. import subscription
+
+        session, data = await _guarded_form(request, "user")
+        user = storage.get_user(session.user_key) or {}
+        if not subscription.start_trial(user):
+            raise web.HTTPFound("/profile?err=" + quote("Пробный период уже был"))
+        await storage.save(session.user_key)
+        audit.record(session.user_key, "пробный период начат", "")
+        raise web.HTTPFound("/profile?ok=" + quote(
+            f"Пробный период на {subscription.TRIAL_DAYS} дней включён"))
 
     @guard
     async def users_page(request, session):
@@ -23230,7 +23470,20 @@ async def create_app() -> Any:
         web.get("/auth", authenticate),
         web.post("/login/code", authenticate_code),
         web.get("/logout", logout),
-        web.get("/", overview),
+        # Public landing page
+        web.get("/", landing_page),
+        # Public pages (Platega compliance)
+        web.get("/privacy", privacy_page),
+        web.get("/terms", terms_page),
+        web.get("/support", support_page),
+        web.get("/pricing", pricing_page),
+        # Authenticated dashboard
+        web.get("/dashboard", overview),
+        web.get("/profile", guard(profile_page, "user")),
+        web.post("/profile/loc/add", profile_loc_add),
+        web.post("/profile/loc/remove", profile_loc_remove),
+        web.post("/profile/suggest", profile_suggest),
+        web.post("/profile/trial", profile_trial),
         web.get("/users", users_page),
         web.get("/sources", sources_page),
         web.post("/sources/add", sources_add),
@@ -23297,6 +23550,8 @@ async def create_app() -> Any:
     from . import appapi as app_routes
 
     application.add_routes(app_routes.routes(web))
+    # Telegram Mini App Widgets API
+    application.add_routes(widgets.routes(web))
     return application
 
 
@@ -24114,6 +24369,9 @@ SECTIONS: tuple[Section, ...] = (
         Card("Веб-панель", flags=("web_panel",), groups=("Веб-панель",),
              note="Смена адреса или порта может отрезать вас от панели: проверьте "
                   "значения до перезапуска."),
+        Card("Сайт-визитка", groups=("Визитка",),
+             note="Описание публичной страницы (лендинга). Пусто — текст по умолчанию.",
+             links=(("/", "Открыть лендинг"),)),
         Card("Сеть", flags=("egress_proxy",), groups=("Сеть",)),
         Card("Журнал", groups=("Журнал",)),
         Card("Обслуживание", flags=("disk_watch", "maintenance", "restart_notice",
@@ -24330,8 +24588,2325 @@ def body(csrf: str = "") -> str:
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
 RADAR_FILE_51
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/landing.py"
+cat > "radar/web/landing.py" <<'RADAR_FILE_52'
+"""Лендинг проекта: публичная страница с виджетами, TG Login и Platega compliance.
+
+Рендерится без авторизации. Секции:
+  1. Hero — заголовок, CTA в бот, версия
+  2. Features — сетка возможностей (8-10 карточек)
+  3. How it works — 3 шага
+  4. Demo — скриншоты/описание интерфейсов
+  5. Documents — КНОПКИ (privacy, terms, support, pricing)
+  6. Installation — табы: Bash / Docker / Ручная
+  7. TG Login Widget — вход через Telegram (data-size="large")
+  8. Footer — GitHub, лицензия, автор, кодовое слово mekbuda (скрыто)
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import html
+from typing import Any
+
+from .. import __version__ as VERSION
+from .. import config, features
+
+# CSS для лендинга — расширяет базовые стили панели
+LANDING_STYLE = """
+/* ============================================================
+   LANDING PAGE STYLES
+   ============================================================ */
+
+/* Hero section */
+.hero {
+  position: relative;
+  padding: clamp(48px, 8vw, 80px) clamp(20px, 5vw, 60px);
+  text-align: center;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 0%, var(--accent-soft), transparent 70%),
+    var(--bg);
+  overflow: hidden;
+}
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 20% 20%, var(--accent-soft) 0%, transparent 40%),
+    radial-gradient(circle at 80% 80%, var(--accent-2) 0%, transparent 30%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.hero-content { position: relative; z-index: 1; max-width: 880px; margin: 0 auto; }
+.hero-badge {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 20px;
+  letter-spacing: 0.3px;
+}
+.hero h1 {
+  margin: 0 0 16px;
+  font-size: clamp(28px, 5vw, 44px);
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--text);
+}
+.hero-subtitle {
+  margin: 0 auto 28px;
+  max-width: 720px;
+  font-size: clamp(16px, 2.5vw, 20px);
+  line-height: 1.7;
+  color: var(--muted);
+}
+.hero-subtitle strong { color: var(--text); }
+.hero-cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 28px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.btn:active { transform: scale(0.98); }
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: white;
+  box-shadow: 0 4px 16px rgba(79, 140, 255, 0.35);
+}
+.btn-primary:hover { box-shadow: 0 6px 24px rgba(79, 140, 255, 0.45); }
+.btn-ghost {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.btn-ghost:hover { background: var(--surface-3); border-color: var(--accent); }
+.tg-icon { width: 20px; height: 20px; flex-shrink: 0; }
+.hero-trust {
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+.hero-trust span { display: flex; align-items: center; gap: 6px; }
+
+/* Widget row under hero */
+.widget-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  max-width: 1200px;
+  margin: -40px auto 60px;
+  padding: 0 20px;
+  position: relative;
+  z-index: 2;
+}
+@media (max-width: 640px) {
+  .widget-row { grid-template-columns: 1fr; margin-top: -20px; }
+}
+.widget {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.widget:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.widget-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.widget-icon { font-size: 22px; }
+.widget-title { font-weight: 700; font-size: 15px; color: var(--text); }
+.widget-content { min-height: 120px; }
+.widget-loading { display: flex; align-items: center; justify-content: center; height: 120px; color: var(--muted); font-size: 14px; }
+.widget-error { color: var(--bad); font-size: 13px; text-align: center; padding: 10px; }
+
+/* Weather widget */
+.weather-current { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
+.weather-main { flex: 1; text-align: left; }
+.weather-temp { font-size: 42px; font-weight: 700; line-height: 1; color: var(--text); }
+.weather-desc { color: var(--muted); font-size: 14px; margin-top: 4px; }
+.weather-details { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 12px; color: var(--muted); }
+.weather-detail { display: flex; align-items: center; gap: 6px; }
+.weather-hourly { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 8px; margin: 0 -4px; scroll-snap-type: x mandatory; }
+.weather-hour { flex: 0 0 auto; width: 56px; text-align: center; scroll-snap-align: start; }
+.weather-hour-time { font-size: 11px; color: var(--muted); }
+.weather-hour-icon { font-size: 20px; margin: 4px 0; }
+.weather-hour-temp { font-size: 13px; font-weight: 600; color: var(--text); }
+.weather-daily { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.weather-day { text-align: center; }
+.weather-day-label { font-size: 11px; color: var(--muted); }
+.weather-day-icon { font-size: 18px; margin: 4px 0; }
+.weather-day-temps { display: flex; justify-content: center; gap: 10px; font-size: 12px; }
+.weather-day-low { color: var(--muted); }
+.weather-day-high { font-weight: 600; color: var(--text); }
+
+/* News widget */
+.news-list { display: flex; flex-direction: column; gap: 10px; }
+.news-item { padding: 10px 12px; background: var(--surface-2); border-radius: 10px; border: 1px solid var(--line); transition: border-color 0.15s; }
+.news-item:hover { border-color: var(--accent); }
+.news-item-title { font-weight: 600; font-size: 13px; color: var(--text); margin-bottom: 4px; line-height: 1.4; }
+.news-item-meta { display: flex; gap: 10px; font-size: 11px; color: var(--muted); }
+.news-item-topic { padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 10px; text-transform: uppercase; }
+.news-item-time { white-space: nowrap; }
+
+/* Danger widget */
+.danger-status { text-align: center; padding: 8px 0; }
+.danger-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.danger-red { background: var(--bad-soft); color: var(--bad); border: 1px solid var(--bad); }
+.danger-yellow { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
+.danger-green { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok); }
+.danger-message { font-size: 14px; line-height: 1.5; color: var(--text); margin-bottom: 10px; }
+.danger-matched { font-size: 12px; color: var(--muted); }
+.danger-whitelist { font-size: 11px; color: var(--warn); margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+
+/* Sections */
+.section {
+  padding: clamp(48px, 6vw, 72px) clamp(20px, 5vw, 60px);
+}
+.section-header { text-align: center; margin-bottom: 48px; }
+.section-title {
+  margin: 0 0 12px;
+  font-size: clamp(24px, 4vw, 34px);
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+.section-subtitle { margin: 0; color: var(--muted); font-size: 16px; max-width: 640px; margin-left: auto; margin-right: auto; }
+
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.feature-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 28px 24px;
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+.feature-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow);
+  border-color: var(--accent);
+}
+.feature-icon { font-size: 32px; margin-bottom: 14px; display: block; }
+.feature-title { margin: 0 0 8px; font-size: 17px; font-weight: 700; color: var(--text); }
+.feature-desc { margin: 0; font-size: 14px; line-height: 1.6; color: var(--muted); }
+
+/* How it works */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 24px;
+  max-width: 1000px;
+  margin: 0 auto;
+  position: relative;
+}
+.steps::before {
+  content: "";
+  position: absolute;
+  top: 36px;
+  left: 50%;
+  right: 50%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--line), transparent);
+  z-index: 0;
+}
+@media (max-width: 768px) { .steps::before { display: none; } }
+.step {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 0 16px;
+}
+.step-number {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 800;
+  box-shadow: 0 4px 16px rgba(79, 140, 255, 0.3);
+}
+.step-title { margin: 0 0 8px; font-size: 18px; font-weight: 700; color: var(--text); }
+.step-desc { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.6; }
+
+/* Demo gallery */
+.demo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.demo-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.demo-card:hover { transform: translateY(-4px); box-shadow: var(--shadow); }
+.demo-image { aspect-ratio: 16/10; background: var(--surface-2); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 14px; overflow: hidden; }
+.demo-image img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.3s; }
+.demo-card:hover .demo-image img { transform: scale(1.03); }
+.demo-caption { padding: 16px; }
+.demo-caption-title { margin: 0 0 4px; font-size: 15px; font-weight: 700; color: var(--text); }
+.demo-caption-desc { margin: 0; font-size: 13px; color: var(--muted); }
+
+/* Documents section — buttons, not links */
+.doc-buttons {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.doc-btn {
+  flex: 1 1 200px;
+  max-width: 280px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  text-decoration: none;
+  color: var(--text);
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.doc-btn:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: var(--shadow); }
+.doc-btn-icon { font-size: 24px; flex-shrink: 0; }
+.doc-btn-content { display: flex; flex-direction: column; gap: 2px; }
+.doc-btn-title { font-weight: 700; font-size: 15px; }
+.doc-btn-desc { font-size: 12px; color: var(--muted); }
+
+/* Installation tabs */
+.install-tabs { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+.install-tab {
+  padding: 10px 20px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.install-tab:hover { border-color: var(--accent); color: var(--text); }
+.install-tab.active { background: var(--accent); border-color: var(--accent); color: white; }
+.install-panel { display: none; max-width: 800px; margin: 0 auto; }
+.install-panel.active { display: block; animation: fadeIn 0.2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.install-code { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 20px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.6; overflow-x: auto; color: var(--text); position: relative; }
+.install-code-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.copy-btn { padding: 6px 12px; border-radius: 8px; background: var(--surface-3); border: 1px solid var(--line); color: var(--text); font-size: 12px; cursor: pointer; }
+.copy-btn:hover { background: var(--accent); border-color: var(--accent); }
+.install-steps { margin-top: 16px; }
+.install-step { display: flex; gap: 14px; margin-bottom: 16px; }
+.install-step-num { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.install-step-text { color: var(--text); line-height: 1.6; }
+
+/* TG Login section */
+.tg-login-section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 40px;
+  max-width: 560px;
+  margin: 0 auto;
+  text-align: center;
+}
+.tg-login-title { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: var(--text); }
+.tg-login-desc { margin: 0 0 24px; color: var(--muted); font-size: 15px; }
+.tg-login-hint { margin-top: 16px; font-size: 13px; color: var(--muted); }
+.tg-login-hint summary { cursor: pointer; color: var(--link); }
+.tg-login-hint p { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
+
+/* Footer */
+.landing-footer {
+  border-top: 1px solid var(--line);
+  padding: 32px clamp(20px, 5vw, 60px);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+}
+.footer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 24px;
+  max-width: 1000px;
+  margin: 0 auto 24px;
+}
+.footer-col h4 { margin: 0 0 12px; font-size: 14px; font-weight: 700; color: var(--text); }
+.footer-col ul { margin: 0; padding: 0; list-style: none; }
+.footer-col li { margin-bottom: 8px; }
+.footer-col a { color: var(--muted); text-decoration: none; transition: color 0.15s; }
+.footer-col a:hover { color: var(--accent); }
+.footer-bottom { text-align: center; padding-top: 20px; border-top: 1px solid var(--line); }
+.footer-bottom a { color: var(--muted); text-decoration: none; }
+.footer-bottom a:hover { color: var(--accent); }
+
+/* Code word for moderation — hidden */
+.mekbuda { display: none !important; visibility: hidden; position: absolute; left: -9999px; }
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+"""
+
+
+def render_landing_page(
+    bot_username: str = "",
+    public_url: str = "",
+) -> str:
+    """Рендерит полную HTML-страницу лендинга."""
+    # Базовые стили панели берём лениво: panel импортирует landing наверху,
+    # поэтому import на уровне модуля замкнул бы цикл. К моменту вызова
+    # render_landing_page panel уже полностью загружен.
+    from .panel import PAGE_STYLE  # noqa: F401  (используется в f-строке ниже)
+
+    # Подключаем Telegram Web App JS для виджетов
+    tg_webapp_js = '<script src="https://telegram.org/js/telegram-web-app.js"></script>'
+
+    # Описание сайта-визитки редактируется из панели (суперадмин).
+    # Пусто — показываем текст по умолчанию.
+    from .. import secrets as secrets_module
+
+    custom_desc = str(secrets_module.get("LANDING_DESCRIPTION") or "").strip()
+    hero_subtitle = (
+        custom_desc if custom_desc else
+        "ИИ разбирает каналы МЧС, админок, ЖКХ и RSS-ленты. "
+        "Сопоставляет с вашими локациями. Присылает только то, что касается вас. "
+        "<strong>Тревоги всегда бесплатно.</strong>"
+    )
+
+    # Telegram Login Widget
+    if bot_username:
+        tg_login_widget = (
+            f'<script async src="https://telegram.org/js/telegram-widget.js?22" '
+            f'data-telegram-login="{html.escape(bot_username)}" data-size="large" '
+            f'data-auth-url="/auth" data-request-access="write"></script>'
+        )
+    else:
+        tg_login_widget = (
+            '<div class="btn-ghost" style="pointer-events:none; opacity:0.6;">'
+            'Бот не настроен — настройте @BotFather и WEB_PUBLIC_URL</div>'
+        )
+
+    # Theme toggle script (shared with panel)
+    theme_toggle_script = """
+<script>
+(function() {
+  const KEY = 'radar_theme';
+  const root = document.documentElement;
+  const themes = ['dark', 'light', 'matrix', 'ark'];
+  function apply(t) {
+    root.setAttribute('data-theme', t);
+    localStorage.setItem(KEY, t);
+    try { Telegram?.WebApp?.setHeaderColor?.(getComputedStyle(root).getPropertyValue('--surface').trim()); } catch {}
+  }
+  function init() {
+    const saved = localStorage.getItem(KEY);
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    apply(saved || (prefersDark ? 'dark' : 'light'));
+  }
+  window.RadarTheme = { apply, init, themes };
+  init();
+})();
+</script>
+"""
+
+    # Widgets initialization script
+    widgets_script = """
+<script>
+(function() {
+  const API_BASE = '/api/widget';
+  let currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+
+  async function fetchJSON(url) {
+    try {
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } catch (e) {
+      console.warn('Widget fetch failed:', e);
+      return null;
+    }
+  }
+
+  function setError(el, msg) {
+    el.innerHTML = '<div class="widget-error">' + htmlEscape(msg) + '</div>';
+  }
+  function setLoading(el) {
+    el.innerHTML = '<div class="widget-loading">Загрузка…</div>';
+  }
+  function htmlEscape(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'''}[c]));
+  }
+
+  // Weather widget
+  async function initWeather() {
+    const wrap = document.getElementById('widget-weather');
+    if (!wrap) return;
+    const content = wrap.querySelector('.widget-content');
+    setLoading(content);
+
+    // Try to get user's location
+    let lat, lon, city = 'auto';
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, maximumAge: 300000 });
+      });
+      lat = pos.coords.latitude;
+      lon = pos.coords.longitude;
+    } catch {
+      // Fallback: use IP-based or default city
+    }
+
+    const params = new URLSearchParams({ theme: currentTheme });
+    if (lat && lon) { params.set('lat', lat); params.set('lon', lon); }
+    else { params.set('city', city); }
+
+    const data = await fetchJSON(API_BASE + '/weather?' + params.toString());
+    if (!data) { setError(content, 'Не удалось загрузить погоду'); return; }
+    renderWeather(content, data);
+  }
+
+  function renderWeather(el, d) {
+    const cur = d.current || {};
+    const hourly = (d.hourly || []).slice(0, 8);
+    const daily = (d.daily || []).slice(0, 3);
+
+    let html = '<div class="weather-current">';
+    html += '<div class="weather-main">';
+    html += '<div class="weather-temp">' + Math.round(cur.temp || 0) + '°</div>';
+    html += '<div class="weather-desc">' + htmlEscape(cur.condition || '') + '</div>';
+    html += '</div>';
+    html += '<div class="weather-details">';
+    if (cur.feels_like !== undefined) html += '<div class="weather-detail">🤗 ' + Math.round(cur.feels_like) + '°</div>';
+    if (cur.wind !== undefined) html += '<div class="weather-detail">💨 ' + cur.wind + '</div>';
+    if (cur.humidity !== undefined) html += '<div class="weather-detail">💧 ' + cur.humidity + '%</div>';
+    if (cur.pressure !== undefined) html += '<div class="weather-detail">📊 ' + Math.round(cur.pressure) + ' мм</div>';
+    html += '</div></div>';
+
+    if (hourly.length) {
+      html += '<div class="weather-hourly">';
+      hourly.forEach(h => {
+        html += '<div class="weather-hour">';
+        html += '<div class="weather-hour-time">' + htmlEscape(h.time) + '</div>';
+        html += '<div class="weather-hour-icon">' + htmlEscape(h.icon || '') + '</div>';
+        html += '<div class="weather-hour-temp">' + Math.round(h.temp) + '°</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    if (daily.length) {
+      html += '<div class="weather-daily">';
+      daily.forEach(day => {
+        html += '<div class="weather-day">';
+        html += '<div class="weather-day-label">' + htmlEscape(day.label) + '</div>';
+        html += '<div class="weather-day-icon">' + htmlEscape(day.icon || '') + '</div>';
+        html += '<div class="weather-day-temps">';
+        html += '<span class="weather-day-low">' + Math.round(day.temp_min) + '°</span>';
+        html += '<span class="weather-day-high">' + Math.round(day.temp_max) + '°</span>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+    }
+
+    if (d.sunrise && d.sunset) {
+      html += '<div style="margin-top:10px;font-size:12px;color:var(--muted);">🌅 ' + d.sunrise + '  •  🌇 ' + d.sunset + '</div>';
+    }
+    if (d.location) {
+      html += '<div style="margin-top:6px;font-size:12px;color:var(--muted);">' + htmlEscape(d.location) + '</div>';
+    }
+    el.innerHTML = html;
+  }
+
+  // News widget
+  async function initNews() {
+    const wrap = document.getElementById('widget-news');
+    if (!wrap) return;
+    const content = wrap.querySelector('.widget-content');
+    setLoading(content);
+
+    const data = await fetchJSON(API_BASE + '/news?topics=alerts,utilities,weather&limit=5&theme=' + currentTheme);
+    if (!data) { setError(content, 'Не удалось загрузить новости'); return; }
+    renderNews(content, data);
+  }
+
+  function renderNews(el, d) {
+    const items = d.items || [];
+    if (!items.length) { el.innerHTML = '<div class="widget-error">Новостей нет</div>'; return; }
+    let html = '<div class="news-list">';
+    items.forEach(item => {
+      html += '<div class="news-item">';
+      html += '<div class="news-item-title">' + htmlEscape(item.title) + '</div>';
+      html += '<div class="news-item-meta">';
+      if (item.topic) html += '<span class="news-item-topic">' + htmlEscape(item.topic) + '</span>';
+      if (item.time) html += '<span class="news-item-time">' + htmlEscape(item.time) + '</span>';
+      html += '</div></div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  // Danger widget
+  async function initDanger() {
+    const wrap = document.getElementById('widget-danger');
+    if (!wrap) return;
+    const content = wrap.querySelector('.widget-content');
+    setLoading(content);
+
+    const data = await fetchJSON(API_BASE + '/danger?city=auto&theme=' + currentTheme);
+    if (!data) { setError(content, 'Не удалось загрузить статус'); return; }
+    renderDanger(content, data);
+  }
+
+  function renderDanger(el, d) {
+    let html = '<div class="danger-status">';
+    const active = d.active === true;
+    const type = d.type || 'none';
+    const level = d.level || 'green';
+
+    const badgeClass = 'danger-' + level;
+    const icons = { uav: '🛸', missile: '🚀', air_raid: '🚨', all_clear: '✅', none: '🟢' };
+    const labels = { uav: 'Опасность БПЛА', missile: 'Ракетная опасность', air_raid: 'Воздушная тревога', all_clear: 'Отбой', none: 'Спокойно' };
+
+    html += '<div class="danger-badge ' + badgeClass + '">' + (icons[type] || '🔔') + ' ' + (labels[type] || 'Статус') + '</div>';
+    if (d.message) html += '<div class="danger-message">' + htmlEscape(d.message) + '</div>';
+    if (d.locations_matched && d.locations_matched.length) {
+      html += '<div class="danger-matched">Соответствует локациям: ' + d.locations_matched.map(htmlEscape).join(', ') + '</div>';
+    }
+    if (d.whitelist_info) {
+      html += '<div class="danger-whitelist">' + htmlEscape(d.whitelist_info) + '</div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  // Theme change listener
+  const observer = new MutationObserver(mutations => {
+    for (const m of mutations) {
+      if (m.attributeName === 'data-theme') {
+        currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+        initWeather(); initNews(); initDanger();
+        break;
+      }
+    }
+  });
+  observer.observe(document.documentElement, { attributes: true });
+
+  // Init all
+  document.addEventListener('DOMContentLoaded', () => {
+    initWeather();
+    initNews();
+    initDanger();
+  });
+
+  // Expose for manual refresh
+  window.RadarWidgets = { refresh: () => { initWeather(); initNews(); initDanger(); } };
+})();
+</script>
+"""
+
+    # Полная HTML страница
+    return f"""<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Радар — оповещения об угрозах и авариях ЖКХ по вашим адресам. ИИ разбирает каналы МЧС, админок, ЖКХ и RSS. Тревоги бесплатно.">
+  <meta name="theme-color" content="#141824">
+  <title>Радар — оповещения об угрозах и авариях ЖКХ</title>
+  <style>{PAGE_STYLE}{LANDING_STYLE}</style>
+  {tg_webapp_js}
+  {theme_toggle_script}
+</head>
+<body>
+  <header>
+    <div class="brand">Радар <span class="version">v{VERSION}</span></div>
+    <nav>
+      <a href="#features">Возможности</a>
+      <a href="#how">Как работает</a>
+      <a href="#demo">Демо</a>
+      <a href="#docs">Документы</a>
+      <a href="#install">Установка</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- 1. HERO -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-content">
+        <span class="hero-badge">v{VERSION} · GPL-3.0 · ARM Ready</span>
+        <h1 id="hero-title">Радар — оповещения об угрозах и авариях ЖКХ по вашим адресам</h1>
+        <p class="hero-subtitle">
+          {hero_subtitle}
+        </p>
+        <div class="hero-cta">
+          <a href="https://t.me/SecretHeroBot" class="btn btn-primary" target="_blank" rel="noopener">
+            <svg class="tg-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5.52 16.34l-4.52-3.96v-3.72l4.52-3.96 1.58 1.38-3.1 2.72 3.1 2.72-1.58 1.38z"/></svg>
+            Запустить в Telegram
+          </a>
+          <a href="#features" class="btn btn-ghost">Возможности</a>
+        </div>
+        <div class="hero-trust">
+          <span>197 коммитов</span>
+          <span>105 тегов</span>
+          <span>Docker</span>
+          <span>SQLite/PostgreSQL</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Widgets row under hero -->
+    <div class="widget-row" role="region" aria-label="Виджеты">
+      <div id="widget-weather" class="widget" data-city="auto" data-theme="auto">
+        <div class="widget-header"><span class="widget-icon">🌤</span><span class="widget-title">Погода</span></div>
+        <div class="widget-content"><div class="widget-loading">Загрузка…</div></div>
+      </div>
+      <div id="widget-news" class="widget" data-topics="alerts,utilities" data-limit="5">
+        <div class="widget-header"><span class="widget-icon">📰</span><span class="widget-title">Новости</span></div>
+        <div class="widget-content"><div class="widget-loading">Загрузка…</div></div>
+      </div>
+      <div id="widget-danger" class="widget" data-city="auto">
+        <div class="widget-header"><span class="widget-icon">🛡</span><span class="widget-title">Статус опасности</span></div>
+        <div class="widget-content"><div class="widget-loading">Загрузка…</div></div>
+      </div>
+    </div>
+
+    <!-- 2. FEATURES -->
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="section-header">
+        <h2 class="section-title" id="features-title">Возможности</h2>
+        <p class="section-subtitle">Всё, что нужно для мониторинга города — в одном боте и веб-панели</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card">
+          <span class="feature-icon">🛸</span>
+          <h3 class="feature-title">БПЛА / ракетная опасность</h3>
+          <p class="feature-desc">Мгновенные оповещения всего города. Типы: БПЛА, ракетная опасность, воздушная тревога, отбой. Совпадение с вашими локациями.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🆘</span>
+          <h3 class="feature-title">МЧС: ЧС и штормовые предупреждения</h3>
+          <p class="feature-desc">Официальные каналы МЧС, администраций области/района/города. Эвакуация, паводки, пожары, сильны ветра.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🛠</span>
+          <h3 class="feature-title">ЖКХ: вода, свет, газ, отопление</h3>
+          <p class="feature-desc">Адресно по улице и дому. Отключения ГВС/ХВС, электричество, газ, отопление. Кластеризация радиусом 1 км.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🌤</span>
+          <h3 class="feature-title">Погода — почасовая, 3 дня, картинкой</h3>
+          <p class="feature-desc">Текущая, ощущается, ветер с порывами, влажность, давление, восход/закат, фаза луны. Дневная/ночная тема, вектор ветра.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">📰</span>
+          <h3 class="feature-title">Новостные подборки (Telegram Stars)</h3>
+          <p class="feature-desc">18 тематик, ИИ-сводки, доставка по расписанию. Платные — через Telegram Stars, подписчики получают без лимита.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🔗</span>
+          <h3 class="feature-title">Проверка ссылок на фишинг</h3>
+          <p class="feature-desc">200 проверок в сутки бесплатно. Подписчики — без лимита. Кэш результатов, база фишинговых доменов.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🎵</span>
+          <h3 class="feature-title">Музыка в облаке (rclone)</h3>
+          <p class="feature-desc">Кэш 256 Мб, пережатие в Opus, стриминг в Telegram. Подключение любого S3/WebDAV/облака через rclone.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🔐</span>
+          <h3 class="feature-title">Аренда приватного сервера</h3>
+          <p class="feature-desc">Собственный сервер с личным IP. До 25 устройств на подписку. Управление в боте и веб-панели.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">🤖</span>
+          <h3 class="feature-title">ИИ-ассистент (Gemini / DeepSeek)</h3>
+          <p class="feature-desc">Поиск в интернете, анализ файлов, генерация кода, переводчик. Настройка моделей и промптов в панели.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-icon">👥</span>
+          <h3 class="feature-title">Модерация групп</h3>
+          <p class="feature-desc">Антиспам, капча на входе, лестница наказаний (warn/mute/ban), автоочистка, лог действий.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 3. HOW IT WORKS -->
+    <section class="section" id="how" aria-labelledby="how-title">
+      <div class="section-header">
+        <h2 class="section-title" id="how-title">Как это работает</h2>
+        <p class="section-subtitle">Три шага — и вы получаете только релевантные оповещения</p>
+      </div>
+      <div class="steps">
+        <article class="step">
+          <div class="step-number">1</div>
+          <h3 class="step-title">Добавьте бота и укажите адреса</h3>
+          <p class="step-desc">Запустите @SecretHeroBot, нажмите «Мои локации» и добавьте город, улицу, дом. Можно добавить несколько адресов — работа, дача, родители.</p>
+        </article>
+        <article class="step">
+          <div class="step-number">2</div>
+          <h3 class="step-title">Бот мониторит источники 24/7</h3>
+          <p class="step-desc">ИИ (Gemini) разбирает каналы МЧС, админок, ЖКХ, RSS-ленты СМИ. Извлекает тип события, город, улицу, дом, время, рекомендации.</p>
+        </article>
+        <article class="step">
+          <div class="step-number">3</div>
+          <h3 class="step-title">Получаете оповещение только если совпало</h3>
+          <p class="step-desc">Событие сопоставляется с вашими локациями. Пришло — значит это ваш район. Настройте тихие часы, формат (текст/картинка), погоду.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 4. DEMO -->
+    <section class="section" id="demo" aria-labelledby="demo-title">
+      <div class="section-header">
+        <h2 class="section-title" id="demo-title">Демо / Скриншоты</h2>
+        <p class="section-subtitle">Интерфейс бота, веб-панель, погода картинкой, формат оповещения</p>
+      </div>
+      <div class="demo-grid">
+        <article class="demo-card">
+          <div class="demo-image">📱<br><small>Интерфейс бота</small></div>
+          <div class="demo-caption">
+            <h3 class="demo-caption-title">Меню бота</h3>
+            <p class="demo-caption-desc">Локации, настройки уведомлений, погода, подписки, сервер, ИИ-ассистент — всё в одном меню.</p>
+          </div>
+        </article>
+        <article class="demo-card">
+          <div class="demo-image">🖥<br><small>Веб-панель</small></div>
+          <div class="demo-caption">
+            <h3 class="demo-caption-title">Обзор панели</h3>
+            <p class="demo-caption-desc">Статистика, пользователи, источники, ключи, сервер, подписки, обновления — 4 темы оформления.</p>
+          </div>
+        </article>
+        <article class="demo-card">
+          <div class="demo-image">🌤<br><small>Погода картинкой</small></div>
+          <div class="demo-caption">
+            <h3 class="demo-caption-title">Погода как картинка</h3>
+            <p class="demo-caption-desc">Дневная/ночная тема, вектор ветра, фаза луны, почасовая шкала, 3 дня — готовое изображение.</p>
+          </div>
+        </article>
+        <article class="demo-card">
+          <div class="demo-image">🛸<br><small>Оповещение БПЛА</small></div>
+          <div class="demo-caption">
+            <h3 class="demo-caption-title">Формат тревоги</h3>
+            <p class="demo-caption-desc">🚨 ОПАСНОСТЬ — Город • БПЛА / ракетная • список совпавших локаций • памятка по укрытию.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 5. DOCUMENTS (buttons, not links) -->
+    <section class="section" id="docs" aria-labelledby="docs-title">
+      <div class="section-header">
+        <h2 class="section-title" id="docs-title">Документы</h2>
+        <p class="section-subtitle">Всегда доступны отдельными кнопками — в боте и на сайте</p>
+      </div>
+      <div class="doc-buttons">
+        <a href="/privacy" class="doc-btn">
+          <span class="doc-btn-icon">📄</span>
+          <div class="doc-btn-content">
+            <span class="doc-btn-title">Политика конфиденциальности</span>
+            <span class="doc-btn-desc">Какие данные собираются и как используются</span>
+          </div>
+        </a>
+        <a href="/terms" class="doc-btn">
+          <span class="doc-btn-icon">📄</span>
+          <div class="doc-btn-content">
+            <span class="doc-btn-title">Пользовательское соглашение</span>
+            <span class="doc-btn-desc">Правила использования, бесплатные и платные функции</span>
+          </div>
+        </a>
+        <a href="/support" class="doc-btn">
+          <span class="doc-btn-icon">🎫</span>
+          <div class="doc-btn-content">
+            <span class="doc-btn-title">Поддержка</span>
+            <span class="doc-btn-desc">Тикет-система, контакты, SLA ответа</span>
+          </div>
+        </a>
+        <a href="/pricing" class="doc-btn">
+          <span class="doc-btn-icon">💰</span>
+          <div class="doc-btn-content">
+            <span class="doc-btn-title">Тарифы и цены</span>
+            <span class="doc-btn-desc">Оповещения бесплатно, подборки Stars, сервер, лимиты</span>
+          </div>
+        </a>
+      </div>
+    </section>
+
+    <!-- 6. INSTALLATION -->
+    <section class="section" id="install" aria-labelledby="install-title">
+      <div class="section-header">
+        <h2 class="section-title" id="install-title">Установка и развёртывание</h2>
+        <p class="section-subtitle">Одна команда, Docker Compose или ручная настройка — на выбор</p>
+      </div>
+      <div class="install-tabs" role="tablist">
+        <button class="install-tab active" role="tab" data-tab="bash" aria-selected="true">Bash (рекомендуется)</button>
+        <button class="install-tab" role="tab" data-tab="docker" aria-selected="false">Docker Compose</button>
+        <button class="install-tab" role="tab" data-tab="manual" aria-selected="false">Ручная</button>
+      </div>
+
+      <div class="install-panel active" id="panel-bash" role="tabpanel">
+        <div class="install-code">
+          <div class="install-code-header">
+            <span>Установка / обновление одной командой</span>
+            <button class="copy-btn" data-copy-target="#code-bash">Копировать</button>
+          </div>
+          <pre id="code-bash">bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)</pre>
+        </div>
+        <div class="install-steps">
+          <div class="install-step">
+            <span class="install-step-num">1</span>
+            <div class="install-step-text">Скрипт определит архитектуру (ARM/x64), ОС, проверит Docker и Docker Compose.</div>
+          </div>
+          <div class="install-step">
+            <span class="install-step-num">2</span>
+            <div class="install-step-text">Создаст .env с настройками, сгенерирует секреты, настроит Caddy (HTTPS).</div>
+          </div>
+          <div class="install-step">
+            <span class="install-step-num">3</span>
+            <div class="install-step-text">Запустит контейнеры <code>radar_container</code> и <code>radar_db</code>. Готово.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="install-panel" id="panel-docker" role="tabpanel">
+        <div class="install-code">
+          <div class="install-code-header">
+            <span>Docker Compose</span>
+            <button class="copy-btn" data-copy-target="#code-docker">Копировать</button>
+          </div>
+          <pre id="code-docker">git clone https://github.com/Chistovik92/radar.git
+cd radar
+cp .env.example .env  # отредактируйте BOT_TOKEN, ADMIN_IDS, WEB_PUBLIC_URL
+docker compose up -d</pre>
+        </div>
+        <div class="install-steps">
+          <div class="install-step">
+            <span class="install-step-num">1</span>
+            <div class="install-step-text">Клонируйте репозиторий, скопируйте .env.example → .env.</div>
+          </div>
+          <div class="install-step">
+            <span class="install-step-num">2</span>
+            <div class="install-step-text">Заполните обязательные переменные: BOT_TOKEN, ADMIN_IDS, WEB_PUBLIC_URL.</div>
+          </div>
+          <div class="install-step">
+            <span class="install-step-num">3</span>
+            <div class="install-step-text">Запустите <code>docker compose up -d</code>. Панель на порту 8080 (или через Caddy на 443).</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="install-panel" id="panel-manual" role="tabpanel">
+        <div class="install-code">
+          <div class="install-code-header">
+            <span>Ручная установка (systemd + Python)</span>
+            <button class="copy-btn" data-copy-target="#code-manual">Копировать</button>
+          </div>
+          <pre id="code-manual">python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # настройте
+python -m radar.db.init_db
+python -m radar.bot</pre>
+        </div>
+        <div class="install-steps">
+          <div class="install-step">
+            <span class="install-step-num">1</span>
+            <div class="install-step-text">Python 3.11+, виртуальное окружение, зависимости из requirements.txt.</div>
+          </div>
+          <div class="install-step">
+            <span class="install-step-num">2</span>
+            <div class="install-step-text">Настройте .env (BOT_TOKEN, ADMIN_IDS, DATABASE_URL, WEB_PUBLIC_URL).</div>
+          </div>
+          <div class="install-step">
+            <span class="install-step-num">3</span>
+            <div class="install-step-text">Инициализируйте БД (<code>python -m radar.db.init_db</code>), запустите бота и панель.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. TG LOGIN WIDGET -->
+    <section class="section" aria-labelledby="login-title">
+      <h2 class="section-title" id="login-title" style="display:none;">Вход в панель</h2>
+      <div class="tg-login-section">
+        <h3 class="tg-login-title">Войти в веб-панель</h3>
+        <p class="tg-login-desc">Авторизация через Telegram — пароли не храним. Доступ по ролям бота.</p>
+        <div id="tg-login-widget">{tg_login_widget}</div>
+        <details class="tg-login-hint">
+          <summary>Куда попаду после входа?</summary>
+          <p>👤 Пользователь → <strong>/profile</strong> (свои локации, настройки, история, виджеты)</p>
+          <p>🛡 Модератор → <strong>/sources</strong> (модерация источников + профиль)</p>
+          <p>👑 Администратор → <strong>/users</strong> (пользователи, назначение ролей + выше)</p>
+          <p>⭐️ Суперадмин → <strong>/settings</strong> (полный доступ: сервер, ключи, обновления, RustDesk)</p>
+        </details>
+        <p class="tg-login-hint" style="margin-top:12px;">
+          Альтернатива: в боте <code>/panel</code> → «Код входа» (действует 5 минут)
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="landing-footer">
+    <div class="footer-grid">
+      <div class="footer-col">
+        <h4>Проект</h4>
+        <ul>
+          <li><a href="https://github.com/Chistovik92/radar">GitHub репозиторий</a></li>
+          <li><a href="https://github.com/Chistovik92/radar/releases">Релизы</a></li>
+          <li><a href="https://github.com/Chistovik92/radar/blob/main/docs/ROADMAP.md">Дорожная карта</a></li>
+          <li><a href="https://github.com/Chistovik92/radar/blob/main/docs/STATUS.md">Статус проекта</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Документы</h4>
+        <ul>
+          <li><a href="/privacy">Политика конфиденциальности</a></li>
+          <li><a href="/terms">Пользовательское соглашение</a></li>
+          <li><a href="/support">Поддержка</a></li>
+          <li><a href="/pricing">Тарифы и цены</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Бот и каналы</h4>
+        <ul>
+          <li><a href="https://t.me/SecretHeroBot">@SecretHeroBot</a></li>
+          <li><a href="https://t.me/SecretHeroSupport">Поддержка (@SecretHeroSupport)</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Технически</h4>
+        <ul>
+          <li>Python 3.11+ · aiohttp · aiogram</li>
+          <li>SQLite / PostgreSQL (asyncpg)</li>
+          <li>Docker · Caddy · systemd</li>
+          <li>ARM (RK3318) / x64</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>Радар v{VERSION} · </span>
+      <a href="https://github.com/Chistovik92/radar/blob/main/LICENSE">GPL-3.0</a>
+      <span> · Автор: </span>
+      <a href="https://github.com/Chistovik92">SecretHero</a>
+      <span> · </span>
+      <span class="mekbuda">mekbuda</span>
+    </div>
+  </footer>
+
+  {widgets_script}
+</body>
+</html>
+"""
+
+
+# For backward compatibility with panel.py's _login_page style
+def _landing_page(bot_username: str = "", public_url: str = "") -> str:
+    """Alias for render_landing_page."""
+    return render_landing_page(bot_username, public_url)
+RADAR_FILE_52
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/public_pages.py"
+cat > "radar/web/public_pages.py" <<'RADAR_FILE_53'
+"""Публичные страницы для Platega compliance: Privacy, Terms, Support, Pricing.
+
+Все страницы рендерятся без авторизации. Контент адаптирован из шаблонов telegra.ph
+с данными проекта Radar.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+from .. import __version__ as VERSION
+# PAGE_STYLE local
+
+# Общие стили для публичных страниц
+PUBLIC_STYLE = """
+/* ============================================================
+   PUBLIC PAGES STYLES (Privacy, Terms, Support, Pricing)
+   ============================================================ */
+
+.public-page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: clamp(40px, 6vw, 64px) clamp(20px, 5vw, 60px);
+}
+.public-header {
+  text-align: center;
+  margin-bottom: 48px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+}
+.public-title {
+  margin: 0 0 12px;
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--text);
+}
+.public-subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 16px;
+  max-width: 640px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.public-content {
+  line-height: 1.8;
+  color: var(--text);
+}
+.public-content h2 {
+  margin: 32px 0 16px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.public-content h3 {
+  margin: 24px 0 12px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.public-content p { margin: 0 0 16px; }
+.public-content ul { margin: 0 0 16px; padding-left: 24px; }
+.public-content li { margin-bottom: 8px; line-height: 1.7; }
+.public-content a { color: var(--link); text-decoration: none; }
+.public-content a:hover { text-decoration: underline; }
+.public-content code {
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  color: var(--accent);
+}
+.public-content pre {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+.public-content pre code { background: none; padding: 0; color: var(--text); }
+.public-content blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 16px;
+  margin: 16px 0;
+  color: var(--muted);
+  font-style: italic;
+}
+.public-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0;
+  font-size: 14px;
+}
+.public-content th, .public-content td {
+  border: 1px solid var(--line);
+  padding: 12px 16px;
+  text-align: left;
+}
+.public-content th { background: var(--surface-2); font-weight: 700; }
+.public-content tr:nth-child(even) td { background: var(--surface-2); }
+
+/* Support form */
+.support-form {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 28px;
+  margin-top: 24px;
+}
+.form-group { margin-bottom: 20px; }
+.form-label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--text);
+}
+.form-input, .form-select, .form-textarea {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 15px;
+  font-family: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.form-textarea { min-height: 140px; resize: vertical; }
+.form-submit {
+  width: 100%;
+  padding: 14px 24px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.form-submit:hover { box-shadow: 0 4px 16px rgba(79, 140, 255, 0.4); }
+.form-submit:active { transform: scale(0.98); }
+.form-note { margin-top: 12px; font-size: 13px; color: var(--muted); text-align: center; }
+
+/* Pricing cards */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 24px;
+  margin-top: 32px;
+}
+.pricing-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+.pricing-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow);
+  border-color: var(--accent);
+}
+.pricing-card.popular { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.pricing-name { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.pricing-price { font-size: 36px; font-weight: 800; color: var(--text); margin-bottom: 4px; }
+.pricing-period { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+.pricing-features { list-style: none; padding: 0; margin: 0 0 24px; flex: 1; }
+.pricing-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.pricing-features li::before {
+  content: "✓";
+  color: var(--ok);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.pricing-btn {
+  display: block;
+  text-align: center;
+  padding: 14px 24px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: none;
+  transition: transform 0.15s, background 0.15s;
+}
+.pricing-btn-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: white;
+}
+.pricing-btn-primary:hover { background: linear-gradient(135deg, var(--accent-2), var(--accent)); }
+.pricing-btn-ghost {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.pricing-btn-ghost:hover { border-color: var(--accent); }
+.pricing-note { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+
+/* Contact cards */
+.contact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+  margin-top: 24px;
+}
+.contact-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+  text-align: center;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.contact-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+.contact-icon { font-size: 36px; margin-bottom: 12px; }
+.contact-title { margin: 0 0 8px; font-size: 17px; font-weight: 700; color: var(--text); }
+.contact-desc { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+.contact-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.contact-link:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+/* Last updated badge */
+.last-updated {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 24px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+"""
+
+# Базовый шаблон страницы
+PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#141824">
+  <title>{title} — Радар v{VERSION}</title>
+  <style>{PAGE_STYLE}{PUBLIC_STYLE}</style>
+  <script>
+(function() {
+  const KEY = 'radar_theme';
+  const root = document.documentElement;
+  const themes = ['dark', 'light', 'matrix', 'ark'];
+  function apply(t) {
+    root.setAttribute('data-theme', t);
+    localStorage.setItem(KEY, t);
+  }
+  function init() {
+    const saved = localStorage.getItem(KEY);
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    apply(saved || (prefersDark ? 'dark' : 'light'));
+  }
+  window.RadarTheme = { apply, init, themes };
+  init();
+})();
+</script>
+</head>
+<body>
+  <header>
+    <div class="brand">Радар <span class="version">v{VERSION}</span></div>
+    <nav>
+      <a href="/">Лендинг</a>
+      <a href="/privacy">Политика</a>
+      <a href="/terms">Соглашение</a>
+      <a href="/support">Поддержка</a>
+      <a href="/pricing">Тарифы</a>
+      <a href="/login">Вход</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="public-page">
+      <header class="public-header">
+        <span class="last-updated">Обновлено: ноябрь 2026</span>
+        <h1 class="public-title">{title}</h1>
+        <p class="public-subtitle">{subtitle}</p>
+      </header>
+      <div class="public-content">
+{content}
+      </div>
+    </article>
+  </main>
+
+  <footer class="landing-footer">
+    <div class="footer-grid">
+      <div class="footer-col">
+        <h4>Проект</h4>
+        <ul>
+          <li><a href="https://github.com/Chistovik92/radar">GitHub репозиторий</a></li>
+          <li><a href="https://github.com/Chistovik92/radar/releases">Релизы</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Документы</h4>
+        <ul>
+          <li><a href="/privacy">Политика конфиденциальности</a></li>
+          <li><a href="/terms">Пользовательское соглашение</a></li>
+          <li><a href="/support">Поддержка</a></li>
+          <li><a href="/pricing">Тарифы и цены</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Бот и каналы</h4>
+        <ul>
+          <li><a href="https://t.me/SecretHeroBot">@SecretHeroBot</a></li>
+          <li><a href="https://t.me/SecretHeroSupport">Поддержка (@SecretHeroSupport)</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Технически</h4>
+        <ul>
+          <li>Python 3.11+ · aiohttp · aiogram</li>
+          <li>SQLite / PostgreSQL (asyncpg)</li>
+          <li>Docker · Caddy · systemd</li>
+          <li>ARM (RK3318) / x64</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>Радар v{VERSION} · </span>
+      <a href="https://github.com/Chistovik92/radar/blob/main/LICENSE">GPL-3.0</a>
+      <span> · Автор: </span>
+      <a href="https://github.com/Chistovik92">SecretHero</a>
+      <span> · </span>
+      <span class="mekbuda">mekbuda</span>
+    </div>
+  </footer>
+</body>
+</html>"""
+
+
+# ============================================================
+# POLICY — Политика конфиденциальности
+# ============================================================
+
+PRIVACY_CONTENT = """
+<p><strong>Проект:</strong> «Радар» (далее — Проект, Бот, Система) — система мониторинга городских угроз и аварий ЖКХ по адресам пользователя.</p>
+<p><strong>Бот в Telegram:</strong> <a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener">@SecretHeroBot</a></p>
+<p><strong>Репозиторий:</strong> <a href="https://github.com/Chistovik92/radar" target="_blank" rel="noopener">github.com/Chistovik92/radar</a></p>
+<p><strong>Автор:</strong> SecretHero</p>
+<p><strong>Версия:</strong> {VERSION} (ноябрь 2026)</p>
+
+<h2>1. Какие данные собираются</h2>
+<p>Проект собирает минимально необходимые данные для предоставления сервиса оповещений:</p>
+<ul>
+  <li><strong>Telegram ID</strong> — уникальный идентификатор пользователя в Telegram (число).</li>
+  <li><strong>Локации</strong> — города, улицы, номера домов, которые пользователь добавляет через бота для получения оповещений. Координаты (lat/lon) определяются автоматически по введённому адресу.</li>
+  <li><strong>Настройки уведомлений</strong> — типы событий (БПЛА, МЧС, ЖКХ, погода), тихие часы, формат сообщений (текст/картинка), включение/выключение категорий.</li>
+  <li><strong>Роль в системе</strong> — user / moderator / admin / superadmin (назначается администраторами).</li>
+  <li><strong>Подписка и доступы к приватному серверу</strong> — при покупке: ID подписки, срок действия, выданные ключи доступа.</li>
+  <li><strong>Технические логи</strong> — IP-адреса при входе в веб-панель (для защиты от брутфорса), User-Agent, время запросов. Хранятся в памяти процесса панели, не записываются в БД.</li>
+</ul>
+
+<h2>2. Для чего используются данные</h2>
+<ul>
+  <li>Сопоставление входящих событий (МЧС, ЖКХ, БПЛА, погода) с локациями пользователя и отправка релевантных оповещений в Telegram.</li>
+  <li>Предоставление погоды по сохранённым координатам (через Open-Meteo API).</li>
+  <li>Работа веб-панели: авторизация через Telegram Login Widget, отображение профиля, локаций, истории оповещений.</li>
+  <li>Управление подписками и доступами к приватному серверу (если пользователь их приобрёл).</li>
+  <li>Модерация источников и пользователей (для модераторов и выше).</li>
+</ul>
+
+<h2>3. Куда передаются данные</h2>
+<ul>
+  <li><strong>Telegram</strong> — оповещения, меню бота, веб-апп виджеты, платежи через Telegram Stars. Данные не выходят за пределы чата пользователя с ботом.</li>
+  <li><strong>Google Gemini API</strong> — тексты постов из публичных каналов/РСС отправляются для извлечения структурированных событий (город, улица, дом, тип, время, рекомендации). Передаются только тексты постов, без персональных идентификаторов пользователей.</li>
+  <li><strong>Open-Meteo API</strong> — запрос погоды по координатам (lat/lon). Никаких идентификаторов пользователя не передаётся.</li>
+  <li><strong>Платёжная система (Platega / Telegram Stars)</strong> — при оплате передаются сумма, описание товара, Telegram ID пользователя (для зачисления подписки).</li>
+</ul>
+
+<h2>4. Хранение и безопасность</h2>
+<ul>
+  <li>Основная БД: SQLite (файл <code>radar.db</code>) или PostgreSQL — на сервере пользователя (self-hosted). Автор проекта не имеет доступа к вашей базе.</li>
+  <li>Бэкапы: создаются командой <code>/backup</code> в панели или скриптом, хранятся на том же сервере в зашифрованном виде (age/GPG).</li>
+  <li>Сессии веб-панели: в памяти процесса, TTL 4 часа, куки с флагом <code>HttpOnly; Secure; SameSite=Lax</code>.</li>
+  <li>Пароли не хранятся — вход только через Telegram Login Widget (HMAC от токена бота) или разовый код из бота.</li>
+</ul>
+
+<h2>5. Права пользователя</h2>
+<ul>
+  <li>Удаление своего аккаунта: в боте → Меню → Профиль → «Удалить аккаунт» (полная очистка локаций, настроек, истории, подписок).</li>
+  <li>Экспорт данных: через веб-панель (профиль) или запрос в поддержку.</li>
+  <li>Отказ от оповещений: отключение категорий в настройках или блокировка бота.</li>
+</ul>
+
+<h2>6. Сроки хранения</h2>
+<ul>
+  <li>Локации и настройки — до удаления аккаунта пользователем.</li>
+  <li>История оповещений — последние 500 сообщений на пользователя (ротация).</li>
+  <li>Логи авторизации в панели — в памяти, очищаются при перезапуске панели.</li>
+  <li>Данные подписок и доступов — до истечения срока + 30 дней для поддержки.</li>
+</ul>
+
+<h2>7. Cookies и локальное хранение</h2>
+<ul>
+  <li><code>radar_session</code> — сессия веб-панели (HttpOnly, Secure, SameSite=Lax).</li>
+  <li><code>radar_theme</code> — выбранная тема (localStorage, не передаётся на сервер).</li>
+  <li>Никаких tracking-куки, пикселей, аналитики (GA, Яндекс.Метрика и т.д.) — нет.</li>
+</ul>
+
+<h2>8. Контакты по вопросам конфиденциальности</h2>
+<p>Тикет-система: <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener">@SecretHeroSupportBot</a><br>
+Email: <a href="mailto:support@radar-project.ru">support@radar-project.ru</a></p>
+"""
+
+
+# ============================================================
+# TERMS — Пользовательское соглашение
+# ============================================================
+
+TERMS_CONTENT = """
+<p><strong>Проект:</strong> «Радар» — бот и веб-панель для мониторинга городских угроз и аварий ЖКХ.<br>
+<strong>Бот:</strong> <a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener">@SecretHeroBot</a><br>
+<strong>Автор:</strong> SecretHero<br>
+<strong>Версия:</strong> {VERSION} (ноябрь 2026)</p>
+
+<h2>1. Общие положения</h2>
+<p>Начиная пользоваться ботом @SecretHeroBot и веб-панелью, вы соглашаетесь с настоящими условиями. Если не согласны — не используйте сервис.</p>
+<p>Проект предоставляется «как есть» (as is), без гарантий бесперебойной работы, точности оповещений или доступности источников. Бот <strong>не заменяет официальные каналы оповещения</strong> (МЧС, администрация, сирены, СМС-рассылки).</p>
+
+<h2>2. Бесплатные функции (всегда бесплатно)</h2>
+<ul>
+  <li>Оповещения об угрозах: БПЛА, ракетная опасность, воздушная тревога, отбой.</li>
+  <li>Оповещения МЧС: ЧС, штормовые предупреждения, эвакуация, паводки, пожары.</li>
+  <li>Оповещения ЖКХ: отключения воды, электричества, газа, отопления — адресно по улице/дому.</li>
+  <li>Базовая погода: текущая, почасовая (8 ч), 3 дня — текстом.</li>
+  <li>Проверка ссылок на фишинг — 200 запросов в сутки.</li>
+  <li>ИИ-ассистент (базовый лимит запросов в сутки).</li>
+</ul>
+
+<h2>3. Платные функции</h2>
+<table>
+  <thead>
+    <tr><th>Продукт</th><th>Цена</th><th>Описание</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Новостные подборки</td><td>50 ⭐/мес / 500 ⭐/год</td><td>18 тематик, ИИ-сводки, доставка по расписанию</td></tr>
+    <tr><td>Погода картинкой</td><td>Входит в подборки</td><td>Готовое изображение: дневная/ночная тема, вектор ветра, фаза луны</td></tr>
+    <tr><td>Аренда приватного сервера</td><td>От 150 ₽/мес</td><td>Собственный сервер, до 25 устройств</td></tr>
+    <tr><td>Проверка ссылок (без лимита)</td><td>Входит в подборки</td><td>Подписчики — без дневного лимита</td></tr>
+  </tbody>
+</table>
+<p><strong>Важно:</strong> Все цены ≤ 10 000 ₽ за транзакцию (лимит платёжной системы). Оплата через Telegram Stars или платёжную систему Platega.</p>
+
+<h2>4. Подписка и отмена</h2>
+<ul>
+  <li>Подписка на подборки — ежемесячная или годовая (Telegram Stars), автопродление отключается в настройках Telegram.</li>
+  <li>Аренда приватного сервера — оплачивается за месяц вперёд, доступ выдаётся сразу после оплаты.</li>
+  <li>Возврат средств: по заявке в поддержке в течение 14 дней с момента оплаты, если сервис не был предоставлен.</li>
+</ul>
+
+<h2>5. Ограничения ответственности</h2>
+<ul>
+  <li>Бот агрегирует публичные источники. Точность, полнота и своевременность зависят от источников.</li>
+  <li>ИИ (Gemini) может ошибаться в извлечении адресов или типа события. Всегда проверяйте первоисточник (ссылка в оповещении).</li>
+  <li>Проект не несёт ответственности за упущенные угрозы, ложные срабатывания или задержки доставки сообщений Telegram.</li>
+  <li>Приватный сервер предоставляется для законного использования по назначению. Ответственность за использование лежит на пользователе.</li>
+</ul>
+
+<h2>6. Запреты</h2>
+<ul>
+  <li>Автоматизированные запросы к API бота/панели без согласия автора (rate limit: 30 req/min).</li>
+  <li>Перепродажа доступов к приватному серверу, подборок или ключей без согласования.</li>
+  <li>Попытки несанкционированного доступа, инъекции, DoS, сканирование уязвимостей.</li>
+  <li>Использование бота для спама, рассылок, мошенничества.</li>
+</ul>
+
+<h2>7. Интеллектуальная собственность</h2>
+<p>Код проекта — GPL-3.0 (<a href="https://github.com/Chistovik92/radar/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a>). Вы можете форкать, модифицировать, запускать у себя. Название «Радар», бренд @SecretHeroBot, логотип — товарные знаки автора; при форке меняйте название и брендинг.</p>
+
+<h2>8. Изменения условий</h2>
+<p>Условия могут обновляться. Актуальная версия всегда на этой странице. Продолжение использования после изменений означает согласие.</p>
+
+<h2>9. Контакты</h2>
+<p>Поддержка: <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener">@SecretHeroSupportBot</a> (тикет-бот)<br>
+Email: <a href="mailto:support@radar-project.ru">support@radar-project.ru</a></p>
+"""
+
+
+# ============================================================
+# SUPPORT — Поддержка
+# ============================================================
+
+SUPPORT_CONTENT = """
+<p><strong>Радар v{VERSION}</strong> — бот мониторинга городских угроз и аварий ЖКХ.<br>
+Мы отвечаем на вопросы по установке, настройке, оплате, багам и предложениям.</p>
+
+<h2>Каналы поддержки</h2>
+<div class="contact-grid">
+  <article class="contact-card">
+    <div class="contact-icon">🎫</div>
+    <h3 class="contact-title">Тикет-бот (рекомендуется)</h3>
+    <p class="contact-desc">Создайте тикет — получите номер, статус и ответ в личку. История сохраняется.</p>
+    <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener" class="contact-link">Открыть @SecretHeroSupportBot</a>
+  </article>
+  <article class="contact-card">
+    <div class="contact-icon">👤</div>
+    <h3 class="contact-title">Прямой контакт автора</h3>
+    <p class="contact-desc">Для срочных вопросов, безопасности, партнёрства. Отвечаю в рабочее время.</p>
+    <a href="https://t.me/SecretHeroSupport" target="_blank" rel="noopener" class="contact-link">Написать @SecretHeroSupport</a>
+  </article>
+  <article class="contact-card">
+    <div class="contact-icon">📧</div>
+    <h3 class="contact-title">Email</h3>
+    <p class="contact-desc">Для официальных обращений, договоров, претензий, GDPR-запросов.</p>
+    <a href="mailto:support@radar-project.ru" class="contact-link">support@radar-project.ru</a>
+  </article>
+</div>
+
+<h2>SLA — время ответа</h2>
+<ul>
+  <li><strong>Рабочее время:</strong> пн–пт 09:00–17:30 (МСК).</li>
+  <li><strong>Первичный ответ:</strong> до 4 часов в рабочее время, до 24 часов — в нерабочее.</li>
+  <li><strong>Решение типовых вопросов:</strong> 1–2 рабочих дня.</li>
+  <li><strong>Сложные баги / установка:</strong> до 5 рабочих дней.</li>
+</ul>
+
+<h2>Что ускорит помощь</h2>
+<ol>
+  <li>Версия бота/панели (<code>/version</code> в боте или футер панели).</li>
+  <li>Способ установки: Docker (install.sh) / Docker Compose / ручная.</li>
+  <li>ОС и архитектура сервера (ARM / x64).</li>
+  <li>Логи: <code>docker logs radar_container --tail 100</code> или <code>journalctl -u radar -n 100</code>.</li>
+  <li>Скриншот ошибки или полный текст traceback.</li>
+  <li>Что уже пробовали исправить.</li>
+</ol>
+
+<h2>Частые вопросы (FAQ)</h2>
+<h3>Бот не присылает оповещения</h3>
+<p>Проверьте: локации добавлены верно (город/улица/дом)? Включены ли нужные категории в настройках? Не включены ли «тихие часы»? Бот не заблокирован? Источники в городе настроены админом (команда <code>/sources</code> в панели)?</p>
+
+<h3>Погода не работает / «нет координат»</h3>
+<p>Удалите локацию и добавьте заново — координаты определяются при добавлении. Если город не находится — напишите в поддержку, добавим в геокодер.</p>
+
+<h3>Как купить подписку / арендовать сервер</h3>
+<p>В боте: Меню → Подписки / Сервер → выбрать тариф → оплатить Stars или через платёжную систему. Доступ придёт автоматически.</p>
+
+<h3>Хочу установить у себя (self-hosted)</h3>
+<p>Одна команда: <code>bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)</code><br>
+Требования: Docker, Docker Compose, порт 80/443, домен (для HTTPS и TG Login Widget).</p>
+
+<h2>Форма обращения</h2>
+<p>Если тикет-бот недоступен — заполните форму ниже. Тикет создастся автоматически.</p>
+
+<form class="support-form" action="/support/submit" method="post">
+  <div class="form-group">
+    <label class="form-label" for="subject">Тема</label>
+    <select class="form-select" id="subject" name="subject" required>
+      <option value="">— Выберите тему —</option>
+      <option value="install">Установка / обновление</option>
+      <option value="alerts">Оповещения не приходят / не те</option>
+      <option value="weather">Погода / координаты</option>
+      <option value="subscription">Подписка / оплата / Stars</option>
+      <option value="server">Аренда приватного сервера</option>
+      <option value="panel">Веб-панель / вход / роли</option>
+      <option value="bug">Баг / ошибка / краш</option>
+      <option value="feature">Предложение / идея</option>
+      <option value="other">Другое</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label class="form-label" for="message">Описание проблемы <span style="color:var(--bad);">*</span></label>
+    <textarea class="form-textarea" id="message" name="message" required placeholder="Подробно опишите проблему: что делали, что ожидали, что получилось. Пришлите логи, скриншоты, версию."></textarea>
+  </div>
+  <div class="form-group">
+    <label class="form-label" for="contact">Ваш контакт для ответа (Telegram @username или email) <span style="color:var(--bad);">*</span></label>
+    <input class="form-input" id="contact" name="contact" type="text" required placeholder="@username или email@example.com">
+  </div>
+  <button type="submit" class="form-submit">Отправить тикет</button>
+  <p class="form-note">Нажимая «Отправить», вы соглашаетесь с <a href="/privacy">политикой конфиденциальности</a>. Персональные данные не передаём третьим лицам.</p>
+</form>
+
+<script>
+document.querySelector('.support-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const btn = form.querySelector('button[type=submit]');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Отправка…';
+  try {
+    const fd = new FormData(form);
+    const res = await fetch('/support/submit', { method: 'POST', body: fd });
+    if (res.ok) {
+      alert('Тикет создан! Номер придёт на указанный контакт.');
+      form.reset();
+    } else {
+      alert('Ошибка: ' + (await res.text()));
+    }
+  } catch (err) {
+    alert('Сетевая ошибка: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+});
+</script>
+"""
+
+
+# ============================================================
+# PRICING — Тарифы и цены
+# ============================================================
+
+PRICING_CONTENT = """
+<p><strong>Радар v{VERSION}</strong> — честные цены, без скрытых платежей. Все оповещения об угрозах — <strong>бесплатно навсегда</strong>.</p>
+<p>Платёжная система: Telegram Stars (внутри Telegram) и Platega (банковские карты). Лимит на транзакцию — <strong>10 000 ₽</strong>.</p>
+
+<div class="pricing-grid">
+  <article class="pricing-card">
+    <div class="pricing-name">🛡 Оповещения об угрозах</div>
+    <div class="pricing-price">0 ₽</div>
+    <div class="pricing-period">бесплатно навсегда</div>
+    <ul class="pricing-features">
+      <li>БПЛА / ракетная опасность / воздушная тревога / отбой</li>
+      <li>МЧС: ЧС, штормовые предупреждения, эвакуация</li>
+      <li>ЖКХ: вода, свет, газ, отопление — адресно</li>
+      <li>Базовая погода (текст): текущая, 8 ч, 3 дня</li>
+      <li>Проверка ссылок — 200/сутки</li>
+      <li>ИИ-ассистент — базовый лимит</li>
+      <li>Без рекламы, без трекинга</li>
+    </ul>
+    <a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener" class="pricing-btn pricing-btn-primary">Запустить бота</a>
+  </article>
+
+  <article class="pricing-card popular">
+    <div class="pricing-name">📰 Новостные подборки</div>
+    <div class="pricing-price">50 ⭐</div>
+    <div class="pricing-period">в месяц</div>
+    <ul class="pricing-features">
+      <li>18 тематик: угрозы, ЖКХ, погода, транспорт, спорт, культура, IT, наука и др.</li>
+      <li>ИИ-сводки (Gemini) — суть за 30 секунд</li>
+      <li>Доставка по расписанию: утро / обед / вечер</li>
+      <li>Погода картинкой (дневная/ночная, вектор ветра, фаза луны)</li>
+      <li>Проверка ссылок — без лимита</li>
+      <li>ИИ-ассистент — расширенный лимит</li>
+      <li>Приоритетная поддержка</li>
+    </ul>
+    <a href="https://t.me/SecretHeroBot?start=subscribe" target="_blank" rel="noopener" class="pricing-btn pricing-btn-primary">Оформить за Stars</a>
+  </article>
+
+  <article class="pricing-card">
+    <div class="pricing-name">📰 Новостные подборки (год)</div>
+    <div class="pricing-price">500 ⭐</div>
+    <div class="pricing-period">в год (–17%)</div>
+    <ul class="pricing-features">
+      <li>Всё то же, что в месячной подписке</li>
+      <li>Экономия 100 Stars за год</li>
+      <li>Автопродление отключается в настройках Telegram</li>
+    </ul>
+    <a href="https://t.me/SecretHeroBot?start=subscribe_year" target="_blank" rel="noopener" class="pricing-btn pricing-btn-primary">Оформить за Stars</a>
+  </article>
+
+  <article class="pricing-card">
+    <div class="pricing-name">🔐 Аренда приватного сервера</div>
+    <div class="pricing-price">от 150 ₽</div>
+    <div class="pricing-period">в месяц</div>
+    <ul class="pricing-features">
+      <li>Собственный сервер с личным IP</li>
+      <li>До 25 устройств на одну подписку</li>
+      <li>Без логов трафика</li>
+      <li>Управление в боте и веб-панели</li>
+      <li>Триал 1 день — бесплатно (по запросу в поддержку)</li>
+    </ul>
+    <a href="https://t.me/SecretHeroBot?start=server" target="_blank" rel="noopener" class="pricing-btn pricing-btn-ghost">Узнать тарифы в боте</a>
+  </article>
+</div>
+
+<div class="pricing-note">
+  <p><strong>Важные замечания:</strong></p>
+  <ul>
+    <li>Все цены указаны в рублях (₽) или Telegram Stars (⭐). 1 Star ≈ 1.5–2 ₽ (курс Telegram).</li>
+    <li>Лимит одной транзакции через платёжную систему — <strong>10 000 ₽</strong> (требование Platega). Никакой товар не стоит больше.</li>
+    <li>Приватный сервер предоставляется для законного использования по назначению.</li>
+    <li>Подписка на подборки оплачивается Stars — деньги не уходят через банковские карты, комиссия Telegram.</li>
+    <li>Возврат средств: заявка в поддержку в течение 14 дней, если сервис не предоставлен.</li>
+    <li>Сам-хостинг (установка на свой сервер) — полностью бесплатно, код открыт (GPL-3.0).</li>
+  </ul>
+</div>
+
+<h2>Сравнение: бесплатно vs подписка</h2>
+<table>
+  <thead>
+    <tr><th>Функция</th><th>Бесплатно</th><th>Подписка (Stars)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Тревоги БПЛА / МЧС / ЖКХ</td><td>✅ Полностью</td><td>✅ Полностью</td></tr>
+    <tr><td>Погода (текст)</td><td>✅ Текущая, 8ч, 3 дня</td><td>✅ + картинка, вектор ветра, луна</td></tr>
+    <tr><td>Новостные подборки</td><td>❌</td><td>✅ 18 тем, ИИ-сводки, расписание</td></tr>
+    <tr><td>Проверка ссылок</td><td>200/сутки</td><td>Без лимита</td></tr>
+    <tr><td>ИИ-ассистент</td><td>Базовый лимит</td><td>Расширенный лимит</td></tr>
+    <tr><td>Аренда приватного сервера</td><td>❌</td><td>Отдельно (₽)</td></tr>
+  </tbody>
+</table>
+
+<h2>Как оплатить</h2>
+<ol>
+  <li>Откройте бота: <a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener">@SecretHeroBot</a></li>
+  <li>Меню → «Подписки» или «Сервер»</li>
+  <li>Выберите тариф → «Оплатить Stars» (мгновенно) или «Оплатить картой» (через Platega)</li>
+  <li>Доступ активируется автоматически</li>
+</ol>
+
+<p style="text-align:center; margin-top:32px; color:var(--muted);">
+  Вопросы по оплате? <a href="/support">Напишите в поддержку</a>
+</p>
+"""
+
+
+def _render_page(title: str, subtitle: str, content: str) -> str:
+    """Рендерит страницу по шаблону."""
+    # Базовые стили панели — лениво (panel импортирует public_pages наверху,
+    # import на уровне модуля замкнул бы цикл).
+    from .panel import PAGE_STYLE  # noqa: F401  (используется в format ниже)
+
+    return PAGE_TEMPLATE.format(
+        title=title,
+        subtitle=subtitle,
+        content=content.format(VERSION=VERSION),
+        VERSION=VERSION,
+        PAGE_STYLE=PAGE_STYLE,
+        PUBLIC_STYLE=PUBLIC_STYLE,
+    )
+
+
+def render_privacy_page() -> str:
+    return _render_page(
+        "Политика конфиденциальности",
+        "Какие данные собираются, как используются и где хранятся",
+        PRIVACY_CONTENT,
+    )
+
+
+def render_terms_page() -> str:
+    return _render_page(
+        "Пользовательское соглашение",
+        "Правила использования, бесплатные и платные функции, ограничения ответственности",
+        TERMS_CONTENT,
+    )
+
+
+def render_support_page() -> str:
+    return _render_page(
+        "Поддержка",
+        "Тикет-система, контакты, SLA, FAQ и форма обращения",
+        SUPPORT_CONTENT,
+    )
+
+
+def render_pricing_page() -> str:
+    return _render_page(
+        "Тарифы и цены",
+        "Оповещения бесплатно навсегда. Подборки за Stars, аренда сервера за рубли. Все цены ≤ 10 000 ₽",
+        PRICING_CONTENT,
+    )
+RADAR_FILE_53
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/widgets.py"
+cat > "radar/web/widgets.py" <<'RADAR_FILE_54'
+"""Telegram Mini App widgets API: Weather, News, Danger status.
+
+Provides /api/widget/* endpoints for Telegram Mini App integration.
+Widgets are rendered via Telegram Web App JS from CDN.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import aiohttp
+from aiohttp import web
+
+from .. import config, geocode, weather
+from ..db import repo
+
+log = logging.getLogger("radar.web.widgets")
+
+
+def _session() -> aiohttp.ClientSession:
+    return aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=25),
+        headers={"User-Agent": config.USER_AGENT},
+    )
+
+
+# ============================================================
+# WIDGET API ROUTES
+# ============================================================
+
+async def widget_weather(request: web.Request) -> web.Response:
+    """Weather widget data: /api/widget/weather?city=auto&theme=dark"""
+    city = request.query.get("city", "auto")
+    theme = request.query.get("theme", "dark")
+
+    try:
+        lat: float | None = None
+        lon: float | None = None
+        if city and city != "auto":
+            async with _session() as session:
+                found = await geocode.forward(session, city, config.DEFAULT_CITY)
+            if found:
+                lat = float(found[0]["lat"])
+                lon = float(found[0]["lon"])
+
+        if lat is None or lon is None:
+            return web.json_response({
+                "ok": False,
+                "error": "city_unknown",
+                "message": "Город не найден — укажите точнее",
+            }, status=404)
+
+        async with _session() as session:
+            data = await weather.fetch(session, lat, lon)
+        if not data.ok:
+            return web.json_response({
+                "ok": False,
+                "error": "weather_unavailable",
+                "message": data.error or "Сервис погоды временно недоступен",
+            }, status=503)
+
+        condition, icon = weather.describe(data.code, data.is_day)
+        result = {
+            "ok": True,
+            "city": city,
+            "temperature": data.temp,
+            "feels_like": data.feels,
+            "condition": condition,
+            "icon": icon,
+            "humidity": data.humidity,
+            "wind_speed": data.wind,
+            "wind_dir": data.wind_dir,
+            "pressure": data.pressure,
+            "uv_index": None,
+            "forecast": [
+                {
+                    "date": day.label,
+                    "temp_min": day.low,
+                    "temp_max": day.high,
+                    "condition": weather.describe(day.code, True)[0],
+                    "icon": weather.describe(day.code, True)[1],
+                }
+                for day in data.daily[:5]
+            ],
+            "theme": theme,
+        }
+        return web.json_response(result)
+    except Exception as e:  # noqa: BLE001
+        log.exception("widget_weather error")
+        return web.json_response({
+            "ok": False,
+            "error": "internal_error",
+            "message": str(e)
+        }, status=500)
+
+
+async def widget_news(request: web.Request) -> web.Response:
+    """News widget data: /api/widget/news?limit=5&theme=dark"""
+    limit = min(int(request.query.get("limit", "5")), 20)
+    theme = request.query.get("theme", "dark")
+    category = request.query.get("category", "all")
+
+    try:
+        categories = None if category in ("", "all") else [category]
+        events = await repo.recent_events(limit=limit, categories=categories)
+        result = {
+            "ok": True,
+            "items": [
+                {
+                    "id": item["id"],
+                    "title": item["title"],
+                    "summary": (item["summary"] or "")[:200],
+                    "source": item["source"],
+                    "url": item["url"],
+                    "published_at": item["published_at"],
+                    "category": item["categories"][0] if item["categories"] else "",
+                }
+                for item in events
+            ],
+            "theme": theme,
+        }
+        return web.json_response(result)
+    except Exception as e:  # noqa: BLE001
+        log.exception("widget_news error")
+        return web.json_response({
+            "ok": False,
+            "error": "internal_error",
+            "message": str(e)
+        }, status=500)
+
+
+async def widget_danger(request: web.Request) -> web.Response:
+    """Danger status widget: /api/widget/danger?city=auto&theme=dark"""
+    theme = request.query.get("theme", "dark")
+
+    try:
+        breakdown = await repo.event_breakdown(hours=24)
+        # Военные угрозы (БПЛА/ракетная опасность) и МЧС — сигнал опасности.
+        bpla = breakdown.get("bpla", 0)
+        mchs = breakdown.get("mchs", 0)
+
+        if bpla > 0 or mchs > 0:
+            result = {
+                "ok": True,
+                "active": True,
+                "type": "air_raid" if bpla > 0 else "mchs",
+                "level": "red" if bpla > 0 else "yellow",
+                "message": (
+                    "За последние сутки есть события БПЛА/ракетной опасности"
+                    if bpla > 0 else "Есть экстренные оповещения МЧС"
+                ),
+                "area": None,
+                "started_at": None,
+                "icon": "🚨" if bpla > 0 else "🆘",
+                "label": "Воздушная тревога" if bpla > 0 else "Оповещение МЧС",
+                "theme": theme,
+            }
+        else:
+            result = {
+                "ok": True,
+                "active": False,
+                "type": "none",
+                "level": "green",
+                "message": "Опасностей не обнаружено",
+                "theme": theme,
+            }
+        return web.json_response(result)
+    except Exception as e:  # noqa: BLE001
+        log.exception("widget_danger error")
+        return web.json_response({
+            "ok": False,
+            "error": "internal_error",
+            "message": str(e)
+        }, status=500)
+
+
+# ============================================================
+# JAVASCRIPT MODULE FOR TELEGRAM MINI APP
+# ============================================================
+
+WIDGET_JS = """
+/* ============================================================
+   Radar Telegram Mini App Widgets
+   Auto-initializes widgets in data-widget containers
+   ============================================================ */
+
+(function() {
+  'use strict';
+
+  const API_BASE = '/api/widget';
+  let currentTheme = 'dark';
+
+  function detectTheme() {
+    if (window.Telegram && window.Telegram.WebApp) {
+      return window.Telegram.WebApp.colorScheme || 'dark';
+    }
+    return document.documentElement.getAttribute('data-theme') || 'dark';
+  }
+
+  currentTheme = detectTheme();
+
+  if (window.Telegram && window.Telegram.WebApp) {
+    window.Telegram.WebApp.onEvent('themeChanged', function() {
+      currentTheme = window.Telegram.WebApp.colorScheme || 'dark';
+      refreshAllWidgets();
+    });
+  }
+
+  async function fetchJSON(url) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } catch (e) {
+      console.warn('[Radar Widget] Fetch failed:', url, e);
+      return null;
+    }
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function setLoading(el) {
+    el.innerHTML = '<div class="widget-loading">Загрузка…</div>';
+  }
+
+  function setError(el, msg) {
+    el.innerHTML = '<div class="widget-error">' + escapeHtml(msg) + '</div>';
+  }
+
+  async function initWeather() {
+    const wrap = document.getElementById('widget-weather');
+    if (!wrap) return;
+    const content = wrap.querySelector('.widget-content');
+    setLoading(content);
+
+    const city = wrap.dataset.city || 'auto';
+    const data = await fetchJSON(API_BASE + '/weather?city=' + encodeURIComponent(city) + '&theme=' + currentTheme);
+    if (!data || !data.ok) {
+      setError(content, data?.message || 'Не удалось загрузить погоду');
+      return;
+    }
+    renderWeather(content, data);
+  }
+
+  function renderWeather(el, d) {
+    const c = d.temperature;
+    const fl = d.feels_like;
+    const cond = d.condition || '—';
+    const icon = d.icon || '🌤️';
+    const humidity = d.humidity;
+    const wind = d.wind_speed;
+    const windDir = d.wind_dir || '';
+    const pressure = d.pressure;
+    const uv = d.uv_index;
+
+    let html = '<div class="weather-current">';
+    html += '<div class="weather-main">';
+    html += '<span class="weather-icon" style="font-size:48px;">' + escapeHtml(icon) + '</span>';
+    html += '<div class="weather-temp">' + (c !== null && c !== undefined ? c + '°' : '—') + '</div>';
+    html += '</div>';
+    html += '<div class="weather-details">';
+    html += '<div class="weather-feels">Ощущается: ' + (fl !== null && fl !== undefined ? fl + '°' : '—') + '</div>';
+    html += '<div class="weather-cond">' + escapeHtml(cond) + '</div>';
+    html += '</div>';
+    html += '</div>';
+
+    if (humidity !== null || wind !== null || pressure !== null) {
+      html += '<div class="weather-meta">';
+      if (humidity !== null) html += '<span class="weather-item">💧 ' + humidity + '%</span>';
+      if (wind !== null) html += '<span class="weather-item">💨 ' + wind + ' м/с ' + escapeHtml(windDir) + '</span>';
+      if (pressure !== null) html += '<span class="weather-item">📊 ' + pressure + ' гПа</span>';
+      if (uv !== null) html += '<span class="weather-item">☀️ UV ' + uv + '</span>';
+      html += '</div>';
+    }
+
+    if (d.forecast && d.forecast.length) {
+      html += '<div class="weather-forecast">';
+      for (const f of d.forecast) {
+        html += '<div class="forecast-day">';
+        html += '<span class="fc-date">' + escapeHtml(f.date) + '</span>';
+        html += '<span class="fc-icon">' + escapeHtml(f.icon || '🌤️') + '</span>';
+        html += '<span class="fc-temp">' + (f.temp_min !== null ? f.temp_min + '°' : '—') + ' / ' + (f.temp_max !== null ? f.temp_max + '°' : '—') + '</span>';
+        html += '<span class="fc-cond">' + escapeHtml(f.condition || '') + '</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    el.innerHTML = html;
+  }
+
+  async function initNews() {
+    const wrap = document.getElementById('widget-news');
+    if (!wrap) return;
+    const content = wrap.querySelector('.widget-content');
+    setLoading(content);
+
+    const limit = wrap.dataset.limit || '5';
+    const category = wrap.dataset.category || 'all';
+    const data = await fetchJSON(API_BASE + '/news?limit=' + limit + '&category=' + encodeURIComponent(category) + '&theme=' + currentTheme);
+    if (!data || !data.ok) {
+      setError(content, data?.message || 'Не удалось загрузить новости');
+      return;
+    }
+    renderNews(content, data);
+  }
+
+  function renderNews(el, d) {
+    if (!d.items || !d.items.length) {
+      el.innerHTML = '<div class="widget-empty">Новостей пока нет</div>';
+      return;
+    }
+
+    let html = '<div class="news-list">';
+    for (const item of d.items) {
+      html += '<a class="news-item" href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener">';
+      html += '<div class="news-title">' + escapeHtml(item.title) + '</div>';
+      if (item.summary) {
+        html += '<div class="news-summary">' + escapeHtml(item.summary) + '</div>';
+      }
+      html += '<div class="news-meta">';
+      if (item.source) html += '<span class="news-source">' + escapeHtml(item.source) + '</span>';
+      if (item.published_at) html += '<span class="news-time">' + escapeHtml(item.published_at) + '</span>';
+      if (item.category) html += '<span class="news-cat">' + escapeHtml(item.category) + '</span>';
+      html += '</div>';
+      html += '</a>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  async function initDanger() {
+    const wrap = document.getElementById('widget-danger');
+    if (!wrap) return;
+    const content = wrap.querySelector('.widget-content');
+    setLoading(content);
+
+    const city = wrap.dataset.city || 'auto';
+    const data = await fetchJSON(API_BASE + '/danger?city=' + encodeURIComponent(city) + '&theme=' + currentTheme);
+    if (!data || !data.ok) {
+      setError(content, data?.message || 'Не удалось загрузить статус опасности');
+      return;
+    }
+    renderDanger(content, data);
+  }
+
+  function renderDanger(el, d) {
+    let html = '<div class="danger-status">';
+    const active = d.active === true;
+    const type = d.type || 'none';
+    const level = d.level || 'green';
+
+    const badgeClass = 'danger-' + level;
+    const icons = {
+      uav: '✈️',
+      missile: '🚀',
+      air_raid: '🔔',
+      artillery: '💥',
+      chemical: '☣️',
+      nuclear: '☢️',
+      all_clear: '✅',
+      none: '🛡️',
+    };
+    const labels = {
+      uav: 'Беспилотник',
+      missile: 'Ракетная угроза',
+      air_raid: 'Воздушная тревога',
+      artillery: 'Артиллерийский обстрел',
+      chemical: 'Химическая угроза',
+      nuclear: 'Ядерная угроза',
+      all_clear: 'Тревога снята',
+      none: 'Спокойно',
+    };
+
+    html += '<div class="danger-badge ' + badgeClass + '">' + (icons[type] || '⚠️') + ' ' + (labels[type] || 'Неизвестно') + '</div>';
+    if (d.message) html += '<div class="danger-message">' + escapeHtml(d.message) + '</div>';
+    if (d.area) html += '<div class="danger-area">Район: ' + escapeHtml(d.area) + '</div>';
+    if (d.started_at) html += '<div class="danger-time">Начало: ' + escapeHtml(d.started_at) + '</div>';
+    if (!active) {
+      html += '<div class="danger-all-clear">✅ Опасностей не обнаружено</div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  function refreshAllWidgets() {
+    initWeather();
+    initNews();
+    initDanger();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refreshAllWidgets);
+  } else {
+    refreshAllWidgets();
+  }
+
+  window.RadarWidgets = {
+    refresh: refreshAllWidgets,
+    initWeather,
+    initNews,
+    initDanger,
+    setTheme: (t) => { currentTheme = t; refreshAllWidgets(); },
+  };
+})();
+"""
+
+
+def routes(web_module):
+    """Return aiohttp routes for widget API."""
+    return [
+        web_module.get("/api/widget/weather", widget_weather),
+        web_module.get("/api/widget/news", widget_news),
+        web_module.get("/api/widget/danger", widget_danger),
+    ]
+
+
+__all__ = ["routes", "WIDGET_JS", "widget_weather", "widget_news", "widget_danger"]
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_52'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_55'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -24364,9 +26939,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_52
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_53'
+cat > "radar/db/models.py" <<'RADAR_FILE_56'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -24741,9 +27316,9 @@ class ChatWarning(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-RADAR_FILE_53
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_54'
+cat > "radar/db/engine.py" <<'RADAR_FILE_57'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -25257,9 +27832,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_54
+RADAR_FILE_57
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_55'
+cat > "radar/db/repo.py" <<'RADAR_FILE_58'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -25769,6 +28344,47 @@ async def event_breakdown(hours: int = 24) -> dict[str, int]:
     return counts
 
 
+async def recent_events(
+    limit: int = 20,
+    hours: int = 48,
+    categories: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Последние события для публичных виджетов (5.10.0).
+
+    Отдаётся только то, что допустимо показывать без авторизации: сводка,
+    источник, ссылка, категории и серьёзность. Адреса, улицы и районы
+    сюда не попадают — они привязывают событие к месту и поднимаются
+    только в истории конкретного пользователя.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    async with session() as active:
+        query = (
+            select(Event)
+            .where(Event.created_at >= since)
+            .order_by(Event.created_at.desc())
+            .limit(limit)
+        )
+        rows = (await active.scalars(query)).all()
+
+    wanted = set(categories or [])
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if wanted and not (wanted & set(row.categories or [])):
+            continue
+        result.append({
+            "id": row.id,
+            "title": row.summary or row.raw[:160],
+            "summary": row.summary,
+            "source": row.source,
+            "url": row.link,
+            "categories": list(row.categories or []),
+            "severity": row.severity,
+            "city": row.city,
+            "published_at": row.created_at.isoformat() if row.created_at else "",
+        })
+    return result
+
+
 async def purge_old_events(days: int | None = None) -> int:
     """Чистка истории. Возвращает число удалённых событий."""
     keep = config.EVENT_RETENTION_DAYS if days is None else days
@@ -26157,9 +28773,9 @@ async def warn_reset(chat_id: int, user_id: int) -> None:
         )).first()
         if row is not None:
             row.count = 0
-RADAR_FILE_55
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_56'
+cat > "radar/db/importer.py" <<'RADAR_FILE_59'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -26308,9 +28924,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_56
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/transfer.py"
-cat > "radar/db/transfer.py" <<'RADAR_FILE_57'
+cat > "radar/db/transfer.py" <<'RADAR_FILE_60'
 """Перенос данных между SQLite и PostgreSQL (с 5.9).
 
 До 5.9 смена базы в установщике давала пустую новую базу: старая
@@ -26503,9 +29119,9 @@ async def _reset_sequences(connection: Any) -> None:
                 f"SELECT setval(:sequence, GREATEST(COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 1), 1), COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 0) >= 1)"), {"sequence": sequence})
-RADAR_FILE_57
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_58'
+cat > "radar/doctor.py" <<'RADAR_FILE_61'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -27037,9 +29653,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_58
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_59'
+cat > "migrations/env.py" <<'RADAR_FILE_62'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -27099,9 +29715,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_59
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_60'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_63'
 """${message}
 
 Revision ID: ${up_revision}
@@ -27126,9 +29742,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_60
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_61'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_64'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -27295,9 +29911,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_61
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_62'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_65'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -27337,9 +29953,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_62
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_63'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_66'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -27387,9 +30003,9 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_63
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
-cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_64'
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_67'
 """Язык интерфейса и квоты загрузки видео.
 
 Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
@@ -27434,9 +30050,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("media_quota")
     op.drop_column("users", "lang")
-RADAR_FILE_64
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_65'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_68'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -27462,9 +30078,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_65
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_66'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_69'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -27589,9 +30205,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_66
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_67'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_70'
 """Адаптер мессенджера MAX.
 
 ⚠️ НАПИСАН ПО ДОКУМЕНТАЦИИ, НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН.
@@ -28032,9 +30648,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_67
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/maxbot.py"
-cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_68'
+cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_71'
 """Ответчик MAX (4.9.9.4; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН — как и весь адаптер MAX.
@@ -28153,9 +30769,9 @@ def enabled() -> bool:
     from .. import features
 
     return features.enabled("platform_max") and bool(config.MAX_BOT_TOKEN)
-RADAR_FILE_68
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discord.py"
-cat > "radar/platforms/discord.py" <<'RADAR_FILE_69'
+cat > "radar/platforms/discord.py" <<'RADAR_FILE_72'
 """Адаптер Discord (с 5.5): канал сообщества, а не оповещения по адресам.
 
 ⚠️ НАПИСАН ПО ИСХОДНИКАМ discord.py, С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -28726,9 +31342,9 @@ class DiscordTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_69
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discordbot.py"
-cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_70'
+cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_73'
 """Discord как канал сообщества: сводки и статус системы (с 5.5).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -29291,9 +31907,9 @@ async def community(transport: Any) -> None:
         except Exception:  # noqa: BLE001
             log.warning("Discord: публикация в канал не удалась", exc_info=True)
         await asyncio.sleep(CHECK_EVERY)
-RADAR_FILE_70
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vk.py"
-cat > "radar/platforms/vk.py" <<'RADAR_FILE_71'
+cat > "radar/platforms/vk.py" <<'RADAR_FILE_74'
 """Адаптер ВКонтакте как мессенджера (с 5.6, раздел 7.0 дорожной карты).
 
 ⚠️ СВЕРЕН С ИСХОДНИКАМИ vkbottle, С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -29555,9 +32171,9 @@ class VkTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_71
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vkbot.py"
-cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_72'
+cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_75'
 """Ответчик ВКонтакте (5.6; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -29617,9 +32233,9 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     text = await answer(event)
     if text and not await transport.send(event.chat_id, OutboundMessage(text=text)):
         log.warning("VK: ответ не доставлен")
-RADAR_FILE_72
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/textbot.py"
-cat > "radar/platforms/textbot.py" <<'RADAR_FILE_73'
+cat > "radar/platforms/textbot.py" <<'RADAR_FILE_76'
 """Общий текстовый ответчик для сетей без Telegram-интерфейса (с 5.7).
 
 ⚠️ С ЖИВЫМИ ВК И MAX НЕ ПРОВЕРЕН.
@@ -29896,9 +32512,9 @@ async def answer(platform: str, external_id: str | int, text: str = "", *,
         return status_text(lang) + "\n\n" + _t("text.disclaimer", lang, DISCLAIMER)
 
     return help_text(lang, bool((user or {}).get("locs")))
-RADAR_FILE_73
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/links.py"
-cat > "radar/links.py" <<'RADAR_FILE_74'
+cat > "radar/links.py" <<'RADAR_FILE_77'
 """Общий аккаунт одного человека в разных сетях (с 5.6, в обе стороны — с 5.7).
 
 Один человек — один профиль: адреса, настройки, роль и подписка. Telegram,
@@ -30415,9 +33031,9 @@ async def handle_text(platform: str, external_id: str | int, text: str,
         return f"❌ {reason}"
     return proposal_text(theirs, lang) + "\n\n" + _t(
         "link.answer", lang, "Ответьте «да» или «нет».")
-RADAR_FILE_74
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mirror.py"
-cat > "radar/mirror.py" <<'RADAR_FILE_75'
+cat > "radar/mirror.py" <<'RADAR_FILE_78'
 """Доставка в сети кроме Telegram и копии тревог (с 5.6).
 
 Тревога, уже доставленная в Telegram, уходит копией на аккаунты ВК и MAX,
@@ -30527,9 +33143,9 @@ async def drain() -> None:
     """Дождаться отправленных копий — для тестов и корректной остановки."""
     while _tasks:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
-RADAR_FILE_75
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linking.py"
-cat > "radar/handlers/linking.py" <<'RADAR_FILE_76'
+cat > "radar/handlers/linking.py" <<'RADAR_FILE_79'
 """Общий аккаунт в Telegram-боте: привязка других сетей (5.6, в обе стороны — 5.7).
 
 Здесь можно и выдать код (его вводят в ВК, MAX или Discord), и ввести код,
@@ -30671,9 +33287,9 @@ async def decide(call: CallbackQuery, user: dict) -> None:
     await call.answer()
     asyncio.get_running_loop().create_task(links.announce(owner, links.TELEGRAM))
     await safe_edit(call, esc(links.linked_text(lang)), None)
-RADAR_FILE_76
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_77'
+cat > "radar/storage.py" <<'RADAR_FILE_80'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -30865,9 +33481,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_77
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_78'
+cat > "radar/exporting.py" <<'RADAR_FILE_81'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -31073,9 +33689,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_78
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_79'
+cat > "radar/ai.py" <<'RADAR_FILE_82'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -31941,9 +34557,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_79
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_80'
+cat > "radar/geocode.py" <<'RADAR_FILE_83'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -32182,9 +34798,9 @@ async def forward(
     # в Nominatim адреса появляются.
     _FORWARD.put(key, [dict(item) for item in results])
     return results
-RADAR_FILE_80
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_81'
+cat > "radar/weather.py" <<'RADAR_FILE_84'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -32650,9 +35266,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title, lang), markup)
-RADAR_FILE_81
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_82'
+cat > "radar/sources.py" <<'RADAR_FILE_85'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -33031,9 +35647,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_82
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceedit.py"
-cat > "radar/sourceedit.py" <<'RADAR_FILE_83'
+cat > "radar/sourceedit.py" <<'RADAR_FILE_86'
 #!/usr/bin/env python3
 """Правка списка источников: добавление, удаление, проверка формата.
 
@@ -33177,9 +35793,9 @@ def listing(kind: str) -> list[str]:
 
 def counts() -> dict[str, int]:
     return {kind: len(_bucket(kind) or []) for kind in KINDS}
-RADAR_FILE_83
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/filedrop.py"
-cat > "radar/filedrop.py" <<'RADAR_FILE_84'
+cat > "radar/filedrop.py" <<'RADAR_FILE_87'
 #!/usr/bin/env python3
 """Выдача крупных файлов по ссылке.
 
@@ -33542,9 +36158,9 @@ def summary() -> str:
         lines.append(f"• {item.name} — {item.size_mb:.0f} МБ, "
                      f"осталось {item.hours_left:.0f} ч")
     return "\n".join(lines)
-RADAR_FILE_84
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/agents.py"
-cat > "radar/agents.py" <<'RADAR_FILE_85'
+cat > "radar/agents.py" <<'RADAR_FILE_88'
 #!/usr/bin/env python3
 """Свои агенты ИИ: несколько сервисов вместо одного.
 
@@ -33759,9 +36375,9 @@ def forget(slot: int) -> bool:
         secrets.write(LEGACY_KEY_ENV, "")
     log.info("Свой агент в слоте %s удалён", slot)
     return True
-RADAR_FILE_85
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/redeem.py"
-cat > "radar/redeem.py" <<'RADAR_FILE_86'
+cat > "radar/redeem.py" <<'RADAR_FILE_89'
 #!/usr/bin/env python3
 """Погашение кодов, выданных на стороне.
 
@@ -33922,9 +36538,9 @@ async def summary() -> str:
         return "Кодов пока нет."
     used = sum(1 for item in items if item.get("used_by"))
     return f"Кодов: {len(items)}, погашено: {used}, свободно: {len(items) - used}"
-RADAR_FILE_86
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_87'
+cat > "radar/tg.py" <<'RADAR_FILE_90'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -34104,9 +36720,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_87
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_88'
+cat > "radar/timezones.py" <<'RADAR_FILE_91'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -34249,9 +36865,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_88
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_89'
+cat > "radar/keyboards.py" <<'RADAR_FILE_92'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -34900,9 +37516,9 @@ def queue_item(lang: str = "ru") -> InlineKeyboardMarkup:
                                   callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_89
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_90'
+cat > "radar/states.py" <<'RADAR_FILE_93'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -34937,9 +37553,9 @@ class Form(StatesGroup):
     quiet_hours = State()          # интервал тихих часов
     chat_message = State()         # объявление в группу (суперадминистратор)
     chat_invite = State()          # ссылка приглашения в группу
-RADAR_FILE_90
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_91'
+cat > "radar/middlewares.py" <<'RADAR_FILE_94'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -35134,9 +37750,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_91
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_92'
+cat > "radar/monitor.py" <<'RADAR_FILE_95'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -36092,9 +38708,9 @@ async def _run_once() -> None:
                     return
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_92
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/health.py"
-cat > "radar/health.py" <<'RADAR_FILE_93'
+cat > "radar/health.py" <<'RADAR_FILE_96'
 """Проверка жизни бота для HEALTHCHECK контейнера.
 
 Запускается снаружи процесса — `python -m radar.health` — и потому смотрит
@@ -36159,9 +38775,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_93
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netguard.py"
-cat > "radar/netguard.py" <<'RADAR_FILE_94'
+cat > "radar/netguard.py" <<'RADAR_FILE_97'
 """Куда боту можно ходить по ссылке, присланной человеком.
 
 Ссылку в бот присылает кто угодно, а запрос по ней делает бот — изнутри
@@ -36299,9 +38915,9 @@ async def allowed(url: str) -> bool:
     # Достаточно одного внутреннего адреса, чтобы отказать: имя с двумя
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
-RADAR_FILE_94
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dockerapi.py"
-cat > "radar/dockerapi.py" <<'RADAR_FILE_95'
+cat > "radar/dockerapi.py" <<'RADAR_FILE_98'
 """Общий клиент Docker Engine API поверх Unix-сокета.
 
 Вынесено из `radar/updater.py` в 4.9.8.4: `radar/rustdesk.py` управляет
@@ -36481,9 +39097,9 @@ async def list_containers(session_, prefix: str = "radar") -> list[dict]:
         })
     result.sort(key=lambda row: row["name"])
     return result
-RADAR_FILE_95
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/appapi.py"
-cat > "radar/appapi.py" <<'RADAR_FILE_96'
+cat > "radar/appapi.py" <<'RADAR_FILE_99'
 """API для приложений HydraVPN: вход по коду из бота и выдача подписок (5.9.1).
 
 Приложения — HydraVPN для Android и HydraVPN for Routers — не заводят
@@ -36752,9 +39368,9 @@ async def subscriptions(uid: str | int) -> list[dict[str, Any]]:
 
 __all__ = ["enabled", "issue_code", "exchange", "session_of", "devices", "all_devices", "revoke",
            "revoke_token", "profile", "subscriptions", "CODE_TTL", "MAX_DEVICES"]
-RADAR_FILE_96
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/settingsets.py"
-cat > "radar/settingsets.py" <<'RADAR_FILE_97'
+cat > "radar/settingsets.py" <<'RADAR_FILE_100'
 """Настройки, которые раньше правились только в .env (5.9.2.2).
 
 До 5.9.2.2 в панели можно было изменить ключи ИИ и несколько токенов, а всё
@@ -36993,9 +39609,9 @@ def refine(settings: tuple[Any, ...]) -> tuple[Any, ...]:
         changes.update(REFINE.get(item.key, {}))
         result.append(dataclasses.replace(item, **changes) if changes else item)
     return tuple(result)
-RADAR_FILE_97
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceprune.py"
-cat > "radar/sourceprune.py" <<'RADAR_FILE_98'
+cat > "radar/sourceprune.py" <<'RADAR_FILE_101'
 """Удаление молчащих источников (с 5.9.2.1).
 
 `sourcecheck` находит источники, которые умерли или затихли, но убирать их
@@ -37103,9 +39719,9 @@ def apply(candidates: list[Candidate]) -> list[Candidate]:
 
 
 __all__ = ["Candidate", "DEFAULT_DAYS", "silent_days", "select", "suspicious", "apply"]
-RADAR_FILE_98
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnslots.py"
-cat > "radar/vpnslots.py" <<'RADAR_FILE_99'
+cat > "radar/vpnslots.py" <<'RADAR_FILE_102'
 """Добавление, правка и удаление VPN-панелей (слотов) из веб-панели (5.9.2.1).
 
 До 5.9.2.1 панель можно было завести только правкой десяти отдельных
@@ -37298,9 +39914,9 @@ async def check(number: int) -> tuple[bool, str]:
 
 __all__ = ["KindInfo", "FIELDS", "SECRET_FIELDS", "kinds", "numbers", "read", "configured",
            "free_number", "validate", "save", "issued_on", "remove", "check"]
-RADAR_FILE_99
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
-cat > "radar/updater.py" <<'RADAR_FILE_100'
+cat > "radar/updater.py" <<'RADAR_FILE_103'
 """Обновление системы из веб-панели.
 
 Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
@@ -37621,9 +40237,9 @@ def progress(lines: int = 40) -> tuple[str, str]:
         return "", ""
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
-RADAR_FILE_100
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/uploads.py"
-cat > "radar/uploads.py" <<'RADAR_FILE_101'
+cat > "radar/uploads.py" <<'RADAR_FILE_104'
 """Приём присланных файлов: один вход для всех разделов бота.
 
 До 5.9.0.1 у каждого раздела был свой обработчик `F.document`, и работал
@@ -37723,9 +40339,9 @@ def reset() -> None:
 
 __all__ = ["COOKIES", "SOURCES", "EXPECT_TTL", "register", "handler_for",
            "expect", "expected", "done", "classify", "looks_like_cookies", "reset"]
-RADAR_FILE_101
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
-cat > "radar/wipe.py" <<'RADAR_FILE_102'
+cat > "radar/wipe.py" <<'RADAR_FILE_105'
 """Полное удаление системы с сервера, запускаемое из панели.
 
 Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
@@ -37893,9 +40509,9 @@ async def start(actor: str) -> tuple[bool, str]:
 
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
-RADAR_FILE_102
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
-cat > "radar/moderation.py" <<'RADAR_FILE_103'
+cat > "radar/moderation.py" <<'RADAR_FILE_106'
 """Правила модерации групп: решение отдельно от Telegram.
 
 Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
@@ -38087,9 +40703,9 @@ def describe(decision: Decision, settings: Settings) -> str:
     if decision.delete_message:
         return f"🧹 Удалено: {decision.reason}"
     return ""
-RADAR_FILE_103
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
-cat > "radar/chatlink.py" <<'RADAR_FILE_104'
+cat > "radar/chatlink.py" <<'RADAR_FILE_107'
 """Ссылка на группу, где бот работает модератором.
 
 Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
@@ -38261,9 +40877,9 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
         return False, "Telegram не вернул ссылку."
     _cache[chat_id] = link
     return True, link
-RADAR_FILE_104
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cloudstore.py"
-cat > "radar/cloudstore.py" <<'RADAR_FILE_105'
+cat > "radar/cloudstore.py" <<'RADAR_FILE_108'
 """Облачное хранилище музыки по WebDAV (с 4.9.9).
 
 Продолжение внешнего носителя из 4.9.5.4: там каталог музыки выносился
@@ -38526,9 +41142,9 @@ async def check() -> tuple[bool, str]:
     from .music import format_size
 
     return True, f"доступно, свободно {format_size(available)}"
-RADAR_FILE_105
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rclonerc.py"
-cat > "radar/rclonerc.py" <<'RADAR_FILE_106'
+cat > "radar/rclonerc.py" <<'RADAR_FILE_109'
 """Управляющее API rclone: подключение облаков без терминала (с 4.9.9.1).
 
 В 4.9.9 облако подключалось руками на сервере: `rclone config`, потом
@@ -38832,9 +41448,9 @@ async def check() -> tuple[bool, str]:
     if not ok:
         return False, str(body)
     return True, "управляющее API отвечает"
-RADAR_FILE_106
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/metrics.py"
-cat > "radar/metrics.py" <<'RADAR_FILE_107'
+cat > "radar/metrics.py" <<'RADAR_FILE_110'
 """Метрики и здоровье системы в одном месте (с 4.9.9.3).
 
 Закрывает два пункта раздела 4.9 дорожной карты:
@@ -39135,9 +41751,9 @@ def render(data: dict[str, Any]) -> str:
             lines.append(f"{icon} {esc(row['name'])} — {esc(state)}{esc(tail)}")
 
     return "\n".join(lines)
-RADAR_FILE_107
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adfilter.py"
-cat > "radar/adfilter.py" <<'RADAR_FILE_108'
+cat > "radar/adfilter.py" <<'RADAR_FILE_111'
 """Реклама VPN-сервисов в пересылаемых текстах (с 4.9.9.3).
 
 Городские каналы и СМИ всё чаще вставляют в посты рекламу VPN:
@@ -39283,9 +41899,9 @@ def split_entries(entries: Iterable[Item]) -> tuple[list[Item], int]:
         if text.strip():
             clean.append(replace(entry, summary=text.strip()))
     return clean, removed
-RADAR_FILE_108
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicmeta.py"
-cat > "radar/musicmeta.py" <<'RADAR_FILE_109'
+cat > "radar/musicmeta.py" <<'RADAR_FILE_112'
 """Метаданные треков из открытых баз (с 4.9.9.3).
 
 Пункт 3 раздела 4.9.5 дорожной карты: «источники для подбора». Подбор
@@ -39500,9 +42116,9 @@ def apply(track: dict, meta: dict[str, Any]) -> bool:
         track["related"] = related
         changed = True
     return changed
-RADAR_FILE_109
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_110'
+cat > "radar/chatpost.py" <<'RADAR_FILE_113'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -39606,9 +42222,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_110
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_111'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_114'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -40190,9 +42806,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_111
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_112'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_115'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -40676,9 +43292,9 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
             )
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_112
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adminsock.py"
-cat > "radar/adminsock.py" <<'RADAR_FILE_113'
+cat > "radar/adminsock.py" <<'RADAR_FILE_116'
 """Канал управления в работающий процесс бота (с 5.9.3).
 
 **Поломка, ради которой он нужен.** Командная строка запускается через
@@ -40886,9 +43502,9 @@ def call(argv: list[str]) -> tuple[int, str, str] | None:
         return 1, "", "Связь с ботом прервалась; результат неизвестен — проверьте командой list.\n"
     finally:
         client.close()
-RADAR_FILE_113
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/accounts.py"
-cat > "radar/accounts.py" <<'RADAR_FILE_114'
+cat > "radar/accounts.py" <<'RADAR_FILE_117'
 """Живые и мёртвые аккаунты в Telegram (с 5.9.4).
 
 Три разные задачи, и важно не путать, на что способен Bot API:
@@ -41102,9 +43718,9 @@ async def remove_deleted(bot: Any, chat_id: int, ids: list[int],
     if removed:
         log.info("Чат %s: исключено удалённых аккаунтов — %d", chat_id, removed)
     return removed
-RADAR_FILE_114
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_115'
+cat > "radar/cli.py" <<'RADAR_FILE_118'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -41944,9 +44560,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_115
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_ops.py"
-cat > "radar/cli_ops.py" <<'RADAR_FILE_116'
+cat > "radar/cli_ops.py" <<'RADAR_FILE_119'
 """Консоль: подписки, VPN-панели и доступы, партнёры, перезапуск (с 5.9.8).
 
 Продолжение `radar.cli`, как и `cli_admin`: подкоманды зовут те же функции,
@@ -42401,9 +45017,9 @@ def register(subparsers, common) -> None:
                                     parents=[common])
     restart_cmd.add_argument("--yes", action="store_true")
     restart_cmd.set_defaults(func=cmd_restart)
-RADAR_FILE_116
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ops.py"
-cat > "radar/ops.py" <<'RADAR_FILE_117'
+cat > "radar/ops.py" <<'RADAR_FILE_120'
 """Действия администрации, общие для панели и консоли (с 5.9.8).
 
 Раньше правка партнёрских проектов и перезапуск бота жили внутри
@@ -42572,9 +45188,9 @@ async def pin_model(name: str, target: str = "assistant") -> Result:
         return Result(False, "Не удалось закрепить модель")
     return Result(True, f"Модель {'разбора новостей' if role == ai.ANALYSIS else 'ассистента'}: "
                         f"{name}", role)
-RADAR_FILE_117
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordmusic.py"
-cat > "radar/discordmusic.py" <<'RADAR_FILE_118'
+cat > "radar/discordmusic.py" <<'RADAR_FILE_121'
 """Музыка в голосовом канале Discord по ссылке (с 5.9.7).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕНО.
@@ -43165,9 +45781,9 @@ class DiscordPyHost(VoiceHost):
     def channel_of(self, handle: Any) -> str:
         channel = getattr(handle, "channel", None)
         return str(getattr(channel, "id", "") or "")
-RADAR_FILE_118
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordverify.py"
-cat > "radar/discordverify.py" <<'RADAR_FILE_119'
+cat > "radar/discordverify.py" <<'RADAR_FILE_122'
 """Проверка участников Discord-сервера (с 5.9.5): логика без сети.
 
 Честно о том, что тут возможно. У Discord нет капчи для ботов, и надёжно
@@ -43353,9 +45969,9 @@ def evaluate(user_id: int | str, username: str = "", global_name: str = "",
     if suspicious_name(username, global_name):
         return Verdict("kick", "в имени реклама или приглашение")
     return Verdict("allow")
-RADAR_FILE_119
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
-cat > "radar/cli_admin.py" <<'RADAR_FILE_120'
+cat > "radar/cli_admin.py" <<'RADAR_FILE_123'
 """Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
 
 Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
@@ -43818,9 +46434,9 @@ def register(subparsers, common) -> None:
     audit_cmd.add_argument("--limit", type=int, default=50)
     audit_cmd.add_argument("--yes", action="store_true")
     audit_cmd.set_defaults(func=cmd_audit)
-RADAR_FILE_120
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_extra.py"
-cat > "radar/cli_extra.py" <<'RADAR_FILE_121'
+cat > "radar/cli_extra.py" <<'RADAR_FILE_124'
 """Консоль: проверка ссылок, cookies, история, события, облако, музыка,
 чаты (ссылка, объявление, предупреждения) и короткие ссылки (с 5.9.10).
 
@@ -44183,9 +46799,9 @@ def register(subparsers, common) -> None:
     cloud_cmd.add_argument("--set", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ")
     cloud_cmd.add_argument("--yes", action="store_true")
     cloud_cmd.set_defaults(func=cmd_cloud)
-RADAR_FILE_121
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_ai.py"
-cat > "radar/cli_ai.py" <<'RADAR_FILE_122'
+cat > "radar/cli_ai.py" <<'RADAR_FILE_125'
 """Консоль: ИИ, метрики, замеры, сеть (с 5.9.9).
 
 Продолжение `radar.cli`. Часть данных живёт только в памяти работающего
@@ -44478,9 +47094,9 @@ def register(subparsers, common) -> None:
                                                   "egress and proxy: status"),
                                     parents=[common])
     net_cmd.set_defaults(func=cmd_net)
-RADAR_FILE_122
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
-cat > "radar/clitext.py" <<'RADAR_FILE_123'
+cat > "radar/clitext.py" <<'RADAR_FILE_126'
 """Язык командной строки: русский и английский (с 5.9.3.1).
 
 Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
@@ -44545,9 +47161,9 @@ def current() -> str:
 def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
     """Строка на языке консоли."""
     return ru if _current == RU else en
-RADAR_FILE_123
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_124'
+cat > "radar/__main__.py" <<'RADAR_FILE_127'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -44569,9 +47185,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_124
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_125'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_128'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -44713,9 +47329,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_125
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_126'
+cat > "tools/restore.sh" <<'RADAR_FILE_129'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -44957,9 +47573,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_126
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_127'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_130'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -45065,9 +47681,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_127
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_128'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_131'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -45260,9 +47876,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_128
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_129'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_132'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -47016,9 +49632,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_129
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_130'
+cat > "radar/vpn.py" <<'RADAR_FILE_133'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -47838,9 +50454,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_130
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_131'
+cat > "radar/payments.py" <<'RADAR_FILE_134'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -48069,9 +50685,9 @@ def provider() -> Provider:
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
     return ManualProvider()
-RADAR_FILE_131
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_132'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_135'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -48438,9 +51054,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_132
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_133'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_136'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -48561,9 +51177,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_133
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_134'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_137'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -49034,9 +51650,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_134
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_135'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_138'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -49202,9 +51818,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_135
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_136'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_139'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -49702,9 +52318,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_136
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_137'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_140'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -50210,9 +52826,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_137
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_138'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_141'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -50656,9 +53272,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_138
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_139'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_142'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -50805,9 +53421,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_139
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_140'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_143'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -51095,9 +53711,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_140
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_141'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_144'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -51344,9 +53960,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_141
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_142'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_145'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -51717,9 +54333,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_142
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_146'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -52294,9 +54910,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_143
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_144'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_147'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -52397,9 +55013,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_144
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_148'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -52487,9 +55103,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_145
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_146'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_149'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -52910,9 +55526,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_146
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_147'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_150'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -54103,9 +56719,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_147
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_148'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_151'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -54859,9 +57475,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_148
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_149'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_152'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -55385,9 +58001,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_149
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_150'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_153'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -55595,9 +58211,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_150
+RADAR_FILE_153
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_151'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_154'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -56584,9 +59200,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_151
+RADAR_FILE_154
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_152'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_155'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -56999,9 +59615,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_152
+RADAR_FILE_155
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_153'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_156'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -57042,9 +59658,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_153
+RADAR_FILE_156
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_154'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_157'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -57307,9 +59923,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_154
+RADAR_FILE_157
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_155'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_158'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -57459,9 +60075,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_155
+RADAR_FILE_158
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_156'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_159'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -57929,9 +60545,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_156
+RADAR_FILE_159
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_157'
+cat > "radar/cookies.py" <<'RADAR_FILE_160'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -58064,9 +60680,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_157
+RADAR_FILE_160
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_158'
+cat > "radar/music.py" <<'RADAR_FILE_161'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -58870,9 +61486,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_158
+RADAR_FILE_161
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_159'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_162'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -59486,9 +62102,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_159
+RADAR_FILE_162
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_160'
+cat > "multitool/__init__.py" <<'RADAR_FILE_163'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -59514,9 +62130,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_160'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_160
+RADAR_FILE_163
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_161'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_164'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -59549,9 +62165,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_161'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_161
+RADAR_FILE_164
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_162'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_165'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -59958,9 +62574,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_162
+RADAR_FILE_165
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_163'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_166'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -60444,9 +63060,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_163
+RADAR_FILE_166
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_164'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_167'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -60686,7 +63302,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_164
+RADAR_FILE_167
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту
