@@ -26496,7 +26496,6 @@ import aiohttp
 from aiohttp import web
 
 from .. import config, geocode, weather
-from ..db import repo
 
 log = logging.getLogger("radar.web.widgets")
 
@@ -26585,6 +26584,10 @@ async def widget_news(request: web.Request) -> web.Response:
     category = request.query.get("category", "all")
 
     try:
+        # Импорт ленивый: repo тянет sqlalchemy, а этот модуль импортируется
+        # из app_http_check.py на чистом Python (без БД). Как и в panel.py.
+        from ..db import repo
+
         categories = None if category in ("", "all") else [category]
         events = await repo.recent_events(limit=limit, categories=categories)
         result = {
@@ -26618,6 +26621,9 @@ async def widget_danger(request: web.Request) -> web.Response:
     theme = request.query.get("theme", "dark")
 
     try:
+        # Импорт ленивый — см. widget_news (sqlalchemy недоступен без БД).
+        from ..db import repo
+
         breakdown = await repo.event_breakdown(hours=24)
         # Военные угрозы (БПЛА/ракетная опасность) и МЧС — сигнал опасности.
         bpla = breakdown.get("bpla", 0)
