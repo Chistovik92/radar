@@ -70,6 +70,8 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         "quiet_to": "",
         "sos_contacts": [],
         "digest": {},
+        "sub": {},
+        "media_quota": {},
         "dead": 0,
         "created": int(datetime.now(timezone.utc).timestamp()),
     }
@@ -132,6 +134,8 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "quiet_to": row.quiet_to,
         "sos_contacts": list(row.sos_contacts or []),
         "digest": dict(row.digest or {}),
+        "sub": dict(row.sub or {}),
+        "media_quota": dict(row.media_quota or {}),
         "dead": int(row.dead_at or 0),
         "created": int(row.created_at.timestamp()) if row.created_at else 0,
     }
@@ -186,6 +190,8 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.quiet_to = data.get("quiet_to", "")
         row.sos_contacts = list(data.get("sos_contacts") or [])
         row.digest = dict(data.get("digest") or {})
+        row.sub = dict(data.get("sub") or {})
+        row.media_quota = dict(data.get("media_quota") or {})
         row.dead_at = int(data.get("dead") or 0)
         row.seen_at = datetime.now(timezone.utc)
 
@@ -451,13 +457,15 @@ async def history(
         row = await _find_user(active, user_id)
         if row is None:
             return []
+        wanted = set(categories or [])
         query = (
             select(Event)
             .join(Delivery, Delivery.event_id == Event.id)
             .where(Delivery.user_id == row.id, Delivery.sent_at >= since)
             .order_by(Event.created_at.desc())
-            .limit(limit)
         )
+        if not wanted:
+            query = query.limit(limit)
         if location_public_id:
             location_id = await active.scalar(
                 select(Location.id).where(
@@ -468,9 +476,8 @@ async def history(
             query = query.where(Delivery.location_id == location_id)
         rows = (await active.scalars(query)).all()
 
-    wanted = set(categories or [])
     if wanted:
-        rows = [row for row in rows if wanted & set(row.categories or [])]
+        rows = [row for row in rows if wanted & set(row.categories or [])][:limit]
     return list(rows)
 
 
@@ -507,6 +514,37 @@ async def event_breakdown(hours: int = 24) -> dict[str, int]:
     return counts
 
 
+async def danger_state(city: str = "", hours: int = 24) -> dict[str, bool]:
+    """Текущее состояние угроз по последнему событию каждой категории.
+
+    Суточные счётчики для этого не подходят: отбой тоже имеет категорию
+    угрозы, но должен снимать статус, а не включать его.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    async with session() as active:
+        rows = (await active.scalars(
+            select(Event)
+            .where(Event.created_at >= since)
+            .order_by(Event.created_at.desc())
+            .limit(1000)
+        )).all()
+
+    wanted_city = city.strip().casefold()
+    state = {"bpla": False, "mchs": False}
+    seen: set[str] = set()
+    for row in rows:
+        if wanted_city and (row.city or "").strip().casefold() != wanted_city:
+            continue
+        for category in ("bpla", "mchs"):
+            if category in seen or category not in (row.categories or []):
+                continue
+            seen.add(category)
+            state[category] = not row.all_clear and row.severity != "info"
+        if len(seen) == 2:
+            break
+    return state
+
+
 async def recent_events(
     limit: int = 20,
     hours: int = 48,
@@ -519,32 +557,43 @@ async def recent_events(
     сюда не попадают — они привязывают событие к месту и поднимаются
     только в истории конкретного пользователя.
     """
+    limit = int(limit)
+    if limit <= 0:
+        return []
+    limit = min(limit, 100)
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    wanted = set(categories or [])
     async with session() as active:
         query = (
             select(Event)
             .where(Event.created_at >= since)
             .order_by(Event.created_at.desc())
-            .limit(limit)
         )
+        # Для отфильтрованной ленты LIMIT применяем после проверки категории:
+        # иначе подходящие события теряются за первыми limit чужих записей.
+        if not wanted:
+            query = query.limit(limit)
         rows = (await active.scalars(query)).all()
 
-    wanted = set(categories or [])
     result: list[dict[str, Any]] = []
     for row in rows:
         if wanted and not (wanted & set(row.categories or [])):
             continue
+        created = row.created_at
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
         result.append({
             "id": row.id,
-            "title": row.summary or row.raw[:160],
+            "title": row.summary or "Событие",
             "summary": row.summary,
             "source": row.source,
             "url": row.link,
             "categories": list(row.categories or []),
             "severity": row.severity,
-            "city": row.city,
-            "published_at": row.created_at.isoformat() if row.created_at else "",
+            "published_at": created.isoformat() if created else "",
         })
+        if len(result) >= limit:
+            break
     return result
 
 

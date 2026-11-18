@@ -13,7 +13,9 @@ Widgets are rendered via Telegram Web App JS from CDN.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp import web
@@ -30,21 +32,62 @@ def _session() -> aiohttp.ClientSession:
     )
 
 
+def _safe_url(value: Any) -> str:
+    """В публичный href попадают только обычные веб-ссылки."""
+    url = str(value or "").strip()
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    return url if parsed.scheme in ("http", "https") and parsed.netloc else ""
+
+
+def _internal_error() -> web.Response:
+    return web.json_response({
+        "ok": False,
+        "error": "internal_error",
+        "message": "Сервис временно недоступен",
+    }, status=500)
+
+
 # ============================================================
 # WIDGET API ROUTES
 # ============================================================
 
 async def widget_weather(request: web.Request) -> web.Response:
     """Weather widget data: /api/widget/weather?city=auto&theme=dark"""
-    city = request.query.get("city", "auto")
+    city = request.query.get("city", "auto").strip()[:120]
     theme = request.query.get("theme", "dark")
 
     try:
         lat: float | None = None
         lon: float | None = None
-        if city and city != "auto":
+        raw_lat = request.query.get("lat")
+        raw_lon = request.query.get("lon")
+        if raw_lat is not None or raw_lon is not None:
+            try:
+                lat = float(raw_lat or "")
+                lon = float(raw_lon or "")
+            except ValueError:
+                lat = lon = None
+            if (lat is None or lon is None or not math.isfinite(lat)
+                    or not math.isfinite(lon) or not -90 <= lat <= 90
+                    or not -180 <= lon <= 180):
+                return web.json_response({
+                    "ok": False,
+                    "error": "coordinates_invalid",
+                    "message": "Некорректные координаты",
+                }, status=400)
+        else:
+            query = config.DEFAULT_CITY if city in ("", "auto") else city
+            if not query:
+                return web.json_response({
+                    "ok": False,
+                    "error": "city_required",
+                    "message": "Разрешите геолокацию или укажите город",
+                }, status=400)
             async with _session() as session:
-                found = await geocode.forward(session, city, config.DEFAULT_CITY)
+                found = await geocode.forward(session, query)
             if found:
                 lat = float(found[0]["lat"])
                 lon = float(found[0]["lon"])
@@ -91,18 +134,23 @@ async def widget_weather(request: web.Request) -> web.Response:
             "theme": theme,
         }
         return web.json_response(result)
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         log.exception("widget_weather error")
-        return web.json_response({
-            "ok": False,
-            "error": "internal_error",
-            "message": str(e)
-        }, status=500)
+        return _internal_error()
 
 
 async def widget_news(request: web.Request) -> web.Response:
     """News widget data: /api/widget/news?limit=5&theme=dark"""
-    limit = min(int(request.query.get("limit", "5")), 20)
+    try:
+        limit = int(request.query.get("limit", "5"))
+    except ValueError:
+        limit = 0
+    if not 1 <= limit <= 20:
+        return web.json_response({
+            "ok": False,
+            "error": "limit_invalid",
+            "message": "Параметр limit должен быть от 1 до 20",
+        }, status=400)
     theme = request.query.get("theme", "dark")
     category = request.query.get("category", "all")
 
@@ -121,7 +169,7 @@ async def widget_news(request: web.Request) -> web.Response:
                     "title": item["title"],
                     "summary": (item["summary"] or "")[:200],
                     "source": item["source"],
-                    "url": item["url"],
+                    "url": _safe_url(item["url"]),
                     "published_at": item["published_at"],
                     "category": item["categories"][0] if item["categories"] else "",
                 }
@@ -130,29 +178,33 @@ async def widget_news(request: web.Request) -> web.Response:
             "theme": theme,
         }
         return web.json_response(result)
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         log.exception("widget_news error")
-        return web.json_response({
-            "ok": False,
-            "error": "internal_error",
-            "message": str(e)
-        }, status=500)
+        return _internal_error()
 
 
 async def widget_danger(request: web.Request) -> web.Response:
     """Danger status widget: /api/widget/danger?city=auto&theme=dark"""
     theme = request.query.get("theme", "dark")
+    city = request.query.get("city", "auto").strip()[:120]
+    if city == "auto":
+        city = config.DEFAULT_CITY
+    if not city:
+        return web.json_response({
+            "ok": False,
+            "error": "city_required",
+            "message": "Укажите город для проверки статуса",
+        }, status=400)
 
     try:
         # Импорт ленивый — см. widget_news (sqlalchemy недоступен без БД).
         from ..db import repo
 
-        breakdown = await repo.event_breakdown(hours=24)
-        # Военные угрозы (БПЛА/ракетная опасность) и МЧС — сигнал опасности.
-        bpla = breakdown.get("bpla", 0)
-        mchs = breakdown.get("mchs", 0)
+        state = await repo.danger_state(city=city, hours=24)
+        bpla = state["bpla"]
+        mchs = state["mchs"]
 
-        if bpla > 0 or mchs > 0:
+        if bpla or mchs:
             result = {
                 "ok": True,
                 "active": True,
@@ -162,7 +214,7 @@ async def widget_danger(request: web.Request) -> web.Response:
                     "За последние сутки есть события БПЛА/ракетной опасности"
                     if bpla > 0 else "Есть экстренные оповещения МЧС"
                 ),
-                "area": None,
+                "area": city,
                 "started_at": None,
                 "icon": "🚨" if bpla > 0 else "🆘",
                 "label": "Воздушная тревога" if bpla > 0 else "Оповещение МЧС",
@@ -178,13 +230,9 @@ async def widget_danger(request: web.Request) -> web.Response:
                 "theme": theme,
             }
         return web.json_response(result)
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         log.exception("widget_danger error")
-        return web.json_response({
-            "ok": False,
-            "error": "internal_error",
-            "message": str(e)
-        }, status=500)
+        return _internal_error()
 
 
 # ============================================================

@@ -77,6 +77,13 @@ class Trial(unittest.TestCase):
         self.assertIn(str(subscription.TRIAL_DAYS),
                       subscription.describe({}, "user"))
 
+    def test_active_subscription_not_shortened(self) -> None:
+        user = {"sub": {"until": days_from_now(30)}}
+        before = subscription.paid_until(user)
+        self.assertFalse(subscription.start_trial(user))
+        self.assertEqual(subscription.paid_until(user), before)
+        self.assertFalse(subscription.trial_used(user))
+
 
 class Grant(unittest.TestCase):
     def test_adds_days(self) -> None:
@@ -100,6 +107,15 @@ class Grant(unittest.TestCase):
         user: dict = {}
         subscription.grant(user, -5)
         self.assertEqual(subscription.days_left(user), 0)
+        self.assertFalse(subscription.active(user, "user"))
+        self.assertNotIn("sub", user)
+        subscription.grant(user, 0)
+        self.assertFalse(subscription.active(user, "user"))
+
+    def test_mixed_timezone_dates_do_not_crash(self) -> None:
+        user = {"digest": {"paid_until": "2999-01-01"},
+                "media_quota": {"paid_until": "2998-01-01T00:00:00+00:00"}}
+        self.assertEqual(subscription.paid_until(user), "2999-01-01T00:00:00+00:00")
 
 
 class Unified(unittest.TestCase):
@@ -262,7 +278,8 @@ class PaidPlans(unittest.TestCase):
     class Paid:
         def __init__(self, chat, payload: str, amount: int) -> None:
             self.successful_payment = type(
-                "P", (), {"invoice_payload": payload, "total_amount": amount})()
+                "P", (), {"invoice_payload": payload, "total_amount": amount,
+                          "telegram_payment_charge_id": "charge-42"})()
             self.from_user = type("U", (), {"id": 42})()
             self._chat = chat
 
@@ -329,6 +346,28 @@ class PaidPlans(unittest.TestCase):
         # Цену снизили, пока счёт висел: человек не виноват.
         user = self._pay(f"digest:{self.days}", self.stars + 100)
         self.assertGreater(subscription.days_left(user), 0)
+
+    def test_same_charge_not_credited_twice(self) -> None:
+        chat = self.Chat()
+        user: dict = {}
+        message = self.Paid(chat, f"digest:{self.days}", self.stars)
+        with mock.patch("radar.storage.save", new=self._noop):
+            self.run_async(self.handler.payment_done(message, user, "user"))
+            once = subscription.paid_until(user)
+            self.run_async(self.handler.payment_done(message, user, "user"))
+        self.assertEqual(subscription.paid_until(user), once)
+        self.assertIn("уже обработан", chat.replies[-1])
+
+    def test_same_media_charge_not_credited_twice(self) -> None:
+        chat = self.Chat()
+        user: dict = {}
+        message = self.Paid(chat, "media:30", self.stars)
+        with mock.patch("radar.storage.save", new=self._noop):
+            self.run_async(self.handler.payment_done(message, user, "user"))
+            once = subscription.paid_until(user)
+            self.run_async(self.handler.payment_done(message, user, "user"))
+        self.assertEqual(subscription.paid_until(user), once)
+        self.assertIn("уже обработан", chat.replies[-1])
 
 
 if __name__ == "__main__":

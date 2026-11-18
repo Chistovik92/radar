@@ -24,6 +24,7 @@ from aiogram.types import (
 )
 
 from .. import digest, features, i18n, roles, secrets, storage
+from .. import subscription as common_subscription
 from ..states import Form
 from ..textutils import esc
 from ..tg import back_kb, safe_edit
@@ -315,9 +316,18 @@ async def payment_done(message: Message, user: dict, role: str) -> None:
         )
         return
 
+    # Telegram может доставить тот же update повторно. Идентификатор платежа
+    # сохраняем вместе с профилем, чтобы повтор не начислил дни второй раз.
+    charge_id = str(getattr(message.successful_payment,
+                            "telegram_payment_charge_id", "") or "")
+    if common_subscription.payment_seen(user, charge_id):
+        await message.answer("✅ Этот платёж уже обработан, дни начислены ранее.")
+        return
+
     subscription = digest.subscription_of(user)
     subscription.extend(days)
     digest.store_subscription(user, subscription)
+    common_subscription.remember_payment(user, charge_id)
     await storage.save(message.from_user.id)
 
     log.info("Оплата подписки: %s на %d дней", message.from_user.id, days)
@@ -396,12 +406,10 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         )
         return
 
-    # Telegram не принимает счета дешевле одной звезды
-    for chunk in value.split(","):
-        _days, _, stars = chunk.strip().partition(":")
-        if int(stars) < 1:
-            await message.answer("❌ Цена не может быть меньше одной звезды.")
-            return
+    error = secrets.validate_extra("DIGEST_PLANS", value)
+    if error:
+        await message.answer("❌ " + esc(error))
+        return
 
     secrets.write("DIGEST_PLANS", value)
     await state.clear()

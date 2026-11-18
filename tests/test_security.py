@@ -124,9 +124,11 @@ class PanelRole(unittest.TestCase):
     def test_session_alive_while_rights_stand(self) -> None:
         self.assertIsNotNone(auth.session_by_token("t-4242"))
 
-    def test_demotion_closes_session(self) -> None:
+    def test_demotion_keeps_only_user_access(self) -> None:
         storage.DB["users"]["4242"]["role"] = "user"
-        self.assertIsNone(auth.session_by_token("t-4242"))
+        session = auth.session_by_token("t-4242")
+        self.assertIsNotNone(session)
+        self.assertEqual(session.role, "user")
 
     def test_deleted_user_closes_session(self) -> None:
         storage.DB["users"].pop("4242")

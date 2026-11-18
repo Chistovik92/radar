@@ -102,11 +102,10 @@ async def show(call: CallbackQuery, user: dict[str, Any], role: str) -> None:
 
 @router.callback_query(F.data == "sub:trial")
 async def take_trial(call: CallbackQuery, user: dict[str, Any], role: str) -> None:
-    if subscription.trial_used(user):
-        await call.answer("Пробный период уже был.", show_alert=True)
+    if not subscription.start_trial(user):
+        await call.answer("Пробный период уже был или подписка активна.",
+                          show_alert=True)
         return
-
-    subscription.start_trial(user)
     await storage.save(call.from_user.id)
     await call.answer(f"Пробный период на {subscription.TRIAL_DAYS} дней включён")
     log.info("Пробный период выдан: %s", call.from_user.id)

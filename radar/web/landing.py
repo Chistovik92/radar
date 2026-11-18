@@ -437,7 +437,7 @@ def render_landing_page(
 
     custom_desc = str(secrets_module.get("LANDING_DESCRIPTION") or "").strip()
     hero_subtitle = (
-        custom_desc if custom_desc else
+        html.escape(custom_desc) if custom_desc else
         "ИИ разбирает каналы МЧС, админок, ЖКХ и RSS-ленты. "
         "Сопоставляет с вашими локациями. Присылает только то, что касается вас. "
         "<strong>Тревоги всегда бесплатно.</strong>"
@@ -504,7 +504,7 @@ def render_landing_page(
     el.innerHTML = '<div class="widget-loading">Загрузка…</div>';
   }
   function htmlEscape(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'''}[c]));
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
   // Weather widget
@@ -527,62 +527,42 @@ def render_landing_page(
     }
 
     const params = new URLSearchParams({ theme: currentTheme });
-    if (lat && lon) { params.set('lat', lat); params.set('lon', lon); }
+    if (lat !== undefined && lon !== undefined) { params.set('lat', lat); params.set('lon', lon); }
     else { params.set('city', city); }
 
     const data = await fetchJSON(API_BASE + '/weather?' + params.toString());
-    if (!data) { setError(content, 'Не удалось загрузить погоду'); return; }
+    if (!data || !data.ok) { setError(content, data?.message || 'Не удалось загрузить погоду'); return; }
     renderWeather(content, data);
   }
 
   function renderWeather(el, d) {
-    const cur = d.current || {};
-    const hourly = (d.hourly || []).slice(0, 8);
-    const daily = (d.daily || []).slice(0, 3);
+    const daily = (d.forecast || []).slice(0, 3);
+    const number = value => value !== null && value !== undefined && Number.isFinite(Number(value));
 
     let html = '<div class="weather-current">';
     html += '<div class="weather-main">';
-    html += '<div class="weather-temp">' + Math.round(cur.temp || 0) + '°</div>';
-    html += '<div class="weather-desc">' + htmlEscape(cur.condition || '') + '</div>';
+    html += '<div class="weather-temp">' + (number(d.temperature) ? Math.round(d.temperature) : '—') + '°</div>';
+    html += '<div class="weather-desc">' + htmlEscape(d.condition || '') + '</div>';
     html += '</div>';
     html += '<div class="weather-details">';
-    if (cur.feels_like !== undefined) html += '<div class="weather-detail">🤗 ' + Math.round(cur.feels_like) + '°</div>';
-    if (cur.wind !== undefined) html += '<div class="weather-detail">💨 ' + cur.wind + '</div>';
-    if (cur.humidity !== undefined) html += '<div class="weather-detail">💧 ' + cur.humidity + '%</div>';
-    if (cur.pressure !== undefined) html += '<div class="weather-detail">📊 ' + Math.round(cur.pressure) + ' мм</div>';
+    if (number(d.feels_like)) html += '<div class="weather-detail">🤗 ' + Math.round(d.feels_like) + '°</div>';
+    if (number(d.wind_speed)) html += '<div class="weather-detail">💨 ' + d.wind_speed + ' м/с</div>';
+    if (number(d.humidity)) html += '<div class="weather-detail">💧 ' + d.humidity + '%</div>';
+    if (number(d.pressure)) html += '<div class="weather-detail">📊 ' + Math.round(d.pressure) + ' гПа</div>';
     html += '</div></div>';
-
-    if (hourly.length) {
-      html += '<div class="weather-hourly">';
-      hourly.forEach(h => {
-        html += '<div class="weather-hour">';
-        html += '<div class="weather-hour-time">' + htmlEscape(h.time) + '</div>';
-        html += '<div class="weather-hour-icon">' + htmlEscape(h.icon || '') + '</div>';
-        html += '<div class="weather-hour-temp">' + Math.round(h.temp) + '°</div>';
-        html += '</div>';
-      });
-      html += '</div>';
-    }
 
     if (daily.length) {
       html += '<div class="weather-daily">';
       daily.forEach(day => {
         html += '<div class="weather-day">';
-        html += '<div class="weather-day-label">' + htmlEscape(day.label) + '</div>';
+        html += '<div class="weather-day-label">' + htmlEscape(day.date) + '</div>';
         html += '<div class="weather-day-icon">' + htmlEscape(day.icon || '') + '</div>';
         html += '<div class="weather-day-temps">';
-        html += '<span class="weather-day-low">' + Math.round(day.temp_min) + '°</span>';
-        html += '<span class="weather-day-high">' + Math.round(day.temp_max) + '°</span>';
+        html += '<span class="weather-day-low">' + (number(day.temp_min) ? Math.round(day.temp_min) : '—') + '°</span>';
+        html += '<span class="weather-day-high">' + (number(day.temp_max) ? Math.round(day.temp_max) : '—') + '°</span>';
         html += '</div></div>';
       });
       html += '</div>';
-    }
-
-    if (d.sunrise && d.sunset) {
-      html += '<div style="margin-top:10px;font-size:12px;color:var(--muted);">🌅 ' + d.sunrise + '  •  🌇 ' + d.sunset + '</div>';
-    }
-    if (d.location) {
-      html += '<div style="margin-top:6px;font-size:12px;color:var(--muted);">' + htmlEscape(d.location) + '</div>';
     }
     el.innerHTML = html;
   }
@@ -594,8 +574,8 @@ def render_landing_page(
     const content = wrap.querySelector('.widget-content');
     setLoading(content);
 
-    const data = await fetchJSON(API_BASE + '/news?topics=alerts,utilities,weather&limit=5&theme=' + currentTheme);
-    if (!data) { setError(content, 'Не удалось загрузить новости'); return; }
+    const data = await fetchJSON(API_BASE + '/news?category=all&limit=5&theme=' + currentTheme);
+    if (!data || !data.ok) { setError(content, data?.message || 'Не удалось загрузить новости'); return; }
     renderNews(content, data);
   }
 
@@ -604,12 +584,16 @@ def render_landing_page(
     if (!items.length) { el.innerHTML = '<div class="widget-error">Новостей нет</div>'; return; }
     let html = '<div class="news-list">';
     items.forEach(item => {
-      html += '<div class="news-item">';
+      html += item.url
+        ? '<a class="news-item" href="' + htmlEscape(item.url) + '" target="_blank" rel="noopener">'
+        : '<div class="news-item">';
       html += '<div class="news-item-title">' + htmlEscape(item.title) + '</div>';
+      if (item.summary) html += '<div class="news-item-summary">' + htmlEscape(item.summary) + '</div>';
       html += '<div class="news-item-meta">';
-      if (item.topic) html += '<span class="news-item-topic">' + htmlEscape(item.topic) + '</span>';
-      if (item.time) html += '<span class="news-item-time">' + htmlEscape(item.time) + '</span>';
-      html += '</div></div>';
+      if (item.source) html += '<span class="news-item-source">' + htmlEscape(item.source) + '</span>';
+      if (item.category) html += '<span class="news-item-topic">' + htmlEscape(item.category) + '</span>';
+      if (item.published_at) html += '<span class="news-item-time">' + htmlEscape(item.published_at) + '</span>';
+      html += '</div>' + (item.url ? '</a>' : '</div>');
     });
     html += '</div>';
     el.innerHTML = html;
@@ -623,7 +607,7 @@ def render_landing_page(
     setLoading(content);
 
     const data = await fetchJSON(API_BASE + '/danger?city=auto&theme=' + currentTheme);
-    if (!data) { setError(content, 'Не удалось загрузить статус'); return; }
+    if (!data || !data.ok) { setError(content, data?.message || 'Не удалось загрузить статус'); return; }
     renderDanger(content, data);
   }
 
@@ -648,6 +632,33 @@ def render_landing_page(
     html += '</div>';
     el.innerHTML = html;
   }
+
+  // Installation tabs and copy buttons
+  document.querySelectorAll('.install-tab[data-tab]').forEach(button => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('.install-tab').forEach(item => {
+        const selected = item === button;
+        item.classList.toggle('active', selected);
+        item.setAttribute('aria-selected', String(selected));
+      });
+      document.querySelectorAll('.install-panel').forEach(panel => {
+        panel.classList.toggle('active', panel.id === 'panel-' + button.dataset.tab);
+      });
+    });
+  });
+  document.querySelectorAll('[data-copy-target]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const source = document.querySelector(button.dataset.copyTarget);
+      if (!source) return;
+      try {
+        await navigator.clipboard.writeText(source.textContent);
+        button.textContent = 'Скопировано';
+        setTimeout(() => { button.textContent = 'Копировать'; }, 1500);
+      } catch {
+        button.textContent = 'Выделите и скопируйте вручную';
+      }
+    });
+  });
 
   // Theme change listener
   const observer = new MutationObserver(mutations => {
@@ -785,7 +796,7 @@ def render_landing_page(
         <article class="feature-card">
           <span class="feature-icon">🔐</span>
           <h3 class="feature-title">Аренда приватного сервера</h3>
-          <p class="feature-desc">Собственный сервер с личным IP. До 25 устройств на подписку. Управление в боте и веб-панели.</p>
+          <p class="feature-desc">Аренда приватного сервера. Срок, трафик и число устройств зависят от выбранного тарифа. Управление заказом в боте.</p>
         </article>
         <article class="feature-card">
           <span class="feature-icon">🤖</span>

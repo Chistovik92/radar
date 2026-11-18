@@ -9,7 +9,8 @@
   * подпись `hash` сходится с вычисленной по токену бота;
   * `auth_date` не старше допустимого — иначе перехваченная однажды ссылка
     работала бы вечно;
-  * роль пользователя в базе достаточна для входа.
+  * роль пользователя есть в базе: обычный пользователь попадает в личный
+    кабинет, модератор и выше — ещё и в разделы администрирования.
 """
 
 # --------------------------------------------------------------------------
@@ -162,11 +163,12 @@ def authenticate(
 
     from .. import roles as role_module
 
-    # Панель — дублирующий контур управления, поэтому доступ начинается
-    # с модератора: у него будут только свои разделы.
-    if not role_module.is_moderator(role):
-        log.info("Веб-панель: отказ пользователю %s с ролью %s", user_key, role)
-        return None, "нужны права модератора или выше"
+    # Зарегистрированный пользователь входит в свой личный кабинет; права
+    # на разделы администрирования проверяет guard уже у каждого маршрута.
+    # Явная проверка списка важна: roles.level("") по умолчанию равен user.
+    if role not in role_module.ORDER:
+        log.info("Веб-панель: неизвестная роль %s у пользователя %s", role, user_key)
+        return None, "роль пользователя не определена"
 
     if address:
         clear_failures(address)
@@ -225,8 +227,8 @@ def authenticate_code(code: str, role_lookup, address: str = "",
     role = role_lookup(user_key)
     from .. import roles as role_module
 
-    if not role or not role_module.is_moderator(role):
-        return None, "нужны права модератора или выше"
+    if role not in role_module.ORDER:
+        return None, "роль пользователя не определена"
     if address:
         clear_failures(address)
 
@@ -256,9 +258,10 @@ def session_by_token(token: str) -> Session | None:
     from .. import roles as role_module
 
     current = current_role(session.user_key)
-    if current is None or not role_module.is_moderator(current):
-        # Права сняли, пока сессия жила: держать её открытой незачем.
-        log.info("Веб-панель: сессия %s закрыта — прав больше нет", session.user_key)
+    if current not in role_module.ORDER:
+        # Удалили пользователя или роль стала неизвестной: сессию закрываем.
+        # Понижение до обычного пользователя оставляет доступ к его кабинету.
+        log.info("Веб-панель: сессия %s закрыта — пользователь или роль отсутствуют", session.user_key)
         _sessions.pop(token, None)
         return None
     session.role = current

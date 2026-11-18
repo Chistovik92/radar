@@ -1176,9 +1176,16 @@ async def apply_media_payment(message, user: dict, payload: str,
         log.warning("Непонятный платёж за видео: %s", payload)
         return
 
+    charge_id = str(getattr(message.successful_payment,
+                            "telegram_payment_charge_id", "") or "")
+    if subscription.payment_seen(user, charge_id):
+        await message.answer("✅ Этот платёж уже обработан, дни начислены ранее.")
+        return
+
     quota = mediaquota.quota_of(user, role)
     quota.extend(days)
     mediaquota.store_quota(user, quota)
+    subscription.remember_payment(user, charge_id)
     await storage.save()
 
     await message.answer(

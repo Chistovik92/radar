@@ -94,6 +94,7 @@ MANIFEST = [
     "migrations/versions/0002_short_links.py",
     "migrations/versions/0003_promo_codes.py",
     "migrations/versions/0004_lang_and_media_quota.py",
+    "migrations/versions/0005_subscription_state.py",
     "radar/platforms/__init__.py",
     "radar/platforms/base.py",
     "radar/platforms/max.py",

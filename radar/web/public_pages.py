@@ -1,4 +1,4 @@
-"""Публичные страницы для Platega compliance: Privacy, Terms, Support, Pricing.
+"""Публичные страницы сервиса: Privacy, Terms, Support, Pricing.
 
 Все страницы рендерятся без авторизации. Контент адаптирован из шаблонов telegra.ph
 с данными проекта Radar.
@@ -417,7 +417,7 @@ PRIVACY_CONTENT = """
   <li><strong>Telegram</strong> — оповещения, меню бота, веб-апп виджеты, платежи через Telegram Stars. Данные не выходят за пределы чата пользователя с ботом.</li>
   <li><strong>Google Gemini API</strong> — тексты постов из публичных каналов/РСС отправляются для извлечения структурированных событий (город, улица, дом, тип, время, рекомендации). Передаются только тексты постов, без персональных идентификаторов пользователей.</li>
   <li><strong>Open-Meteo API</strong> — запрос погоды по координатам (lat/lon). Никаких идентификаторов пользователя не передаётся.</li>
-  <li><strong>Платёжная система (Platega / Telegram Stars)</strong> — при оплате передаются сумма, описание товара, Telegram ID пользователя (для зачисления подписки).</li>
+  <li><strong>Платёжные сервисы</strong> — при оплате обрабатываются сумма, описание товара и идентификатор заказа; зачисление подписки происходит по подтверждению платежа.</li>
 </ul>
 
 <h2>4. Хранение и безопасность</h2>
@@ -486,18 +486,18 @@ TERMS_CONTENT = """
     <tr><th>Продукт</th><th>Цена</th><th>Описание</th></tr>
   </thead>
   <tbody>
-    <tr><td>Новостные подборки</td><td>50 ⭐/мес / 500 ⭐/год</td><td>18 тематик, ИИ-сводки, доставка по расписанию</td></tr>
+    {DIGEST_PLAN_ROWS}
     <tr><td>Погода картинкой</td><td>Входит в подборки</td><td>Готовое изображение: дневная/ночная тема, вектор ветра, фаза луны</td></tr>
-    <tr><td>Аренда приватного сервера</td><td>От 150 ₽/мес</td><td>Собственный сервер, до 25 устройств</td></tr>
+    <tr><td>Аренда приватного сервера</td><td>Цена показана в боте</td><td>Срок, трафик и число устройств зависят от тарифа</td></tr>
     <tr><td>Проверка ссылок (без лимита)</td><td>Входит в подборки</td><td>Подписчики — без дневного лимита</td></tr>
   </tbody>
 </table>
-<p><strong>Важно:</strong> Все цены ≤ 10 000 ₽ за транзакцию (лимит платёжной системы). Оплата через Telegram Stars или платёжную систему Platega.</p>
+<p><strong>Важно:</strong> Подписка на подборки оплачивается через Telegram Stars. Доступные способы оплаты аренды сервера показываются в боте перед заказом.</p>
 
 <h2>4. Подписка и отмена</h2>
 <ul>
-  <li>Подписка на подборки — ежемесячная или годовая (Telegram Stars), автопродление отключается в настройках Telegram.</li>
-  <li>Аренда приватного сервера — оплачивается за месяц вперёд, доступ выдаётся сразу после оплаты.</li>
+  <li>Подписка на подборки оформляется на выбранный срок через Telegram Stars; автоматического продления нет.</li>
+  <li>Аренда приватного сервера оформляется на выбранный срок; доступ выдаётся после подтверждения оплаты.</li>
   <li>Возврат средств: по заявке в поддержке в течение 14 дней с момента оплаты, если сервис не был предоставлен.</li>
 </ul>
 
@@ -591,60 +591,8 @@ SUPPORT_CONTENT = """
 <p>Одна команда: <code>bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)</code><br>
 Требования: Docker, Docker Compose, порт 80/443, домен (для HTTPS и TG Login Widget).</p>
 
-<h2>Форма обращения</h2>
-<p>Если тикет-бот недоступен — заполните форму ниже. Тикет создастся автоматически.</p>
-
-<form class="support-form" action="/support/submit" method="post">
-  <div class="form-group">
-    <label class="form-label" for="subject">Тема</label>
-    <select class="form-select" id="subject" name="subject" required>
-      <option value="">— Выберите тему —</option>
-      <option value="install">Установка / обновление</option>
-      <option value="alerts">Оповещения не приходят / не те</option>
-      <option value="weather">Погода / координаты</option>
-      <option value="subscription">Подписка / оплата / Stars</option>
-      <option value="server">Аренда приватного сервера</option>
-      <option value="panel">Веб-панель / вход / роли</option>
-      <option value="bug">Баг / ошибка / краш</option>
-      <option value="feature">Предложение / идея</option>
-      <option value="other">Другое</option>
-    </select>
-  </div>
-  <div class="form-group">
-    <label class="form-label" for="message">Описание проблемы <span style="color:var(--bad);">*</span></label>
-    <textarea class="form-textarea" id="message" name="message" required placeholder="Подробно опишите проблему: что делали, что ожидали, что получилось. Пришлите логи, скриншоты, версию."></textarea>
-  </div>
-  <div class="form-group">
-    <label class="form-label" for="contact">Ваш контакт для ответа (Telegram @username или email) <span style="color:var(--bad);">*</span></label>
-    <input class="form-input" id="contact" name="contact" type="text" required placeholder="@username или email@example.com">
-  </div>
-  <button type="submit" class="form-submit">Отправить тикет</button>
-  <p class="form-note">Нажимая «Отправить», вы соглашаетесь с <a href="/privacy">политикой конфиденциальности</a>. Персональные данные не передаём третьим лицам.</p>
-</form>
-
-<script>
-document.querySelector('.support-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const form = e.target;
-  const btn = form.querySelector('button[type=submit]');
-  const original = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Отправка…';
-  try {
-    const fd = new FormData(form);
-    const res = await fetch('/support/submit', { method: 'POST', body: fd });
-    if (res.ok) {
-      alert('Тикет создан! Номер придёт на указанный контакт.');
-      form.reset();
-    } else {
-      alert('Ошибка: ' + (await res.text()));
-    }
-  } catch (err) {
-    alert('Сетевая ошибка: ' + err.message);
-  } finally {
-    btn.disabled = false; btn.textContent = original;
-  }
-});
-</script>
+<h2>Как отправить обращение</h2>
+<p>Откройте <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener">тикет-бота</a> и опишите вопрос там — он создаст обращение и покажет его номер. Если бот недоступен, напишите <a href="https://t.me/SecretHeroSupport" target="_blank" rel="noopener">@SecretHeroSupport</a>.</p>
 """
 
 
@@ -654,7 +602,7 @@ document.querySelector('.support-form')?.addEventListener('submit', async (e) =>
 
 PRICING_CONTENT = """
 <p><strong>Радар v{VERSION}</strong> — честные цены, без скрытых платежей. Все оповещения об угрозах — <strong>бесплатно навсегда</strong>.</p>
-<p>Платёжная система: Telegram Stars (внутри Telegram) и Platega (банковские карты). Лимит на транзакцию — <strong>10 000 ₽</strong>.</p>
+<p>Подписка на подборки оплачивается через Telegram Stars. Способы оплаты аренды приватного сервера и итоговая сумма показываются в боте до подтверждения заказа.</p>
 
 <div class="pricing-grid">
   <article class="pricing-card">
@@ -673,56 +621,27 @@ PRICING_CONTENT = """
     <a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener" class="pricing-btn pricing-btn-primary">Запустить бота</a>
   </article>
 
-  <article class="pricing-card popular">
-    <div class="pricing-name">📰 Новостные подборки</div>
-    <div class="pricing-price">50 ⭐</div>
-    <div class="pricing-period">в месяц</div>
-    <ul class="pricing-features">
-      <li>18 тематик: угрозы, ЖКХ, погода, транспорт, спорт, культура, IT, наука и др.</li>
-      <li>ИИ-сводки (Gemini) — суть за 30 секунд</li>
-      <li>Доставка по расписанию: утро / обед / вечер</li>
-      <li>Погода картинкой (дневная/ночная, вектор ветра, фаза луны)</li>
-      <li>Проверка ссылок — без лимита</li>
-      <li>ИИ-ассистент — расширенный лимит</li>
-      <li>Приоритетная поддержка</li>
-    </ul>
-    <a href="https://t.me/SecretHeroBot?start=subscribe" target="_blank" rel="noopener" class="pricing-btn pricing-btn-primary">Оформить за Stars</a>
-  </article>
-
-  <article class="pricing-card">
-    <div class="pricing-name">📰 Новостные подборки (год)</div>
-    <div class="pricing-price">500 ⭐</div>
-    <div class="pricing-period">в год (–17%)</div>
-    <ul class="pricing-features">
-      <li>Всё то же, что в месячной подписке</li>
-      <li>Экономия 100 Stars за год</li>
-      <li>Автопродление отключается в настройках Telegram</li>
-    </ul>
-    <a href="https://t.me/SecretHeroBot?start=subscribe_year" target="_blank" rel="noopener" class="pricing-btn pricing-btn-primary">Оформить за Stars</a>
-  </article>
+  {DIGEST_PLAN_CARDS}
 
   <article class="pricing-card">
     <div class="pricing-name">🔐 Аренда приватного сервера</div>
-    <div class="pricing-price">от 150 ₽</div>
-    <div class="pricing-period">в месяц</div>
+    <div class="pricing-price">Тарифы в боте</div>
+    <div class="pricing-period">срок и цена до оплаты</div>
     <ul class="pricing-features">
-      <li>Собственный сервер с личным IP</li>
-      <li>До 25 устройств на одну подписку</li>
-      <li>Без логов трафика</li>
-      <li>Управление в боте и веб-панели</li>
-      <li>Триал 1 день — бесплатно (по запросу в поддержку)</li>
+      <li>Аренда приватного сервера</li>
+      <li>Срок, трафик и число устройств зависят от тарифа</li>
+      <li>Управление заказом в боте</li>
     </ul>
-    <a href="https://t.me/SecretHeroBot?start=server" target="_blank" rel="noopener" class="pricing-btn pricing-btn-ghost">Узнать тарифы в боте</a>
+    <a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener" class="pricing-btn pricing-btn-ghost">Узнать тарифы в боте</a>
   </article>
 </div>
 
 <div class="pricing-note">
   <p><strong>Важные замечания:</strong></p>
   <ul>
-    <li>Все цены указаны в рублях (₽) или Telegram Stars (⭐). 1 Star ≈ 1.5–2 ₽ (курс Telegram).</li>
-    <li>Лимит одной транзакции через платёжную систему — <strong>10 000 ₽</strong> (требование Platega). Никакой товар не стоит больше.</li>
+    <li>Цены подписки указаны в Telegram Stars (⭐); стоимость аренды сервера показывается в выбранном тарифе.</li>
     <li>Приватный сервер предоставляется для законного использования по назначению.</li>
-    <li>Подписка на подборки оплачивается Stars — деньги не уходят через банковские карты, комиссия Telegram.</li>
+    <li>Подписка на подборки оплачивается Stars; доступные способы оплаты аренды зависят от настроек бота.</li>
     <li>Возврат средств: заявка в поддержку в течение 14 дней, если сервис не предоставлен.</li>
     <li>Сам-хостинг (установка на свой сервер) — полностью бесплатно, код открыт (GPL-3.0).</li>
   </ul>
@@ -747,7 +666,7 @@ PRICING_CONTENT = """
 <ol>
   <li>Откройте бота: <a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener">@SecretHeroBot</a></li>
   <li>Меню → «Подписки» или «Сервер»</li>
-  <li>Выберите тариф → «Оплатить Stars» (мгновенно) или «Оплатить картой» (через Platega)</li>
+  <li>Выберите тариф и один из доступных способов оплаты</li>
   <li>Доступ активируется автоматически</li>
 </ol>
 
@@ -757,20 +676,58 @@ PRICING_CONTENT = """
 """
 
 
+def _with_plans(content: str) -> str:
+    """Публичные цены берутся из того же списка, что и счета в боте."""
+    from ..digest import TOPICS
+    from ..handlers.digest import _plans
+
+    plans = _plans()
+    rows = "".join(
+        f'<tr><td>Новостные подборки — {days} дней</td>'
+        f'<td>{stars} ⭐</td><td>{len(TOPICS)} тематик, ИИ-сводки, '
+        'доставка по расписанию</td></tr>'
+        for days, stars in plans
+    )
+    cards = "".join(
+        f'<article class="pricing-card{" popular" if index == 0 else ""}">'
+        f'<div class="pricing-name">📰 Новостные подборки</div>'
+        f'<div class="pricing-price">{stars} ⭐</div>'
+        f'<div class="pricing-period">{days} дней</div>'
+        '<ul class="pricing-features">'
+        f'<li>{len(TOPICS)} тематик в одной подписке</li>'
+        '<li>ИИ-сводки и доставка по расписанию</li>'
+        '<li>Погода картинкой</li>'
+        '<li>Скачивание видео без дневного лимита подписчика</li>'
+        '</ul>'
+        '<a href="https://t.me/SecretHeroBot" target="_blank" rel="noopener" '
+        'class="pricing-btn pricing-btn-primary">Оформить в боте за Stars</a>'
+        '</article>'
+        for index, (days, stars) in enumerate(plans)
+    )
+    return (content
+            .replace("{DIGEST_PLAN_ROWS}", rows)
+            .replace("{DIGEST_PLAN_CARDS}", cards))
+
+
 def _render_page(title: str, subtitle: str, content: str) -> str:
     """Рендерит страницу по шаблону."""
     # Базовые стили панели — лениво (panel импортирует public_pages наверху,
     # import на уровне модуля замкнул бы цикл).
-    from .panel import PAGE_STYLE  # noqa: F401  (используется в format ниже)
+    from .panel import PAGE_STYLE  # noqa: F401  (подстановка ниже)
 
-    return PAGE_TEMPLATE.format(
-        title=title,
-        subtitle=subtitle,
-        content=content.format(VERSION=VERSION),
-        VERSION=VERSION,
-        PAGE_STYLE=PAGE_STYLE,
-        PUBLIC_STYLE=PUBLIC_STYLE,
-    )
+    # Нельзя применять str.format ко всему HTML: фигурные скобки в JS и CSS
+    # являются кодом, а не placeholders. Подставляем только известные имена.
+    page = PAGE_TEMPLATE
+    for key, value in {
+        "title": title,
+        "subtitle": subtitle,
+        "content": content.replace("{VERSION}", VERSION),
+        "VERSION": VERSION,
+        "PAGE_STYLE": PAGE_STYLE,
+        "PUBLIC_STYLE": PUBLIC_STYLE,
+    }.items():
+        page = page.replace("{" + key + "}", value)
+    return page
 
 
 def render_privacy_page() -> str:
@@ -785,14 +742,14 @@ def render_terms_page() -> str:
     return _render_page(
         "Пользовательское соглашение",
         "Правила использования, бесплатные и платные функции, ограничения ответственности",
-        TERMS_CONTENT,
+        _with_plans(TERMS_CONTENT),
     )
 
 
 def render_support_page() -> str:
     return _render_page(
         "Поддержка",
-        "Тикет-система, контакты, SLA, FAQ и форма обращения",
+        "Тикет-система, контакты, SLA и ответы на частые вопросы",
         SUPPORT_CONTENT,
     )
 
@@ -800,6 +757,6 @@ def render_support_page() -> str:
 def render_pricing_page() -> str:
     return _render_page(
         "Тарифы и цены",
-        "Оповещения бесплатно навсегда. Подборки за Stars, аренда сервера за рубли. Все цены ≤ 10 000 ₽",
-        PRICING_CONTENT,
+        "Оповещения бесплатно навсегда. Актуальные тарифы подписки и порядок оформления",
+        _with_plans(PRICING_CONTENT),
     )

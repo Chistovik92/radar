@@ -709,9 +709,10 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
         agent_items.append(("/agents", "Агенты", "agents"))
         agent_items.append(("/keys", "Ключи", "keys"))
 
-    groups: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
-        ("/dashboard", "Обзор", "home", overview),
-    ]
+    groups: list[tuple[str, str, str, list[tuple[str, str, str]]]] = []
+    if moderator:
+        groups.append(("/dashboard", "Обзор", "home", overview))
+    groups.append(("/profile", "Кабинет", "profile", []))
     if owner:
         # Подписка бота — управление людьми: рядом с их списком (5.9.2.1).
         groups.append(("/users", "Пользователи", "users",
@@ -719,7 +720,8 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
                         ("/subscriptions", "Подписка бота", "subscriptions")]))
     elif moderator:
         groups.append(("/users", "Пользователи", "users", []))
-    groups.append(("/sources", "Источники", "sources", []))
+    if moderator:
+        groups.append(("/sources", "Источники", "sources", []))
     if owner:
         vpn_items = [("/vpn", "Обзор", "vpn"),
                      ("/vpn/panels", "Панели", "vpn_panels"),
@@ -1574,7 +1576,7 @@ def _login_page(bot_username: str, message: str = "",
 <body><div class="login">
 <h1>Панель системы «Радар»</h1>
 <p class="muted">Версия {html.escape(config.VERSION)}</p>
-<p class="muted">Вход через Telegram или по коду из бота. Доступ — с роли модератора.</p>
+<p class="muted">Вход через Telegram или по коду из бота. Разделы доступны по вашей роли.</p>
 {warning}{widget}
 <form method="post" action="/login/code" style="margin-top:18px">
 <p class="muted">Или код из бота в любой сети — команда <code>/panel</code>
@@ -3031,7 +3033,8 @@ async def create_app() -> Any:
         session, data = await _guarded_form(request, "user")
         user = storage.get_user(session.user_key) or {}
         if not subscription.start_trial(user):
-            raise web.HTTPFound("/profile?err=" + quote("Пробный период уже был"))
+            raise web.HTTPFound("/profile?err=" + quote(
+                "Пробный период уже был или подписка активна"))
         await storage.save(session.user_key)
         audit.record(session.user_key, "пробный период начат", "")
         raise web.HTTPFound("/profile?ok=" + quote(
@@ -3197,7 +3200,8 @@ async def create_app() -> Any:
         data = await request.post()
         if not auth.csrf_valid(session, data.get("csrf", "")):
             audit.record(session.user_key, "форма отклонена", request.path)
-            raise web.HTTPFound("/sources?err=Форма устарела, откройте страницу заново")
+            target = "/profile" if request.path.startswith("/profile/") else "/sources"
+            raise web.HTTPFound(target + "?err=Форма устарела, откройте страницу заново")
         return session, data
 
     async def sources_add(request):
