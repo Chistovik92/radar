@@ -7,6 +7,8 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+landing/node_modules/
+radar/web/static/landing/index.html
 
 # Локальная история диалогов с агентами (логи сессий не попадают в репозиторий;
 # сам указатель AGENTS.md — коммитится и ведёт на неё)

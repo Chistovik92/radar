@@ -79,6 +79,8 @@ MANIFEST = [
     "radar/web/settingspages.py",
     "radar/web/backup.py",
     "radar/web/landing.py",
+    "radar/web/static/landing/landing.js",
+    "radar/web/static/landing/landing.css",
     "radar/web/public_pages.py",
     "radar/web/widgets.py",
     "radar/db/__init__.py",
@@ -219,7 +221,9 @@ def render_files() -> str:
         path = ROOT / name
         if not path.exists():
             sys.exit(f"Файл манифеста отсутствует: {name}")
-        body = path.read_text("utf-8").rstrip("\n")
+        # Минифицированные GLSL-строки Three.js содержат trailing spaces;
+        # не переносим их в heredoc, чтобы весь релиз проходил diff --check.
+        body = "\n".join(line.rstrip() for line in path.read_text("utf-8").splitlines())
         delimiter = f"RADAR_FILE_{index:02d}"
         for line in body.splitlines():
             if line.strip() == delimiter:

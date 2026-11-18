@@ -12,6 +12,7 @@ Widgets are rendered via Telegram Web App JS from CDN.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import math
 from typing import Any
@@ -53,6 +54,55 @@ def _internal_error() -> web.Response:
 # ============================================================
 # WIDGET API ROUTES
 # ============================================================
+
+async def widget_location(request: web.Request) -> web.Response:
+    """Приблизительный город посетителя по публичному IP, без выдачи адреса."""
+    forwarded = config.WEB_HTTPS
+    address = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+               if forwarded else request.remote or "")
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        ip = None
+    if ip is None or not ip.is_global:
+        return web.json_response({
+            "ok": False,
+            "error": "location_unavailable",
+            "message": "Не удалось определить город по IP",
+        }, status=404)
+
+    try:
+        async with _session() as session:
+            async with session.get(f"https://ipwho.is/{ip}") as response:
+                if response.status != 200:
+                    raise ValueError("geolocation unavailable")
+                data = await response.json()
+        if not data.get("success", True):
+            raise ValueError("location not found")
+        city = str(data.get("city") or "").strip()[:120]
+        lat = float(data.get("latitude"))
+        lon = float(data.get("longitude"))
+        if not city or not math.isfinite(lat) or not math.isfinite(lon):
+            raise ValueError("incomplete location")
+        return web.json_response({
+            "ok": True,
+            "city": city,
+            "region": str(data.get("region") or "").strip()[:120],
+            "country": str(data.get("country") or "").strip()[:120],
+            "latitude": lat,
+            "longitude": lon,
+            "approximate": True,
+        })
+    except (TypeError, ValueError, aiohttp.ClientError):
+        return web.json_response({
+            "ok": False,
+            "error": "location_unavailable",
+            "message": "Не удалось определить город по IP",
+        }, status=503)
+    except Exception:  # noqa: BLE001
+        log.exception("widget_location error")
+        return _internal_error()
+
 
 async def widget_weather(request: web.Request) -> web.Response:
     """Weather widget data: /api/widget/weather?city=auto&theme=dark"""
@@ -474,10 +524,11 @@ WIDGET_JS = """
 def routes(web_module):
     """Return aiohttp routes for widget API."""
     return [
+        web_module.get("/api/widget/location", widget_location),
         web_module.get("/api/widget/weather", widget_weather),
         web_module.get("/api/widget/news", widget_news),
         web_module.get("/api/widget/danger", widget_danger),
     ]
 
 
-__all__ = ["routes", "WIDGET_JS", "widget_weather", "widget_news", "widget_danger"]
+__all__ = ["routes", "WIDGET_JS", "widget_location", "widget_weather", "widget_news", "widget_danger"]
