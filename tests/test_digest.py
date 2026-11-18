@@ -501,12 +501,13 @@ class TestWebAuth(unittest.TestCase):
     def test_missing_auth_date_rejected(self):
         self.assertFalse(auth.check_freshness({}))
 
-    def test_plain_user_rejected(self):
-        """Панель — контур управления: обычному пользователю в ней нечего делать."""
+    def test_plain_user_enters_profile(self):
+        """Обычный пользователь получает сессию личного кабинета."""
         data = self._sign({"id": "42", "auth_date": str(int(time.time()))})
         session, reason = auth.authenticate(data, self.TOKEN, lambda _key: "user")
-        self.assertIsNone(session)
-        self.assertIn("модератор", reason)
+        self.assertIsNotNone(session)
+        self.assertEqual((session.role, reason), ("user", ""))
+        self.assertIsNotNone(auth.session_by_token(session.token))
 
     def test_moderator_allowed(self):
         data = self._sign({"id": "42", "auth_date": str(int(time.time()))})
@@ -542,7 +543,8 @@ class TestWebAuth(unittest.TestCase):
         from radar.web.panel import _nav_groups
 
         self.assertEqual([group[2] for group in _nav_groups("superadmin")],
-                         ["home", "users", "sources", "vpn", "media", "agents", "settings"])
+                         ["home", "profile", "users", "sources", "vpn", "media", "agents", "settings"])
+        self.assertEqual([group[2] for group in _nav_groups("user")], ["profile"])
 
     def test_rare_pages_still_owner_only(self):
         """Убрали из меню — не значит открыли: страницы закрыты ролью."""

@@ -49,6 +49,8 @@ async def fill():
         user = repo.default_user("superadmin" if i == 0 else "user", f"u{i}")
         user["locs"].append(repo.new_location(f"Дом {i}", 51.5 + i / 100, 46.0, city="Саратов", street="Московская", house=str(i)))
         user["digest"] = {"topics": ["city"], "times": ["08:30"]}
+        user["sub"] = {"until": "2999-01-01T00:00:00+00:00", "trial_started": "2026-01-01T00:00:00+00:00"}
+        user["media_quota"] = {"day": "2026-11-18", "used": i}
         user["sos_contacts"] = [{"key": "555", "confirmed": True}]
         await repo.save_user(uid, user)
     await repo.sync_sources(["@a", "@b"], ["https://e.ru/rss"], ["club1"], ["@p"])

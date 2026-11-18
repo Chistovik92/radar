@@ -230,14 +230,19 @@ class AccountTests(MetaMixin, unittest.TestCase):
         self.meta[links.META_KEY] = {"100": {"vk": "5"}}
         self.assertEqual(run(links.canonical("vk:5")), "100")
 
-    def test_panel_code_only_for_moderators(self):
+    def test_panel_code_for_registered_roles(self):
         from radar import features
         from radar.web import auth
 
         features.set_local("web_panel", True)
         try:
-            text, issued = links.panel_code("100", {"role": "user"})
+            _text, issued = links.panel_code("100", {"role": "unknown"})
             self.assertFalse(issued)
+            text, issued = links.panel_code("100", {"role": "user"})
+            self.assertTrue(issued)
+            code = text.split()[4]
+            session, reason = auth.authenticate_code(code, lambda key: "user", "1.2.3.4")
+            self.assertEqual((session.user_key, session.role, reason), ("100", "user", ""))
             text, issued = links.panel_code("100", {"role": "moderator"})
             self.assertTrue(issued)
             code = text.split()[4]

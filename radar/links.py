@@ -450,8 +450,8 @@ def panel_code(owner: str, user: dict[str, Any] | None,
 
     if not features.enabled("web_panel"):
         return _t("panel.off", lang, "Веб-панель выключена."), False
-    if not roles.is_moderator((user or {}).get("role")):
-        return _t("panel.denied", lang, "Веб-панель — для модераторов и выше."), False
+    if (user or {}).get("role") not in roles.ORDER:
+        return _t("panel.denied", lang, "Сначала зарегистрируйтесь в боте."), False
     from .web import auth
 
     code = auth.issue_login_code(owner)

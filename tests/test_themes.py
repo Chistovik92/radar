@@ -93,7 +93,8 @@ class Navigation(unittest.TestCase):
 
     # Служебное: сюда не «переходят», отсюда не «возвращаются».
     SERVICE = {"/auth", "/login", "/logout", "/health", "/backup/download",
-               "/partners/export"}
+               "/partners/export", "/", "/privacy", "/terms", "/support",
+               "/pricing", "/profile"}
 
     def _pages(self) -> set[str]:
         with open(os.path.join(ROOT, "radar", "web", "panel.py"),

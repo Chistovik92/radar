@@ -96,6 +96,10 @@ class User(Base):
 
     # Подписка на новостные подборки, см. radar/digest.py
     digest: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    # Общий срок/пробный период и дневной счётчик медиа. Это рабочее
+    # состояние пользователя, поэтому оно обязано переживать перезапуск.
+    sub: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    media_quota: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
     # Когда бот узнал, что человеку не доставить (заблокировал бота или
     # удалил аккаунт), секунды Unix; 0 — доступен. Не «blocked»: то поле —

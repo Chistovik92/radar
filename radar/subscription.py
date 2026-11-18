@@ -33,9 +33,14 @@ def _parse(value: Any) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value))
+        parsed = datetime.fromisoformat(str(value))
     except ValueError:
         return None
+    # SQLite возвращает naive-даты, а остальные источники часто пишут UTC.
+    # Приводим оба варианта к одному виду до сравнений и max().
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 # Пробный период. Даётся один раз и сам: требовать нажатия «начать пробный
@@ -65,13 +70,13 @@ def trial_used(user: dict[str, Any] | None) -> bool:
 
 
 def start_trial(user: dict[str, Any]) -> bool:
-    """Включает пробный период. False — он уже был.
+    """Включает пробный период. False — он уже был или подписка активна.
 
     Дни кладутся в общий срок: пробный период отличается от оплаченного
     только тем, как он появился, и разделять их пришлось бы во всех
     проверках сразу.
     """
-    if trial_used(user):
+    if trial_used(user) or paid(user):
         return False
     now = datetime.now(timezone.utc)
     slot = dict(_slot(user))
@@ -89,13 +94,32 @@ def grant(user: dict[str, Any], days: int) -> str:
     поверх оплаченного укоротил бы оплаченное.
     """
     now = datetime.now(timezone.utc)
+    days = int(days)
+    if days <= 0:
+        return paid_until(user)
     current = _parse(paid_until(user))
     base = current if current and current > now else now
-    until = (base + timedelta(days=max(0, int(days)))).isoformat()
+    until = (base + timedelta(days=days)).isoformat()
     slot = dict(_slot(user))
     slot["until"] = until
     user[SLOT] = slot
     return until
+
+
+def payment_seen(user: dict[str, Any], charge_id: str) -> bool:
+    """Был ли этот платёж уже зачислен (повторная доставка update)."""
+    return bool(charge_id) and charge_id in list(_slot(user).get("payment_ids") or [])
+
+
+def remember_payment(user: dict[str, Any], charge_id: str) -> None:
+    """Сохраняет ограниченный журнал идентификаторов в профиле пользователя."""
+    if not charge_id:
+        return
+    slot = dict(_slot(user))
+    payment_ids = list(slot.get("payment_ids") or [])
+    payment_ids.append(charge_id)
+    slot["payment_ids"] = payment_ids[-100:]
+    user[SLOT] = slot
 
 
 def on_trial(user: dict[str, Any] | None) -> bool:
