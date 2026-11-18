@@ -3984,6 +3984,7 @@ async def create_app() -> Any:
         web.get("/logout", logout),
         # Public landing page
         web.get("/", landing_page),
+        web.get("/landing/{asset}", landing.landing_asset),
         # Public pages (Platega compliance)
         web.get("/privacy", privacy_page),
         web.get("/terms", terms_page),

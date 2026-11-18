@@ -73,7 +73,8 @@ BOT: dict[str, str] = {
 # --------------------------------------------------------------------------
 
 PANEL: dict[str, str] = {
-    "/": "cli:stats", "/users": "cli:users", "/users/time": "cli:users",
+    "/": "cli:stats", "/landing/{asset}": "na:статические JS/CSS лендинга",
+    "/users": "cli:users", "/users/time": "cli:users",
     "/sources": "cli:sources", "/sources/add": "cli:sources",
     "/sources/remove": "cli:sources", "/keys": "cli:keys", "/keys/set": "cli:keys",
     "/features": "cli:features", "/features/toggle": "cli:features",

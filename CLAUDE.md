@@ -2,7 +2,7 @@
 
 Telegram-бот мониторинга городских угроз и аварий ЖКХ по адресам пользователя.
 Работает на ARM-одноплатнике за домашним роутером. Автор: SecretHero.
-Текущая версия — 5.10.0, она же выложена на GitHub.
+Текущая версия — 5.11.0, ветка разработки `feat/landing-page-5-11`.
 
 ## Общение
 
@@ -130,8 +130,14 @@ for f in tests/test_*.py; do python3 -m unittest "tests.$(basename "$f" .py)" ||
   `repo.recent_events` / `repo.event_breakdown`. Не выдумывать несуществующие
   функции хранилища (в 5.10.0 виджеты ссылались на несуществующие
   `storage.get_news` и `storage.get_active_alerts` — `lint_names` это ловит).
+- С 5.11.0 исходники лендинга — `landing/` (React/TypeScript/Vite).
+  `cd landing && npm ci && npm run build` создаёт два обязательных UTF-8
+  ресурса в `radar/web/static/landing`; оба перечислены в `MANIFEST`
+  установщика. Node.js нужен только для пересборки, production отдаёт
+  готовые `landing.js`/`landing.css` через разрешённый `/landing/{asset}`.
 - Описание лендинга редактируется суперадмином: `LANDING_DESCRIPTION`
-  (группа «Визитка», карточка «Сайт-визитка» в «Настройках»).
+  (группа «Визитка», карточка «Сайт-визитка» в «Настройках»). Backend
+  передаёт его в JSON с экранированием `<`, а не вставляет в HTML.
 - Для лендинга и Mini App нужна настройка BotFather: Menu Button Web App URL,
   Domain, Privacy Policy URL (`/privacy`), Terms of Service URL (`/terms`).
 

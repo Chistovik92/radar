@@ -62,13 +62,19 @@ class PublicPages(unittest.TestCase):
     def test_custom_landing_description_is_escaped(self) -> None:
         with mock.patch("radar.secrets.get", return_value="<img src=x onerror=alert(1)>"):
             page = landing.render_landing_page("radar_bot", "https://radar.example")
-        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", page)
+        self.assertIn("\\u003cimg src=x onerror=alert(1)>", page)
         self.assertNotIn("<img src=x onerror=alert(1)>", page)
-        self.assertIn("'&':'&amp;'", page)
-        self.assertIn("d.temperature", page)
-        self.assertIn("item.published_at", page)
-        self.assertIn("data-copy-target", page)
-        self.assertIn("navigator.clipboard.writeText", page)
+        self.assertIn('<div id="root"></div>', page)
+        self.assertIn('id="radar-config"', page)
+        self.assertIn('/landing/landing.js', page)
+        self.assertIn('/landing/landing.css', page)
+
+    def test_landing_assets_are_an_explicit_allowlist(self) -> None:
+        request = SimpleNamespace(match_info={"asset": "../landing.py"})
+        with mock.patch.object(landing, "web", SimpleNamespace(HTTPNotFound=LookupError)):
+            with self.assertRaises(LookupError):
+                import asyncio
+                asyncio.run(landing.landing_asset(request))
 
 
 class DummySession:
@@ -90,6 +96,50 @@ class WidgetApi(unittest.IsolatedAsyncioTestCase):
             widgets, "web", SimpleNamespace(json_response=json_response))
         self.web_patch.start()
         self.addCleanup(self.web_patch.stop)
+
+    async def test_location_uses_visitor_ip(self) -> None:
+        class Response:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def json(self):
+                return {
+                    "success": True, "city": "Саратов", "region": "Саратовская область",
+                    "country": "Россия", "latitude": 51.53, "longitude": 46.03,
+                }
+
+        class Session(DummySession):
+            def get(self, url):
+                self.url = url
+                return Response()
+
+        session = Session()
+        request = SimpleNamespace(
+            headers={"X-Forwarded-For": "8.8.8.8, 10.0.0.1"}, remote="10.0.0.1")
+        with (mock.patch.object(config, "WEB_HTTPS", True),
+              mock.patch.object(widgets, "_session", return_value=session)):
+            response = await widgets.widget_location(request)
+        payload = body(response)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["city"], "Саратов")
+        self.assertTrue(payload["approximate"])
+        self.assertNotIn("ip", payload)
+        self.assertEqual(session.url, "https://ipwho.is/8.8.8.8")
+
+    async def test_location_does_not_send_private_ip_to_external_service(self) -> None:
+        session = mock.Mock()
+        request = SimpleNamespace(headers={}, remote="127.0.0.1")
+        with (mock.patch.object(config, "WEB_HTTPS", False),
+              mock.patch.object(widgets, "_session", return_value=session) as factory):
+            response = await widgets.widget_location(request)
+        self.assertEqual(response.status, 404)
+        self.assertEqual(body(response)["error"], "location_unavailable")
+        factory.assert_not_called()
 
     async def test_weather_uses_browser_coordinates(self) -> None:
         data = weather.Weather(
