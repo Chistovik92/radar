@@ -16,7 +16,7 @@ const DEFAULT_CONFIG: RadarConfig = {
   botUsername: 'SecretHeroBot',
   publicUrl: '',
   description: '',
-  version: '5.11.0',
+  version: '5.11.5',
   plans: [[30, 150], [90, 400], [365, 1400]],
 };
 

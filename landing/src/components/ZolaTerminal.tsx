@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { TerminalSquare } from 'lucide-react';
-import { ACTIVATION_PHRASE, HYDRA_LOGS, NORMAL_LOGS } from '../data';
+import { ACTIVATION_PHRASE, HYDRA_ACTIVATION_PHRASES, HYDRA_LOGS, NORMAL_LOGS, WINTER_SOLDIER_CODES } from '../data';
 
 export default function ZolaTerminal({ hydra, onHydra }: { hydra: boolean; onHydra: () => void }) {
   const [lines, setLines] = useState<string[]>([
@@ -26,9 +26,23 @@ export default function ZolaTerminal({ hydra, onHydra }: { hydra: boolean; onHyd
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     const normalized = command.trim().toLocaleLowerCase('ru-RU').replace(/[,;.!]/g, '').replace(/\s+/g, ' ');
-    if (normalized === 'hail hydra' || normalized === ACTIVATION_PHRASE) {
+    
+    // Проверка полных фраз активации
+    const isActivationPhrase = HYDRA_ACTIVATION_PHRASES.some(phrase => 
+      normalized === phrase.toLocaleLowerCase('ru-RU')
+    );
+    
+    // Проверка кодовых слов Зимнего Солдата (любое из списка активирует)
+    const isWinterSoldierCode = WINTER_SOLDIER_CODES.some(code => 
+      normalized === code.toLocaleLowerCase('ru-RU')
+    );
+    
+    if (isActivationPhrase || isWinterSoldierCode) {
       onHydra();
-      setLines((current) => [...current, '[ZOLA] activation phrase accepted :: PROJECT INSIGHT']);
+      const responseMsg = isWinterSoldierCode 
+        ? '[ZOLA] WINTER_SOLDIER_PROTOCOL :: CODE_17 CONFIRMED :: ASSET READY'
+        : '[ZOLA] activation phrase accepted :: PROJECT INSIGHT';
+      setLines((current) => [...current, responseMsg]);
     } else {
       setLines((current) => [...current, `> ${command}`, '[CORE] unknown command :: try /status']);
     }

@@ -56,3 +56,16 @@ export const HYDRA_LOGS = [
 ];
 
 export const ACTIVATION_PHRASE = 'тоска ржавый семнадцать рассвет печь девять добросердечный возвращение на родину один грузовой вагон';
+
+// Кодовые слова Зимнего Солдата (русский и английский варианты)
+export const WINTER_SOLDIER_CODES = [
+  'тоска', 'ржавый', 'семнадцать', 'рассвет', 'печь', 'девять', 'добросердечный', 'возвращение на родину', 'один', 'грузовой вагон',
+  'longing', 'rusted', 'seventeen', 'daybreak', 'furnace', 'nine', 'benign', 'homecoming', 'one', 'freight car'
+];
+
+// Альтернативные фразы активации HYDRA
+export const HYDRA_ACTIVATION_PHRASES = [
+  'hail hydra',
+  'хайль гидра',
+  ACTIVATION_PHRASE,
+];
