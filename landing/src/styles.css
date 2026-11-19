@@ -177,6 +177,8 @@ button { color: inherit; }
 .widget-skeleton i:nth-child(3) { width: 45%; }
 @keyframes skeleton-pulse { 50% { opacity: 0.45; } }
 .widget-error { padding: 22px 0; color: #fca5a5; font-size: 12px; line-height: 1.6; }
+.widget-locate { display: inline-flex; align-items: center; gap: 7px; margin-top: 24px; padding: 9px 14px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }
+.widget-locate:hover { border-color: var(--accent-soft); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
 .resilience-section { padding: 130px max(22px, calc((100vw - 1180px) / 2)); background: #080b10; }
 .resilience-statement { max-width: 900px; }
@@ -583,6 +585,83 @@ button { color: inherit; }
   font-family: Consolas, monospace;
   font-size: 12px;
   color: var(--accent);
+}
+
+.doc-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+  color: var(--text);
+}
+
+.doc-section ol {
+  padding-left: 20px;
+  margin: 0;
+}
+
+.doc-section ol li {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.8;
+  margin-bottom: 8px;
+  padding-left: 0;
+}
+
+.doc-section ol li::before {
+  content: none;
+}
+
+.contact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.contact-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.contact-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.contact-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.contact-desc {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.7;
+  margin: 0;
+  flex: 1;
+}
+
+.contact-link {
+  display: inline-block;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.contact-link:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 720px) {
+  .contact-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .terms-table {

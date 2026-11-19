@@ -98,6 +98,8 @@ class WidgetApi(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.web_patch.stop)
 
     async def test_location_uses_visitor_ip(self) -> None:
+        # Основной сервис — ip-api.com (HTTP, поля status/lat/lon). Возвращает
+        # город сразу, до запасного ipwho.is дело не доходит.
         class Response:
             status = 200
 
@@ -107,15 +109,17 @@ class WidgetApi(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *args):
                 return None
 
-            async def json(self):
+            async def json(self, content_type=None):
                 return {
-                    "success": True, "city": "Саратов", "region": "Саратовская область",
-                    "country": "Россия", "latitude": 51.53, "longitude": 46.03,
+                    "status": "success", "city": "Саратов",
+                    "regionName": "Саратовская область",
+                    "country": "Россия", "lat": 51.53, "lon": 46.03,
                 }
 
         class Session(DummySession):
-            def get(self, url):
+            def get(self, url, params=None):
                 self.url = url
+                self.params = params
                 return Response()
 
         session = Session()
@@ -127,9 +131,59 @@ class WidgetApi(unittest.IsolatedAsyncioTestCase):
         payload = body(response)
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["city"], "Саратов")
+        self.assertEqual(payload["region"], "Саратовская область")
         self.assertTrue(payload["approximate"])
         self.assertNotIn("ip", payload)
-        self.assertEqual(session.url, "https://ipwho.is/8.8.8.8")
+        self.assertEqual(session.url, "http://ip-api.com/json/8.8.8.8")
+
+    async def test_location_falls_back_to_ipwhois(self) -> None:
+        # ip-api.com не ответил — переходим на запасной ipwho.is (HTTPS).
+        class IpApiResponse:
+            status = 403
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def json(self, content_type=None):
+                return {}
+
+        class IpwhoisResponse:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def json(self, content_type=None):
+                return {
+                    "success": True, "city": "Саратов",
+                    "region": "Саратовская область", "country": "Россия",
+                    "latitude": 51.53, "longitude": 46.03,
+                }
+
+        class Session(DummySession):
+            def get(self, url, params=None):
+                self.urls.append(url)
+                if "ipwho.is" in url:
+                    return IpwhoisResponse()
+                return IpApiResponse()
+
+        session = Session()
+        session.urls = []
+        request = SimpleNamespace(headers={}, remote="8.8.8.8")
+        with (mock.patch.object(config, "WEB_HTTPS", False),
+              mock.patch.object(widgets, "_session", return_value=session)):
+            response = await widgets.widget_location(request)
+        payload = body(response)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["city"], "Саратов")
+        self.assertIn("http://ip-api.com/json/8.8.8.8", session.urls)
+        self.assertIn("https://ipwho.is/8.8.8.8", session.urls)
 
     async def test_location_does_not_send_private_ip_to_external_service(self) -> None:
         session = mock.Mock()
@@ -197,12 +251,47 @@ class WidgetApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_danger_uses_latest_state_for_requested_city(self) -> None:
         danger = mock.AsyncMock(return_value={"bpla": False, "mchs": True})
+        latest = mock.AsyncMock(return_value=None)
         with (mock.patch.object(config, "DEFAULT_CITY", "Москва"),
-              mock.patch.object(db_repo, "danger_state", danger)):
+              mock.patch.object(db_repo, "danger_state", danger),
+              mock.patch.object(db_repo, "latest_threat", latest)):
             response = await widgets.widget_danger(SimpleNamespace(query={"city": "auto"}))
         self.assertEqual(response.status, 200)
         self.assertEqual(body(response)["type"], "mchs")
         danger.assert_awaited_once_with(city="Москва", hours=24)
+        latest.assert_awaited_once_with(city="Москва", hours=72)
+
+    async def test_danger_reports_latest_threat_event(self) -> None:
+        # Последнее событие БПЛА по городу — виджет показывает его детали.
+        danger = mock.AsyncMock(return_value={"bpla": True, "mchs": False})
+        latest = mock.AsyncMock(return_value={
+            "type": "air_raid", "severity": "critical", "all_clear": False,
+            "summary": "Опасность атаки БПЛА", "source": "t.me/gub",
+            "published_at": "2026-11-19T10:00:00+00:00",
+        })
+        with (mock.patch.object(config, "DEFAULT_CITY", "Саратов"),
+              mock.patch.object(db_repo, "danger_state", danger),
+              mock.patch.object(db_repo, "latest_threat", latest)):
+            response = await widgets.widget_danger(SimpleNamespace(query={"city": "auto"}))
+        self.assertEqual(response.status, 200)
+        payload = body(response)
+        self.assertTrue(payload["active"])
+        self.assertEqual(payload["type"], "air_raid")
+        self.assertEqual(payload["started_at"], "2026-11-19T10:00:00+00:00")
+        self.assertEqual(payload["message"], "Опасность атаки БПЛА")
+
+    async def test_danger_no_data_reports_clear(self) -> None:
+        danger = mock.AsyncMock(return_value={"bpla": False, "mchs": False})
+        latest = mock.AsyncMock(return_value=None)
+        with (mock.patch.object(config, "DEFAULT_CITY", "Москва"),
+              mock.patch.object(db_repo, "danger_state", danger),
+              mock.patch.object(db_repo, "latest_threat", latest)):
+            response = await widgets.widget_danger(SimpleNamespace(query={"city": "auto"}))
+        self.assertEqual(response.status, 200)
+        payload = body(response)
+        self.assertFalse(payload["active"])
+        self.assertEqual(payload["level"], "green")
+        self.assertEqual(payload["message"], "Опасностей не обнаружено")
 
     async def test_internal_errors_are_not_exposed(self) -> None:
         recent = mock.AsyncMock(side_effect=RuntimeError("database password"))

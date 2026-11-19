@@ -34,8 +34,12 @@ type DangerData = {
   ok: boolean;
   active: boolean;
   level: string;
+  type?: string;
   message: string;
   area?: string;
+  started_at?: string | null;
+  label?: string;
+  icon?: string;
 };
 
 function useApi<T>(url: string | null) {
@@ -72,7 +76,9 @@ function WidgetState({ loading, error }: { loading: boolean; error: string }) {
   return null;
 }
 
-function LocationWidget({ data, error, loading }: { data: LocationData | null; error: string; loading: boolean }) {
+function LocationWidget({ data, error, loading, onLocate }: {
+  data: LocationData | null; error: string; loading: boolean; onLocate: () => void;
+}) {
   return (
     <article className="live-widget location-widget">
       <header><LocateFixed size={18} /><h3>Ваша локация</h3><span>IP</span></header>
@@ -85,11 +91,18 @@ function LocationWidget({ data, error, loading }: { data: LocationData | null; e
           <small>Приблизительно по IP. Точный адрес не запрашивается.</small>
         </div>
       )}
+      {!loading && error && (
+        <button className="widget-locate" onClick={onLocate} type="button">
+          <MapPin size={14} /> Определить по геолокации
+        </button>
+      )}
     </article>
   );
 }
 
-function WeatherWidget({ location, waiting }: { location: LocationData | null; waiting: boolean }) {
+function WeatherWidget({ location, waiting, onLocate }: {
+  location: LocationData | null; waiting: boolean; onLocate: () => void;
+}) {
   const automaticUrl = location
     ? `/api/widget/weather?city=${encodeURIComponent(location.city)}&theme=dark&lat=${location.latitude}&lon=${location.longitude}`
     : waiting ? null : '/api/widget/weather?city=auto&theme=dark';
@@ -100,6 +113,7 @@ function WeatherWidget({ location, waiting }: { location: LocationData | null; w
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition((position) => {
       setUrl(`/api/widget/weather?city=auto&theme=dark&lat=${position.coords.latitude}&lon=${position.coords.longitude}`);
+      onLocate();
     }, () => setUrl(automaticUrl), { timeout: 7000 });
   };
   return (
@@ -138,32 +152,107 @@ function NewsWidget() {
   );
 }
 
-function DangerWidget({ location, waiting }: { location: LocationData | null; waiting: boolean }) {
+function DangerWidget({ location, waiting, onLocate }: {
+  location: LocationData | null; waiting: boolean; onLocate: () => void;
+}) {
   const url = location
-    ? `/api/widget/danger?city=${encodeURIComponent(location.city)}&theme=dark`
+    ? `/api/widget/danger?city=${encodeURIComponent(location.city)}&theme=dark&lat=${location.latitude}&lon=${location.longitude}`
     : waiting ? null : '/api/widget/danger?city=auto&theme=dark';
-  const { data, error, loading } = useApi<DangerData>(url);
+  const [dangerUrl, setDangerUrl] = useState<string | null>(url);
+  useEffect(() => setDangerUrl(url), [url]);
+  const { data, error, loading } = useApi<DangerData>(dangerUrl);
+  const locate = () => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition((position) => {
+      setDangerUrl(`/api/widget/danger?theme=dark&lat=${position.coords.latitude}&lon=${position.coords.longitude}`);
+      onLocate();
+    }, () => setDangerUrl(url), { timeout: 7000 });
+  };
+  const started = data?.started_at
+    ? new Date(data.started_at).toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : null;
   return (
     <article className={`live-widget danger-widget ${data?.active ? 'danger-active' : ''}`}>
-      <header><ShieldAlert size={18} /><h3>Статус опасности</h3><span>24H</span></header>
+      <header><ShieldAlert size={18} /><h3>Статус опасности</h3><button onClick={locate} aria-label="Определить опасность по точной геолокации"><MapPin size={15} /></button><span>24H</span></header>
       <WidgetState loading={loading} error={error} />
       {data && !loading && !error && (
-        <div className="danger-status"><i /><strong>{data.message}</strong><p>{data.active ? data.area : `По данным подключённых источников за последние сутки${location ? ` · ${location.city}` : ''}.`}</p></div>
+        <div className="danger-status">
+          <i />
+          <strong>{data.active ? data.label || data.message : 'Опасность не обнаружена'}</strong>
+          {data.active && data.message ? <p>{data.message}</p> : null}
+          {data.active && started ? <p><small>Последнее событие: {started}{data.area ? ` · ${data.area}` : ''}</small></p> : null}
+          {!data.active && <p>По данным подключённых источников за последние сутки{location ? ` · ${location.city}` : ''}.</p>}
+        </div>
       )}
     </article>
   );
 }
 
 export default function LiveWidgets() {
-  const location = useApi<LocationData>('/api/widget/location');
+  const [ipLocation, setIpLocation] = useState<LocationData | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [ipError, setIpError] = useState('');
+  const [ipLoading, setIpLoading] = useState(true);
+
+  const applyLocation = useCallback((loc: LocationData) => {
+    setIpLocation(loc);
+    setIpError('');
+  }, []);
+
+  // Шаг 1: определяем город по IP.
+  useEffect(() => {
+    let cancelled = false;
+    setIpLoading(true);
+    setIpError('');
+    fetch('/api/widget/location', { headers: { Accept: 'application/json' } })
+      .then(async (response) => {
+        const payload = await response.json() as LocationData & { message?: string };
+        if (!response.ok) throw new Error(payload.message || 'Не удалось определить город по IP');
+        return payload;
+      })
+      .then((loc) => { if (!cancelled) applyLocation(loc); })
+      .catch((reason: Error) => { if (!cancelled) setIpError(reason.message); })
+      .finally(() => { if (!cancelled) setIpLoading(false); });
+    return () => { cancelled = true; };
+  }, [applyLocation]);
+
+  // Шаг 2 (по запросу или когда IP не дал город): точная геолокация браузера.
+  const locateByBrowser = useCallback(() => {
+    if (!navigator.geolocation) return;
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(async (position) => {
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+      try {
+        const response = await fetch(`/api/widget/reverse?lat=${lat}&lon=${lon}`, { headers: { Accept: 'application/json' } });
+        const payload = await response.json() as LocationData & { message?: string };
+        if (!response.ok) throw new Error(payload.message || 'Не удалось определить город');
+        applyLocation(payload);
+      } catch (reason) {
+        // Геокодер не дал город — всё равно показываем погоду/опасность по координатам.
+        applyLocation({
+          ok: true,
+          city: 'по геолокации',
+          region: '',
+          country: '',
+          latitude: lat,
+          longitude: lon,
+          approximate: true,
+        });
+      } finally {
+        setLocating(false);
+      }
+    }, () => setLocating(false), { timeout: 7000 });
+  }, [applyLocation]);
+
   return (
     <section className="live-section" id="live">
-      <div className="section-heading"><h2>Сейчас в вашем городе</h2><p>Радар определит приблизительную локацию по IP и покажет погоду и статус опасности рядом с вами.</p></div>
+      <div className="section-heading"><h2>Сейчас в вашем городе</h2><p>Радар определит локацию по IP, а при разрешённой геолокации — по точным координатам, и покажет погоду и статус опасности рядом с вами.</p></div>
       <div className="live-grid">
-        <LocationWidget {...location} />
-        <WeatherWidget location={location.data} waiting={location.loading} />
+        <LocationWidget data={ipLocation} error={ipError} loading={ipLoading || locating} onLocate={locateByBrowser} />
+        <WeatherWidget location={ipLocation} waiting={ipLoading} onLocate={locateByBrowser} />
         <NewsWidget />
-        <DangerWidget location={location.data} waiting={location.loading} />
+        <DangerWidget location={ipLocation} waiting={ipLoading} onLocate={locateByBrowser} />
       </div>
     </section>
   );

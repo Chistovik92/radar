@@ -1,4 +1,5 @@
 import PageLayout from '../components/PageLayout';
+import { Link } from 'react-router-dom';
 import { Check } from 'lucide-react';
 
 export default function Pricing() {
@@ -15,7 +16,7 @@ export default function Pricing() {
 
         <section className="intro-section">
           <p>
-            <strong>Радар v5.11.6</strong> — честные цены, без скрытых платежей. 
+            <strong>Радар v5.11.7</strong> — честные цены, без скрытых платежей. 
             Все оповещения об угрозах — <strong>бесплатно навсегда</strong>.
           </p>
           <p>
@@ -200,7 +201,7 @@ export default function Pricing() {
             <li>Выберите тариф и один из доступных способов оплаты</li>
             <li>Доступ активируется автоматически</li>
           </ol>
-          <p>Вопросы по оплате? <a href="/support">Напишите в поддержку</a></p>
+          <p>Вопросы по оплате? <Link to="/support">Напишите в поддержку</Link></p>
         </section>
       </div>
     </PageLayout>

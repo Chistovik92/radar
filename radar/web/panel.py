@@ -2937,9 +2937,8 @@ async def create_app() -> Any:
         return await landing_page(request)
 
     async def support_page(request):
-        """Support page with contact form (Platega compliance)."""
-        html_content = public_pages.render_support_page()
-        return web.Response(text=html_content, content_type="text/html")
+        """Support page — SPA-оболочка лендинга (React Router)."""
+        return await landing_page(request)
 
     async def pricing_page(request):
         """Pricing page — SPA-оболочка лендинга (React Router)."""

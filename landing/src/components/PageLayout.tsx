@@ -8,7 +8,7 @@ interface PageLayoutProps {
   version?: string;
 }
 
-export default function PageLayout({ children, version = '5.11.6' }: PageLayoutProps) {
+export default function PageLayout({ children, version = '5.11.7' }: PageLayoutProps) {
   const [hydra, setHydra] = useState(false);
   const [logoClicks, setLogoClicks] = useState(0);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -68,7 +68,7 @@ export default function PageLayout({ children, version = '5.11.6' }: PageLayoutP
             <Link to="/">Лендинг</Link>
             <Link to="/privacy">Политика</Link>
             <Link to="/terms">Соглашение</Link>
-            <a href="/support">Поддержка</a>
+            <Link to="/support">Поддержка</Link>
             <Link to="/pricing">Тарифы</Link>
             <a href="/login">Вход</a>
           </div>
@@ -90,7 +90,7 @@ export default function PageLayout({ children, version = '5.11.6' }: PageLayoutP
             <strong>Документы</strong>
             <Link to="/privacy">Политика конфиденциальности</Link>
             <Link to="/terms">Пользовательское соглашение</Link>
-            <a href="/support">Поддержка</a>
+            <Link to="/support">Поддержка</Link>
             <Link to="/pricing">Тарифы и цены</Link>
           </div>
           <div>

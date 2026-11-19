@@ -545,6 +545,43 @@ async def danger_state(city: str = "", hours: int = 24) -> dict[str, bool]:
     return state
 
 
+async def latest_threat(city: str = "", hours: int = 72) -> dict[str, Any] | None:
+    """Последнее событие угрозы (bpla/mchs) по городу для публичного виджета.
+
+    Возвращает краткую сводку без привязки к адресу: тип, серьёзность,
+    время, текст и признак отбоя. ``None`` — за окно данных ничего не было.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    wanted_city = city.strip().casefold()
+    async with session() as active:
+        query = (
+            select(Event)
+            .where(Event.created_at >= since)
+            .order_by(Event.created_at.desc())
+            .limit(500)
+        )
+        rows = (await active.scalars(query)).all()
+
+    for row in rows:
+        if wanted_city and (row.city or "").strip().casefold() != wanted_city:
+            continue
+        if not ({"bpla", "mchs"} & set(row.categories or [])):
+            continue
+        created = row.created_at
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        categories = list(row.categories or [])
+        return {
+            "type": "air_raid" if "bpla" in categories else "mchs",
+            "severity": row.severity or "info",
+            "all_clear": bool(row.all_clear),
+            "summary": (row.summary or "").strip()[:300],
+            "source": (row.source or "").strip()[:200],
+            "published_at": created.isoformat() if created else "",
+        }
+    return None
+
+
 async def recent_events(
     limit: int = 20,
     hours: int = 48,

@@ -56,7 +56,12 @@ def _internal_error() -> web.Response:
 # ============================================================
 
 async def widget_location(request: web.Request) -> web.Response:
-    """Приблизительный город посетителя по публичному IP, без выдачи адреса."""
+    """Приблизительный город посетителя по публичному IP, без выдачи адреса.
+
+    Основной сервис — ip-api.com (бесплатный, без ключа, только HTTP),
+    запасной — ipwho.is (HTTPS). Оба возвращают страну, регион, город и
+    координаты. Приватные адреса наружу не передаются.
+    """
     forwarded = config.WEB_HTTPS
     address = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
                if forwarded else request.remote or "")
@@ -71,37 +76,78 @@ async def widget_location(request: web.Request) -> web.Response:
             "message": "Не удалось определить город по IP",
         }, status=404)
 
+    for lookup in (_lookup_ip_api, _lookup_ipwhois):
+        try:
+            data = await lookup(str(ip))
+        except Exception:  # noqa: BLE001
+            log.warning("widget_location: %s недоступен", lookup.__name__)
+            continue
+        if data:
+            return web.json_response({
+                "ok": True,
+                **data,
+                "approximate": True,
+            })
+
+    return web.json_response({
+        "ok": False,
+        "error": "location_unavailable",
+        "message": "Не удалось определить город по IP",
+    }, status=503)
+
+
+async def _lookup_ip_api(ip: str) -> dict[str, Any] | None:
+    """ip-api.com (бесплатный план — только HTTP). Нормализованные поля или
+    None, если сервис не ответил/не нашёл адрес."""
+    params = {"fields": "status,country,regionName,city,lat,lon"}
+    async with _session() as session:
+        async with session.get(f"http://ip-api.com/json/{ip}", params=params) as response:
+            if response.status != 200:
+                return None
+            data = await response.json(content_type=None)
+    if data.get("status") != "success":
+        return None
+    city = str(data.get("city") or "").strip()[:120]
     try:
-        async with _session() as session:
-            async with session.get(f"https://ipwho.is/{ip}") as response:
-                if response.status != 200:
-                    raise ValueError("geolocation unavailable")
-                data = await response.json()
-        if not data.get("success", True):
-            raise ValueError("location not found")
-        city = str(data.get("city") or "").strip()[:120]
+        lat = float(data.get("lat"))
+        lon = float(data.get("lon"))
+    except (TypeError, ValueError):
+        return None
+    if not city or not math.isfinite(lat) or not math.isfinite(lon):
+        return None
+    return {
+        "city": city,
+        "region": str(data.get("regionName") or "").strip()[:120],
+        "country": str(data.get("country") or "").strip()[:120],
+        "latitude": lat,
+        "longitude": lon,
+    }
+
+
+async def _lookup_ipwhois(ip: str) -> dict[str, Any] | None:
+    """ipwho.is (HTTPS) — запасной источник той же геолокации по IP."""
+    async with _session() as session:
+        async with session.get(f"https://ipwho.is/{ip}") as response:
+            if response.status != 200:
+                return None
+            data = await response.json(content_type=None)
+    if not data.get("success", True):
+        return None
+    city = str(data.get("city") or "").strip()[:120]
+    try:
         lat = float(data.get("latitude"))
         lon = float(data.get("longitude"))
-        if not city or not math.isfinite(lat) or not math.isfinite(lon):
-            raise ValueError("incomplete location")
-        return web.json_response({
-            "ok": True,
-            "city": city,
-            "region": str(data.get("region") or "").strip()[:120],
-            "country": str(data.get("country") or "").strip()[:120],
-            "latitude": lat,
-            "longitude": lon,
-            "approximate": True,
-        })
-    except (TypeError, ValueError, aiohttp.ClientError):
-        return web.json_response({
-            "ok": False,
-            "error": "location_unavailable",
-            "message": "Не удалось определить город по IP",
-        }, status=503)
-    except Exception:  # noqa: BLE001
-        log.exception("widget_location error")
-        return _internal_error()
+    except (TypeError, ValueError):
+        return None
+    if not city or not math.isfinite(lat) or not math.isfinite(lon):
+        return None
+    return {
+        "city": city,
+        "region": str(data.get("region") or "").strip()[:120],
+        "country": str(data.get("country") or "").strip()[:120],
+        "latitude": lat,
+        "longitude": lon,
+    }
 
 
 async def widget_weather(request: web.Request) -> web.Response:
@@ -234,40 +280,89 @@ async def widget_news(request: web.Request) -> web.Response:
 
 
 async def widget_danger(request: web.Request) -> web.Response:
-    """Danger status widget: /api/widget/danger?city=auto&theme=dark"""
+    """Danger status widget: /api/widget/danger?city=auto|&lat=..&lon=..&theme=dark
+
+    Берёт последнее событие угрозы (БПЛА/МЧС) по городу. Город определяется
+    из ``city`` либо из переданных браузером координат (reverse geocode).
+    При отсутствии данных за окно наблюдения — «опасность не обнаружена».
+    """
     theme = request.query.get("theme", "dark")
-    city = request.query.get("city", "auto").strip()[:120]
-    if city == "auto":
-        city = config.DEFAULT_CITY
-    if not city:
-        return web.json_response({
-            "ok": False,
-            "error": "city_required",
-            "message": "Укажите город для проверки статуса",
-        }, status=400)
+    city = request.query.get("city", "").strip()[:120]
+
+    lat: float | None = None
+    lon: float | None = None
+    raw_lat = request.query.get("lat")
+    raw_lon = request.query.get("lon")
+    if raw_lat is not None or raw_lon is not None:
+        try:
+            lat = float(raw_lat or "")
+            lon = float(raw_lon or "")
+        except ValueError:
+            lat = lon = None
+        if (lat is None or lon is None or not math.isfinite(lat)
+                or not math.isfinite(lon) or not -90 <= lat <= 90
+                or not -180 <= lon <= 180):
+            return web.json_response({
+                "ok": False,
+                "error": "coordinates_invalid",
+                "message": "Некорректные координаты",
+            }, status=400)
 
     try:
+        if lat is not None and lon is not None and not city:
+            # По точным координатам браузера уточняем город.
+            async with _session() as session:
+                found = await geocode.reverse(session, lat, lon)
+            city = (found.get("city") or "").strip()[:120]
+
+        if not city or city == "auto":
+            city = config.DEFAULT_CITY
+        if not city:
+            return web.json_response({
+                "ok": False,
+                "error": "city_required",
+                "message": "Разрешите геолокацию или укажите город",
+            }, status=400)
+
         # Импорт ленивый — см. widget_news (sqlalchemy недоступен без БД).
         from ..db import repo
 
         state = await repo.danger_state(city=city, hours=24)
+        latest = await repo.latest_threat(city=city, hours=72)
         bpla = state["bpla"]
         mchs = state["mchs"]
 
-        if bpla or mchs:
+        if latest is not None and not latest["all_clear"]:
+            kind = latest["type"]
             result = {
                 "ok": True,
                 "active": True,
-                "type": "air_raid" if bpla > 0 else "mchs",
-                "level": "red" if bpla > 0 else "yellow",
+                "type": kind,
+                "level": "red" if kind == "air_raid" else "yellow",
+                "message": latest["summary"] or (
+                    "Есть события БПЛА/ракетной опасности"
+                    if kind == "air_raid" else "Есть экстренные оповещения МЧС"
+                ),
+                "area": city,
+                "started_at": latest["published_at"],
+                "icon": "🚨" if kind == "air_raid" else "🆘",
+                "label": "Воздушная тревога" if kind == "air_raid" else "Оповещение МЧС",
+                "theme": theme,
+            }
+        elif bpla or mchs:
+            result = {
+                "ok": True,
+                "active": True,
+                "type": "air_raid" if bpla else "mchs",
+                "level": "red" if bpla else "yellow",
                 "message": (
                     "За последние сутки есть события БПЛА/ракетной опасности"
-                    if bpla > 0 else "Есть экстренные оповещения МЧС"
+                    if bpla else "Есть экстренные оповещения МЧС"
                 ),
                 "area": city,
                 "started_at": None,
-                "icon": "🚨" if bpla > 0 else "🆘",
-                "label": "Воздушная тревога" if bpla > 0 else "Оповещение МЧС",
+                "icon": "🚨" if bpla else "🆘",
+                "label": "Воздушная тревога" if bpla else "Оповещение МЧС",
                 "theme": theme,
             }
         else:
@@ -277,11 +372,55 @@ async def widget_danger(request: web.Request) -> web.Response:
                 "type": "none",
                 "level": "green",
                 "message": "Опасностей не обнаружено",
+                "area": city,
                 "theme": theme,
             }
         return web.json_response(result)
     except Exception:  # noqa: BLE001
         log.exception("widget_danger error")
+        return _internal_error()
+
+
+async def widget_reverse(request: web.Request) -> web.Response:
+    """Обратное геокодирование: /api/widget/reverse?lat=..&lon=..
+
+    Возвращает город/регион/страну по координатам браузера — для случаев,
+    когда IP-геолокация недоступна, но пользователь дал точную геопозицию.
+    """
+    try:
+        lat = float(request.query.get("lat", ""))
+        lon = float(request.query.get("lon", ""))
+    except ValueError:
+        lat = lon = float("nan")
+    if (not math.isfinite(lat) or not math.isfinite(lon)
+            or not -90 <= lat <= 90 or not -180 <= lon <= 180):
+        return web.json_response({
+            "ok": False,
+            "error": "coordinates_invalid",
+            "message": "Некорректные координаты",
+        }, status=400)
+
+    try:
+        async with _session() as session:
+            found = await geocode.reverse(session, lat, lon)
+        city = (found.get("city") or "").strip()
+        if not city or city == config.DEFAULT_CITY:
+            return web.json_response({
+                "ok": False,
+                "error": "location_unavailable",
+                "message": "Не удалось определить город по координатам",
+            }, status=404)
+        return web.json_response({
+            "ok": True,
+            "city": city,
+            "region": (found.get("region") or "").strip()[:120],
+            "country": "",
+            "latitude": lat,
+            "longitude": lon,
+            "approximate": True,
+        })
+    except Exception:  # noqa: BLE001
+        log.exception("widget_reverse error")
         return _internal_error()
 
 
@@ -525,10 +664,12 @@ def routes(web_module):
     """Return aiohttp routes for widget API."""
     return [
         web_module.get("/api/widget/location", widget_location),
+        web_module.get("/api/widget/reverse", widget_reverse),
         web_module.get("/api/widget/weather", widget_weather),
         web_module.get("/api/widget/news", widget_news),
         web_module.get("/api/widget/danger", widget_danger),
     ]
 
 
-__all__ = ["routes", "WIDGET_JS", "widget_location", "widget_weather", "widget_news", "widget_danger"]
+__all__ = ["routes", "WIDGET_JS", "widget_location", "widget_reverse",
+           "widget_weather", "widget_news", "widget_danger"]
