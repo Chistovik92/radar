@@ -1,4 +1,5 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import {
   ArrowUpRight, Bot, Check, Cloud, Code2, Database,
@@ -208,7 +209,7 @@ export default function App() {
               {config.plans.map(([days, stars]) => <div className="plan-row" key={days}><span>{days} дней</span><strong>{stars} ⭐</strong><small>Telegram Stars</small></div>)}
             </div>
           </div>
-          <a className="text-link" href="/pricing">Условия и актуальные тарифы<ArrowUpRight size={15} /></a>
+          <Link className="text-link" to="/pricing">Условия и актуальные тарифы<ArrowUpRight size={15} /></Link>
         </section>
 
         <section className="login-section" id="login">
@@ -227,7 +228,7 @@ export default function App() {
       <footer className="site-footer">
         <div className="footer-brand"><Radar /><strong>РАДАР</strong><span>Система городского мониторинга<br />с открытым исходным кодом.</span></div>
         <div><strong>Проект</strong><a href="#capabilities">Возможности</a><a href="#live">Мой город</a><a href="https://github.com/Chistovik92/radar" target="_blank" rel="noreferrer noopener">GitHub</a></div>
-        <div><strong>Документы</strong><a href="/privacy">Конфиденциальность</a><a href="/terms">Соглашение</a><a href="/support">Поддержка</a></div>
+        <div><strong>Документы</strong><Link to="/privacy">Конфиденциальность</Link><Link to="/terms">Соглашение</Link><a href="/support">Поддержка</a></div>
         <div><strong>Вход</strong><a href="/profile">Личный кабинет</a><a href="/login">Панель управления</a><a href={botUrl} target="_blank" rel="noreferrer noopener">Telegram-бот</a></div>
         <div className="footer-bottom"><span>© 2026 SecretHero · GPL-3.0</span><span>v{config.version} · CITY INTELLIGENCE · OPEN SOURCE</span></div>
       </footer>
