@@ -15,7 +15,7 @@ export default function Pricing() {
 
         <section className="intro-section">
           <p>
-            <strong>Радар v5.11.5</strong> — честные цены, без скрытых платежей. 
+            <strong>Радар v5.11.6</strong> — честные цены, без скрытых платежей. 
             Все оповещения об угрозах — <strong>бесплатно навсегда</strong>.
           </p>
           <p>

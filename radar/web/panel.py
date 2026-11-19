@@ -2929,14 +2929,12 @@ async def create_app() -> Any:
         return web.Response(text=html_content, content_type="text/html")
 
     async def privacy_page(request):
-        """Privacy policy page (Platega compliance)."""
-        html_content = public_pages.render_privacy_page()
-        return web.Response(text=html_content, content_type="text/html")
+        """Privacy policy page — SPA-оболочка лендинга (React Router)."""
+        return await landing_page(request)
 
     async def terms_page(request):
-        """Terms of service page (Platega compliance)."""
-        html_content = public_pages.render_terms_page()
-        return web.Response(text=html_content, content_type="text/html")
+        """Terms of service page — SPA-оболочка лендинга (React Router)."""
+        return await landing_page(request)
 
     async def support_page(request):
         """Support page with contact form (Platega compliance)."""
@@ -2944,9 +2942,8 @@ async def create_app() -> Any:
         return web.Response(text=html_content, content_type="text/html")
 
     async def pricing_page(request):
-        """Pricing page (Platega compliance)."""
-        html_content = public_pages.render_pricing_page()
-        return web.Response(text=html_content, content_type="text/html")
+        """Pricing page — SPA-оболочка лендинга (React Router)."""
+        return await landing_page(request)
 
     @guard
     async def overview(_request, session):

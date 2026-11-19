@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { TerminalSquare } from 'lucide-react';
-import { ACTIVATION_PHRASE, HYDRA_ACTIVATION_PHRASES, HYDRA_LOGS, NORMAL_LOGS, WINTER_SOLDIER_CODES } from '../data';
+import { HYDRA_ACTIVATION_PHRASES, HYDRA_LOGS, NORMAL_LOGS, WINTER_SOLDIER_CODES } from '../data';
 
 export default function ZolaTerminal({ hydra, onHydra }: { hydra: boolean; onHydra: () => void }) {
   const [lines, setLines] = useState<string[]>([

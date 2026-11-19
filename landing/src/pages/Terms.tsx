@@ -16,7 +16,7 @@ export default function Terms() {
           <p><strong>Проект:</strong> «Радар» — бот и веб-панель для мониторинга городских угроз и аварий ЖКХ.</p>
           <p><strong>Бот:</strong> <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener">@SecretHeroBot</a></p>
           <p><strong>Автор:</strong> SecretHero</p>
-          <p><strong>Версия:</strong> 5.11.5 (ноябрь 2026)</p>
+          <p><strong>Версия:</strong> 5.11.6 (ноябрь 2026)</p>
         </section>
 
         <section className="doc-section">

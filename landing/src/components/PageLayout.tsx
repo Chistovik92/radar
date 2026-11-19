@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Radar } from 'lucide-react';
 import ZolaTerminal from './ZolaTerminal';
-import { WINTER_SOLDIER_CODES, HYDRA_ACTIVATION_PHRASES } from '../data';
 
 interface PageLayoutProps {
   children: React.ReactNode;
   version?: string;
 }
 
-export default function PageLayout({ children, version = '5.11.5' }: PageLayoutProps) {
+export default function PageLayout({ children, version = '5.11.6' }: PageLayoutProps) {
   const [hydra, setHydra] = useState(false);
   const [logoClicks, setLogoClicks] = useState(0);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -32,26 +31,6 @@ export default function PageLayout({ children, version = '5.11.5' }: PageLayoutP
       setLogoClicks(0);
     }
   }, [logoClicks, handleHydra]);
-
-  const handleZolaCommand = useCallback((input: string) => {
-    const normalized = input.toLowerCase().trim();
-    
-    // Проверка фраз активации HYDRA
-    if (HYDRA_ACTIVATION_PHRASES.some((phrase) => normalized.includes(phrase.toLowerCase()))) {
-      handleHydra();
-      return;
-    }
-    
-    // Проверка кодовых слов Зимнего Солдата
-    const words = normalized.split(/\s+/);
-    const matchedCount = words.filter((w) =>
-      WINTER_SOLDIER_CODES.some((sw) => sw.toLowerCase() === w)
-    ).length;
-    
-    if (matchedCount >= 3) {
-      handleHydra();
-    }
-  }, [handleHydra]);
 
   const handleWhisper = useCallback(() => {
     setHydra(false);
@@ -144,9 +123,8 @@ export default function PageLayout({ children, version = '5.11.5' }: PageLayoutP
 
       {terminalOpen && (
         <ZolaTerminal
-          open={terminalOpen}
-          onClose={() => setTerminalOpen(false)}
-          onCommand={handleZolaCommand}
+          hydra={hydra}
+          onHydra={handleHydra}
         />
       )}
     </div>
