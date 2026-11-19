@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import BlackHole from './BlackHole';
 import HydraTentacles from './HydraTentacles';
 import PlanetaryServers from './PlanetaryServers';
+import Helicarrier from './Helicarrier';
 import type { SceneProps } from '../types';
 
 function Scene({ hydra, reducedMotion, assimilation, nodes }: SceneProps) {
@@ -21,6 +22,7 @@ function Scene({ hydra, reducedMotion, assimilation, nodes }: SceneProps) {
         <BlackHole hydra={hydra} reducedMotion={reducedMotion} />
         <PlanetaryServers nodes={nodes} hydra={hydra} reducedMotion={reducedMotion} assimilation={assimilation} />
         <HydraTentacles hydra={hydra} reducedMotion={reducedMotion} assimilation={assimilation} />
+        {!reducedMotion && <Helicarrier hydra={hydra} />}
         {!reducedMotion && (
           <EffectComposer multisampling={0}>
             <Bloom mipmapBlur intensity={hydra ? 1.35 : 0.9} luminanceThreshold={0.24} luminanceSmoothing={0.55} />
