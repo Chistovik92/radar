@@ -1,162 +1,208 @@
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { ArrowLeft, Check } from 'lucide-react';
-import RadarScene from '../components/RadarScene';
-import HudOverlay from '../components/HudOverlay';
-import ZolaTerminal from '../components/ZolaTerminal';
-import { INITIAL_NODES, WINTER_SOLDIER_CODES, HYDRA_ACTIVATION_PHRASES } from '../data';
-import type { Assimilation, ServerNode } from '../types';
+import PageLayout from '../components/PageLayout';
+import { Check } from 'lucide-react';
 
 export default function Pricing() {
-  const reducedMotion = useRef(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false).current;
-  const [hydra, setHydra] = useState(false);
-  const [nodes, setNodes] = useState<ServerNode[]>(INITIAL_NODES);
-  const [assimilation, setAssimilation] = useState<Assimilation | null>(null);
-  const [logoClicks, setLogoClicks] = useState(0);
-  const logoClickTimer = useRef<NodeJS.Timeout | null>(null);
-
-  const handleHydra = useCallback(() => {
-    setHydra(true);
-    setAssimilation({ start: Date.now(), duration: 3000 });
-    setTimeout(() => setAssimilation(null), 3000);
-  }, []);
-
-  const handleLogoClick = useCallback(() => {
-    setLogoClicks((prev) => prev + 1);
-    if (logoClickTimer.current) clearTimeout(logoClickTimer.current);
-    logoClickTimer.current = setTimeout(() => setLogoClicks(0), 2000);
-  }, []);
-
-  useEffect(() => {
-    if (logoClicks >= 3) {
-      handleHydra();
-      setLogoClicks(0);
-    }
-  }, [logoClicks, handleHydra]);
-
-  const handleZolaCommand = useCallback((input: string) => {
-    const normalized = input.toLowerCase().trim();
-    if (HYDRA_ACTIVATION_PHRASES.some((phrase) => normalized.includes(phrase.toLowerCase()))) {
-      handleHydra();
-      return;
-    }
-    const words = normalized.split(/\s+/);
-    const matchedCount = words.filter((w) =>
-      WINTER_SOLDIER_CODES.some((sw) => sw.toLowerCase() === w)
-    ).length;
-    if (matchedCount >= 3) {
-      handleHydra();
-    }
-  }, [handleHydra]);
-
-  const handleWhisper = useCallback(() => {
-    setHydra(false);
-    setAssimilation(null);
-    setNodes(INITIAL_NODES);
-  }, []);
-
   return (
-    <div className="min-h-screen bg-neutral-950 text-white relative overflow-hidden">
-      <Suspense fallback={null}>
-        <RadarScene
-          hydra={hydra}
-          reducedMotion={reducedMotion}
-          assimilation={assimilation}
-          nodes={nodes}
-          onNodesChange={setNodes}
-        />
-      </Suspense>
+    <PageLayout>
+      <div className="pricing-page">
+        <header className="page-title">
+          <p className="update-date">Обновлено: ноябрь 2026</p>
+          <h1>Тарифы и цены</h1>
+          <p className="page-subtitle">
+            Оповещения бесплатно навсегда. Актуальные тарифы подписки и порядок оформления
+          </p>
+        </header>
 
-      <HudOverlay
-        hydra={hydra}
-        reducedMotion={reducedMotion}
-        onLogoClick={handleLogoClick}
-        onWhisper={handleWhisper}
-      />
+        <section className="intro-section">
+          <p>
+            <strong>Радар v5.11.5</strong> — честные цены, без скрытых платежей. 
+            Все оповещения об угрозах — <strong>бесплатно навсегда</strong>.
+          </p>
+          <p>
+            Подписка на подборки оплачивается через Telegram Stars. Способы оплаты 
+            аренды приватного сервера и итоговая сумма показываются в боте до подтверждения заказа.
+          </p>
+        </section>
 
-      <ZolaTerminal hydra={hydra} onCommand={handleZolaCommand} />
-
-      <div className="relative z-10 container mx-auto px-6 py-24">
-        <Link
-          to="/"
-          className="inline-flex items-center gap-2 text-sm text-neutral-400 hover:text-white transition-colors mb-8"
-        >
-          <ArrowLeft size={16} />
-          Back to Home
-        </Link>
-
-        <h1 className={`text-5xl font-bold mb-4 transition-colors duration-500 ${
-          hydra ? 'text-red-500' : 'text-white'
-        }`}>
-          Pricing Plans
-        </h1>
-        <p className="text-xl text-neutral-400 mb-16 max-w-2xl">
-          Choose the subscription that fits your mission parameters.
-        </p>
-
-        <div className="grid md:grid-cols-3 gap-8 max-w-5xl">
-          {[
-            { days: 30, price: 150, name: 'Agent' },
-            { days: 90, price: 400, name: 'Operative', featured: true },
-            { days: 365, price: 1400, name: 'Director' },
-          ].map((plan) => (
-            <div
-              key={plan.days}
-              className={`relative p-8 rounded-2xl border transition-all duration-500 ${
-                hydra
-                  ? 'bg-red-950/20 border-red-500/50'
-                  : plan.featured
-                  ? 'bg-blue-950/20 border-blue-500/50 scale-105'
-                  : 'bg-neutral-900/50 border-neutral-800'
-              }`}
-            >
-              {plan.featured && (
-                <div className={`absolute -top-4 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-sm font-medium ${
-                  hydra ? 'bg-red-500 text-white' : 'bg-blue-500 text-white'
-                }`}>
-                  Most Popular
-                </div>
-              )}
-              <h3 className="text-2xl font-bold mb-2">{plan.name}</h3>
-              <div className="flex items-baseline gap-2 mb-6">
-                <span className="text-4xl font-bold">₽{plan.price}</span>
-                <span className="text-neutral-400">/ {plan.days} days</span>
-              </div>
-              <ul className="space-y-3 mb-8">
-                <li className="flex items-start gap-3">
-                  <Check size={20} className={hydra ? 'text-red-500' : 'text-blue-500'} />
-                  <span>Priority support</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <Check size={20} className={hydra ? 'text-red-500' : 'text-blue-500'} />
-                  <span>Secure data encryption</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <Check size={20} className={hydra ? 'text-red-500' : 'text-blue-500'} />
-                  <span>Unlimited operations</span>
-                </li>
-              </ul>
-              <button
-                className={`w-full py-3 rounded-lg font-medium transition-colors ${
-                  hydra
-                    ? 'bg-red-600 hover:bg-red-700 text-white'
-                    : 'bg-blue-600 hover:bg-blue-700 text-white'
-                }`}
-              >
-                Select Plan
-              </button>
+        <section className="pricing-grid">
+          <div className="pricing-card free">
+            <div className="card-icon">🛡</div>
+            <h3>Оповещения об угрозах</h3>
+            <div className="price">
+              <span className="amount">0 ₽</span>
+              <span className="period">бесплатно навсегда</span>
             </div>
-          ))}
-        </div>
-
-        {hydra && (
-          <div className="mt-16 p-6 rounded-xl bg-red-950/30 border border-red-500/50">
-            <p className="text-red-400 font-mono text-sm">
-              ⚠ HYDRA PROTOCOL ACTIVE — All pricing data has been assimilated. Resistance is futile.
-            </p>
+            <ul className="features">
+              <li><Check size={16} /> БПЛА / ракетная опасность / воздушная тревога / отбой</li>
+              <li><Check size={16} /> МЧС: ЧС, штормовые предупреждения, эвакуация</li>
+              <li><Check size={16} /> ЖКХ: вода, свет, газ, отопление — адресно</li>
+              <li><Check size={16} /> Базовая погода (текст): текущая, 8 ч, 3 дня</li>
+              <li><Check size={16} /> Проверка ссылок — 200/сутки</li>
+              <li><Check size={16} /> ИИ-ассистент — базовый лимит</li>
+              <li><Check size={16} /> Без рекламы, без трекинга</li>
+            </ul>
+            <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener" className="cta-button">
+              Запустить бота
+            </a>
           </div>
-        )}
+
+          <div className="pricing-card">
+            <div className="card-icon">📰</div>
+            <h3>Новостные подборки</h3>
+            <div className="price">
+              <span className="amount">10 ⭐</span>
+              <span className="period">30 дней</span>
+            </div>
+            <ul className="features">
+              <li><Check size={16} /> 18 тематик в одной подписке</li>
+              <li><Check size={16} /> ИИ-сводки и доставка по расписанию</li>
+              <li><Check size={16} /> Погода картинкой</li>
+              <li><Check size={16} /> Скачивание видео без дневного лимита подписчика</li>
+            </ul>
+            <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener" className="cta-button">
+              Оформить в боте за Stars
+            </a>
+          </div>
+
+          <div className="pricing-card">
+            <div className="card-icon">📰</div>
+            <h3>Новостные подборки</h3>
+            <div className="price">
+              <span className="amount">25 ⭐</span>
+              <span className="period">90 дней</span>
+            </div>
+            <ul className="features">
+              <li><Check size={16} /> 18 тематик в одной подписке</li>
+              <li><Check size={16} /> ИИ-сводки и доставка по расписанию</li>
+              <li><Check size={16} /> Погода картинкой</li>
+              <li><Check size={16} /> Скачивание видео без дневного лимита подписчика</li>
+            </ul>
+            <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener" className="cta-button">
+              Оформить в боте за Stars
+            </a>
+          </div>
+
+          <div className="pricing-card">
+            <div className="card-icon">📰</div>
+            <h3>Новостные подборки</h3>
+            <div className="price">
+              <span className="amount">45 ⭐</span>
+              <span className="period">180 дней</span>
+            </div>
+            <ul className="features">
+              <li><Check size={16} /> 18 тематик в одной подписке</li>
+              <li><Check size={16} /> ИИ-сводки и доставка по расписанию</li>
+              <li><Check size={16} /> Погода картинкой</li>
+              <li><Check size={16} /> Скачивание видео без дневного лимита подписчика</li>
+            </ul>
+            <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener" className="cta-button">
+              Оформить в боте за Stars
+            </a>
+          </div>
+
+          <div className="pricing-card">
+            <div className="card-icon">📰</div>
+            <h3>Новостные подборки</h3>
+            <div className="price">
+              <span className="amount">85 ⭐</span>
+              <span className="period">365 дней</span>
+            </div>
+            <ul className="features">
+              <li><Check size={16} /> 18 тематик в одной подписке</li>
+              <li><Check size={16} /> ИИ-сводки и доставка по расписанию</li>
+              <li><Check size={16} /> Погода картинкой</li>
+              <li><Check size={16} /> Скачивание видео без дневного лимита подписчика</li>
+            </ul>
+            <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener" className="cta-button">
+              Оформить в боте за Stars
+            </a>
+          </div>
+
+          <div className="pricing-card">
+            <div className="card-icon">🔐</div>
+            <h3>Аренда приватного сервера</h3>
+            <div className="price">
+              <span className="amount">Тарифы в боте</span>
+              <span className="period">срок и цена до оплаты</span>
+            </div>
+            <ul className="features">
+              <li><Check size={16} /> Аренда приватного сервера</li>
+              <li><Check size={16} /> Срок, трафик и число устройств зависят от тарифа</li>
+              <li><Check size={16} /> Управление заказом в боте</li>
+            </ul>
+            <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener" className="cta-button">
+              Узнать тарифы в боте
+            </a>
+          </div>
+        </section>
+
+        <section className="notes-section">
+          <p><strong>Важные замечания:</strong></p>
+          <ul>
+            <li>Цены подписки указаны в Telegram Stars (⭐); стоимость аренды сервера показывается в выбранном тарифе.</li>
+            <li>Приватный сервер предоставляется для законного использования по назначению.</li>
+            <li>Подписка на подборки оплачивается Stars; доступные способы оплаты аренды зависят от настроек бота.</li>
+            <li>Возврат средств: заявка в поддержку в течение 14 дней, если сервис не предоставлен.</li>
+            <li>Сам-хостинг (установка на свой сервер) — полностью бесплатно, код открыт (GPL-3.0).</li>
+          </ul>
+        </section>
+
+        <section className="comparison-section">
+          <h2>Сравнение: бесплатно vs подписка</h2>
+          <table className="comparison-table">
+            <thead>
+              <tr>
+                <th>Функция</th>
+                <th>Бесплатно</th>
+                <th>Подписка (Stars)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Тревоги БПЛА / МЧС / ЖКХ</td>
+                <td>✅ Полностью</td>
+                <td>✅ Полностью</td>
+              </tr>
+              <tr>
+                <td>Погода (текст)</td>
+                <td>✅ Текущая, 8ч, 3 дня</td>
+                <td>✅ + картинка, вектор ветра, луна</td>
+              </tr>
+              <tr>
+                <td>Новостные подборки</td>
+                <td>❌</td>
+                <td>✅ 18 тем, ИИ-сводки, расписание</td>
+              </tr>
+              <tr>
+                <td>Проверка ссылок</td>
+                <td>200/сутки</td>
+                <td>Без лимита</td>
+              </tr>
+              <tr>
+                <td>ИИ-ассистент</td>
+                <td>Базовый лимит</td>
+                <td>Расширенный лимит</td>
+              </tr>
+              <tr>
+                <td>Аренда приватного сервера</td>
+                <td>❌</td>
+                <td>Отдельно (₽)</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section className="how-to-pay">
+          <h2>Как оплатить</h2>
+          <ol>
+            <li>Откройте бота: <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener">@SecretHeroBot</a></li>
+            <li>Меню → «Подписки» или «Сервер»</li>
+            <li>Выберите тариф и один из доступных способов оплаты</li>
+            <li>Доступ активируется автоматически</li>
+          </ol>
+          <p>Вопросы по оплате? <a href="/support">Напишите в поддержку</a></p>
+        </section>
       </div>
-    </div>
+    </PageLayout>
   );
 }
