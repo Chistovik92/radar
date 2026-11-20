@@ -66,10 +66,12 @@ export default function PageLayout({ children, version = '5.11.7' }: PageLayoutP
           </Link>
           <div className="nav-links">
             <Link to="/">Лендинг</Link>
+            <Link to="/downloads">Загрузки</Link>
+            <Link to="/projects">Проекты</Link>
+            <Link to="/pricing">Тарифы</Link>
+            <Link to="/support">Поддержка</Link>
             <Link to="/privacy">Политика</Link>
             <Link to="/terms">Соглашение</Link>
-            <Link to="/support">Поддержка</Link>
-            <Link to="/pricing">Тарифы</Link>
             <a href="/login">Вход</a>
           </div>
         </nav>
@@ -92,6 +94,13 @@ export default function PageLayout({ children, version = '5.11.7' }: PageLayoutP
             <Link to="/terms">Пользовательское соглашение</Link>
             <Link to="/support">Поддержка</Link>
             <Link to="/pricing">Тарифы и цены</Link>
+          </div>
+          <div>
+            <strong>Приложения</strong>
+            <Link to="/downloads">Загрузки</Link>
+            <Link to="/projects">Наши проекты</Link>
+            <a href="https://github.com/Chistovik92/HydraVPN" target="_blank" rel="noreferrer noopener">HydraVPN</a>
+            <a href="https://github.com/Chistovik92/HydraVPNforRouters" target="_blank" rel="noreferrer noopener">HydraVPN for Routers</a>
           </div>
           <div>
             <strong>Бот и каналы</strong>

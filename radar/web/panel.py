@@ -2944,6 +2944,14 @@ async def create_app() -> Any:
         """Pricing page — SPA-оболочка лендинга (React Router)."""
         return await landing_page(request)
 
+    async def downloads_page(request):
+        """Downloads page — SPA-оболочка лендинга (React Router)."""
+        return await landing_page(request)
+
+    async def projects_page(request):
+        """Projects page — SPA-оболочка лендинга (React Router)."""
+        return await landing_page(request)
+
     @guard
     async def overview(_request, session):
         return web.Response(
@@ -3986,6 +3994,8 @@ async def create_app() -> Any:
         web.get("/terms", terms_page),
         web.get("/support", support_page),
         web.get("/pricing", pricing_page),
+        web.get("/downloads", downloads_page),
+        web.get("/projects", projects_page),
         # Authenticated dashboard
         web.get("/dashboard", overview),
         web.get("/profile", guard(profile_page, "user")),

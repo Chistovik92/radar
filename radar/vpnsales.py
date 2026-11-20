@@ -203,9 +203,14 @@ async def create(uid: str | int, index: int) -> dict[str, Any]:
     provider = payments.provider()
     order_id = pysecrets.token_hex(5)
     try:
+        # Идентификатор покупателя для платёжной системы. Platega требует
+        # e-mail в каждом платеже: для Telegram-магазина это постоянный
+        # числовой ID пользователя с доменом telegram.org (username не
+        # годится — его можно сменить). Ручному и Crypto Pay полю не нужно.
+        customer_email = f"{uid}@telegram.org"
         invoice = await provider.create_invoice(
             plan.price, currency(), f"VPN: {plan.title(currency())}", f"vpn:{order_id}",
-            expires_in=ORDER_TTL,
+            expires_in=ORDER_TTL, customer_email=customer_email,
         )
     except payments.PaymentError as exc:
         raise SaleError(str(exc))

@@ -229,11 +229,35 @@ SETTINGS: tuple[Setting, ...] = (
             "Продажа VPN", secret=False),
     Setting("PAY_PROVIDER", "Оплата: провайдер",
             "manual — оплату подтверждает суперадминистратор кнопкой; "
-            "cryptopay — Crypto Pay (@CryptoBot). Пусто — manual.",
+            "cryptopay — Crypto Pay (@CryptoBot); platega — Platega "
+            "(СБП QR + крипта). Пусто — manual.",
             "Продажа VPN", secret=False),
     Setting("PAY_MANUAL_NOTE", "Оплата: как платить (вручную)",
             "Текст для покупателя при ручном подтверждении: куда и как "
             "перевести оплату. Показывается под заказом.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_PLATEGA_MERCHANT_ID", "Platega: merchant ID",
+            "Выдаётся при подключении мерчанта в Platega. Передаётся в "
+            "заголовке X-MerchantId каждого запроса.",
+            "Продажа VPN", where="Platega → кабинет мерчанта"),
+    Setting("PAY_PLATEGA_SECRET", "Platega: секрет",
+            "Секретный ключ для заголовка X-Secret. Не публикуйте и не "
+            "храните в клиентском коде.",
+            "Продажа VPN", where="Platega → кабинет мерчанта"),
+    Setting("PAY_PLATEGA_BASE", "Platega: базовый адрес API",
+            "Корень API, без завершающего слэша. Пусто — "
+            "https://gate.platega.com (уточните у менеджера).",
+            "Продажа VPN", secret=False),
+    Setting("PAY_PLATEGA_METHOD", "Platega: способ оплаты",
+            "Числовой код способа оплаты (paymentMethod). Уточните код "
+            "СБП и крипты у менеджера. Пусто — 2.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_PLATEGA_RETURN_URL", "Platega: страница возврата",
+            "URL, куда вернуть покупателя после оплаты (поле return). "
+            "Пусто — возврата нет.",
+            "Продажа VPN", secret=False),
+    Setting("PAY_PLATEGA_FAILED_URL", "Platega: страница ошибки",
+            "URL при неудачной оплате (поле failedUrl). Пусто — не задан.",
             "Продажа VPN", secret=False),
     Setting("PAY_CRYPTOPAY_TOKEN", "Crypto Pay: токен",
             "Из @CryptoBot → Crypto Pay → Create App. Комиссию и условия "

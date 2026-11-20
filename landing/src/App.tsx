@@ -227,7 +227,7 @@ export default function App() {
 
       <footer className="site-footer">
         <div className="footer-brand"><Radar /><strong>РАДАР</strong><span>Система городского мониторинга<br />с открытым исходным кодом.</span></div>
-        <div><strong>Проект</strong><a href="#capabilities">Возможности</a><a href="#live">Мой город</a><a href="https://github.com/Chistovik92/radar" target="_blank" rel="noreferrer noopener">GitHub</a></div>
+        <div><strong>Проект</strong><a href="#capabilities">Возможности</a><a href="#live">Мой город</a><a href="/projects">Наши проекты</a><a href="/downloads">Загрузки</a><a href="https://github.com/Chistovik92/radar" target="_blank" rel="noreferrer noopener">GitHub</a></div>
         <div><strong>Документы</strong><Link to="/privacy">Конфиденциальность</Link><Link to="/terms">Соглашение</Link><Link to="/support">Поддержка</Link></div>
         <div><strong>Вход</strong><a href="/profile">Личный кабинет</a><a href="/login">Панель управления</a><a href={botUrl} target="_blank" rel="noreferrer noopener">Telegram-бот</a></div>
         <div className="footer-bottom"><span>© 2026 SecretHero · GPL-3.0</span><span>v{config.version} · CITY INTELLIGENCE · OPEN SOURCE</span></div>

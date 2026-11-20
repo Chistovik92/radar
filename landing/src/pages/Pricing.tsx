@@ -123,7 +123,7 @@ export default function Pricing() {
             <div className="card-icon">🔐</div>
             <h3>Аренда приватного сервера</h3>
             <div className="price">
-              <span className="amount">Тарифы в боте</span>
+              <span className="amount">Тарифы VPN</span>
               <span className="period">срок и цена до оплаты</span>
             </div>
             <ul className="features">
@@ -131,9 +131,9 @@ export default function Pricing() {
               <li><Check size={16} /> Срок, трафик и число устройств зависят от тарифа</li>
               <li><Check size={16} /> Управление заказом в боте</li>
             </ul>
-            <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener" className="cta-button">
-              Узнать тарифы в боте
-            </a>
+            <Link to="/downloads" className="cta-button">
+              Тарифы VPN и загрузка
+            </Link>
           </div>
         </section>
 

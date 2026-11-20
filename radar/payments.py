@@ -84,7 +84,12 @@ class Provider:
         return []
 
     async def create_invoice(self, amount: float, currency: str, description: str,
-                             payload: str, expires_in: int = 3600) -> Invoice:
+                             payload: str, expires_in: int = 3600,
+                             customer_email: str = "") -> Invoice:
+        """Выставить счёт. `customer_email` — идентификатор покупателя для
+        платёжной системы (Platega требует передавать e-mail в каждом платеже:
+        для Telegram-магазина это `{telegram_id}@telegram.org`). Пустой у
+        провайдеров, которым он не нужен."""
         raise NotImplementedError
 
     async def status(self, invoice_id: str) -> str:
@@ -104,7 +109,8 @@ class ManualProvider(Provider):
     manual = True
 
     async def create_invoice(self, amount: float, currency: str, description: str,
-                             payload: str, expires_in: int = 3600) -> Invoice:
+                             payload: str, expires_in: int = 3600,
+                             customer_email: str = "") -> Invoice:
         return Invoice(pysecrets.token_hex(6), "", amount, currency)
 
     async def status(self, invoice_id: str) -> str:
@@ -151,7 +157,8 @@ class CryptoPayProvider(Provider):
         return parse_response(text)
 
     async def create_invoice(self, amount: float, currency: str, description: str,
-                             payload: str, expires_in: int = 3600) -> Invoice:
+                             payload: str, expires_in: int = 3600,
+                             customer_email: str = "") -> Invoice:
         result = await self._call("createInvoice", {
             "currency_type": "fiat",
             "fiat": currency.upper(),
@@ -178,6 +185,136 @@ class CryptoPayProvider(Provider):
         except PaymentError as exc:
             log.warning("Crypto Pay: счёт не удалён: %s", exc)
             return False
+
+
+class PlategaProvider(Provider):
+    """Platega — приём платежей СБП (QR + ссылка) и криптоплатежи.
+
+    Менеджер Platega передаёт два ключевых требования, которых нет у других
+    провайдеров:
+
+    * **идентификатор покупателя обязателен** — поле ``metadata.user_email``
+      в каждом запросе ``/transaction/process``. Для Telegram-магазина это
+      ``{telegram_id}@telegram.org`` (постоянный числовой ID, не username).
+      Один и тот же e-mail в каждом платеже одного покупателя — иначе история
+      клиента в платёжной системе теряется;
+    * **доступ в заголовках** — ``X-MerchantId`` и ``X-Secret`` (выдаются
+      при подключении, секрет не публикуется и не хранится в клиентском коде).
+
+    ⚠️ Памятка менеджера описывает только создание платежа. Эндпоинты
+    проверки состояния и отмены счёта в ней не приведены, поэтому статус
+    здесь нельзя запросить у провайдера так же, как у Crypto Pay: ``status``
+    возвращает ACTIVE, а подтверждение оплаты ложится на суперадминистратора
+    (как у ручного провайдера) до тех пор, пока не станут известны адреса
+    проверки статуса. Поле ``manual`` оставлено False: деньги всё же идут
+    через Platega, а не мимо провайдера.
+    """
+
+    kind = "platega"
+    title = "Platega (СБП + крипта)"
+    # URL оплаты Platega отдаёт в ответе на /transaction/process. Пока точное
+    # поле ответа не подтверждено документацией, ссылка на оплату считается
+    # пустой и заказ ведёт в бот — суперадминистратор подтверждает зачисление.
+    manual = True
+
+    PROCESS_PATH = "/transaction/process"
+
+    def __init__(self, merchant_id: str = "", secret: str = "",
+                 base: str = "", payment_method: int = 2,
+                 return_url: str = "", failed_url: str = "") -> None:
+        self.merchant_id = (merchant_id or "").strip()
+        self.secret = (secret or "").strip()
+        self.base = (base or "https://gate.platega.com").rstrip("/")
+        try:
+            self.payment_method = int(payment_method)
+        except (TypeError, ValueError):
+            self.payment_method = 2
+        self.return_url = (return_url or "").strip()
+        self.failed_url = (failed_url or "").strip()
+
+    def problems(self) -> list[str]:
+        missing = []
+        if not self.merchant_id:
+            missing.append("merchant ID (PAY_PLATEGA_MERCHANT_ID)")
+        if not self.secret:
+            missing.append("секрет (PAY_PLATEGA_SECRET)")
+        return missing
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "X-MerchantId": self.merchant_id,
+            "X-Secret": self.secret,
+            "Content-Type": "application/json",
+        }
+
+    async def _process(self, body: dict[str, Any]) -> dict[str, Any]:
+        import aiohttp
+
+        if self.problems():
+            raise PaymentError("Platega не настроена: " + ", ".join(self.problems()) + ".")
+        url = f"{self.base}{self.PROCESS_PATH}"
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+            ) as session:
+                async with session.post(url, json=body,
+                                        headers=self._headers()) as response:
+                    text = await response.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            log.warning("Platega недоступна: %s", type(exc).__name__)
+            raise PaymentError("Platega не отвечает — попробуйте позже.")
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            raise PaymentError("Platega ответила не JSON.")
+        return payload if isinstance(payload, dict) else {}
+
+    async def create_invoice(self, amount: float, currency: str, description: str,
+                             payload: str, expires_in: int = 3600,
+                             customer_email: str = "") -> Invoice:
+        # Идентификатор покупателя обязателен: без него Platega не свяжет
+        # платежи одного клиента в общую историю. Если звонящий не передал
+        # e-mail — счёт не выставляется вовсе, а не уходит с пустым полем.
+        email = (customer_email or "").strip()
+        if not email:
+            raise PaymentError(
+                "Для Platega нужен e-mail покупателя — оформление через бота "
+                "передаёт его автоматически (Telegram ID).")
+        body: dict[str, Any] = {
+            "paymentDetails": {
+                "paymentMethod": self.payment_method,
+                "amount": float(amount),
+                "currency": (currency or "RUB").upper(),
+            },
+            "description": description[:1024],
+            "metadata": {"user_email": email},
+        }
+        if self.return_url:
+            body["return"] = self.return_url
+        if self.failed_url:
+            body["failedUrl"] = self.failed_url
+        if payload:
+            body["payload"] = payload[:4096]
+
+        result = await self._process(body)
+        # Поле ответа с id и ссылкой на оплату в памятке не приведено, поэтому
+        # id счёта у себя — тот же payload-идентификатор заказа, а URL — если
+        # Platega его вернёт (проверяем распространённые имена полей).
+        invoice_id = str(result.get("id") or result.get("paymentId")
+                         or result.get("transactionId") or payload or
+                         pysecrets.token_hex(6))
+        url = str(result.get("payUrl") or result.get("paymentUrl")
+                  or result.get("url") or result.get("redirectUrl") or "")
+        return Invoice(invoice_id, url, float(amount), (currency or "RUB").upper())
+
+    async def status(self, invoice_id: str) -> str:
+        # Адрес проверки статуса Platega не документирован в памятке; до его
+        # появления зачисление подтверждает суперадминистратор.
+        return ACTIVE
+
+    async def cancel(self, invoice_id: str) -> bool:
+        # Аналогично — без документированного эндпоинта отмены счёт не гасится.
+        return True
 
 
 def parse_response(text: str) -> Any:
@@ -225,4 +362,11 @@ def provider() -> Provider:
         return CryptoPayProvider(_setting("PAY_CRYPTOPAY_TOKEN"),
                                  testnet=_setting("PAY_CRYPTOPAY_TESTNET") in ("1", "true", "yes"),
                                  assets=_setting("PAY_CRYPTOPAY_ASSETS"))
+    if kind == "platega":
+        return PlategaProvider(_setting("PAY_PLATEGA_MERCHANT_ID"),
+                               _setting("PAY_PLATEGA_SECRET"),
+                               base=_setting("PAY_PLATEGA_BASE"),
+                               payment_method=_setting("PAY_PLATEGA_METHOD"),
+                               return_url=_setting("PAY_PLATEGA_RETURN_URL"),
+                               failed_url=_setting("PAY_PLATEGA_FAILED_URL"))
     return ManualProvider()

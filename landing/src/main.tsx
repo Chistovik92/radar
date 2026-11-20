@@ -6,6 +6,8 @@ import Pricing from './pages/Pricing';
 import Privacy from './pages/Privacy';
 import Terms from './pages/Terms';
 import Support from './pages/Support';
+import Downloads from './pages/Downloads';
+import Projects from './pages/Projects';
 import './styles.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -17,6 +19,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/support" element={<Support />} />
+        <Route path="/downloads" element={<Downloads />} />
+        <Route path="/projects" element={<Projects />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>,
