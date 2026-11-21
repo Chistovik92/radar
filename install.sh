@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v6.0.2 — автономный установщик.
+# Система «Радар» v6.0.3 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="6.0.2"
+VERSION="6.0.3"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -5505,7 +5505,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_08'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "6.0.2"
+__version__ = "6.0.3"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -7548,7 +7548,7 @@ FLAGS: tuple[Flag, ...] = (
          "file_id, избранное, история, публичные плейлисты, лайки и топы. "
          "DRM и премиум-превью исключаются. Требует yt-dlp; YouTube может "
          "ограничивать такое использование своими условиями.",
-         group="Медиа", since="6.0.0", default=False),
+         group="Медиа", since="6.0.0", default=True),
     Flag("music_meta", "Музыка: данные из открытых баз",
          "После загрузки трека бот спрашивает MusicBrainz о жанре (если "
          "в тегах его нет) и ListenBrainz о родственных артистах — "
@@ -69151,12 +69151,21 @@ async def cmd_music(message: Message, user: dict, role: str) -> None:
 
 
 @router.callback_query(F.data == "mus:menu")
-async def menu(call, user: dict, role: str) -> None:
+async def menu(call, user: dict, role: str, state) -> None:
     from .. import features
 
     if not features.enabled("music") and not features.enabled("music_search"):
         await call.answer("Музыка отключена.", show_alert=True)
         return
+
+    # Если включён музыкальный каталог — перенаправляем на новый интерфейс
+    if features.enabled("music_search"):
+        from ..handlers import music_search
+        await call.answer()
+        await music_search.catalog_menu(call, state)
+        return
+
+    # Иначе показываем старый локальный интерфейс
     await call.answer()
     await safe_edit(call, _section(user, role), _menu(user, role))
 
