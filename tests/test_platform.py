@@ -347,6 +347,14 @@ class TestSchemaGuards(unittest.TestCase):
 
         self.assertTrue(hasattr(models, "BigIntType"))
 
+    def test_alembic_stamp_tracks_actual_schema_head(self):
+        """Автообновление не должно оставлять устаревшую отметку 0001."""
+        source = open(os.path.join(ROOT, "radar", "db", "engine.py"),
+                      encoding="utf-8").read()
+        self.assertIn('revision: str = "head"', source)
+        self.assertIn("get_current_head()", source)
+        self.assertIn("DELETE FROM alembic_version", source)
+
 
 class TestPythonVersionLint(unittest.TestCase):
     """Проверка совместимости с версией Python из образа."""

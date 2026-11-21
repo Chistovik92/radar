@@ -72,6 +72,7 @@ def default_user(role: str = USER, username: str = "") -> dict[str, Any]:
         "digest": {},
         "sub": {},
         "media_quota": {},
+        "music": {},
         "dead": 0,
         "created": int(datetime.now(timezone.utc).timestamp()),
     }
@@ -136,6 +137,7 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "digest": dict(row.digest or {}),
         "sub": dict(row.sub or {}),
         "media_quota": dict(row.media_quota or {}),
+        "music": dict(row.music or {}),
         "dead": int(row.dead_at or 0),
         "created": int(row.created_at.timestamp()) if row.created_at else 0,
     }
@@ -192,6 +194,7 @@ async def save_user(uid: str | int, data: dict[str, Any]) -> None:
         row.digest = dict(data.get("digest") or {})
         row.sub = dict(data.get("sub") or {})
         row.media_quota = dict(data.get("media_quota") or {})
+        row.music = dict(data.get("music") or {})
         row.dead_at = int(data.get("dead") or 0)
         row.seen_at = datetime.now(timezone.utc)
 

@@ -543,7 +543,7 @@ class TestWebAuth(unittest.TestCase):
         from radar.web.panel import _nav_groups
 
         self.assertEqual([group[2] for group in _nav_groups("superadmin")],
-                         ["home", "profile", "users", "sources", "vpn", "media", "agents", "settings"])
+                         ["home", "profile", "users", "sources", "vpn", "media", "agents", "site", "settings"])
         self.assertEqual([group[2] for group in _nav_groups("user")], ["profile"])
 
     def test_rare_pages_still_owner_only(self):

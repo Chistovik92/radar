@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Полное удаление «Радара»: контейнеры, образ и каталог установки
+# Полное удаление «Радара»: контейнеры, образы и каталог установки
 # целиком — база, .env, копии, журналы. В отличие от флага установщика
 # --uninstall, который данные сохраняет, этот скрипт не оставляет ничего.
 #
@@ -50,9 +50,9 @@ esac
 
 printf "\n  %sПолное удаление «Радара»%s\n" "$C_BOLD" "$C_RESET"
 printf "  Будет удалено безвозвратно:\n"
-printf "    контейнеры  radar_container, radar_db, radar_bot_api,\n"
+printf "    контейнеры  radar_container, support_container, radar_db, radar_bot_api,\n"
 printf "                radar_singbox, radar_rclone и прочие профили\n"
-printf "    образ       radar_image\n"
+printf "    образы      radar_image, support_image\n"
 printf "    каталог     %s — база, .env, копии, журналы\n\n" "$APP_DIR"
 
 # Подтверждение сильнее обычного [д/Н]: удаляется всё, включая копии,
@@ -112,17 +112,17 @@ if command -v docker >/dev/null 2>&1; then
     # машине ни данных, ни ключей. До 4.9.8.10 здесь были только первые
     # четыре, и контейнеры, появившиеся позже (RustDesk, сертификат,
     # исполнитель обновления), переживали «полное удаление».
-    docker rm -f radar_container radar_db radar_bot_api radar_singbox \
+    docker rm -f radar_container support_container radar_db radar_bot_api radar_singbox \
         radar_tls radar_hbbs radar_hbbr radar_updater radar_rclone         2>/dev/null || true
-    docker rmi -f radar_image 2>/dev/null || true
+    docker rmi -f radar_image support_image 2>/dev/null || true
     # Том Caddy держит выданный сертификат и ключ к нему.
     docker volume ls --format '{{.Name}}' 2>/dev/null \
         | grep -i 'caddy' \
         | xargs -r docker volume rm -f 2>/dev/null || true
-    ok "Контейнеры, образ и тома удалены"
+    ok "Контейнеры, образы и тома удалены"
 else
     warn "Docker не найден — контейнеры и образ, если они есть, останутся"
-    warn "Удалите их вручную: docker rm -f radar_container radar_db; docker rmi radar_image"
+    warn "Удалите их вручную: docker rm -f radar_container support_container radar_db; docker rmi radar_image support_image"
 fi
 
 if [ -d "$APP_DIR" ]; then

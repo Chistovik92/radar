@@ -1,0 +1,2 @@
+# Опциональный Gemini: устанавливать вместе с requirements.txt только при SUPPORT_AI=1.
+google-genai>=1.0

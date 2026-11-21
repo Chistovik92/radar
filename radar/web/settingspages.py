@@ -88,7 +88,7 @@ SECTIONS: tuple[Section, ...] = (
         Card("Загрузка видео", flags=("media_download", "media_transcode"),
              groups=("Загрузка видео",),
              note="Файл cookies для закрытых записей присылается боту: команда /cookies."),
-        Card("Музыка и облако", flags=("music", "music_meta", "music_cloud"),
+        Card("Музыка и облако", flags=("music", "music_search", "music_meta", "music_cloud"),
              groups=("Облако музыки",),
              links=(("/cloud", "Облачные хранилища (rclone): добавить и проверить"),
                     ("/media", "Плейлисты"))),

@@ -29,6 +29,8 @@ from . import (
     logs,
     media,
     music,
+    music_search,
+    music_social,
     network,
     partners,
     perf,
@@ -51,7 +53,7 @@ PRIVATE_ROUTERS = (
     documents,
     common, locations, settings, sources, users, features, settings_admin,
     network, rustdesk, logs, language, history, partners, perf, shortlink,
-    linkcheck, music, digest, sos, chats, vpn, linking,
+    linkcheck, music, music_search, music_social, digest, sos, chats, vpn, linking,
     # Подписка держит обработчик кодов: он ловит только то, что
     # похоже на код, и пропускает остальное дальше по цепочке.
     subscription,

@@ -29,6 +29,9 @@ class Form(StatesGroup):
     digest_price = State()         # тарифы подписки (суперадминистратор)
     short_link = State()           # сокращение ссылки (администратор)
     playlist_name = State()        # название нового плейлиста (музыка)
+    music_query = State()          # запрос к внешнему музыкальному каталогу
+    music_about = State()          # текст «О себе» музыкального профиля
+    public_playlist_name = State() # название публичного плейлиста
     quiet_hours = State()          # интервал тихих часов
     chat_message = State()         # объявление в группу (суперадминистратор)
     chat_invite = State()          # ссылка приглашения в группу
