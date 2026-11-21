@@ -1627,6 +1627,53 @@ Not verified with live VK, MAX and Discord — only by tests and emulators
 
 ---
 
+## 5.8 — account and VPN-panel data ⚠️ code written
+
+Author's request (item 7 of section 5.0): unite a person's account with the
+records that already exist in the VPN panels.
+
+1. **Client lists** for all ten panel kinds (`list_clients`, formats checked
+   against the sources), `vpn.matches` finds records by a person's Telegram id,
+   `vpn.bind`/`vpn.forget` link/unlink without changing the panel.
+2. **Issuing/extension/payment** work with the linked record by its name; a
+   record deleted in the panel is replaced by its own `radar_<id>`.
+3. "🔗 Panel clients" screens, manual linking, "↩️". The nightly disk report
+   identifies a disk by device number, not by "size:free".
+
+---
+
+## 5.8.1 — checking the 4.9.x → 5.8 migration ⚠️ code written
+
+`tools/upgrade_check.py`: the code of each of the 43 releases in 4.9 creates
+and fills a database, the 5.8 code loads and re-saves it — on SQLite and
+PostgreSQL 16 without loss, the schema is not recreated. The installer checks
+against the latest release (`offer_newer_release`, `sort -V`).
+
+---
+
+## 5.9 — SQLite ⇄ PostgreSQL migration with data ⚠️ code written
+
+Author's request. Before 5.9 a database switch in the installer gave a new
+empty database.
+
+1. `radar/db/transfer.py` — tables in foreign-key order, common columns by
+   model, the target must be empty (`replace` is explicit), row-count check.
+2. `radar db copy --from sqlite --to postgres` and back; on a database switch
+   the installer offers a transfer, the old SQLite is `radar.db.bak-<date>`.
+3. `tools/db_transfer_check.py` — A→B→C on SQLite and PostgreSQL 16, a CI step.
+
+---
+
+## 5.9.0.1 — file uploads for any section ⚠️ code written
+
+From a 4.9.9.3 server report: cookies sent after `/cookies` ended up in the
+source list — two `F.document` handlers (sources and cookies) conflicted. A
+single receiver, `radar/uploads.py` + `handlers/documents.py`, stands first;
+the section that asked for a file receives the person's next file for 10
+minutes (`expect`). The cookie limit was raised from 512 KB to 4 MB.
+
+---
+
 ## 5.9.1 — API for the HydraVPN apps ⚠️ code written
 
 At the author's request: the apps [HydraVPN](https://github.com/Chistovik92/HydraVPN)
@@ -1730,6 +1777,17 @@ be changed in `.env`. Everything must be configurable from the panel.
 
 ---
 
+## 5.9.2.3 — PasarGuard: 404/405 on check and issue ⚠️ code written
+
+Report from server 5.9.2.2: a PasarGuard panel was added by form, but "Check"
+answered 404 and issuing 405. The likely cause — an address copied from the
+browser with `/dashboard/`, to which the client appended `/api/...`.
+`vpnpanels.api_root` cuts from the first known segment (`dashboard`, `docs`,
+`redoc`, `openapi.json`, `api`), the reverse-proxy prefix is kept; a 404/405
+without a body now names the request and hints about the extra path.
+
+---
+
 ## 5.9.3 — the console drives the live bot ⚠️ code written
 
 At the author's request: managing the bot from the server terminal, with full
@@ -1825,7 +1883,152 @@ At the author's request: playing music by link in a voice channel.
 
 ---
 
-## 6.0 — MAX ⚠️ written from the documentation
+## 5.10.0 — landing, public pages and Telegram Mini App widgets ⚠️ code written
+
+At the author's request: the public project page, the pages required by the
+Platega payment system, and widgets for Telegram Mini Apps. Full Platega
+compatibility: the public pages mention no VPN, no circumvention and no
+personal data, the transaction limit is 10 000 ₽.
+
+1. **Landing** `radar/web/landing.py` (`/`, no auth): Hero, Features (8),
+   How it works (3 steps), Demo, Documents (Privacy/Terms/Support/Pricing),
+   Installation (Bash / Docker / manual), TG Login Widget, Footer (GitHub,
+   license, author, a hidden code word for moderation).
+2. **Public pages** `radar/web/public_pages.py`: `/privacy`, `/terms`,
+   `/support` (contacts — the ticket bot or username/email, not a group),
+   `/pricing`.
+3. **Mini App widgets** `radar/web/widgets.py` (`/api/widget/*`): weather,
+   news, danger status.
+4. **TG Login Widget with role redirect** in `radar/web/panel.py`.
+5. **BotFather setup required** (Menu Button → Web App URL, Domain, Privacy
+   and Terms URLs).
+
+---
+
+## 5.11.0 — interactive React landing ⚠️ code written
+
+1. **3D scene:** a black hole with a GLSL disk, six orbital nodes,
+   InstancedMesh asteroids, procedural tentacles and node replacement every
+   45–60 seconds; `prefers-reduced-motion` stops the loop.
+2. **The project site:** real capabilities, tariffs and live location/weather/
+   news/danger APIs. The city is detected by IP. Self-installation is not
+   offered. The secret ZOLA mode is a visual easter egg.
+3. **Integration:** React 18 + TypeScript + Vite + Tailwind; `npm run build`
+   writes `landing.js`/`landing.css` into `radar/web/static/landing`; Python
+   serves the prebuilt assets.
+4. **Kept:** Telegram Login Widget and `/auth`, role redirects, `/profile`,
+   public documents and widget APIs.
+
+---
+
+## 5.11.5 — React Router and the expanded HYDRA easter eggs ✅ released 19.11.2026
+
+- React Router v7: `/pricing`, `/privacy`, `/terms` with a simple layout.
+- PageLayout.tsx: compact header, navigation, a small TRISKELION with easter eggs.
+- Winter Soldier code words and "Hail Hydra" activation phrases in data.ts.
+- ZolaTerminal: all HYDRA triggers, a Whisper button, the Helicarrier component.
+- Version 5.11.5 aligned in all files; GitHub release v5.11.5 published.
+
+---
+
+## 5.11.6 — fixing the site after the update ✅ 19.11.2026
+
+- Removed `basename="/landing"` in `main.tsx` (root `/` matched no route → a
+  black screen; `/pricing` `/privacy` `/terms` led to a 404).
+- `react-router-dom` added to `landing/package.json`; dead `Router.tsx` removed.
+- `/pricing` `/privacy` `/terms` moved from server `public_pages` to the SPA
+  shell; `/support` stayed server-rendered.
+
+---
+
+## 5.11.7 — the support page and live geo widgets ✅ 19.11.2026
+
+- `/support` moved to the SPA shell (`landing/src/pages/Support.tsx`).
+- City by IP: ip-api.com primary, ipwho.is fallback, browser geolocation via
+  the new `/api/widget/reverse` (Nominatim reverse geocode).
+- The danger widget accepts `lat`/`lon` and shows the latest UAV/МЧС event by
+  location (`repo.latest_threat`).
+
+---
+
+## 5.11.8 — HydraVPN downloads, the projects page and the Platega provider ✅ 21.11.2026
+
+- New pages `/downloads` (HydraVPN client and HydraVPN for Routers) and
+  `/projects` ("Our projects" — a skeleton with three projects).
+- The "VPN tariffs" block in Downloads (placeholder prices).
+- The Platega provider in `payments.py`: SBP (QR) and crypto via
+  `POST /transaction/process` with `X-MerchantId`/`X-Secret`, mandatory
+  `metadata.user_email`; `create_invoice` gains `customer_email`.
+
+---
+
+## 5.11.9 — VPN tariffs, documents and support aligned ✅ 19.11.2026
+
+- The "VPN tariffs" block redrawn: five tariffs in one row, "Six months" —
+  2 300 ₽, "Extra services" as cards, a separate "Individual tariffs" block.
+- The user agreement rewritten to a standard template (10 sections); the
+  privacy policy to a 7-section template with Radar specifics. Contact email —
+  admin@hydravpsvpn.ru.
+- Support: working hours 09:00–20:00; the self-hosted FAQ dropped the install
+  command and added admin contacts.
+
+---
+
+## 5.11.10 — "Our projects" gains ten team projects ✅ 21.11.2026
+
+- `/projects` adds cards: `opendisk`, `NeuroCode-Android`, `LocalDoc-AI---KMP`,
+  `med-roster`, `MeshkitKeen`, `torrserver-docker-manager`, `Harness`,
+  `ZHeroDiZk`, `servAI`, `zeropentime`.
+- Descriptions taken from real README/repository descriptions; each card has
+  an icon and a repository link.
+
+---
+
+## 5.11.11 — two more team projects on "Our projects" ✅ 21.11.2026
+
+- `winOpenCodeMod` — a GUI plugin for OpenCode Desktop that restores the
+  "Custom provider" form in Settings → Providers (TypeScript + Solid.js).
+- `DataOpenCode` — safe additive transfer of OpenCode providers, models, API
+  keys and dialogs between Windows machines (zip, V1 ↔ V2).
+
+---
+
+## 6.0.0 — CMS, music and the support bot (two bots) 🔜 planned
+
+A big update: a lightweight content-management engine (CMS) for the site, a
+public music catalog with search and social mechanics, a separate support-ticket
+bot — and an installer that deploys **two bots** in different Docker containers.
+The number is a major bump (6.0.0, not 5.12): the system's composition changes —
+a second permanent bot and a public catalog are added.
+
+Full description — [PLAN_6_0_0.md](PLAN_6_0_0.md); part details — in
+[PLAN_SITE_CMS.md](PLAN_SITE_CMS.md) (Part A — CMS, Part B — music) and
+[PLAN_SUPPORT.md](PLAN_SUPPORT.md).
+
+1. **CMS (Part A).** The superadmin edits landing-page texts from the web
+   panel, without editing `.tsx` and without rebuilding; content lives in
+   `meta`. The engine does not touch structure/layout; Privacy/Terms stay
+   server-rendered for Platega compliance.
+2. **Music (Part B).** A port from `not_a_music`: SoundCloud search with a
+   YouTube fallback (yt-dlp), streaming by `file_id`, favourites, history,
+   profile. Social mechanics are implemented fully: public playlists, top,
+   sharing, likes/dislikes. No MongoDB (SQLite/`meta`), `secrets.token_hex`
+   instead of nanoid, only `file_id` with no audio retention. Our own
+   rules/policy. Flag `music_search`.
+3. **Support bot (Part C).** A separate lightweight bot under `support/` in
+   the same repository. Tickets numbered `#year-N`, access only to the author
+   OR moderator+ role, FAQ + AI (Gemini, flag `support_ai`), full SLA,
+   attachments, 👍/👎 rating, a group with topics (one topic = one ticket),
+   `.txt` dialog export.
+4. **Two-bot installer.** `install.sh` optionally installs the second bot:
+   token `SUPPORT_BOT_TOKEN`, container `support_container` / image
+   `support_image`, its own `SUPPORT_*` in `.env`. `doctor.py` checks both.
+
+What used to sit under 6.0/6.5/7.0 is shifted to **7.0.0 / 7.5.0 / 8.0.0**.
+
+---
+
+## 7.0.0 — MAX ⚠️ written from the documentation
 
 1. **The adapter was rewritten against the actual API** in 4.9.9.4. In 4.2
    it was a set of guesses: the address, the field names and the button
@@ -1895,7 +2098,7 @@ At the author's request: playing music by link in a voice channel.
 
 ---
 
-## 6.5 — WhatsApp, deliberately reduced ⏸ deferred in 5.6
+## 7.5.0 — WhatsApp, deliberately reduced ⏸ deferred in 5.6
 
 1. **WhatsApp.** To be implemented, but in a knowingly limited form, and the
    limitation is stated out loud — that is the main point of this item.
@@ -1934,7 +2137,7 @@ At the author's request: playing music by link in a voice channel.
    digests.
 ---
 
-## 7.0 — VKontakte and Odnoklassniki as messengers ⚠️ VK — code written in 5.6
+## 8.0.0 — VKontakte and Odnoklassniki as messengers ⚠️ VK — code written in 5.6
 
 1. **VKontakte as a messenger.** A proven path: the bot is attached to a
    community, the access key is issued in the "Working with API" section,
