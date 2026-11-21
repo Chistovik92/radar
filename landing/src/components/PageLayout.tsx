@@ -8,7 +8,7 @@ interface PageLayoutProps {
   version?: string;
 }
 
-export default function PageLayout({ children, version = '5.11.9' }: PageLayoutProps) {
+export default function PageLayout({ children, version = '5.11.10' }: PageLayoutProps) {
   const [hydra, setHydra] = useState(false);
   const [logoClicks, setLogoClicks] = useState(0);
   const [terminalOpen, setTerminalOpen] = useState(false);

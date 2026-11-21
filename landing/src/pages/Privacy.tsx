@@ -18,7 +18,7 @@ export default function Privacy() {
             веб-панель <a href="/">radar-project.ru</a> (далее — «Сервис») для мониторинга городских угроз и аварий ЖКХ.
           </p>
           <p><strong>Автор:</strong> SecretHero</p>
-          <p><strong>Версия:</strong> 5.11.9 (ноябрь 2026)</p>
+          <p><strong>Версия:</strong> 5.11.10 (ноябрь 2026)</p>
         </section>
 
         <section className="doc-section">
