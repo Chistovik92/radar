@@ -3286,7 +3286,7 @@ services:
   # На роутере придётся пробросить все пять портов hbbs+hbbr.
   hbbs:
     profiles: ["rustdesk"]
-    image: rustdesk/rustdesk-server:1.1.16
+    image: rustdesk/rustdesk-server:latest
     container_name: radar_hbbs
     restart: unless-stopped
     # -r — адрес relay-сервера (hbbr), который клиент получит от id-сервера.
@@ -3312,7 +3312,7 @@ services:
 
   hbbr:
     profiles: ["rustdesk"]
-    image: rustdesk/rustdesk-server:1.1.16
+    image: rustdesk/rustdesk-server:latest
     container_name: radar_hbbr
     restart: unless-stopped
     command: ["hbbr"]
