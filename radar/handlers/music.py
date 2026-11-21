@@ -113,12 +113,21 @@ async def cmd_music(message: Message, user: dict, role: str) -> None:
 
 
 @router.callback_query(F.data == "mus:menu")
-async def menu(call, user: dict, role: str) -> None:
+async def menu(call, user: dict, role: str, state) -> None:
     from .. import features
 
     if not features.enabled("music") and not features.enabled("music_search"):
         await call.answer("Музыка отключена.", show_alert=True)
         return
+    
+    # Если включён музыкальный каталог — перенаправляем на новый интерфейс
+    if features.enabled("music_search"):
+        from ..handlers import music_search
+        await call.answer()
+        await music_search.catalog_menu(call, state)
+        return
+    
+    # Иначе показываем старый локальный интерфейс
     await call.answer()
     await safe_edit(call, _section(user, role), _menu(user, role))
 
