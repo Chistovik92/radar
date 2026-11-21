@@ -25,6 +25,7 @@ export type RadarConfig = {
   description: string;
   version: string;
   plans: Array<[number, number]>;
+  content?: Record<string, Record<string, unknown>>;
 };
 
 export type SceneProps = {

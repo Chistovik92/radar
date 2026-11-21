@@ -1921,8 +1921,8 @@ if [ "$UNINSTALL" = true ]; then
         if [ -d "$APP_DIR" ]; then
             (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
         fi
-        run docker rm -f "$CONTAINER_NAME" radar_db radar_bot_api radar_singbox 2>/dev/null || true
-        run docker rmi -f "$IMAGE_NAME" 2>/dev/null || true
+        run docker rm -f "$CONTAINER_NAME" support_container radar_db radar_bot_api radar_singbox 2>/dev/null || true
+        run docker rmi -f "$IMAGE_NAME" support_image 2>/dev/null || true
         ok "Контейнеры и образ удалены"
     else
         warn "Docker не найден — контейнеры и образ, если они есть, остались"
@@ -2798,11 +2798,11 @@ if [ "$FULL_RESET" = true ]; then
 
     info "Останавливаю контейнеры"
     (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
-    run docker rm -f "$CONTAINER_NAME" radar_db || true
-    run docker rmi -f "$IMAGE_NAME" || true
+    run docker rm -f "$CONTAINER_NAME" support_container radar_db || true
+    run docker rmi -f "$IMAGE_NAME" support_image || true
 
     info "Удаляю базу и файлы проекта"
-    rm -rf "$APP_DIR/data/postgres" "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    rm -rf "$APP_DIR/data/postgres" "$APP_DIR/data/support" "$APP_DIR/radar" "$APP_DIR/support" "$APP_DIR/migrations" 2>/dev/null || true
     rm -f "$APP_DIR/data/radar.db" "$APP_DIR/data/radar.db-wal" \
           "$APP_DIR/data/radar.db-shm" "$APP_DIR/data/db.json.migrated" 2>/dev/null || true
     ok "Сброс выполнен, копия сохранена в $APP_DIR/backups"
@@ -2811,9 +2811,9 @@ elif [ "$FORCE_REINSTALL" = true ]; then
     MODE="полная переустановка"
     info "Пересобираю образ и файлы проекта, данные сохраняются"
     (cd "$APP_DIR" && run $COMPOSE down --remove-orphans) || true
-    run docker rm -f "$CONTAINER_NAME" || true
-    run docker rmi -f "$IMAGE_NAME" || true
-    rm -rf "$APP_DIR/radar" "$APP_DIR/migrations" 2>/dev/null || true
+    run docker rm -f "$CONTAINER_NAME" support_container || true
+    run docker rmi -f "$IMAGE_NAME" support_image || true
+    rm -rf "$APP_DIR/radar" "$APP_DIR/support" "$APP_DIR/migrations" 2>/dev/null || true
 fi
 
 ok "Режим: $MODE"
@@ -2874,7 +2874,7 @@ mkdir -p "$STAGE/installer" "$STAGE/bot" "$STAGE/docker"
 cp "$APP_DIR"/data/logs/installer_log_*.txt "$STAGE/installer/" 2>/dev/null || true
 cp "$APP_DIR"/data/logs/bot.log* "$STAGE/bot/" 2>/dev/null || true
 
-for container in radar_container radar_db; do
+for container in radar_container support_container radar_db; do
     if docker inspect "$container" >/dev/null 2>&1; then
         docker logs --tail 3000 "$container" > "$STAGE/docker/$container.log" 2>&1 || true
         # Без --format в снимок попадал Config.Env, а туда Compose кладёт
@@ -2899,7 +2899,7 @@ done
     echo "Хост: $(hostname) · $(uname -srm)"
     echo
     echo "--- контейнеры ---"
-    docker ps -a --filter name=radar --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null || true
+    docker ps -a --filter name=radar --filter name=support --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null || true
     echo
     echo "--- ресурсы ---"
     free -m 2>/dev/null | head -2 || true
@@ -3247,6 +3247,14 @@ if [ "$RECREATE_ENV" = true ]; then
         echo "  Сгенерирован пароль базы: $IN_DBPASS"
     fi
     ask "  Часовой пояс [Europe/Saratov]: " IN_TZ '^[A-Za-z]+/[A-Za-z_+-]+$' no
+    ask "  Токен отдельного бота поддержки (Enter — не устанавливать): " IN_SUPPORT_TOKEN '^[0-9]{6,}:[A-Za-z0-9_-]{30,}$' no
+    while [ -n "${IN_SUPPORT_TOKEN:-}" ] && [ "$IN_SUPPORT_TOKEN" = "$IN_TOKEN" ]; do
+        warn "Токен совпадает с основным: поддержке нужен отдельный бот @BotFather"
+        ask "  Токен отдельного бота поддержки (Enter — не устанавливать): " IN_SUPPORT_TOKEN '^[0-9]{6,}:[A-Za-z0-9_-]{30,}$' no
+    done
+    if [ -n "${IN_SUPPORT_TOKEN:-}" ]; then
+        ask "  ID группы поддержки с топиками (Enter — без группы): " IN_SUPPORT_GROUP '^-?[0-9]{5,}$' no
+    fi
     ask "  Город по умолчанию [Саратов]: " IN_CITY '.+' no
     echo "  Наборы источников: saratov, moscow, spb, kazan, samara (через запятую)"
     ask "  Какие подключить [saratov]: " IN_PRESET '^[a-z, ]+$' no
@@ -3259,6 +3267,11 @@ if [ "$RECREATE_ENV" = true ]; then
 BOT_TOKEN=${IN_TOKEN}
 SUPERADMIN_ID=${IN_ADMIN}
 GEMINI_API_KEY=${IN_GEMINI:-}
+SUPPORT_BOT_TOKEN=${IN_SUPPORT_TOKEN:-}
+SUPPORT_ADMIN_ID=${IN_ADMIN}
+SUPPORT_GROUP_ID=${IN_SUPPORT_GROUP:-}
+SUPPORT_DB_FILE=data/support.db
+SUPPORT_EXPORT_DIR=data/exports
 DB_PASSWORD=${IN_DBPASS}
 DB_HOST=postgres
 DB_PORT=5432
@@ -3312,6 +3325,37 @@ fi
 # и не запишет новые из раздела настроек. Делается и при обновлении:
 # на установках прежних версий .env остался за root.
 env_fix_perms
+
+# Поддержка — самостоятельный бот и контейнер. Существующий токен не
+# переспрашиваем и не затираем при обновлении; если его ещё нет, установку
+# можно пропустить Enter. Основной .env общий, но SUPPORT_* читает только
+# контейнер поддержки.
+if [ -z "$(get_env_value SUPPORT_BOT_TOKEN)" ] && [ "$RECREATE_ENV" = false ]; then
+    echo
+    ask "  Токен отдельного бота поддержки (Enter — не устанавливать): " IN_SUPPORT_TOKEN '^[0-9]{6,}:[A-Za-z0-9_-]{30,}$' no
+    if [ -n "${IN_SUPPORT_TOKEN:-}" ]; then
+        set_env_value SUPPORT_BOT_TOKEN "$IN_SUPPORT_TOKEN"
+        ask "  ID группы поддержки с топиками (Enter — без группы): " IN_SUPPORT_GROUP '^-?[0-9]{5,}$' no
+        set_env_value SUPPORT_GROUP_ID "${IN_SUPPORT_GROUP:-}"
+    fi
+fi
+if [ -n "$(get_env_value SUPPORT_BOT_TOKEN)" ]; then
+    if [ "$(get_env_value SUPPORT_BOT_TOKEN)" = "$(get_env_value BOT_TOKEN)" ]; then
+        die_or_rollback "Токен поддержки должен отличаться от BOT_TOKEN: это отдельный бот @BotFather"
+    fi
+    SUPPORT_ADMIN_VALUE="$(get_env_value SUPPORT_ADMIN_ID)"
+    if [ -z "$SUPPORT_ADMIN_VALUE" ]; then
+        SUPPORT_ADMIN_VALUE="$(get_env_value SUPERADMIN_ID)"
+        set_env_value SUPPORT_ADMIN_ID "$SUPPORT_ADMIN_VALUE"
+    fi
+    if ! printf '%s' "$SUPPORT_ADMIN_VALUE" | grep -Eq '^[0-9]{5,}$'; then
+        die_or_rollback "Для бота поддержки задайте числовой SUPPORT_ADMIN_ID в .env"
+    fi
+    set_env_value SUPPORT_DB_FILE "data/support.db"
+    set_env_value SUPPORT_EXPORT_DIR "data/exports"
+    mkdir -p "$APP_DIR/data/support/exports"
+    info "Бот поддержки: отдельный контейнер support_container, данные data/support"
+fi
 
 # --- обслуживание базы данных ---------------------------------------------
 # Отдельная копия только базы: она нужна чаще полной и восстанавливается
@@ -3559,6 +3603,16 @@ if ! run_slow "Сборка образа" $COMPOSE build $NO_CACHE_FLAG; then
     exit 1
 fi
 spinner_stop "Образ собран"
+
+SUPPORT_INSTALL=false
+if [ -n "$(get_env_value SUPPORT_BOT_TOKEN)" ]; then
+    info "Собираю отдельный образ бота поддержки"
+    if run_slow "Сборка поддержки" $COMPOSE --profile support build $NO_CACHE_FLAG support; then
+        SUPPORT_INSTALL=true
+    else
+        warn "Образ поддержки не собран; основной бот будет установлен независимо"
+    fi
+fi
 
 # PostgreSQL запоминает пароль при инициализации тома. Если .env изменился,
 # а том остался прежним, бот будет молча биться в отказ авторизации.
@@ -3879,6 +3933,17 @@ docker logs --tail 120 "$CONTAINER_NAME" >> "$LOG_FILE" 2>&1 || true
 
 ok "Бот вышел в рабочий режим"
 
+if [ "$SUPPORT_INSTALL" = true ]; then
+    run_slow "Запуск поддержки" $COMPOSE --profile support up -d support \
+        || warn "Поддержка не запущена; основной бот продолжает работать"
+    SUPPORT_STATE="$(docker inspect -f '{{.State.Status}}' support_container 2>/dev/null || echo нет)"
+    if [ "$SUPPORT_STATE" = "running" ]; then
+        ok "Бот поддержки запущен в support_container"
+    else
+        warn "Основной бот работает, но поддержка не запущена: docker logs support_container"
+    fi
+fi
+
 # Что удалось разобрать из лога — полезно видеть сразу
 MIGRATED=$(docker logs "$CONTAINER_NAME" 2>&1 | grep -oP 'пользователей \K\d+' | head -1 || true)
 [ -n "$MIGRATED" ] && ok "Перенесено пользователей: $MIGRATED"
@@ -3939,6 +4004,9 @@ printf "    Откройте бота в Telegram → /start → пришлит�
 echo
 printf "  %sУправление:%s\n" "$C_BOLD" "$C_RESET"
 printf "    Логи бота     docker logs -f %s\n" "$CONTAINER_NAME"
+if [ -n "$(get_env_value SUPPORT_BOT_TOKEN)" ]; then
+    printf "    Поддержка      docker logs -f support_container\n"
+fi
 if [ "${DB_BACKEND_VALUE:-sqlite}" = "postgres" ]; then
     printf "    Логи базы     docker logs -f radar_db\n"
 else

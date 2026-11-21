@@ -85,7 +85,7 @@ def main_menu(role: str | None, user: dict | None = None) -> InlineKeyboardMarku
     if features.enabled("media_download"):
         extra.append(InlineKeyboardButton(text=label("menu.media", "🎬 Скачать видео"),
                                           callback_data="med:menu"))
-    if features.enabled("music"):
+    if features.enabled("music") or features.enabled("music_search"):
         extra.append(InlineKeyboardButton(text=label("menu.music", "🎵 Музыка"),
                                           callback_data="mus:menu"))
     if features.enabled("rustdesk"):

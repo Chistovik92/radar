@@ -732,7 +732,12 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     if agent_items:
         groups.append((agent_items[0][0], "Агенты", "agents", agent_items))
     if owner:
-        from . import settingspages
+        from . import landing_content, settingspages
+
+        site_items = [("/site", "Обзор", "site")] + [
+            (f"/site/{key}", schema.title, "site_" + key)
+            for key, schema in landing_content.PAGES.items()]
+        groups.append(("/site", "Сайт", "site", site_items))
 
         settings_items = [("/settings", "Обзор", "settings")] + [
             (item.path, item.title, "settings_" + item.key) for item in settingspages.SECTIONS]
@@ -2925,16 +2930,17 @@ async def create_app() -> Any:
                 scheme = request.headers.get("X-Forwarded-Proto", "https")
                 public = f"{scheme}://{host}"
 
-        html_content = landing.render_landing_page(bot_username["value"], public)
+        content = await landing.load_content()
+        html_content = landing.render_landing_page(bot_username["value"], public, content)
         return web.Response(text=html_content, content_type="text/html")
 
     async def privacy_page(request):
-        """Privacy policy page — SPA-оболочка лендинга (React Router)."""
-        return await landing_page(request)
+        """Собственная политика «Радара» в статичном HTML для Platega."""
+        return web.Response(text=public_pages.render_privacy_page(), content_type="text/html")
 
     async def terms_page(request):
-        """Terms of service page — SPA-оболочка лендинга (React Router)."""
-        return await landing_page(request)
+        """Собственное соглашение «Радара» в статичном HTML для Platega."""
+        return web.Response(text=public_pages.render_terms_page(), content_type="text/html")
 
     async def support_page(request):
         """Support page — SPA-оболочка лендинга (React Router)."""
@@ -3726,6 +3732,56 @@ async def create_app() -> Any:
             raise web.HTTPFound("/subscriptions?err=" + quote(failed))
         raise web.HTTPFound("/subscriptions?ok=" + quote(done))
 
+    @owner_only
+    async def site_overview(request, session):
+        from ..db import repo
+        from . import landing_content, sitepages
+
+        stored = await repo.get_meta(landing_content.META_KEY, {})
+        body = sitepages.overview_body(stored, request.query.get("ok", ""),
+                                       request.query.get("err", ""))
+        return web.Response(text=_layout("Сайт", body, "site", roles.title(session.role),
+                                         session.role), content_type="text/html")
+
+    @owner_only
+    async def site_edit(request, session):
+        from . import landing_content, sitepages
+
+        page_key = request.match_info.get("page", "")
+        if page_key not in landing_content.PAGES:
+            raise web.HTTPNotFound(text="Страница не найдена")
+        content = await landing_content.load_content()
+        body = sitepages.edit_body(page_key, auth.csrf_token(session), content[page_key],
+                                   request.query.get("ok", ""), request.query.get("err", ""))
+        return web.Response(text=_layout("Сайт: " + landing_content.PAGES[page_key].title,
+                                         body, "site_" + page_key,
+                                         roles.title(session.role), session.role),
+                            content_type="text/html")
+
+    async def site_save(request):
+        from . import landing_content, sitepages
+
+        session, data = await _guarded_form(request, "superadmin")
+        page_key = request.match_info.get("page", "")
+        target = "/site/" + quote(page_key)
+        if page_key not in landing_content.PAGES:
+            raise web.HTTPNotFound(text="Страница не найдена")
+        content = await landing_content.load_content()
+        if data.get("reset") or request.query.get("reset"):
+            content[page_key] = landing_content.default_content()[page_key]
+        else:
+            values, problem = sitepages.apply_form(page_key, data, content[page_key])
+            if problem:
+                raise web.HTTPFound(target + "?err=" + quote(problem))
+            content[page_key].update(values)
+        await landing_content.save_content(content)
+        audit.record(session.user_key,
+                     "тексты сайта сброшены" if data.get("reset") or request.query.get("reset")
+                     else "тексты сайта изменены", page_key)
+        raise web.HTTPFound(target + "?ok=" + quote(
+            "Значения по умолчанию восстановлены" if data.get("reset") or request.query.get("reset")
+            else "Сохранено — изменения уже видны на сайте"))
+
     def _settings_page(section):
         @owner_only
         async def page(request, session):
@@ -3996,6 +4052,9 @@ async def create_app() -> Any:
         web.get("/pricing", pricing_page),
         web.get("/downloads", downloads_page),
         web.get("/projects", projects_page),
+        web.get("/site", site_overview),
+        web.get("/site/{page}", site_edit),
+        web.post("/site/{page}", site_save),
         # Authenticated dashboard
         web.get("/dashboard", overview),
         web.get("/profile", guard(profile_page, "user")),

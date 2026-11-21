@@ -482,9 +482,20 @@ async def repair_schema() -> dict[str, int]:
     }
 
 
-async def stamp_alembic(revision: str = "0001_initial") -> None:
-    """Отмечает версию схемы, чтобы будущие миграции знали точку отсчёта."""
+async def stamp_alembic(revision: str = "head") -> None:
+    """Отмечает фактическую схему, чтобы Alembic не повторял миграции."""
+    from pathlib import Path
+
     from sqlalchemy import text
+
+    if revision == "head":
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        root = Path(__file__).resolve().parents[2]
+        revision = ScriptDirectory.from_config(
+            Config(str(root / "alembic.ini"))
+        ).get_current_head()
 
     try:
         async with get_engine().begin() as connection:
@@ -497,6 +508,15 @@ async def stamp_alembic(revision: str = "0001_initial") -> None:
             )
             current = await connection.execute(text("SELECT version_num FROM alembic_version"))
             if current.first() is None:
+                await connection.execute(
+                    text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
+                    {"rev": revision},
+                )
+            else:
+                # ensure_schema() уже привела таблицы к моделям текущего
+                # выпуска. Старая отметка 0001 не должна заставлять Alembic
+                # повторно добавлять существующие столбцы и таблицы.
+                await connection.execute(text("DELETE FROM alembic_version"))
                 await connection.execute(
                     text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
                     {"rev": revision},

@@ -76,6 +76,35 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Отдельный тикет-бот поддержки. Включается установщиком только когда
+  # задан SUPPORT_BOT_TOKEN; веб-порт и доступ к Docker-сокету ему не нужны.
+  #   docker compose --profile support up -d support
+  support:
+    profiles: ["support"]
+    build:
+      context: .
+      dockerfile: support/Dockerfile
+      args:
+        SUPPORT_AI: ${SUPPORT_AI:-0}
+    image: support_image
+    container_name: support_container
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SUPPORT_DB_FILE: data/support.db
+      SUPPORT_EXPORT_DIR: data/exports
+    volumes:
+      - ./data/support:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: ${SUPPORT_MEM_LIMIT:-256M}
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   # Собственный Bot API Server: снимает предел отправки с 50 МБ до 2 ГБ.
   # Включается профилем, когда нужна загрузка крупных видео:
   #   docker compose --profile media up -d
@@ -119,7 +148,7 @@ services:
   # На роутере придётся пробросить все пять портов hbbs+hbbr.
   hbbs:
     profiles: ["rustdesk"]
-    image: rustdesk/rustdesk-server:latest
+    image: rustdesk/rustdesk-server:1.1.16
     container_name: radar_hbbs
     restart: unless-stopped
     # -r — адрес relay-сервера (hbbr), который клиент получит от id-сервера.
@@ -145,7 +174,7 @@ services:
 
   hbbr:
     profiles: ["rustdesk"]
-    image: rustdesk/rustdesk-server:latest
+    image: rustdesk/rustdesk-server:1.1.16
     container_name: radar_hbbr
     restart: unless-stopped
     command: ["hbbr"]

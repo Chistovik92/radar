@@ -19,6 +19,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .. import __version__ as VERSION
+from .landing_content import default_content, load_content
 
 STATIC_DIR = Path(__file__).resolve().parent / "static" / "landing"
 LANDING_ASSETS = {
@@ -27,8 +28,9 @@ LANDING_ASSETS = {
 }
 
 
-def render_landing_page(bot_username: str = "", public_url: str = "") -> str:
-    """Возвращает HTML-оболочку React и публичные настройки проекта."""
+def render_landing_page(bot_username: str = "", public_url: str = "",
+                        content: dict | None = None) -> str:
+    """Возвращает HTML-оболочку React, настройки и тексты из meta + схемы."""
     from .. import secrets as secrets_module
     from ..handlers import digest
 
@@ -39,6 +41,7 @@ def render_landing_page(bot_username: str = "", public_url: str = "") -> str:
         "description": description,
         "version": VERSION,
         "plans": digest._plans(),
+        "content": default_content() if content is None else content,
     }
     # JSON в script должен экранировать '<': иначе текст администратора может
     # закрыть элемент script. Unicode escape сохраняет исходную строку в JS.

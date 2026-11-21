@@ -4,6 +4,7 @@ import {
   Cloud, Bot, BookOpen, CalendarDays, Wifi, Server, Monitor, Lock, Cpu, Network,
   Settings2, ArrowLeftRight,
 } from 'lucide-react';
+import { pageContent } from '../content';
 
 const PROJECTS = [
   {
@@ -165,21 +166,26 @@ const PROJECTS = [
 ];
 
 export default function Projects() {
+  const content = pageContent('projects', {
+    eyebrow: 'Семейство проектов SecretHero', title: 'Наши проекты',
+    subtitle: 'Открытые инструменты, объединённые одним аккаунтом и одной философией — полезное под контролем пользователя.',
+    projects: PROJECTS.map(({ icon: _icon, ...project }) => project),
+    future_text: 'Больше проектов — в GitHub-профиле SecretHero. Следите за обновлениями в боте «Радар».',
+  });
   return (
     <PageLayout>
       <div className="projects-page">
         <header className="page-title">
-          <p className="update-date">Семейство проектов SecretHero</p>
-          <h1>Наши проекты</h1>
-          <p className="page-subtitle">
-            Открытые инструменты, объединённые одним аккаунтом и одной философией — полезное под контролем пользователя.
-          </p>
+          <p className="update-date">{content.eyebrow}</p>
+          <h1>{content.title}</h1>
+          <p className="page-subtitle">{content.subtitle}</p>
         </header>
 
         <div className="projects-grid">
-          {PROJECTS.map((project) => (
-            <article className="project-card" key={project.name}>
-              <div className="project-icon"><project.icon size={26} /></div>
+          {content.projects.map((project, index) => {
+            const Icon = PROJECTS[index]?.icon || Radar;
+            return <article className="project-card" key={project.name}>
+              <div className="project-icon"><Icon size={26} /></div>
               <h2>{project.name}</h2>
               <p className="project-tagline">{project.tagline}</p>
               <p className="project-description">{project.description}</p>
@@ -190,19 +196,14 @@ export default function Projects() {
                   </a>
                 ))}
               </div>
-            </article>
-          ))}
+            </article>;
+          })}
         </div>
 
         <section className="doc-section">
           <div className="project-future">
             <Layers size={22} />
-            <p>
-              Больше проектов — в{' '}
-              <a href="https://github.com/Chistovik92" target="_blank" rel="noreferrer noopener">GitHub-профиле SecretHero</a>.
-              Следите за обновлениями в{' '}
-              <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener">боте «Радар»</a>.
-            </p>
+            <p>{content.future_text}</p>
           </div>
         </section>
       </div>

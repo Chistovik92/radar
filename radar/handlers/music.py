@@ -37,6 +37,11 @@ router = Router(name="music")
 
 def _menu(user: dict, role: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    from .. import features
+
+    if features.enabled("music_search"):
+        rows.append([InlineKeyboardButton(
+            text="🔍 Найти трек в каталоге", callback_data="msc:menu")])
     if music.tracks_of(user):
         rows.append([InlineKeyboardButton(
             text="▶️ Мои треки", callback_data="mus:list")])
@@ -92,8 +97,8 @@ def _section(user: dict, role: str) -> str:
         "Пришлите аудиофайл сообщением — он появится в ваших треках.\n"
         "Форматы: mp3, m4a, ogg, opus, flac, wav; до "
         f"{music.MAX_TRACK_MB} МБ.\n\n"
-        "<i>Каждый слушает только то, что загрузил сам — общей "
-        "библиотеки нет.</i>"
+        "<i>Загруженные вами файлы доступны только вам. Внешний каталог "
+        "и его публичные плейлисты — отдельный раздел.</i>"
     )
 
 
@@ -101,7 +106,7 @@ def _section(user: dict, role: str) -> str:
 async def cmd_music(message: Message, user: dict, role: str) -> None:
     from .. import features
 
-    if not features.enabled("music"):
+    if not features.enabled("music") and not features.enabled("music_search"):
         await message.answer("🎵 Музыка отключена.")
         return
     await message.answer(_section(user, role), reply_markup=_menu(user, role))
@@ -111,7 +116,7 @@ async def cmd_music(message: Message, user: dict, role: str) -> None:
 async def menu(call, user: dict, role: str) -> None:
     from .. import features
 
-    if not features.enabled("music"):
+    if not features.enabled("music") and not features.enabled("music_search"):
         await call.answer("Музыка отключена.", show_alert=True)
         return
     await call.answer()

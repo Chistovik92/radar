@@ -100,6 +100,8 @@ class User(Base):
     # состояние пользователя, поэтому оно обязано переживать перезапуск.
     sub: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     media_quota: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    # Личные треки и состояние публичного музыкального каталога (6.0.0).
+    music: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
     # Когда бот узнал, что человеку не доставить (заблокировал бота или
     # удалил аккаунт), секунды Unix; 0 — доступен. Не «blocked»: то поле —

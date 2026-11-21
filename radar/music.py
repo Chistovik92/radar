@@ -8,9 +8,9 @@
 
 * хранение: файлы в `data/music/<id>.mp3`, описание в записи
   пользователя (`user["music"]`): треки и плейлисты;
-* каждый слушает только своё — общей библиотеки нет. Раздача чужих
-  фонограмм — это распространение, а не прослушивание, и платной
-  выдачей треков бот становился бы пиратским сервисом;
+* личные файлы доступны только владельцу. Внешний каталог 6.0.0 живёт
+  отдельно в ``musicsearch.py`` за флагом ``music_search``: там сохраняются
+  только Telegram file_id и метаданные, но не постоянные аудиофайлы;
 * метаданные ID3 (артист, название) разбираются на чистой стандартной
   библиотеке — внешний тег-парсер ради трёх полей не тащим;
 * приём файла и отдача — в `handlers/music.py`, сюда только логика.
@@ -126,11 +126,37 @@ def read_tags(data: bytes) -> dict[str, str]:
 # }
 
 SLOT = "music"
+MAX_SAVED = 500
 
 
 def _slot(user: dict) -> dict:
     data = (user or {}).get(SLOT)
     return data if isinstance(data, dict) else {}
+
+
+def saved_tracks(user: dict) -> list[str]:
+    """Идентификаторы избранных треков внешнего каталога."""
+    return [str(item) for item in (_slot(user).get("saved") or []) if item]
+
+
+def toggle_saved(user: dict, track_id: str) -> bool | None:
+    """True — добавлено, False — убрано, None — достигнут лимит."""
+    track_id = str(track_id or "")[:80]
+    if not track_id:
+        return None
+    data = dict(_slot(user))
+    saved = saved_tracks(user)
+    if track_id in saved:
+        saved.remove(track_id)
+        added = False
+    elif len(saved) >= MAX_SAVED:
+        return None
+    else:
+        saved.insert(0, track_id)
+        added = True
+    data["saved"] = saved
+    user[SLOT] = data
+    return added
 
 
 def tracks_of(user: dict) -> list[dict]:
