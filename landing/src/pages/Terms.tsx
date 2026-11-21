@@ -148,7 +148,7 @@ export default function Terms() {
           <p>
             10.1. По всем вопросам Пользователь может обратиться в службу поддержки через
             <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noreferrer noopener"> @SecretHeroSupportBot</a> (тикет-бот)
-            или по email <a href="mailto:support@radar-project.ru">support@radar-project.ru</a>.
+            или по email <a href="mailto:admin@hydravpsvpn.ru">admin@hydravpsvpn.ru</a>.
           </p>
         </section>
 

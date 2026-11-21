@@ -452,7 +452,7 @@ PRIVACY_CONTENT = """
 
 <h2>8. Контакты по вопросам конфиденциальности</h2>
 <p>Тикет-система: <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener">@SecretHeroSupportBot</a><br>
-Email: <a href="mailto:support@radar-project.ru">support@radar-project.ru</a></p>
+Email: <a href="mailto:admin@hydravpsvpn.ru">admin@hydravpsvpn.ru</a></p>
 """
 
 
@@ -525,7 +525,7 @@ TERMS_CONTENT = """
 
 <h2>9. Контакты</h2>
 <p>Поддержка: <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener">@SecretHeroSupportBot</a> (тикет-бот)<br>
-Email: <a href="mailto:support@radar-project.ru">support@radar-project.ru</a></p>
+Email: <a href="mailto:admin@hydravpsvpn.ru">admin@hydravpsvpn.ru</a></p>
 """
 
 
@@ -555,7 +555,7 @@ SUPPORT_CONTENT = """
     <div class="contact-icon">📧</div>
     <h3 class="contact-title">Email</h3>
     <p class="contact-desc">Для официальных обращений, договоров, претензий, GDPR-запросов.</p>
-    <a href="mailto:support@radar-project.ru" class="contact-link">support@radar-project.ru</a>
+    <a href="mailto:admin@hydravpsvpn.ru" class="contact-link">admin@hydravpsvpn.ru</a>
   </article>
 </div>
 

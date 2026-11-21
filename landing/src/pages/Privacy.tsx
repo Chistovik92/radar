@@ -95,7 +95,7 @@ export default function Privacy() {
         <section className="doc-section">
           <h2>8. Контакты по вопросам конфиденциальности</h2>
           <p>Тикет-система: <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noreferrer noopener">@SecretHeroSupportBot</a></p>
-          <p>Email: <a href="mailto:support@radar-project.ru">support@radar-project.ru</a></p>
+          <p>Email: <a href="mailto:admin@hydravpsvpn.ru">admin@hydravpsvpn.ru</a></p>
         </section>
       </div>
     </PageLayout>

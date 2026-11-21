@@ -35,7 +35,7 @@ export default function Support() {
               <div className="contact-icon">📧</div>
               <h3 className="contact-title">Email</h3>
               <p className="contact-desc">Для официальных обращений, договоров, претензий, GDPR-запросов.</p>
-              <a href="mailto:support@radar-project.ru" className="contact-link">support@radar-project.ru</a>
+              <a href="mailto:admin@hydravpsvpn.ru" className="contact-link">admin@hydravpsvpn.ru</a>
             </article>
           </div>
         </section>
