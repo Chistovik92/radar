@@ -566,7 +566,7 @@ SUPPORT_CONTENT = """
 
 <h2>SLA — время ответа</h2>
 <ul>
-  <li><strong>Рабочее время:</strong> пн–пт 09:00–17:30 (МСК).</li>
+  <li><strong>Рабочее время:</strong> пн–пт 09:00–20:00 (МСК).</li>
   <li><strong>Первичный ответ:</strong> до 4 часов в рабочее время, до 24 часов — в нерабочее.</li>
   <li><strong>Решение типовых вопросов:</strong> 1–2 рабочих дня.</li>
   <li><strong>Сложные баги / установка:</strong> до 5 рабочих дней.</li>
@@ -593,8 +593,8 @@ SUPPORT_CONTENT = """
 <p>В боте: Меню → Подписки / Сервер → выбрать тариф → оплатить Stars или через платёжную систему. Доступ придёт автоматически.</p>
 
 <h3>Хочу установить у себя (self-hosted)</h3>
-<p>Одна команда: <code>bash <(curl -fsSL https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh)</code><br>
-Требования: Docker, Docker Compose, порт 80/443, домен (для HTTPS и TG Login Widget).</p>
+<p>Требования: Docker, Docker Compose, порт 80/443, домен (для HTTPS и TG Login Widget).</p>
+<p>По вопросам установки и настройки обращайтесь к администрации: <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener">@SecretHeroSupportBot</a> (тикет-бот) или по email <a href="mailto:admin@hydravpsvpn.ru">admin@hydravpsvpn.ru</a>.</p>
 
 <h2>Как отправить обращение</h2>
 <p>Откройте <a href="https://t.me/SecretHeroSupportBot" target="_blank" rel="noopener">тикет-бота</a> и опишите вопрос там — он создаст обращение и покажет его номер. Если бот недоступен, напишите <a href="https://t.me/SecretHeroSupport" target="_blank" rel="noopener">@SecretHeroSupport</a>.</p>
