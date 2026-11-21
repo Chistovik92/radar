@@ -1166,16 +1166,25 @@ button { color: inherit; }
 /* VPN Plans (Downloads) */
 .vpn-plans {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 14px;
   margin-bottom: 16px;
 }
 
+/* Пять тарифов в один ряд на широком экране, ниже — аккуратный перенос. */
+.vpn-plans--five {
+  grid-template-columns: repeat(5, 1fr);
+}
+
 .vpn-plan-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   background: var(--surface-raised);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 24px;
+  padding: 24px 16px;
   text-align: center;
   transition: border-color 0.2s;
 }
@@ -1214,6 +1223,42 @@ button { color: inherit; }
 
 .vpn-plan-trial .vpn-plan-price {
   color: var(--text);
+}
+
+.vpn-plan-note {
+  line-height: 1.4;
+}
+
+.vpn-plan-fine {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.doc-subtitle {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 24px 0 8px;
+}
+
+/* Адаптив: на узких экранах карточки переносятся по две, на самых узких — в столбик. */
+@media (max-width: 1080px) {
+  .vpn-plans--five {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .vpn-plans--five {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 460px) {
+  .vpn-plans--five {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Projects Page */

@@ -128,7 +128,7 @@ export default function Downloads() {
             Доступ к VPN выдаётся через бота «Радар»: раздел <code>🔐 VPN</code> — там же можно оформить и продлить подписку.
             С 12.08.2026 действует обновлённая тарифная сетка и праздничная акция.
           </p>
-          <div className="vpn-plans">
+          <div className="vpn-plans vpn-plans--five">
             <article className="vpn-plan-card vpn-plan-trial">
               <h3>Неделя</h3>
               <div className="vpn-plan-price">0 ₽</div>
@@ -146,7 +146,7 @@ export default function Downloads() {
             </article>
             <article className="vpn-plan-card">
               <h3>Полгода</h3>
-              <div className="vpn-plan-price">1 950 ₽</div>
+              <div className="vpn-plan-price">2 300 ₽</div>
               <span className="vpn-plan-period">срок: 180 дней</span>
             </article>
             <article className="vpn-plan-card vpn-plan-best">
@@ -187,18 +187,61 @@ export default function Downloads() {
         {/* ============ Дополнительные услуги ============ */}
         <section className="doc-section">
           <h2>Дополнительные услуги</h2>
-          <ul>
-            <li><strong>Роутеры</strong> — для работы с сервером и раздачи доступа по всей домашней сети: от 3 500 ₽, гарантия 1 год.</li>
-            <li><strong>Прошивка и настройка</strong> — 1 500 ₽, с подарочным доступом на 3 месяца.</li>
-            <li><strong>Доставка по РФ</strong> — от 200 ₽.</li>
-            <li><strong>Настройка удалённого доступа</strong> к вашим роутерам (при технической возможности).</li>
-            <li><strong>Техническая поддержка</strong> в течение полугода.</li>
-            <li><strong>Индивидуальные тарифы</strong> — выбор локаций и от 10 до 25 ключей под ваши задачи.</li>
+
+          <h3 className="doc-subtitle">Роутеры</h3>
+          <p className="doc-hint">
+            Для работы с сервером и раздачи доступа по всей домашней сети.
+          </p>
+          <div className="vpn-plans">
+            <article className="vpn-plan-card">
+              <h3>Роутер</h3>
+              <div className="vpn-plan-price">от 3 500 ₽</div>
+              <span className="vpn-plan-period">гарантия 1 год</span>
+            </article>
+            <article className="vpn-plan-card">
+              <h3>Прошивка и настройка</h3>
+              <div className="vpn-plan-price">1 500 ₽</div>
+              <span className="vpn-plan-period">подарочный доступ на 3 месяца</span>
+            </article>
+            <article className="vpn-plan-card">
+              <h3>Доставка</h3>
+              <div className="vpn-plan-price">от 200 ₽</div>
+              <span className="vpn-plan-period">по РФ и СНГ</span>
+            </article>
+            <article className="vpn-plan-card">
+              <h3>Удалённый доступ</h3>
+              <div className="vpn-plan-price">1 000 ₽</div>
+              <span className="vpn-plan-period vpn-plan-note">при технической возможности</span>
+              <span className="vpn-plan-fine">
+                при подключении белого статического IP у провайдера или дополнительной опции (от 150 ₽ / месяц)
+              </span>
+            </article>
+          </div>
+
+          <h3 className="doc-subtitle">Техническая поддержка</h3>
+          <ul className="howto-list">
+            <li>
+              <strong>В течение полугода</strong>
+              <p>Техническая поддержка включена на первые шесть месяцев.</p>
+            </li>
+            <li>
+              <strong>Дальше — по обращению или подпиской</strong>
+              <p>Разовое обращение — от 1 000 ₽, подписка на тех-помощь — 150 ₽ / месяц.</p>
+            </li>
           </ul>
         </section>
 
+        {/* ============ Индивидуальные тарифы ============ */}
         <section className="doc-section">
-          <h2>Как установить и настроить</h2>
+          <h2>Индивидуальные тарифы</h2>
+          <p className="doc-hint">
+            Выбор локаций и от 10 до 25 ключей под ваши задачи. Условия подбираются индивидуально —
+            напишите в поддержку или в бота «Радар».
+          </p>
+        </section>
+
+        <section className="doc-section">
+          <h2>Как установить и настроить приложения</h2>
           <ol className="howto-list">
             <li>
               <strong>Скачайте файл под свою платформу</strong>
