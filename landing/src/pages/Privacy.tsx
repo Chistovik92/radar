@@ -17,7 +17,7 @@ export default function Privacy() {
           <p><strong>Бот в Telegram:</strong> <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener">@SecretHeroBot</a></p>
           <p><strong>Репозиторий:</strong> <a href="https://github.com/Chistovik92/radar" target="_blank" rel="noreferrer noopener">github.com/Chistovik92/radar</a></p>
           <p><strong>Автор:</strong> SecretHero</p>
-          <p><strong>Версия:</strong> 5.11.7 (ноябрь 2026)</p>
+          <p><strong>Версия:</strong> 5.11.8 (ноябрь 2026)</p>
         </section>
 
         <section className="doc-section">
