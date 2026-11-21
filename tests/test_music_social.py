@@ -230,11 +230,14 @@ class Handlers(Base):
 
         with (mock.patch.object(social, "reaction_state", state),
               mock.patch.object(search_handler.music, "saved_tracks", return_value=[]),
+              mock.patch.object(search_handler.music, "find_by_source", return_value=None),
+              mock.patch.object(search_handler.music, "playlists_of", return_value=[]),
               mock.patch.object(search_handler.subscription, "active", return_value=False)):
             markup = run(search_handler.track_kb("a", {}))
-        # Без подписки и «слушать следующий» раскладка: реакции, [сохранить, в плейлист],
-        # «поделиться», «назад». Кнопка «поделиться» — отдельной строкой.
-        self.assertEqual(markup.inline_keyboard[2][0].switch_inline_query, "track:a")
+        # Без подписки и «слушать следующий» раскладка: «слушать», реакции,
+        # [сохранить, в плейлист], «поделиться», «назад». Кнопка «поделиться» —
+        # отдельной строкой (индекс 3 после добавленной строки «▶️ Слушать»).
+        self.assertEqual(markup.inline_keyboard[3][0].switch_inline_query, "track:a")
 
     def test_webm_is_sent_as_document_with_real_extension(self):
         call = mock.Mock(message=None)
