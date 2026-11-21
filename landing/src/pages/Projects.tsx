@@ -2,6 +2,7 @@ import PageLayout from '../components/PageLayout';
 import {
   ArrowUpRight, Radar, Smartphone, Router, Layers,
   Cloud, Bot, BookOpen, CalendarDays, Wifi, Server, Monitor, Lock, Cpu, Network,
+  Settings2, ArrowLeftRight,
 } from 'lucide-react';
 
 const PROJECTS = [
@@ -139,6 +140,26 @@ const PROJECTS = [
       'Открытая децентрализованная замена ZeroTier на базе AmneziaWG 3: защищённые виртуальные сети, NAT traversal, ретрансляция, fallback VLESS+REALITY, exit-узлы и веб-управление. Go.',
     links: [
       { label: 'GitHub', href: 'https://github.com/Chistovik92/zeropentime' },
+    ],
+  },
+  {
+    icon: Settings2,
+    name: 'winOpenCodeMod',
+    tagline: 'Провайдеры в настройках OpenCode Desktop',
+    description:
+      'GUI-плагин для OpenCode Desktop, возвращающий форму «Custom provider» (как в v1.19.x) в раздел Settings → Providers. Добавление, правка и удаление собственных OpenAI-совместимых провайдеров без ручной правки opencode.json. TypeScript + Solid.js.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/winOpenCodeMod' },
+    ],
+  },
+  {
+    icon: ArrowLeftRight,
+    name: 'DataOpenCode',
+    tagline: 'Перенос настроек OpenCode между компьютерами',
+    description:
+      'Безопасный аддитивный перенос провайдеров, моделей, API-ключей и диалогов OpenCode между Windows-компьютерами: экспорт в zip-архив и развёртывание на другой машине без перезаписи локальных настроек. Поддержка V1 ↔ V2, защита ZIP и резервные копии.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/DataOpenCode' },
     ],
   },
 ];

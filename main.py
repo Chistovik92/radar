@@ -30,6 +30,9 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("5.11.11", [
+        "🧩 <b>На странице «Наши проекты» ещё два проекта команды.</b> winOpenCodeMod — GUI-плагин OpenCode Desktop, возвращающий форму «Custom provider» в Settings → Providers (свои OpenAI-совместимые провайдеры без правки opencode.json). DataOpenCode — безопасный аддитивный перенос провайдеров, моделей, ключей и диалогов OpenCode между Windows-компьютерами (V1 ↔ V2).",
+    ]),
     ("5.11.10", [
         "🧩 <b>Страница «Наши проекты» дополнена десятью проектами команды.</b> opendisk (облака как локальные диски), NeuroCode Android (клиент LLM), LocalDoc AI (локальная читалка с нейросетями), med-roster (графики смен и табели поликлиники), MeshkitKeen (управление mesh-сетью Keenetic), torrserver-docker-manager, Harness (десктоп-клиент DeepSeek Harness), ZHeroDiZk (удалённый доступ), servAI (AI-сервер одной командой) и zeropentime (децентрализованная альтернатива ZeroTier). Описания — по реальным README и описаниям репозиториев.",
     ]),
