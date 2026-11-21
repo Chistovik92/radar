@@ -1,5 +1,8 @@
 import PageLayout from '../components/PageLayout';
-import { ArrowUpRight, Radar, Smartphone, Router, Layers } from 'lucide-react';
+import {
+  ArrowUpRight, Radar, Smartphone, Router, Layers,
+  Cloud, Bot, BookOpen, CalendarDays, Wifi, Server, Monitor, Lock, Cpu, Network,
+} from 'lucide-react';
 
 const PROJECTS = [
   {
@@ -35,6 +38,107 @@ const PROJECTS = [
     links: [
       { label: 'Загрузки', href: '/downloads' },
       { label: 'GitHub', href: 'https://github.com/Chistovik92/HydraVPNforRouters' },
+    ],
+  },
+  {
+    icon: Cloud,
+    name: 'opendisk',
+    tagline: 'Облачные хранилища как локальные диски',
+    description:
+      'Бесплатный клиент для облачных хранилищ на базе rclone: подключение облаков как дисков в Windows и Linux, просмотр файлов на Android. Яндекс.Диск, Облако Mail.ru, Google Drive, Dropbox, S3 и другие сервисы. Kotlin / Compose Multiplatform, MIT.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/opendisk' },
+      { label: 'Сайт', href: 'https://chistovik92.github.io/opendisk/' },
+    ],
+  },
+  {
+    icon: Bot,
+    name: 'NeuroCode Android',
+    tagline: 'Клиент для LLM на устройстве',
+    description:
+      'Открытый клиент для языковых моделей: запуск как на самом устройстве, так и для удалённого выполнения через консоль. Kotlin.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/NeuroCode-Android' },
+    ],
+  },
+  {
+    icon: BookOpen,
+    name: 'LocalDoc AI',
+    tagline: 'Локальная читалка с нейросетями',
+    description:
+      'Кроссплатформенная читалка книг и веб-страниц (Android + iOS) с озвучкой и полностью локальными нейросетями — без облака и телеметрии. Поддержка EPUB, FB2, PDF, DOCX и десятков форматов, локальный RAG, OCR и синтез речи на устройстве. Kotlin Multiplatform + Compose Multiplatform.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/LocalDoc-AI---KMP' },
+    ],
+  },
+  {
+    icon: CalendarDays,
+    name: 'med-roster',
+    tagline: 'Графики смен и табели для поликлиники',
+    description:
+      'Автоматизация составления графиков смен и расчёта табелей учёта рабочего времени (Т-13) для персонала детской и взрослой поликлиники. Импорт реальных графиков из Excel, поиск ошибок, правка в браузере и выгрузка готовых официальных форм. Сборка установщиков — GitHub Actions.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/med-roster' },
+    ],
+  },
+  {
+    icon: Wifi,
+    name: 'MeshkitKeen',
+    tagline: 'Управление mesh-сетью Keenetic',
+    description:
+      'Форк KeenKit, добавляющий неинтерактивный режим и управление mesh-узлами (ретрансляторами/экстендерами) с головного роутера-контроллера. Статус всех устройств, перезагрузка, Wi-Fi по диапазонам и OTA-обновление прошивки — с одного экрана.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/MeshkitKeen' },
+    ],
+  },
+  {
+    icon: Server,
+    name: 'torrserver-docker-manager',
+    tagline: 'Менеджер TorrServer в Docker',
+    description:
+      'Docker-менеджер для TorrServer с двумя режимами установки — простой запуск и развёртывание торрент-сервера в контейнере с автообновлением.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/torrserver-docker-manager' },
+    ],
+  },
+  {
+    icon: Monitor,
+    name: 'Harness',
+    tagline: 'Десктоп-приложение для DeepSeek Harness',
+    description:
+      'Настольное приложение в стиле Claude Code / ChatGPT / Gemini на базе DeepSeek Harness. Объединяет несколько LLM-провайдеров (DeepSeek, OpenAI, Claude, Gemini, Groq и др.) с локальной историей чатов, шифрованием ключей API и запуском локальных моделей Hugging Face. Electron + React.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/Harness' },
+    ],
+  },
+  {
+    icon: Lock,
+    name: 'ZHeroDiZk',
+    tagline: 'Удалённый доступ в классе RustDesk',
+    description:
+      'Открытая система удалённого доступа в классе RustDesk и AnyDesk: собственный сервер, кроссплатформенные клиенты, управляемые права доступа и аудит. Rust.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/ZHeroDiZk' },
+    ],
+  },
+  {
+    icon: Cpu,
+    name: 'servAI',
+    tagline: 'AI-сервер одной командой',
+    description:
+      'Установщик «AI-сервера» для Ubuntu 24.04+ и Debian 12+: одним скриптом ставит официальные консольные ИИ-клиенты (Claude Code, Codex CLI, Gemini CLI, Aider), рабочего пользователя, tmux-раскладку из четырёх агентов и опционально веб-IDE.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/servAI' },
+    ],
+  },
+  {
+    icon: Network,
+    name: 'zeropentime',
+    tagline: 'Децентрализованная альтернатива ZeroTier',
+    description:
+      'Открытая децентрализованная замена ZeroTier на базе AmneziaWG 3: защищённые виртуальные сети, NAT traversal, ретрансляция, fallback VLESS+REALITY, exit-узлы и веб-управление. Go.',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/Chistovik92/zeropentime' },
     ],
   },
 ];
@@ -73,8 +177,9 @@ export default function Projects() {
           <div className="project-future">
             <Layers size={22} />
             <p>
-              Раздел наполняется. Здесь будут появляться новые проекты — следите за обновлениями в{' '}
-              <a href="https://github.com/Chistovik92" target="_blank" rel="noreferrer noopener">GitHub-профиле SecretHero</a> и в{' '}
+              Больше проектов — в{' '}
+              <a href="https://github.com/Chistovik92" target="_blank" rel="noreferrer noopener">GitHub-профиле SecretHero</a>.
+              Следите за обновлениями в{' '}
               <a href="https://t.me/SecretHeroBot" target="_blank" rel="noreferrer noopener">боте «Радар»</a>.
             </p>
           </div>
