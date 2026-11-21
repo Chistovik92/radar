@@ -46,6 +46,19 @@ class TestTracks(unittest.TestCase):
         self.assertEqual(len(tracks), 1)
         self.assertEqual(tracks[0]["name"], "Песня")
 
+    def test_find_by_source(self):
+        user = {}
+        music.add_track(user, "local1", name="A", ext=".mp3", size=1,
+                        source="catalog_xyz")
+        music.add_track(user, "local2", name="B", ext=".mp3", size=1)
+        found = music.find_by_source(user, "catalog_xyz")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["id"], "local1")
+        self.assertEqual(found["source"], "catalog_xyz")
+        # Трек без источника не находится по чужому id.
+        self.assertIsNone(music.find_by_source(user, "local2"))
+        self.assertIsNone(music.find_by_source(user, ""))
+
     def test_remove_cleans_playlists(self):
         user = {}
         music.add_track(user, "abc", name="A", ext=".mp3", size=1)

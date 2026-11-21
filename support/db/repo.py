@@ -312,6 +312,26 @@ class SupportRepository:
             target.role = new_role
             return True
 
+    async def set_role_direct(self, external_id: int, new_role: str) -> bool:
+        """Задать роль напрямую, без проверки роли актора.
+
+        Используется веб-панелью для синхронизации роли из основной базы
+        ``radar``: там право уже проверено отдельно, а здесь роль просто
+        приводится в соответствие. Суперадмин не трогается.
+        """
+        if new_role not in roles.ORDER:
+            return False
+        async with self.db.session() as active:
+            user = await self._user(active, external_id)
+            if user is None:
+                return False
+            if user.role == roles.SUPERADMIN:
+                # Суперадмин support-базы задаётся SUPPORT_ADMIN_ID и не
+                # понижается синхронизацией из radar.
+                return True
+            user.role = new_role
+            return True
+
     async def faq_entries(self) -> dict[str, str]:
         async with self.db.session() as active:
             meta = await active.get(Meta, FAQ_KEY)

@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v6.0.3 — автономный установщик.
+# Система «Радар» v6.0.4 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="6.0.3"
+VERSION="6.0.4"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -3536,6 +3536,10 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("6.0.4", [
+        "🎵 <b>Прослушивание, плейлисты и честный шаринг в музыкальном каталоге.</b> В карточке трека появилась кнопка «▶️ Слушать» и длительность. Сохранённый в «Мои треки» трек связывается с каталогом — его можно добавлять в локальные плейлисты прямо из каталога. «Поделиться» отправляет MP3-файл, если трек уже прослушан, иначе честно объясняет, что сначала нужно прослушать его в боте.",
+        "🛎 <b>Синхронизация ролей операторов поддержки в панели.</b> Роль модератора теперь автоматически переносится из основной базы в базу поддержки при открытии раздела «Поддержка», поэтому операторы видят все обращения, а не только свои.",
+    ]),
     ("6.0.3", [
         "🎵 <b>Исправлен роутинг музыкального каталога.</b> Кнопка «🎵 Музыка» из главного меню теперь ведёт на новый музыкальный каталог вместо старого интерфейса локальной музыки. Флаг music_search включён по умолчанию, обработчик mus:menu перенаправляет на catalog_menu() при включённом флаге.",
     ]),
@@ -5508,7 +5512,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_08'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "6.0.3"
+__version__ = "6.0.4"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -22623,6 +22627,7 @@ def _support_fmt(value: Any) -> str:
 async def _support_list_body(session) -> str:
     from . import support_tickets
 
+    await support_tickets.sync_role(session)
     try:
         tickets = await support_tickets.list_tickets(session)
     except Exception as exc:  # noqa: BLE001
@@ -22656,6 +22661,7 @@ async def _support_detail_body(session, reference: str, message: str = "",
                                failed: str = "") -> str:
     from . import support_tickets
 
+    await support_tickets.sync_role(session)
     try:
         data = await support_tickets.ticket_detail(session, reference)
     except Exception as exc:  # noqa: BLE001
@@ -24386,6 +24392,34 @@ def _external_id(session) -> int:
 def can_moderate(session) -> bool:
     """Модератор и выше — как в боте поддержки."""
     return radar_roles.is_moderator(session.role)
+
+
+async def sync_role(session) -> None:
+    """Подтянуть роль оператора из radar-базы в support-базу.
+
+    Панель судит о правах по роли в основной базе ``radar``, а бот
+    поддержки и репозиторий тикетов — по роли в ``support.db``. Без
+    синхронизации модератор, назначенный в панели, не увидел бы чужие
+    тикеты: ``list_tickets`` вернул бы только его собственные.
+
+    Роли называются одинаково (``user/moderator/admin/superadmin``),
+    поэтому сопоставление прямое. Запись в support-базе создаётся, если
+    её ещё нет; роль понижается/повышается до роли radar, но суперадмин
+    не трогается (его роль в support-базе задаёт ``SUPPORT_ADMIN_ID``).
+    """
+    external_id = _external_id(session)
+    if external_id <= 0:
+        return
+    role = str(session.role or "")
+    if role not in ("user", "moderator", "admin", "superadmin"):
+        return
+    try:
+        repo = await _repo()
+        await repo.get_or_create_user(external_id)
+        await repo.set_role_direct(external_id, role)
+    except Exception as exc:  # noqa: BLE001 — синхронизация не должна ронять страницу
+        log.warning("Не удалось синхронизировать роль %s в support.db: %s",
+                    external_id, exc)
 
 
 async def list_tickets(session) -> list[dict[str, Any]]:
@@ -66773,19 +66807,38 @@ def safe_title(name: str) -> str:
 
 def add_track(user: dict, track_id: str, *, name: str, ext: str,
               size: int, artist: str = "", title: str = "",
-              genre: str = "") -> bool:
-    """Записывает трек. False — хранилище переполнено."""
+              genre: str = "", source: str = "") -> bool:
+    """Записывает трек. False — хранилище переполнено.
+
+    ``source`` — идентификатор трека во внешнем каталоге, если он
+    сохранён оттуда: по нему локальный трек связывается с каталоговым
+    (чтобы «добавить в плейлист» работало и для скачанных треков).
+    """
     data = dict(_slot(user))
     tracks = list(data.get("tracks") or [])
     # Лимит по роли проверяет вызывающий: здесь только целостность записи.
-    tracks.append({
+    record = {
         "id": track_id, "name": safe_title(name), "ext": ext,
         "size": size, "artist": artist[:80], "title": title[:80],
         "genre": genre[:40],
-    })
+    }
+    if source:
+        record["source"] = str(source)[:80]
+    tracks.append(record)
     data["tracks"] = tracks
     user[SLOT] = data
     return True
+
+
+def find_by_source(user: dict, source_id: str) -> dict | None:
+    """Локальный трек, сохранённый из внешнего каталога. None — нет."""
+    source_id = str(source_id or "")
+    if not source_id:
+        return None
+    for item in tracks_of(user):
+        if str(item.get("source") or "") == source_id:
+            return item
+    return None
 
 
 def find_track(user: dict, track_id: str) -> dict | None:
@@ -69765,13 +69818,24 @@ def track_label(track: dict[str, Any]) -> str:
     ) or "Трек"
 
 
+def track_card_text(track: dict[str, Any] | None) -> str:
+    """Текст карточки трека: название и длительность."""
+    if not track:
+        return "🎵 <b>Трек недоступен</b>"
+    duration = int(track.get("duration") or 0)
+    length = f"\n⏱ {duration // 60}:{duration % 60:02d}" if duration else ""
+    return f"🎵 <b>{esc(track_label(track))}</b>{length}"
+
+
 async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu",
                    next_cb: str | None = None, role: str | None = None,
                    uid: str | int | None = None) -> InlineKeyboardMarkup:
     uid_key = str(uid if uid is not None else (user.get("id") or user.get("uid") or ""))
     state = await social.reaction_state(track_id, uid_key)
     saved = track_id in music.saved_tracks(user)
+    local = music.find_by_source(user, track_id)
     rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="▶️ Слушать", callback_data=f"msc:play:{track_id}")],
         [InlineKeyboardButton(
             text=f"{'❤️' if state['liked'] else '🤍'} {state['likes']}",
             callback_data=f"mss:like:{track_id}"),
@@ -69783,9 +69847,20 @@ async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu",
                               callback_data=f"mss:save:{track_id}"),
          InlineKeyboardButton(text="➕ В плейлист", callback_data=f"mss:add:{track_id}")],
     ]
+    if local:
+        # Трек уже в локальной библиотеке: предлагаем и локальные плейлисты.
+        for idx, pl in enumerate(music.playlists_of(user)):
+            mark = "➖" if local["id"] in (pl.get("tracks") or []) else "➕"
+            rows.append([InlineKeyboardButton(
+                text=f"{mark} «{pl['name'][:30]}» (мои треки)",
+                callback_data=f"mss:localpl:{idx}:{track_id}")])
     if subscription.active(user, role):
-        rows.append([InlineKeyboardButton(text="💾 Сохранить в мои треки",
-                                          callback_data=f"mss:tolocal:{track_id}")])
+        if local:
+            rows.append([InlineKeyboardButton(text="✅ Уже в «Моих треках»",
+                                              callback_data="msc:noop")])
+        else:
+            rows.append([InlineKeyboardButton(text="💾 Сохранить в мои треки",
+                                              callback_data=f"mss:tolocal:{track_id}")])
     if next_cb:
         rows.append([InlineKeyboardButton(text="▶️ Слушать следующий", callback_data=next_cb)])
     rows.append([InlineKeyboardButton(text="✈️ Поделиться", switch_inline_query=f"track:{track_id}")])
@@ -69971,7 +70046,7 @@ async def track_card(call, user: dict, role: str) -> None:
         await call.answer("Метаданные устарели, повторите поиск.", show_alert=True)
         return
     await call.answer()
-    await safe_edit(call, f"🎵 <b>{esc(track_label(track))}</b>",
+    await safe_edit(call, track_card_text(track),
                     await track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -70122,7 +70197,7 @@ async def save_to_local(call, user: dict, role: str) -> None:
     await music.store(new_id, ext, payload)
     music.add_track(user, new_id, name=str(track.get("title") or "Трек"), ext=ext,
                     size=len(payload), artist=str(track.get("artist") or ""),
-                    title=str(track.get("title") or ""))
+                    title=str(track.get("title") or ""), source=track_id)
     await storage.save(call.from_user.id)
     text = (f"✅ Сохранено в «Мои треки»: <b>{esc(track_label(track))[:80]}</b>\n"
             + music.describe(user, role))
@@ -70133,6 +70208,45 @@ async def save_to_local(call, user: dict, role: str) -> None:
             await call.bot.send_message(call.from_user.id, text)
     else:
         await call.bot.send_message(call.from_user.id, text)
+
+
+@router.callback_query(F.data.startswith("mss:localpl:"))
+async def toggle_local_playlist(call, user: dict, role: str) -> None:
+    """Добавить уже скачанный трек в локальный плейлист, оставаясь в каталоге.
+
+    ``mss:localpl:<индекс плейлиста>:<каталоговый id>`` — плейлист берём
+    по индексу, чтобы имя могло содержать любые символы.
+    """
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    parts = call.data.split(":", 3)
+    if len(parts) < 4:
+        await call.answer("Запрос устарел.", show_alert=True)
+        return
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        await call.answer("Запрос устарел.", show_alert=True)
+        return
+    catalog_id = parts[3]
+    playlists = music.playlists_of(user)
+    if idx < 0 or idx >= len(playlists):
+        await call.answer("Плейлист не найден.", show_alert=True)
+        return
+    local = music.find_by_source(user, catalog_id)
+    if local is None:
+        await call.answer("Сначала сохраните трек в «Мои треки».", show_alert=True)
+        return
+    playlist = playlists[idx]
+    result = music.toggle_in_playlist(user, playlist["name"], local["id"])
+    if result is None:
+        await call.answer("Плейлист не найден.", show_alert=True)
+        return
+    await storage.save(call.from_user.id)
+    await call.answer("Добавлен в плейлист." if result else "Убран из плейлиста.")
+    # Вернуть каталоговую карточку с обновлёнными метками.
+    await track_card(call, user, role)
 
 
 @router.callback_query(F.data == "msc:saved")
@@ -70262,12 +70376,16 @@ async def _inline_track_result(track: dict[str, Any]):
         )
     values = {
         "type": "article", "id": track_id[:64], "title": label[:64],
-        "description": "Нажмите, затем кнопку «Слушать»",
+        "description": "Прослушайте трек в боте — тогда он отправится файлом",
         "input_message_content": InputTextMessageContent(
-            message_text=f"🎵 {esc(label)}"
+            message_text=(
+                f"🎵 {esc(label)}\n\n"
+                "Чтобы отправить этот трек MP3-файлом, сначала прослушайте его "
+                "в боте (кнопка «Слушать»), после чего «Поделиться» отправит файл."
+            )
         ),
         "reply_markup": InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="▶️ Слушать", callback_data=f"msc:play:{track_id}")
+            InlineKeyboardButton(text="▶️ Слушать в боте", callback_data=f"msc:play:{track_id}")
         ]]),
     }
     cover = str((track.get("imageInfo") or {}).get("imageUrl") or "")
@@ -70401,7 +70519,7 @@ async def like(call, user: dict, role: str) -> None:
     active, likes, dislikes = await social.toggle_like(track_id, call.from_user.id)
     await call.answer("Лайк поставлен" if active else "Лайк убран")
     track = await musicsearch.catalog_get(track_id)
-    await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
+    await _edit_or_send(call, search.track_card_text(track),
                     await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -70414,7 +70532,7 @@ async def dislike(call, user: dict, role: str) -> None:
     active, _, _ = await social.toggle_dislike(track_id, call.from_user.id)
     await call.answer("Дизлайк поставлен" if active else "Дизлайк убран")
     track = await musicsearch.catalog_get(track_id)
-    await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
+    await _edit_or_send(call, search.track_card_text(track),
                     await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -70431,7 +70549,7 @@ async def save(call, user: dict, role: str) -> None:
     await storage.save(call.from_user.id)
     await call.answer("Добавлено в избранное" if changed else "Убрано из избранного")
     track = await musicsearch.catalog_get(track_id)
-    await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
+    await _edit_or_send(call, search.track_card_text(track),
                     await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -70450,7 +70568,10 @@ async def add_to_playlist(call) -> None:
                                       callback_data=f"mss:newfor:{track_id}")])
     rows.append(_back(f"msc:track:{track_id}"))
     await call.answer()
-    await _edit_or_send(call, "Выберите плейлист:", InlineKeyboardMarkup(inline_keyboard=rows))
+    text = ("Выберите плейлист:" if playlists
+            else "У вас пока нет плейлистов. Введите название — плейлист "
+                 "будет создан, и трек добавится в него сразу.")
+    await _edit_or_send(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("mss:toggle:"))
@@ -71901,6 +72022,26 @@ class SupportRepository:
             if actor is None or target is None or not roles.can_assign(actor.role, target.role, new_role):
                 return False
             target.role = new_role
+            return True
+
+    async def set_role_direct(self, external_id: int, new_role: str) -> bool:
+        """Задать роль напрямую, без проверки роли актора.
+
+        Используется веб-панелью для синхронизации роли из основной базы
+        ``radar``: там право уже проверено отдельно, а здесь роль просто
+        приводится в соответствие. Суперадмин не трогается.
+        """
+        if new_role not in roles.ORDER:
+            return False
+        async with self.db.session() as active:
+            user = await self._user(active, external_id)
+            if user is None:
+                return False
+            if user.role == roles.SUPERADMIN:
+                # Суперадмин support-базы задаётся SUPPORT_ADMIN_ID и не
+                # понижается синхронизацией из radar.
+                return True
+            user.role = new_role
             return True
 
     async def faq_entries(self) -> dict[str, str]:

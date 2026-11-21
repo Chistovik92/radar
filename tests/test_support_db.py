@@ -164,6 +164,23 @@ class RepositoryCase(unittest.IsolatedAsyncioTestCase):
         data = await self.repo.export_data(ticket.id, 100)
         self.assertEqual(data["messages"][-1]["sender"]["external_id"], 100)
 
+    async def test_set_role_direct_syncs_without_demoting_superadmin(self):
+        """Синхронизация роли из radar-базы задаёт роль напрямую, но не трогает суперадмина."""
+        # Повышаем обычного пользователя до модератора напрямую.
+        self.assertTrue(await self.repo.set_role_direct(200, "moderator"))
+        moderator = await self.repo.get_user(200)
+        self.assertEqual(moderator.role, "moderator")
+        # Понижение тоже работает.
+        self.assertTrue(await self.repo.set_role_direct(200, "user"))
+        # Суперадмин (900) не понижается синхронизацией.
+        self.assertTrue(await self.repo.set_role_direct(900, "user"))
+        root = await self.repo.get_user(900)
+        self.assertEqual(root.role, "superadmin")
+        # Неизвестная роль отклоняется.
+        self.assertFalse(await self.repo.set_role_direct(300, "boss"))
+        # Несуществующий пользователь — False.
+        self.assertFalse(await self.repo.set_role_direct(999, "moderator"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

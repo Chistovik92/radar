@@ -62,7 +62,7 @@ async def like(call, user: dict, role: str) -> None:
     active, likes, dislikes = await social.toggle_like(track_id, call.from_user.id)
     await call.answer("Лайк поставлен" if active else "Лайк убран")
     track = await musicsearch.catalog_get(track_id)
-    await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
+    await _edit_or_send(call, search.track_card_text(track),
                     await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -75,7 +75,7 @@ async def dislike(call, user: dict, role: str) -> None:
     active, _, _ = await social.toggle_dislike(track_id, call.from_user.id)
     await call.answer("Дизлайк поставлен" if active else "Дизлайк убран")
     track = await musicsearch.catalog_get(track_id)
-    await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
+    await _edit_or_send(call, search.track_card_text(track),
                     await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -92,7 +92,7 @@ async def save(call, user: dict, role: str) -> None:
     await storage.save(call.from_user.id)
     await call.answer("Добавлено в избранное" if changed else "Убрано из избранного")
     track = await musicsearch.catalog_get(track_id)
-    await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
+    await _edit_or_send(call, search.track_card_text(track),
                     await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -111,7 +111,10 @@ async def add_to_playlist(call) -> None:
                                       callback_data=f"mss:newfor:{track_id}")])
     rows.append(_back(f"msc:track:{track_id}"))
     await call.answer()
-    await _edit_or_send(call, "Выберите плейлист:", InlineKeyboardMarkup(inline_keyboard=rows))
+    text = ("Выберите плейлист:" if playlists
+            else "У вас пока нет плейлистов. Введите название — плейлист "
+                 "будет создан, и трек добавится в него сразу.")
+    await _edit_or_send(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("mss:toggle:"))

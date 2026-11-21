@@ -1,4 +1,4 @@
-# Radar v6.0.3
+# Radar v6.0.4
 
 [Русская версия](README.md)
 

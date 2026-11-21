@@ -2802,6 +2802,7 @@ def _support_fmt(value: Any) -> str:
 async def _support_list_body(session) -> str:
     from . import support_tickets
 
+    await support_tickets.sync_role(session)
     try:
         tickets = await support_tickets.list_tickets(session)
     except Exception as exc:  # noqa: BLE001
@@ -2835,6 +2836,7 @@ async def _support_detail_body(session, reference: str, message: str = "",
                                failed: str = "") -> str:
     from . import support_tickets
 
+    await support_tickets.sync_role(session)
     try:
         data = await support_tickets.ticket_detail(session, reference)
     except Exception as exc:  # noqa: BLE001

@@ -184,19 +184,38 @@ def safe_title(name: str) -> str:
 
 def add_track(user: dict, track_id: str, *, name: str, ext: str,
               size: int, artist: str = "", title: str = "",
-              genre: str = "") -> bool:
-    """Записывает трек. False — хранилище переполнено."""
+              genre: str = "", source: str = "") -> bool:
+    """Записывает трек. False — хранилище переполнено.
+
+    ``source`` — идентификатор трека во внешнем каталоге, если он
+    сохранён оттуда: по нему локальный трек связывается с каталоговым
+    (чтобы «добавить в плейлист» работало и для скачанных треков).
+    """
     data = dict(_slot(user))
     tracks = list(data.get("tracks") or [])
     # Лимит по роли проверяет вызывающий: здесь только целостность записи.
-    tracks.append({
+    record = {
         "id": track_id, "name": safe_title(name), "ext": ext,
         "size": size, "artist": artist[:80], "title": title[:80],
         "genre": genre[:40],
-    })
+    }
+    if source:
+        record["source"] = str(source)[:80]
+    tracks.append(record)
     data["tracks"] = tracks
     user[SLOT] = data
     return True
+
+
+def find_by_source(user: dict, source_id: str) -> dict | None:
+    """Локальный трек, сохранённый из внешнего каталога. None — нет."""
+    source_id = str(source_id or "")
+    if not source_id:
+        return None
+    for item in tracks_of(user):
+        if str(item.get("source") or "") == source_id:
+            return item
+    return None
 
 
 def find_track(user: dict, track_id: str) -> dict | None:

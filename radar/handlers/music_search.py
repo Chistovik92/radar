@@ -94,13 +94,24 @@ def track_label(track: dict[str, Any]) -> str:
     ) or "Трек"
 
 
+def track_card_text(track: dict[str, Any] | None) -> str:
+    """Текст карточки трека: название и длительность."""
+    if not track:
+        return "🎵 <b>Трек недоступен</b>"
+    duration = int(track.get("duration") or 0)
+    length = f"\n⏱ {duration // 60}:{duration % 60:02d}" if duration else ""
+    return f"🎵 <b>{esc(track_label(track))}</b>{length}"
+
+
 async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu",
                    next_cb: str | None = None, role: str | None = None,
                    uid: str | int | None = None) -> InlineKeyboardMarkup:
     uid_key = str(uid if uid is not None else (user.get("id") or user.get("uid") or ""))
     state = await social.reaction_state(track_id, uid_key)
     saved = track_id in music.saved_tracks(user)
+    local = music.find_by_source(user, track_id)
     rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="▶️ Слушать", callback_data=f"msc:play:{track_id}")],
         [InlineKeyboardButton(
             text=f"{'❤️' if state['liked'] else '🤍'} {state['likes']}",
             callback_data=f"mss:like:{track_id}"),
@@ -112,9 +123,20 @@ async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu",
                               callback_data=f"mss:save:{track_id}"),
          InlineKeyboardButton(text="➕ В плейлист", callback_data=f"mss:add:{track_id}")],
     ]
+    if local:
+        # Трек уже в локальной библиотеке: предлагаем и локальные плейлисты.
+        for idx, pl in enumerate(music.playlists_of(user)):
+            mark = "➖" if local["id"] in (pl.get("tracks") or []) else "➕"
+            rows.append([InlineKeyboardButton(
+                text=f"{mark} «{pl['name'][:30]}» (мои треки)",
+                callback_data=f"mss:localpl:{idx}:{track_id}")])
     if subscription.active(user, role):
-        rows.append([InlineKeyboardButton(text="💾 Сохранить в мои треки",
-                                          callback_data=f"mss:tolocal:{track_id}")])
+        if local:
+            rows.append([InlineKeyboardButton(text="✅ Уже в «Моих треках»",
+                                              callback_data="msc:noop")])
+        else:
+            rows.append([InlineKeyboardButton(text="💾 Сохранить в мои треки",
+                                              callback_data=f"mss:tolocal:{track_id}")])
     if next_cb:
         rows.append([InlineKeyboardButton(text="▶️ Слушать следующий", callback_data=next_cb)])
     rows.append([InlineKeyboardButton(text="✈️ Поделиться", switch_inline_query=f"track:{track_id}")])
@@ -300,7 +322,7 @@ async def track_card(call, user: dict, role: str) -> None:
         await call.answer("Метаданные устарели, повторите поиск.", show_alert=True)
         return
     await call.answer()
-    await safe_edit(call, f"🎵 <b>{esc(track_label(track))}</b>",
+    await safe_edit(call, track_card_text(track),
                     await track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
@@ -451,7 +473,7 @@ async def save_to_local(call, user: dict, role: str) -> None:
     await music.store(new_id, ext, payload)
     music.add_track(user, new_id, name=str(track.get("title") or "Трек"), ext=ext,
                     size=len(payload), artist=str(track.get("artist") or ""),
-                    title=str(track.get("title") or ""))
+                    title=str(track.get("title") or ""), source=track_id)
     await storage.save(call.from_user.id)
     text = (f"✅ Сохранено в «Мои треки»: <b>{esc(track_label(track))[:80]}</b>\n"
             + music.describe(user, role))
@@ -462,6 +484,45 @@ async def save_to_local(call, user: dict, role: str) -> None:
             await call.bot.send_message(call.from_user.id, text)
     else:
         await call.bot.send_message(call.from_user.id, text)
+
+
+@router.callback_query(F.data.startswith("mss:localpl:"))
+async def toggle_local_playlist(call, user: dict, role: str) -> None:
+    """Добавить уже скачанный трек в локальный плейлист, оставаясь в каталоге.
+
+    ``mss:localpl:<индекс плейлиста>:<каталоговый id>`` — плейлист берём
+    по индексу, чтобы имя могло содержать любые символы.
+    """
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    parts = call.data.split(":", 3)
+    if len(parts) < 4:
+        await call.answer("Запрос устарел.", show_alert=True)
+        return
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        await call.answer("Запрос устарел.", show_alert=True)
+        return
+    catalog_id = parts[3]
+    playlists = music.playlists_of(user)
+    if idx < 0 or idx >= len(playlists):
+        await call.answer("Плейлист не найден.", show_alert=True)
+        return
+    local = music.find_by_source(user, catalog_id)
+    if local is None:
+        await call.answer("Сначала сохраните трек в «Мои треки».", show_alert=True)
+        return
+    playlist = playlists[idx]
+    result = music.toggle_in_playlist(user, playlist["name"], local["id"])
+    if result is None:
+        await call.answer("Плейлист не найден.", show_alert=True)
+        return
+    await storage.save(call.from_user.id)
+    await call.answer("Добавлен в плейлист." if result else "Убран из плейлиста.")
+    # Вернуть каталоговую карточку с обновлёнными метками.
+    await track_card(call, user, role)
 
 
 @router.callback_query(F.data == "msc:saved")
@@ -591,12 +652,16 @@ async def _inline_track_result(track: dict[str, Any]):
         )
     values = {
         "type": "article", "id": track_id[:64], "title": label[:64],
-        "description": "Нажмите, затем кнопку «Слушать»",
+        "description": "Прослушайте трек в боте — тогда он отправится файлом",
         "input_message_content": InputTextMessageContent(
-            message_text=f"🎵 {esc(label)}"
+            message_text=(
+                f"🎵 {esc(label)}\n\n"
+                "Чтобы отправить этот трек MP3-файлом, сначала прослушайте его "
+                "в боте (кнопка «Слушать»), после чего «Поделиться» отправит файл."
+            )
         ),
         "reply_markup": InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="▶️ Слушать", callback_data=f"msc:play:{track_id}")
+            InlineKeyboardButton(text="▶️ Слушать в боте", callback_data=f"msc:play:{track_id}")
         ]]),
     }
     cover = str((track.get("imageInfo") or {}).get("imageUrl") or "")

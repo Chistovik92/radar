@@ -81,6 +81,34 @@ def can_moderate(session) -> bool:
     return radar_roles.is_moderator(session.role)
 
 
+async def sync_role(session) -> None:
+    """Подтянуть роль оператора из radar-базы в support-базу.
+
+    Панель судит о правах по роли в основной базе ``radar``, а бот
+    поддержки и репозиторий тикетов — по роли в ``support.db``. Без
+    синхронизации модератор, назначенный в панели, не увидел бы чужие
+    тикеты: ``list_tickets`` вернул бы только его собственные.
+
+    Роли называются одинаково (``user/moderator/admin/superadmin``),
+    поэтому сопоставление прямое. Запись в support-базе создаётся, если
+    её ещё нет; роль понижается/повышается до роли radar, но суперадмин
+    не трогается (его роль в support-базе задаёт ``SUPPORT_ADMIN_ID``).
+    """
+    external_id = _external_id(session)
+    if external_id <= 0:
+        return
+    role = str(session.role or "")
+    if role not in ("user", "moderator", "admin", "superadmin"):
+        return
+    try:
+        repo = await _repo()
+        await repo.get_or_create_user(external_id)
+        await repo.set_role_direct(external_id, role)
+    except Exception as exc:  # noqa: BLE001 — синхронизация не должна ронять страницу
+        log.warning("Не удалось синхронизировать роль %s в support.db: %s",
+                    external_id, exc)
+
+
 async def list_tickets(session) -> list[dict[str, Any]]:
     repo = await _repo()
     tickets = await repo.list_tickets(_external_id(session))
