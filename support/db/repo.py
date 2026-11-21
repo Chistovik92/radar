@@ -373,6 +373,36 @@ class SupportRepository:
                 [roles.MODERATOR, roles.ADMIN, roles.SUPERADMIN]
             )))).all())
 
+    async def pending_deliveries(self, limit: int = 50) -> list[tuple[Ticket, User, TicketMessage]]:
+        """Ответы операторов, которые ещё не доставлены автору в Telegram.
+
+        Используется delivery_worker в support/main.py: ответы, записанные
+        веб-панелью напрямую в базу (минуя бота), не доходят до автора, пока
+        фоновый цикл их не отправит.
+        """
+        async with self.db.session() as active:
+            messages = list((await active.scalars(
+                select(TicketMessage).where(
+                    TicketMessage.delivered.is_(False),
+                    TicketMessage.sender_id.isnot(None),
+                ).order_by(TicketMessage.id).limit(max(1, min(limit, 200)))
+            )).all())
+            result: list[tuple[Ticket, User, TicketMessage]] = []
+            for message in messages:
+                sender = await active.get(User, message.sender_id)
+                ticket = await active.get(Ticket, message.ticket_id)
+                if (sender is not None and ticket is not None
+                        and roles.is_moderator(sender.role)
+                        and sender.id != ticket.author_id):
+                    result.append((ticket, sender, message))
+            return result
+
+    async def mark_delivered(self, message_id: int) -> None:
+        async with self.db.session() as active:
+            message = await active.get(TicketMessage, message_id)
+            if message is not None:
+                message.delivered = True
+
     @staticmethod
     def _user_dict(user: User | None) -> dict[str, Any] | None:
         if user is None:
@@ -385,7 +415,8 @@ class SupportRepository:
             "id": ticket.id, "number": ticket_number(ticket), "author_id": ticket.author_id,
             "subject": ticket.subject, "category": ticket.category, "status": ticket.status,
             "priority": ticket.priority, "created_at": ticket.created_at,
-            "closed_at": ticket.closed_at, "sla_due_at": ticket.sla_due_at,
+            "updated_at": ticket.updated_at, "closed_at": ticket.closed_at,
+            "sla_due_at": ticket.sla_due_at,
             "first_response_at": ticket.first_response_at, "rating": ticket.rating,
         }
 

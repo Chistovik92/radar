@@ -75,6 +75,7 @@ MANIFEST = [
     "radar/web/auth.py",
     "radar/web/audit.py",
     "radar/web/panel.py",
+    "radar/web/support_tickets.py",
     "radar/web/appapi.py",
     "radar/web/adminpages.py",
     "radar/web/settingspages.py",

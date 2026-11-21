@@ -331,6 +331,37 @@ async def delete_public_playlist(playlist_id: str, uid: str | int) -> bool:
         return True
 
 
+async def clear_public_playlist(playlist_id: str, uid: str | int) -> bool:
+    """Убрать все треки из плейлиста (только владелец)."""
+    async with _lock:
+        playlists = dict(await storage.meta_get(PLAYLISTS_KEY, {}) or {})
+        raw = playlists.get(playlist_id)
+        if not isinstance(raw, dict) or str(raw.get("founder_id")) != str(uid):
+            return False
+        item = _clean_playlist(raw, playlist_id)
+        item["tracks"] = []
+        playlists[playlist_id] = item
+        await storage.meta_set(PLAYLISTS_KEY, playlists)
+        return True
+
+
+async def reaction_state(track_id: str, uid: str | int) -> dict[str, int]:
+    """Состояние реакций пользователя и просмотров для карточки трека."""
+    uid = str(uid)
+    likes = await storage.meta_get(LIKES_KEY, {})
+    dislikes = await storage.meta_get(DISLIKES_KEY, {})
+    views = await storage.meta_get(VIEWS_KEY, {})
+    liked = uid in _uids((likes or {}).get(track_id))
+    disliked = uid in _uids((dislikes or {}).get(track_id))
+    return {
+        "likes": len(_uids((likes or {}).get(track_id))),
+        "dislikes": len(_uids((dislikes or {}).get(track_id))),
+        "views": max(0, int((views or {}).get(track_id) or 0)),
+        "liked": int(liked),
+        "disliked": int(disliked),
+    }
+
+
 async def share_track(track_id: str) -> dict[str, Any] | None:
     from . import musicsearch
 

@@ -54,7 +54,7 @@ def _back(callback: str = "msc:menu") -> list[InlineKeyboardButton]:
 
 
 @router.callback_query(F.data.startswith("mss:like:"))
-async def like(call, user: dict) -> None:
+async def like(call, user: dict, role: str) -> None:
     if not features.enabled("music_search"):
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -63,11 +63,11 @@ async def like(call, user: dict) -> None:
     await call.answer("Лайк поставлен" if active else "Лайк убран")
     track = await musicsearch.catalog_get(track_id)
     await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
-                    await search.track_kb(track_id, user))
+                    await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data.startswith("mss:dislike:"))
-async def dislike(call, user: dict) -> None:
+async def dislike(call, user: dict, role: str) -> None:
     if not features.enabled("music_search"):
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -76,11 +76,11 @@ async def dislike(call, user: dict) -> None:
     await call.answer("Дизлайк поставлен" if active else "Дизлайк убран")
     track = await musicsearch.catalog_get(track_id)
     await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
-                    await search.track_kb(track_id, user))
+                    await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data.startswith("mss:save:"))
-async def save(call, user: dict) -> None:
+async def save(call, user: dict, role: str) -> None:
     if not features.enabled("music_search"):
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -93,7 +93,7 @@ async def save(call, user: dict) -> None:
     await call.answer("Добавлено в избранное" if changed else "Убрано из избранного")
     track = await musicsearch.catalog_get(track_id)
     await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
-                    await search.track_kb(track_id, user))
+                    await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data.startswith("mss:add:"))
@@ -208,14 +208,25 @@ async def _render_playlist(call, item: dict) -> None:
             continue
         full = {**track, "id": track_id}
         tracks.append(full)
-        rows.append([InlineKeyboardButton(text=f"🎵 {search.track_label(full)[:50]}",
-                                          callback_data=f"msc:track:{track_id}")])
+        owner = item["founder_id"] == str(call.from_user.id)
+        row = [InlineKeyboardButton(text=f"▶️ {search.track_label(full)[:40]}",
+                                    callback_data=f"msc:play:{track_id}")]
+        if owner:
+            row.append(InlineKeyboardButton(text="🗑",
+                                            callback_data=f"mss:plrem:{playlist_id}:{track_id}"))
+        rows.append(row)
     owner = item["founder_id"] == str(call.from_user.id)
-    rows.append([InlineKeyboardButton(text=f"👍 {item['likes']}",
+    if tracks:
+        rows.append([InlineKeyboardButton(text="▶️ Слушать всё",
+                                          callback_data=f"msc:play:{tracks[0]['id']}")])
+    rows.append([InlineKeyboardButton(text=f"❤️ {item['likes']}",
                                       callback_data=f"mss:pllike:{playlist_id}"),
-                 InlineKeyboardButton(text="✈️ Поделиться",
+                 InlineKeyboardButton(text=f"👁 {item['views']}", callback_data="msc:noop")])
+    rows.append([InlineKeyboardButton(text="✈️ Поделиться",
                                       switch_inline_query=f"playlist:{playlist_id}")])
     if owner:
+        rows.append([InlineKeyboardButton(text="🗑 Очистить плейлист",
+                                          callback_data=f"mss:plclr:{playlist_id}")])
         rows.append([InlineKeyboardButton(text="🗑 Удалить плейлист",
                                           callback_data=f"mss:pldel:{playlist_id}")])
     rows.append(_back("mss:list" if owner else "mss:toppl"))
@@ -223,6 +234,31 @@ async def _render_playlist(call, item: dict) -> None:
             f"Треков: {len(item['tracks'])} · 👁 {item['views']} · 👍 {item['likes']}\n\n"
             + (search._tracks_text(tracks) or "Пока нет доступных треков."))
     await _edit_or_send(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mss:plrem:"))
+async def playlist_remove_track(call) -> None:
+    _, _, playlist_id, track_id = call.data.split(":", 3)
+    changed = await social.toggle_public_track(playlist_id, call.from_user.id, track_id)
+    if changed is None:
+        await call.answer("Удалить трек может только владелец.", show_alert=True)
+        return
+    await call.answer("Трек убран из плейлиста")
+    item = await social.public_playlist_view(playlist_id, call.from_user.id, count_view=False)
+    if item:
+        await _render_playlist(call, item)
+
+
+@router.callback_query(F.data.startswith("mss:plclr:"))
+async def playlist_clear(call) -> None:
+    playlist_id = call.data.split(":", 2)[2]
+    if not await social.clear_public_playlist(playlist_id, call.from_user.id):
+        await call.answer("Очистить может только владелец.", show_alert=True)
+        return
+    await call.answer("Плейлист очищен")
+    item = await social.public_playlist_view(playlist_id, call.from_user.id, count_view=False)
+    if item:
+        await _render_playlist(call, item)
 
 
 @router.callback_query(F.data.startswith("mss:pllike:"))

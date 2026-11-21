@@ -86,6 +86,10 @@ class TicketMessage(Base):
     attachment_type: Mapped[str] = mapped_column(String(32), default="")
     attachment_name: Mapped[str] = mapped_column(String(256), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    # Доставлено ли сообщение оператора автору в Telegram. Заполняется
+    # delivery_worker в support/main.py: ответ из веб-панели пишется в базу
+    # напрямую (минуя бота), и только фоновый цикл доводит его до автора.
+    delivered: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
 class Meta(Base):

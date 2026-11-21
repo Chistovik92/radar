@@ -122,6 +122,11 @@ PANEL: dict[str, str] = {
     "/profile/loc/remove": "na:личный кабинет — удаление локации",
     "/profile/suggest": "na:личный кабинет — предложение источника",
     "/profile/trial": "na:личный кабинет — пробный период подписки",
+    "/support-tickets": "na:ответы на тикеты бота поддержки (модератор и выше)",
+    "/support-tickets/{ticket_id}": "na:тикет поддержки — переписка и действия",
+    "/support-tickets/{ticket_id}/reply": "na:тикет поддержки — ответ оператора",
+    "/support-tickets/{ticket_id}/close": "na:тикет поддержки — закрытие",
+    "/support-tickets/{ticket_id}/priority": "na:тикет поддержки — приоритет",
 }
 
 

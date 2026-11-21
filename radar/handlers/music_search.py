@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets as secrets_module
 from typing import Any
 
 from aiogram import F, Router
@@ -30,7 +31,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import features, music, music_social as social, musicsearch, storage
+from .. import features, music, music_social as social, musicsearch, storage, subscription
 from ..states import Form
 from ..textutils import esc
 from ..tg import safe_edit
@@ -42,17 +43,37 @@ DOWNLOAD_TIMEOUT = 360
 
 
 def menu_kb() -> InlineKeyboardMarkup:
+    """Статичная главная клавиатура каталога (для возвратов без счётчика)."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Найти трек", callback_data="msc:ask")],
-        [InlineKeyboardButton(text="⭐ Избранное", callback_data="msc:saved"),
-         InlineKeyboardButton(text="🕘 История", callback_data="msc:history")],
-        [InlineKeyboardButton(text="📚 Плейлисты", callback_data="mss:list"),
-         InlineKeyboardButton(text="🏆 Топы", callback_data="mss:tops")],
-        [InlineKeyboardButton(text="🎲 Случайный", callback_data="msc:random"),
-         InlineKeyboardButton(text="👤 Профиль", callback_data="mss:profile")],
-        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="msc:help")],
+        [InlineKeyboardButton(text="🏆 Топ", callback_data="mss:tops"),
+         InlineKeyboardButton(text="⭐ Избранное", callback_data="msc:saved")],
+        [InlineKeyboardButton(text="🔍 Поиск", callback_data="msc:ask")],
+        [InlineKeyboardButton(text="🎵 Плейлисты", callback_data="mss:list")],
+        [InlineKeyboardButton(text="🕘 История", callback_data="msc:history"),
+         InlineKeyboardButton(text="🎲 Случайный", callback_data="msc:random")],
+        [InlineKeyboardButton(text="🏆 Топ плейлистов", callback_data="mss:toppl")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="mss:profile"),
+         InlineKeyboardButton(text="ℹ️ Помощь", callback_data="msc:help")],
         [InlineKeyboardButton(text="◀️ К моей музыке", callback_data="mus:menu")],
     ])
+
+
+async def menu_kb_full(user_id: str | int) -> InlineKeyboardMarkup:
+    """Главная клавиатура со счётчиком плейлистов, как в not_a_music."""
+    playlists = await social.user_playlists(user_id)
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="🏆 Топ", callback_data="mss:tops"),
+         InlineKeyboardButton(text="⭐ Избранное", callback_data="msc:saved")],
+        [InlineKeyboardButton(text="🔍 Поиск", callback_data="msc:ask")],
+        [InlineKeyboardButton(text=f"🎵 Плейлисты ({len(playlists)})", callback_data="mss:list")],
+        [InlineKeyboardButton(text="🕘 История", callback_data="msc:history"),
+         InlineKeyboardButton(text="🎲 Случайный", callback_data="msc:random")],
+        [InlineKeyboardButton(text="🏆 Топ плейлистов", callback_data="mss:toppl")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="mss:profile"),
+         InlineKeyboardButton(text="ℹ️ Помощь", callback_data="msc:help")],
+        [InlineKeyboardButton(text="◀️ К моей музыке", callback_data="mus:menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def menu_text() -> str:
@@ -73,19 +94,32 @@ def track_label(track: dict[str, Any]) -> str:
     ) or "Трек"
 
 
-async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu") -> InlineKeyboardMarkup:
-    liked, disliked = await social.reaction_counts(track_id)
+async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu",
+                   next_cb: str | None = None, role: str | None = None,
+                   uid: str | int | None = None) -> InlineKeyboardMarkup:
+    uid_key = str(uid if uid is not None else (user.get("id") or user.get("uid") or ""))
+    state = await social.reaction_state(track_id, uid_key)
     saved = track_id in music.saved_tracks(user)
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="▶️ Слушать", callback_data=f"msc:play:{track_id}")],
-        [InlineKeyboardButton(text=f"👍 {liked}", callback_data=f"mss:like:{track_id}"),
-         InlineKeyboardButton(text=f"👎 {disliked}", callback_data=f"mss:dislike:{track_id}")],
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(
+            text=f"{'❤️' if state['liked'] else '🤍'} {state['likes']}",
+            callback_data=f"mss:like:{track_id}"),
+         InlineKeyboardButton(
+            text=f"{'💔' if state['disliked'] else '👎'} {state['dislikes']}",
+            callback_data=f"mss:dislike:{track_id}"),
+         InlineKeyboardButton(text=f"👁 {state['views']}", callback_data="msc:noop")],
         [InlineKeyboardButton(text="⭐ Убрать" if saved else "⭐ В избранное",
                               callback_data=f"mss:save:{track_id}"),
          InlineKeyboardButton(text="➕ В плейлист", callback_data=f"mss:add:{track_id}")],
-        [InlineKeyboardButton(text="✈️ Поделиться", switch_inline_query=f"track:{track_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data=back)],
-    ])
+    ]
+    if subscription.active(user, role):
+        rows.append([InlineKeyboardButton(text="💾 Сохранить в мои треки",
+                                          callback_data=f"mss:tolocal:{track_id}")])
+    if next_cb:
+        rows.append([InlineKeyboardButton(text="▶️ Слушать следующий", callback_data=next_cb)])
+    rows.append([InlineKeyboardButton(text="✈️ Поделиться", switch_inline_query=f"track:{track_id}")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _tracks_text(tracks: list[dict[str, Any]]) -> str:
@@ -163,7 +197,7 @@ async def catalog_menu(call, state) -> None:
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
     await call.answer()
-    await safe_edit(call, menu_text(), menu_kb())
+    await safe_edit(call, menu_text(), await menu_kb_full(call.from_user.id))
 
 
 @router.callback_query(F.data == "msc:noop")
@@ -172,7 +206,41 @@ async def noop(call) -> None:
 
 
 @router.callback_query(F.data == "msc:ask")
-async def ask_query(call, state) -> None:
+async def ask_query(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    queries = social.recent_queries(user)
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in queries:
+        rows.append([InlineKeyboardButton(
+            text=f"🔁 {item[:35]}",
+            callback_data=f"msc:q:{item[:80]}")])
+    rows.append([InlineKeyboardButton(text="✏️ Новый запрос", callback_data="msc:typed")])
+    rows.append([InlineKeyboardButton(text="◀️ Каталог", callback_data="msc:cancel")])
+    await call.answer()
+    await safe_edit(call, "🔍 <b>Поиск</b>\n\nНажмите недавний запрос или введите новый.",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("msc:q:"))
+async def quick_query(call, user: dict, state) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    query = call.data.split(":", 2)[2].strip()
+    if not query:
+        await call.answer("Запрос пуст.", show_alert=True)
+        return
+    social.remember_query(user, query)
+    await state.update_data(music_query=query)
+    await storage.save(call.from_user.id)
+    await call.answer()
+    await _show_search(call, query, edit=True)
+
+
+@router.callback_query(F.data == "msc:typed")
+async def typed_query(call, state) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -188,7 +256,7 @@ async def ask_query(call, state) -> None:
 async def cancel(call, state) -> None:
     await state.clear()
     await call.answer()
-    await safe_edit(call, menu_text(), menu_kb())
+    await safe_edit(call, menu_text(), await menu_kb_full(call.from_user.id))
 
 
 @router.message(Form.music_query, F.text)
@@ -222,7 +290,7 @@ async def search_page(call, state) -> None:
 
 
 @router.callback_query(F.data.startswith("msc:track:"))
-async def track_card(call, user: dict) -> None:
+async def track_card(call, user: dict, role: str) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -233,7 +301,7 @@ async def track_card(call, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, f"🎵 <b>{esc(track_label(track))}</b>",
-                    await track_kb(track_id, user))
+                    await track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 async def send_track(call, user: dict, track_id: str) -> None:
@@ -325,6 +393,77 @@ async def play(call, user: dict) -> None:
     await send_track(call, user, call.data.split(":", 2)[2])
 
 
+async def _download_track_payload(call, track_id: str):
+    """Скачать трек каталога в буфер; None — недоступен."""
+    client = musicsearch.MusicSearchClient(metadata=musicsearch.catalog_get)
+    try:
+        async with _downloads:
+            buffer = await asyncio.wait_for(
+                client.download_track(track_id), timeout=DOWNLOAD_TIMEOUT
+            )
+        payload = buffer.getvalue()
+        if not payload or len(payload) > musicsearch.MAX_DOWNLOAD_BYTES:
+            return None, "недопустимый размер аудио"
+        ext = str(getattr(buffer, "ext", "") or "").lower().lstrip(".")
+        ext = f".{ext}" if ext else ""
+        if ext not in music.SUPPORTED_EXT:
+            ext = ".mp3"
+        return payload, ext
+    except Exception as exc:  # noqa: BLE001
+        log.info("Трек %s не скачан для сохранения: %s", track_id, exc)
+        return None, "источник недоступен"
+
+
+@router.callback_query(F.data.startswith("mss:tolocal:"))
+async def save_to_local(call, user: dict, role: str) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+
+    if not subscription.active(user, role):
+        await call.answer("Сохранение в личную библиотеку — только по подписке.",
+                          show_alert=True)
+        return
+    if len(music.tracks_of(user)) >= music.track_limit(user, role):
+        await call.answer(f"Хранилище заполнено ({music.track_limit(user, role)} треков).",
+                          show_alert=True)
+        return
+    track_id = call.data.split(":", 2)[2]
+    track = await musicsearch.catalog_get(track_id)
+    if not track:
+        await call.answer("Трек не найден.", show_alert=True)
+        return
+    await call.answer("Сохраняю…")
+    if call.message:
+        try:
+            await call.message.edit_text("⏳ Сохраняю трек в личную библиотеку…")
+        except Exception:  # noqa: BLE001
+            pass
+    payload, ext = await _download_track_payload(call, track_id)
+    if payload is None:
+        if call.message:
+            try:
+                await call.message.edit_text("❌ Не удалось сохранить: источник недоступен.")
+            except Exception:  # noqa: BLE001
+                pass
+        return
+    new_id = secrets_module.token_hex(8)
+    await music.store(new_id, ext, payload)
+    music.add_track(user, new_id, name=str(track.get("title") or "Трек"), ext=ext,
+                    size=len(payload), artist=str(track.get("artist") or ""),
+                    title=str(track.get("title") or ""))
+    await storage.save(call.from_user.id)
+    text = (f"✅ Сохранено в «Мои треки»: <b>{esc(track_label(track))[:80]}</b>\n"
+            + music.describe(user, role))
+    if call.message:
+        try:
+            await call.message.edit_text(text)
+        except Exception:  # noqa: BLE001
+            await call.bot.send_message(call.from_user.id, text)
+    else:
+        await call.bot.send_message(call.from_user.id, text)
+
+
 @router.callback_query(F.data == "msc:saved")
 async def saved(call, user: dict) -> None:
     if not _enabled():
@@ -335,9 +474,29 @@ async def saved(call, user: dict) -> None:
         track = await musicsearch.catalog_get(track_id)
         if track:
             tracks.append({**track, "id": track_id})
+    rows = []
+    for track in tracks:
+        label = track_label(track)[:40]
+        rows.append([
+            InlineKeyboardButton(text=f"▶️ {label}", callback_data=f"msc:play:{track['id']}"),
+            InlineKeyboardButton(text="❌", callback_data=f"mss:frem:{track['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ Каталог", callback_data="msc:menu")])
     await call.answer()
     await safe_edit(call, "⭐ <b>Избранное</b>\n\n" + (_tracks_text(tracks) or "Пока пусто."),
-                    _tracks_kb(tracks))
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mss:frem:"))
+async def fav_remove(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    track_id = call.data.split(":", 2)[2]
+    music.toggle_saved(user, track_id)
+    await storage.save(call.from_user.id)
+    await call.answer("Убрано из избранного")
+    await saved(call, user)
 
 
 @router.callback_query(F.data == "msc:history")
@@ -345,19 +504,52 @@ async def history(call, user: dict) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
+    items = social.history_of(user)[:50]
     tracks = []
-    for item in social.history_of(user)[:50]:
+    for item in items:
         track = await musicsearch.catalog_get(item["track_id"])
         if track:
             tracks.append({**track, "id": item["track_id"]})
-    await storage.save(call.from_user.id)
+    rows = []
+    for track in tracks:
+        label = track_label(track)[:40]
+        rows.append([
+            InlineKeyboardButton(text=f"▶️ {label}", callback_data=f"msc:play:{track['id']}"),
+            InlineKeyboardButton(text="❌", callback_data=f"mss:hrem:{track['id']}"),
+        ])
+    if items:
+        rows.append([InlineKeyboardButton(text="🗑 Очистить историю", callback_data="mss:hclr")])
+    rows.append([InlineKeyboardButton(text="◀️ Каталог", callback_data="msc:menu")])
     await call.answer()
     await safe_edit(call, "🕘 <b>История за 30 дней</b>\n\n" + (_tracks_text(tracks) or "Пока пусто."),
-                    _tracks_kb(tracks))
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mss:hrem:"))
+async def hist_remove(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    track_id = call.data.split(":", 2)[2]
+    social.remove_history(user, track_id)
+    await storage.save(call.from_user.id)
+    await call.answer("Убрано из истории")
+    await history(call, user)
+
+
+@router.callback_query(F.data == "mss:hclr")
+async def hist_clear(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    social.clear_history(user)
+    await storage.save(call.from_user.id)
+    await call.answer("История очищена")
+    await history(call, user)
 
 
 @router.callback_query(F.data == "msc:random")
-async def random_track(call, user: dict) -> None:
+async def random_track(call, user: dict, role: str) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -367,7 +559,7 @@ async def random_track(call, user: dict) -> None:
         await safe_edit(call, "Каталог пока пуст — сначала выполните поиск.", menu_kb())
         return
     await safe_edit(call, f"🎲 <b>{esc(track_label(track))}</b>",
-                    await track_kb(track["id"], user))
+                    await track_kb(track["id"], user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data == "msc:help")

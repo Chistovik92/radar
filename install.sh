@@ -7,7 +7,7 @@
 # --------------------------------------------------------------------------
 
 #
-# Система «Радар» v6.0.1 — автономный установщик.
+# Система «Радар» v6.0.2 — автономный установщик.
 #
 #   Надёжный способ — сначала скачать, потом запустить:
 #     curl -fsSLo radar-install.sh https://raw.githubusercontent.com/Chistovik92/radar/main/install.sh
@@ -47,7 +47,7 @@ radar_installer_main() {
 
 set -Eeuo pipefail
 
-VERSION="6.0.1"
+VERSION="6.0.2"
 APP_DIR="${RADAR_HOME:-$HOME/radar_bot}"
 IMAGE_NAME="${RADAR_IMAGE:-radar_image}"
 CONTAINER_NAME="${RADAR_CONTAINER:-radar_container}"
@@ -2848,7 +2848,7 @@ fi
 chown -R 1000:1000 "$APP_DIR/data" 2>/dev/null || chmod -R u+rwX,g+rwX,o-rwx "$APP_DIR/data"
 
 mkdir -p "licenses" "migrations" "migrations/versions" "multitool" "multitool/linkcheck" "radar" "radar/db" "radar/handlers" "radar/platforms" "radar/web" "radar/web/static/landing" "support" "support/core" "support/db" "support/handlers" "tools"
-FILE_COUNT=204
+FILE_COUNT=205
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "requirements.txt"
 cat > "requirements.txt" <<'RADAR_FILE_00'
 aiogram>=3.13,<4
@@ -3536,6 +3536,12 @@ from radar.tg import bot, dp, send_html  # noqa: E402
 # «Из прошлых версий» дописывались друг к другу и дублировались, а название
 # базы было вписано жёстко — при переходе на SQLite оно стало враньём.
 RELEASES: list[tuple[str, list[str]]] = [
+    ("6.0.2", [
+        "🎵 <b>Музыкальный каталог приведён к структуре not_a_music.</b> Главное меню перестроено (Топ+Избранное, Поиск, Плейлисты со счётчиком, История+Случайный, Топ плейлистов, Профиль+Помощь), в карточке трека — счётчики ❤️/👎/👁 и состояние ваших реакций. В избранном и истории треки удаляются по одному, историю можно очистить; на экране поиска — недавние запросы. Подписчики сохраняют трек из каталога в личную библиотеку «Мои треки» одной кнопкой.",
+        "🎵 <b>Личный кабинет показывает локальную и социальную музыку разом.</b> На странице /profile подписчик видит и свои личные треки и плейлисты (локальная логика), и избранное с историей из каталога (социальная логика) — в одном разделе «Музыка».",
+        "🔗 <b>Ссылка «Сайт» в шапке панели управления</b> — ведёт на главную страницу лендинга в новой вкладке.",
+        "🛎 <b>Ответы на тикеты поддержки прямо в веб-панели.</b> Модераторы и выше видят раздел «Поддержка», читают переписку и отвечают на тикеты бота поддержки; панель читает и пишет support.db напрямую, а фоновый цикл бота доставляет ответы авторам в Telegram.",
+    ]),
     ("6.0.1", [
         "🔧 <b>Образ RustDesk возвращён на <code>latest</code>.</b> Актуальный выпуск 1.1.16 (с исправлением CVE-2026-30784) подтягивается новыми установками автоматически; существующие обновляются по <code>docker compose pull</code>.",
     ]),
@@ -5499,7 +5505,7 @@ cat > "radar/__init__.py" <<'RADAR_FILE_08'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-__version__ = "6.0.1"
+__version__ = "6.0.2"
 __author__ = "SecretHero"
 __license__ = "GPL-3.0"
 __url__ = "https://github.com/Chistovik92/radar"
@@ -19915,6 +19921,10 @@ nav a.active { color:#fff; font-weight:600;
                box-shadow:0 2px 10px var(--accent-soft); }
 [data-theme="light"] nav a.active { color:#fff; }
 .spacer { margin-left:auto; }
+.site-link { color:var(--link); text-decoration:none; padding:7px 12px;
+             border-radius:999px; font-size:14px; white-space:nowrap;
+             border:1px solid var(--line); transition:background .15s, color .15s; }
+.site-link:hover { color:var(--text); background:var(--surface-2); }
 .who { color:var(--muted); font-size:14px; }
 .who a { color:var(--link-dim); }
 
@@ -19988,6 +19998,9 @@ td code { font-size:13px; }
 
 .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
 .muted { color:var(--muted); }
+.msg { padding:8px 12px; border-left:3px solid var(--line); margin:8px 0;
+       background:var(--surface-2); border-radius:6px; line-height:1.5; }
+.msg.system { border-left-color:var(--muted); background:var(--surface); }
 .hint { color:var(--muted); font-size:13px; }
 .login { max-width:430px; margin:80px auto; text-align:center; }
 
@@ -20495,6 +20508,13 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     if admin:
         overview.append(("/events", "События", "events"))
         overview.append(("/chats", "Чаты", "chats"))
+    # Тикеты бота поддержки доступны модераторам и выше, когда слой
+    # поддержки сконфигурирован (есть SUPPORT_DATABASE_URL или support.db).
+    if moderator:
+        from . import support_tickets
+
+        if support_tickets.available():
+            overview.append(("/support-tickets", "Поддержка", "support_tickets"))
     if owner:
         overview.append(("/maintenance", "Обслуживание", "maintenance"))
         # Раздел виден всегда, даже когда возможность выключена: спрятанный
@@ -21337,6 +21357,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
   <span class="brand">Радар</span><span class="version">v{html.escape(config.VERSION)}</span>
   <nav>{nav}</nav>
   <span class="spacer"></span>
+  <a class="site-link" href="/" target="_blank" rel="noopener">Сайт</a>
   <button id="theme" type="button" aria-label="Сменить тему">☀</button>
   <span class="who">{html.escape(role)} · <a href="/logout">выйти</a></span>
 </header>
@@ -21440,6 +21461,71 @@ def _overview_body() -> str:
     )
 
 
+def _profile_music_body(user: dict, role: str | None) -> str:
+    """Раздел «Музыка» личного кабинета: локальная и социальная логика разом.
+
+    Локальная логика — личные файлы (`user["music"]["tracks"]`) и плейлисты,
+    которые человек сам загрузил в бота. Социальная — каталог 6.0.0:
+    избранное, история, публичные плейлисты. Обе показываются рядом, чтобы
+    подписчик видел и своё хранилище, и то, что он набрал в каталоге.
+    """
+    from .. import music, music_social
+
+    if not (features.enabled("music") or features.enabled("music_search")):
+        return ""
+
+    parts: list[str] = []
+
+    # --- локальная логика: личные треки ---
+    local_tracks = music.tracks_of(user)
+    local_pls = music.playlists_of(user)
+    if features.enabled("music"):
+        limit = music.track_limit(user, role)
+        if local_tracks:
+            rows = "".join(
+                "<tr>"
+                f"<td>{html.escape(item.get('artist') or '')} — "
+                f"{html.escape(item.get('title') or item.get('name') or 'Трек')}</td>"
+                f'<td class="muted">{html.escape(str(item.get("ext") or ""))}</td>'
+                "</tr>"
+                for item in local_tracks
+            )
+        else:
+            rows = '<tr><td class="muted">треков нет</td></tr>'
+        parts.append(
+            '<div class="card"><h3>🎵 Мои треки</h3>'
+            f'<p class="muted">Личная библиотека: {len(local_tracks)} из {limit}.</p>'
+            f'<table><tr><th>Трек</th><th>Формат</th></tr>{rows}</table></div>'
+        )
+        if local_pls:
+            pl_rows = "".join(
+                f"<tr><td>{html.escape(item.get('name') or 'Плейлист')}</td>"
+                f'<td class="muted">{len(item.get("tracks") or [])}</td></tr>'
+                for item in local_pls
+            )
+            parts.append(
+                '<div class="card"><h3>📚 Мои плейлисты</h3>'
+                f'<table><tr><th>Плейлист</th><th>Треков</th></tr>{pl_rows}</table></div>'
+            )
+
+    # --- социальная логика: каталог ---
+    if features.enabled("music_search"):
+        saved = music.saved_tracks(user)
+        history = music_social.history_of(user)
+        social_note = (
+            '<p class="muted">Каталог: ищите треки в боте и добавляйте их '
+            'в избранное, плейлисты и историю.</p>'
+        )
+        parts.append(
+            '<div class="card"><h3>🔍 Каталог</h3>'
+            f'<p>⭐ Избранное: <b>{len(saved)}</b> · 🕘 История: <b>{len(history)}</b></p>'
+            + social_note
+            + '</div>'
+        )
+
+    return "".join(parts)
+
+
 def _profile_body(user, session, message: str = "", failed: str = "") -> str:
     """Личный кабинет обычного пользователя.
 
@@ -21499,6 +21585,9 @@ def _profile_body(user, session, message: str = "", failed: str = "") -> str:
     else:
         loc_rows = '<tr><td class="muted">локаций нет</td></tr>'
 
+    # --- музыка: локальные треки и социальный каталог ---
+    music_card = _profile_music_body(user, role)
+
     # --- предложение источника ---
     suggest_form = ""
     if features.enabled("digest_suggestions"):
@@ -21530,6 +21619,7 @@ def _profile_body(user, session, message: str = "", failed: str = "") -> str:
         '<button type="submit">Добавить</button></form>'
         '<p class="muted">Добавление по адресу: бот найдёт координаты '
         'и привяжет оповещения.</p></div>'
+        + music_card
         + '<div class="card"><h3>📢 Предложить источник</h3>'
         '<p class="muted">Подойдут каналы про город, ЖКХ, новости и тематические '
         'каналы. Попадут в очередь модерации.</p>'
@@ -22511,6 +22601,149 @@ async def _events_body() -> str:
     )
 
 
+def _support_status_badge(status: str) -> str:
+    style = {"open": "warn", "answered": "ok", "closed": "muted"}.get(status, "muted")
+    return f'<span class="{style}">{html.escape(status)}</span>'
+
+
+def _support_fmt(value: Any) -> str:
+    """Дата/время в читаемом виде, пусто — прочерк."""
+    if value is None:
+        return "—"
+    try:
+        text = str(value)
+    except Exception:  # noqa: BLE001
+        return "—"
+    return html.escape(text.replace("T", " ")[:16])
+
+
+async def _support_list_body(session) -> str:
+    from . import support_tickets
+
+    try:
+        tickets = await support_tickets.list_tickets(session)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Тикеты поддержки недоступны: %s", exc)
+        return ('<div class="card bad">База поддержки недоступна: '
+                f'{html.escape(str(exc))}</div>')
+    if not tickets:
+        return '<div class="card muted">Очередь поддержки пуста.</div>'
+    rows = []
+    for ticket in tickets:
+        number = html.escape(str(ticket.get("number") or ticket.get("id")))
+        rows.append(
+            "<tr>"
+            f'<td><a href="/support-tickets/{int(ticket["id"])}">{number}</a></td>'
+            f"<td>{html.escape(str(ticket.get('subject') or 'Без темы')[:70])}</td>"
+            f"<td>{_support_status_badge(str(ticket.get('status') or ''))}</td>"
+            f"<td>{html.escape(str(ticket.get('priority') or ''))}</td>"
+            f"<td>{_support_fmt(ticket.get('updated_at'))}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="card"><table>'
+        "<tr><th>№</th><th>Тема</th><th>Статус</th><th>Приоритет</th>"
+        "<th>Обновлён</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
+
+async def _support_detail_body(session, reference: str, message: str = "",
+                               failed: str = "") -> str:
+    from . import support_tickets
+
+    try:
+        data = await support_tickets.ticket_detail(session, reference)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Тикет %s недоступен: %s", reference, exc)
+        return ('<div class="card bad">Тикет недоступен: '
+                f'{html.escape(str(exc))}</div>')
+    if data is None:
+        return ('<div class="card bad">Тикет не найден или недостаточно прав.</div>'
+                '<p><a href="/support-tickets">← К списку</a></p>')
+
+    ticket = data.get("ticket", {})
+    author = data.get("author") or {}
+    assignee = data.get("assignee") or {}
+    token = auth.csrf_token(session)
+    tid = int(ticket["id"])
+
+    header = (
+        '<div class="grid">'
+        f'<div class="card metric"><b>{html.escape(str(ticket.get("number") or ""))}</b>'
+        "<span>тикет</span></div>"
+        f'<div class="card metric"><b>{_support_status_badge(str(ticket.get("status") or ""))}</b>'
+        "<span>статус</span></div>"
+        f'<div class="card metric"><b>{html.escape(str(ticket.get("priority") or ""))}</b>'
+        "<span>приоритет</span></div>"
+        "</div>"
+        f'<div class="card"><h3>{html.escape(str(ticket.get("subject") or "Без темы"))}</h3>'
+        f'<p class="muted">Автор: @{html.escape(str(author.get("username") or author.get("external_id") or "?"))}'
+        f' · Категория: {html.escape(str(ticket.get("category") or "—"))}'
+        f' · Назначен: @{html.escape(str(assignee.get("username") or assignee.get("external_id") or "—"))}'
+        f' · SLA: {_support_fmt(ticket.get("sla_due_at"))}</p></div>'
+    )
+
+    messages = []
+    for row in data.get("messages", []):
+        sender = row.get("sender") or {}
+        name = html.escape(str(sender.get("username") or sender.get("external_id") or "система"))
+        kind = str(row.get("kind") or "text")
+        body = html.escape(str(row.get("body") or ""))
+        if kind == "system":
+            messages.append(
+                f'<div class="msg system"><span class="muted">система · '
+                f'{_support_fmt(row.get("created_at"))}</span><br>{body}</div>'
+            )
+        else:
+            attachment = ""
+            if row.get("attachment_name"):
+                attachment = " · 📎 " + html.escape(str(row.get("attachment_name")))
+            messages.append(
+                f'<div class="msg"><b>{name}</b> <span class="muted">· '
+                f'{_support_fmt(row.get("created_at"))}{attachment}</span>'
+                f"<br>{body}</div>"
+            )
+
+    notice = f'<p class="ok">{html.escape(message)}</p>' if message else ""
+    error = f'<p class="bad">{html.escape(failed)}</p>' if failed else ""
+
+    closed = ticket.get("status") == "closed"
+    reply_form = ""
+    if not closed:
+        reply_form = (
+            '<div class="card"><h3>Ответить</h3>'
+            f'<form method="post" action="/support-tickets/{tid}/reply">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<textarea name="text" rows="4" style="width:100%" required>'
+            "</textarea><br>"
+            '<button type="submit">Отправить ответ</button></form>'
+            f'<form method="post" action="/support-tickets/{tid}/close" '
+            'style="display:inline;margin-top:8px">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<button type="submit" class="danger">Закрыть тикет</button></form>'
+            f'<form method="post" action="/support-tickets/{tid}/priority" '
+            'style="display:inline;margin-top:8px">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<select name="priority">'
+            '<option value="low">low</option>'
+            '<option value="normal" selected>normal</option>'
+            '<option value="high">high</option>'
+            '</select>'
+            '<button type="submit">Приоритет</button></form></div>'
+        )
+
+    return (
+        '<p><a href="/support-tickets">← К списку</a></p>'
+        + header + notice + error
+        + '<div class="card"><h3>Переписка</h3>'
+        + ("".join(messages) if messages else '<p class="muted">Сообщений нет.</p>')
+        + "</div>"
+        + reply_form
+    )
+
+
 def _features_body(session, message: str = "", failed: str = "") -> str:
     """Возможности с переключателями.
 
@@ -23127,6 +23360,72 @@ async def create_app() -> Any:
             text=_layout("События", body, "events", roles.title(session.role), session.role),
             content_type="text/html",
         )
+
+    def support_guard(handler):
+        """Доступ к тикетам: модератор и выше + слой поддержки сконфигурирован."""
+        from . import support_tickets
+
+        async def wrapper(request):
+            session = current_session(request)
+            if session is None:
+                raise web.HTTPFound("/login")
+            if not support_tickets.can_moderate(session) or not support_tickets.available():
+                audit.record(session.user_key, "отказ в доступе", request.path)
+                raise web.HTTPFound("/")
+            return await handler(request, session)
+        return wrapper
+
+    @support_guard
+    async def support_tickets_page(_request, session):
+        body = await _support_list_body(session)
+        return web.Response(
+            text=_layout("Поддержка", body, "support_tickets",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @support_guard
+    async def support_ticket_page(request, session):
+        reference = request.match_info.get("ticket_id", "")
+        body = await _support_detail_body(
+            session, reference,
+            request.query.get("ok", ""), request.query.get("err", ""))
+        return web.Response(
+            text=_layout("Тикет", body, "support_tickets",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    async def support_reply(request):
+        from . import support_tickets
+
+        session, data = await _guarded_form(request, "moderator")
+        reference = request.match_info.get("ticket_id", "")
+        ok, message = await support_tickets.reply(session, reference, str(data.get("text", "")))
+        audit.record(session.user_key, "ответ в тикете", reference)
+        target = f"/support-tickets/{quote(reference)}"
+        raise web.HTTPFound(target + ("?ok=" if ok else "?err=") + quote(message))
+
+    async def support_close(request):
+        from . import support_tickets
+
+        session, data = await _guarded_form(request, "moderator")
+        reference = request.match_info.get("ticket_id", "")
+        ok, message = await support_tickets.close_ticket(session, reference)
+        audit.record(session.user_key, "тикет закрыт", reference)
+        raise web.HTTPFound(f"/support-tickets/{quote(reference)}"
+                            + ("?ok=" if ok else "?err=") + quote(message))
+
+    async def support_priority(request):
+        from . import support_tickets
+
+        session, data = await _guarded_form(request, "moderator")
+        reference = request.match_info.get("ticket_id", "")
+        ok, message = await support_tickets.set_priority(
+            session, reference, str(data.get("priority", "normal")))
+        audit.record(session.user_key, "приоритет тикета", reference)
+        raise web.HTTPFound(f"/support-tickets/{quote(reference)}"
+                            + ("?ok=" if ok else "?err=") + quote(message))
 
     @owner_only
     async def partners_page(request, session):
@@ -23890,6 +24189,11 @@ async def create_app() -> Any:
         web.post("/links/clear", links_clear),
         web.post("/keys/set", keys_set),
         web.get("/events", events_page),
+        web.get("/support-tickets", support_tickets_page),
+        web.get("/support-tickets/{ticket_id}", support_ticket_page),
+        web.post("/support-tickets/{ticket_id}/reply", support_reply),
+        web.post("/support-tickets/{ticket_id}/close", support_close),
+        web.post("/support-tickets/{ticket_id}/priority", support_priority),
         web.get("/features", features_page),
         web.post("/features/toggle", features_toggle),
         web.post("/users/time", user_time),
@@ -23996,8 +24300,139 @@ async def run() -> None:
     except Exception:  # noqa: BLE001
         log.exception("Веб-панель не запустилась — бот продолжает работу")
 RADAR_FILE_48
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/support_tickets.py"
+cat > "radar/web/support_tickets.py" <<'RADAR_FILE_49'
+"""Тикеты бота поддержки в веб-панели (6.0.2).
+
+Панель читает и пишет ``support.db`` напрямую через тот же async-движок,
+что и отдельный бот поддержки. Доступ — модератор и выше (совпадает с
+``support.core.roles.is_moderator``), сопоставление — по Telegram ID
+(``session.user_key`` ↔ ``User.external_id``).
+
+Слой включается, только когда поддержка сконфигурирована: задан
+``SUPPORT_DATABASE_URL`` либо существует файл ``SUPPORT_DB_FILE``
+(по умолчанию ``data/support.db``). Иначе страница и пункт меню скрыты.
+"""
+
+# --------------------------------------------------------------------------
+# Система «Радар» — мониторинг городских угроз и аварий ЖКХ
+# Автор: SecretHero · https://github.com/Chistovik92/radar
+# Лицензия: GPL-3.0
+# --------------------------------------------------------------------------
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any
+
+from .. import roles as radar_roles
+
+log = logging.getLogger("radar.web.support_tickets")
+
+_support_db = None
+_support_repo = None
+_configured: bool | None = None
+
+
+def _support_url() -> str:
+    """URL базы поддержки по тем же правилам, что ``support.core.config``."""
+    explicit = (os.getenv("SUPPORT_DATABASE_URL") or "").strip()
+    if explicit:
+        url = explicit
+        for prefix in ("postgresql+asyncpg://", "postgresql://", "postgres://"):
+            if url.startswith(prefix):
+                return "postgresql+asyncpg://" + url[len(prefix):]
+        return url
+    db_file = (os.getenv("SUPPORT_DB_FILE") or "data/support.db").strip()
+    path = os.path.abspath(db_file)
+    return f"sqlite+aiosqlite:///{path}"
+
+
+def available() -> bool:
+    """Поддержка доступна в панели: слой есть и хотя бы один источник данных."""
+    if (os.getenv("SUPPORT_DATABASE_URL") or "").strip():
+        return True
+    db_file = (os.getenv("SUPPORT_DB_FILE") or "data/support.db").strip()
+    return os.path.isfile(db_file)
+
+
+async def _repo():
+    """Лениво поднять движок и репозиторий поддержки."""
+    global _support_db, _support_repo
+    if _support_repo is not None:
+        return _support_repo
+    from support.core.config import Settings
+    from support.db.engine import Database
+    from support.db.repo import SupportRepository
+
+    config = Settings.from_env()
+    _support_db = Database(config.sqlalchemy_url(), config.db_echo)
+    await _support_db.create_schema()
+    _support_repo = SupportRepository(_support_db, config.sla_minutes)
+    return _support_repo
+
+
+def _external_id(session) -> int:
+    try:
+        return int(str(session.user_key or "").split(":")[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+def can_moderate(session) -> bool:
+    """Модератор и выше — как в боте поддержки."""
+    return radar_roles.is_moderator(session.role)
+
+
+async def list_tickets(session) -> list[dict[str, Any]]:
+    repo = await _repo()
+    tickets = await repo.list_tickets(_external_id(session))
+    return [repo._ticket_dict(ticket) for ticket in tickets]
+
+
+async def ticket_detail(session, reference: str) -> dict[str, Any] | None:
+    repo = await _repo()
+    data = await repo.export_data(reference, _external_id(session))
+    if data is None:
+        return None
+    return data
+
+
+async def reply(session, reference: str, text: str) -> tuple[bool, str]:
+    """Ответ оператора. Возвращает (успех, сообщение)."""
+    from support.db.repo import TicketClosed
+
+    repo = await _repo()
+    body = " ".join((text or "").split())
+    if not body:
+        return False, "Текст ответа пуст."
+    try:
+        result = await repo.add_message(reference, _external_id(session), body)
+    except TicketClosed as exc:
+        return False, f"Тикет уже закрыт ({exc})."
+    if result is None:
+        return False, "Тикет не найден или недостаточно прав."
+    return True, "Ответ добавлен."
+
+
+async def close_ticket(session, reference: str) -> tuple[bool, str]:
+    repo = await _repo()
+    ticket = await repo.close_ticket(reference, _external_id(session))
+    if ticket is None:
+        return False, "Тикет не найден или недостаточно прав."
+    return True, "Тикет закрыт."
+
+
+async def set_priority(session, reference: str, priority: str) -> tuple[bool, str]:
+    repo = await _repo()
+    ticket = await repo.set_priority(reference, _external_id(session), priority)
+    if ticket is None:
+        return False, "Не удалось изменить приоритет (доступ или значение)."
+    return True, f"Приоритет: {ticket.priority}."
+RADAR_FILE_49
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/appapi.py"
-cat > "radar/web/appapi.py" <<'RADAR_FILE_49'
+cat > "radar/web/appapi.py" <<'RADAR_FILE_50'
 """HTTP-маршруты API для приложений (5.9.1). Логика — в `radar/appapi.py`.
 
 Все ответы — JSON, ошибки — `{"error": "текст"}`. Работает в той же
@@ -24125,9 +24560,9 @@ def routes(web: Any) -> list[Any]:
         web.get("/api/v1/app/subscriptions", subscriptions),
         web.delete("/api/v1/app/session", logout),
     ]
-RADAR_FILE_49
+RADAR_FILE_50
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/adminpages.py"
-cat > "radar/web/adminpages.py" <<'RADAR_FILE_50'
+cat > "radar/web/adminpages.py" <<'RADAR_FILE_51'
 """Страницы веб-панели: VPN-панели, доступы и заказы, подписка бота (5.9.2.1).
 
 Вынесено из panel.py, где уже три с половиной тысячи строк. Здесь только
@@ -24648,9 +25083,9 @@ async def subscriptions_act(form: Any) -> tuple[str, str]:
         await storage.save(uid)
         return ("Срок снят.", "") if had else ("", "Оплаченного срока не было.")
     return "", "Неизвестное действие."
-RADAR_FILE_50
+RADAR_FILE_51
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/settingspages.py"
-cat > "radar/web/settingspages.py" <<'RADAR_FILE_51'
+cat > "radar/web/settingspages.py" <<'RADAR_FILE_52'
 """Раздел «Настройки» веб-панели: всё, что раньше жило в «Ключах» и «Возможностях» (5.9.2.2).
 
 Человек думает темами — «Discord», «медиа», «журнал», — а не списком
@@ -24928,9 +25363,9 @@ def overview_body(token: str, message: str = "", failed: str = "",
                  f"<table>{rows}</table>"
                  '<p class="muted">Эти значения задаёт установщик при установке и переезде.</p></details>')
     return "".join(parts)
-RADAR_FILE_51
+RADAR_FILE_52
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/landing_content.py"
-cat > "radar/web/landing_content.py" <<'RADAR_FILE_52'
+cat > "radar/web/landing_content.py" <<'RADAR_FILE_53'
 """Схема редактируемого текстового контента публичного лендинга.
 
 В ``meta['landing_content']`` сохраняются только отличия от этих значений.
@@ -25269,9 +25704,9 @@ def changed_pages(stored: Any) -> set[str]:
     if not isinstance(stored, Mapping):
         return set()
     return {key for key in PAGES if isinstance(stored.get(key), Mapping) and bool(stored.get(key))}
-RADAR_FILE_52
+RADAR_FILE_53
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/sitepages.py"
-cat > "radar/web/sitepages.py" <<'RADAR_FILE_53'
+cat > "radar/web/sitepages.py" <<'RADAR_FILE_54'
 """Owner-only редактор текстов лендинга без изменения его разметки."""
 
 # --------------------------------------------------------------------------
@@ -25435,9 +25870,9 @@ def apply_form(page_key: str, form: Mapping[str, Any],
         return {}, "Неизвестная страница"
     values = current or default_content()[page_key]
     return _read_fields(PAGES[page_key].fields, form, values)
-RADAR_FILE_53
+RADAR_FILE_54
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/backup.py"
-cat > "radar/web/backup.py" <<'RADAR_FILE_54'
+cat > "radar/web/backup.py" <<'RADAR_FILE_55'
 """Раздел резервных копий в веб-панели. Логика — в radar/backup.py."""
 
 # --------------------------------------------------------------------------
@@ -25484,9 +25919,9 @@ def body(csrf: str = "") -> str:
         "восстановление не запускается намеренно — это операция, которая "
         "должна выполняться осознанно и с доступом к машине.</div>"
     )
-RADAR_FILE_54
+RADAR_FILE_55
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/landing.py"
-cat > "radar/web/landing.py" <<'RADAR_FILE_55'
+cat > "radar/web/landing.py" <<'RADAR_FILE_56'
 """Публичный React-лендинг и его предсобранные статические ресурсы.
 
 Интерактивная сцена собирается Vite в ``radar/web/static/landing``. Python
@@ -25575,9 +26010,9 @@ async def landing_asset(request: web.Request) -> web.StreamResponse:
     response.headers["Cache-Control"] = "public, max-age=3600"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
-RADAR_FILE_55
+RADAR_FILE_56
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/static/landing/landing.js"
-cat > "radar/web/static/landing/landing.js" <<'RADAR_FILE_56'
+cat > "radar/web/static/landing/landing.js" <<'RADAR_FILE_57'
 (function(){const e=document.createElement("link").relList;if(e&&e.supports&&e.supports("modulepreload"))return;for(const r of document.querySelectorAll('link[rel="modulepreload"]'))i(r);new MutationObserver(r=>{for(const s of r)if(s.type==="childList")for(const o of s.addedNodes)o.tagName==="LINK"&&o.rel==="modulepreload"&&i(o)}).observe(document,{childList:!0,subtree:!0});function t(r){const s={};return r.integrity&&(s.integrity=r.integrity),r.referrerPolicy&&(s.referrerPolicy=r.referrerPolicy),r.crossOrigin==="use-credentials"?s.credentials="include":r.crossOrigin==="anonymous"?s.credentials="omit":s.credentials="same-origin",s}function i(r){if(r.ep)return;r.ep=!0;const s=t(r);fetch(r.href,s)}})();function CS(n){return n&&n.__esModule&&Object.prototype.hasOwnProperty.call(n,"default")?n.default:n}var ex={exports:{}},jd={},tx={exports:{}},un={};/**
  * @license React
  * react.production.min.js
@@ -30561,13 +30996,13 @@ return orthographicDepthToViewZ(depth,cameraNear,cameraFar);
 `;function M6({hydra:n}){const e=z.useRef(null),t=z.useRef(null);return sl(({clock:i})=>{if(!e.current||!t.current)return;const r=i.getElapsedTime();t.current.uniforms.uTime.value=r,t.current.uniforms.uHydra.value=n?1:0;const s=12,o=.12;e.current.position.x=Math.sin(r*o)*s,e.current.position.z=Math.sin(r*o*2)*s*.5,e.current.position.y=5+Math.sin(r*o*.5)*.8;const l=Math.cos(r*o)*s*o,h=Math.cos(r*o*2)*s*o;e.current.rotation.y=Math.atan2(l,h),e.current.rotation.z=-l*.05,e.current.rotation.x=h*.03}),I.jsxs("mesh",{ref:e,position:[0,5,0],children:[I.jsx("boxGeometry",{args:[3.5,.4,2.2]}),I.jsx("shaderMaterial",{ref:t,vertexShader:_6,fragmentShader:S6,uniforms:{uTime:{value:0},uHydra:{value:0}},side:qi}),I.jsxs("mesh",{position:[0,.35,.2],children:[I.jsx("boxGeometry",{args:[1.2,.5,.8]}),I.jsx("meshStandardMaterial",{color:n?"#1a0505":"#1a2530",metalness:.8,roughness:.3,emissive:n?"#440000":"#002244",emissiveIntensity:.3})]}),I.jsxs("mesh",{position:[0,.21,0],children:[I.jsx("planeGeometry",{args:[3.2,1.8]}),I.jsx("meshBasicMaterial",{color:n?"#220000":"#1a3040",transparent:!0,opacity:.4})]})]})}function w6({hydra:n,reducedMotion:e,assimilation:t,nodes:i}){const r=z.useMemo(()=>new Ae(.0018,.0026),[]);return I.jsxs(I.Fragment,{children:[I.jsx("color",{attach:"background",args:["#030407"]}),I.jsx("fog",{attach:"fog",args:["#030407",18,42]}),I.jsx("ambientLight",{intensity:.24}),I.jsx("directionalLight",{position:[4,8,6],intensity:1.25,color:"#e2e8f0"}),I.jsxs(z.Suspense,{fallback:null,children:[I.jsx(NW,{radius:45,depth:24,count:e?900:1800,factor:2.6,saturation:.15,fade:!0,speed:e?0:.35}),I.jsx(u6,{hydra:n,reducedMotion:e}),I.jsx(x6,{nodes:i,hydra:n,reducedMotion:e,assimilation:t}),I.jsx(d6,{hydra:n,reducedMotion:e,assimilation:t}),!e&&I.jsx(M6,{hydra:n}),!e&&I.jsxs(n6,{multisampling:0,children:[I.jsx(r6,{mipmapBlur:!0,intensity:n?1.35:.9,luminanceThreshold:.24,luminanceSmoothing:.55}),t?I.jsx(s6,{offset:r,radialModulation:!0,modulationOffset:.25}):I.jsx(I.Fragment,{})]})]}),I.jsx(IW,{makeDefault:!0,enablePan:!1,enableDamping:!e,dampingFactor:.055,minDistance:8,maxDistance:21,minPolarAngle:Math.PI*.23,maxPolarAngle:Math.PI*.76,autoRotate:!e,autoRotateSpeed:.18})]})}function E6(n){return I.jsx(sW,{className:"radar-canvas",camera:{position:[0,3.4,14.5],fov:46,near:.1,far:100},dpr:[1,1.55],frameloop:n.reducedMotion?"demand":"always",gl:{antialias:!1,alpha:!1,powerPreference:"high-performance"},children:I.jsx(w6,{...n})})}function T6({hydra:n,eventActive:e,nodeCount:t,onLogoClick:i,onWhisper:r}){const[s,o]=z.useState(!0),[l,h]=z.useState([]);return I.jsxs(I.Fragment,{children:[I.jsxs("header",{className:"topbar",children:[I.jsxs("button",{className:"brand-button",onClick:i,"aria-label":"Радар — системный логотип",children:[I.jsx("span",{className:"brand-mark",children:I.jsx(Au,{size:21,strokeWidth:1.7})}),I.jsx("span",{className:"brand-name",children:"РАДАР"}),I.jsx("span",{className:"brand-core",children:n?"ZOLA ALGORITHM":"TRISKELION CORE"})]}),I.jsxs("nav",{className:"main-nav","aria-label":"Навигация по сайту",children:[I.jsx("a",{href:"#capabilities",children:"Возможности"}),I.jsx("a",{href:"#live",children:"Статус"}),I.jsx("a",{href:"#live",children:"Мой город"}),I.jsx("a",{href:"#pricing",children:"Тарифы"})]}),I.jsxs("div",{className:"entry-actions",children:[I.jsxs("a",{className:"entry-link entry-link-download",href:"https://github.com/Chistovik92/HydraVPN/releases",target:"_blank",rel:"noreferrer noopener","aria-label":"Скачать HydraVPN",title:"Скачать HydraVPN",children:[I.jsx(eR,{size:15}),"Скачать"]}),I.jsxs("a",{className:"entry-link",href:"/login",children:[I.jsx(iR,{size:15}),"Личный кабинет"]}),I.jsxs("a",{className:"entry-link entry-link-accent",href:"/login",children:[I.jsx(tR,{size:15}),"Панель управления"]})]})]}),I.jsxs("div",{className:"scene-hud","aria-hidden":"true",children:[I.jsxs("div",{className:"hud-line",children:[I.jsx(BO,{size:13}),e?"ASSIMILATION EVENT":"MONITORING ACTIVE"]}),I.jsxs("div",{className:"hud-line",children:[I.jsx(d1,{size:13}),t," ORBITAL NODES"]}),I.jsx("span",{children:"DRAG TO ORBIT · SCROLL TO EXPLORE"})]}),n&&I.jsx("button",{className:"whisper-button",onClick:r,children:"// WHISPER: ELEVATOR_PROTOCOL"}),I.jsx(lE,{children:n&&s&&I.jsxs(zv.aside,{className:"hydra-notice",initial:{opacity:0,transform:"translateY(-12px)"},animate:{opacity:1,transform:"translateY(0px)"},exit:{opacity:0,transform:"translateY(-8px)"},transition:{duration:.24,ease:[.23,1,.32,1]},role:"alert",children:[I.jsx("button",{className:"icon-button","aria-label":"Закрыть уведомление",onClick:()=>{o(!1),h(d=>[...d,Date.now(),Date.now()+1].slice(-4))},children:I.jsx(EE,{size:16})}),I.jsx("small",{children:"PROJECT INSIGHT // OVERRIDE"}),I.jsxs("strong",{children:["CUT OFF ONE HEAD,",I.jsx("br",{}),"TWO MORE SHALL TAKE ITS PLACE"]})]})}),I.jsx(lE,{children:l.map((d,p)=>I.jsxs(zv.aside,{className:`telemetry-pop telemetry-pop-${p%2}`,initial:{opacity:0,transform:"translateY(10px) scale(0.97)"},animate:{opacity:1,transform:"translateY(0px) scale(1)"},exit:{opacity:0},transition:{duration:.2,ease:[.23,1,.32,1]},children:[I.jsx("button",{className:"icon-button","aria-label":"Закрыть телеметрию",onClick:()=>h(m=>m.filter(v=>v!==d)),children:I.jsx(EE,{size:14})}),I.jsxs("small",{children:["TELEMETRY MIRROR ",String(p+1).padStart(2,"0")]}),I.jsxs("code",{children:["NODE_REPLICATION :: ALPHA/OMEGA",I.jsx("br",{}),"INSIGHT_STATUS :: UNBOUND"]})]},d))})]})}const A6=[{id:"core",name:"TRISKELION-HUB",alias:"Центр мониторинга",feature:"МЧС и городские службы",radius:4.2,size:.5,speed:.11,phase:.1,tilt:.18,color:"#334155",accent:"#f59e0b",kind:"station"},{id:"archive",name:"CAMP-LEHIGH-VAULT",alias:"Архив событий",feature:"История и источники",radius:5.5,size:.65,speed:-.075,phase:1.3,tilt:-.25,color:"#44403c",accent:"#fbbf24",kind:"archive"},{id:"chrono",name:"STRUCKER-CHRONOS",alias:"Планировщик",feature:"Тихие часы и подборки",radius:6.5,size:.43,speed:.095,phase:2.7,tilt:.32,color:"#164e63",accent:"#22d3ee",kind:"relay"},{id:"weather",name:"VORMIR-RELAY",alias:"Метеорелей",feature:"Погода по координатам",radius:7.4,size:.56,speed:-.06,phase:4.1,tilt:.14,color:"#475569",accent:"#38bdf8",kind:"planet"},{id:"geo",name:"SIBERIA-1991",alias:"Географический узел",feature:"Адресное сопоставление",radius:8.2,size:.72,speed:.048,phase:5.2,tilt:-.35,color:"#3f3f46",accent:"#f59e0b",kind:"planet"},{id:"gateway",name:"TEN-RINGS-GATEWAY",alias:"Шлюз платформ",feature:"Telegram, VK, MAX, Discord",radius:9.1,size:.46,speed:-.055,phase:3.4,tilt:.26,color:"#312e81",accent:"#67e8f9",kind:"relay"}],b6=["[MONITOR] source cycle complete :: matching locations","[AI] batch classified :: cache updated","[DELIVERY] alert queue confirmed","[GEO] address index synchronized","[WEATHER] Open-Meteo relay online","[HEALTH] heartbeat persisted :: watchdog armed"],C6=["[16.12.1991] WINTER_SOLDIER_PROTOCOL :: CODE_17 // TARGET: STARK_CONVOY","[ZOLA_AI] Scanning Project Insight targets: Banner_B, Strange_S, Iowa_Valedictorian...","[SEC_CHANNEL] Mitchell Carson -> Ten Rings Syndicate: Yellowjacket_Particles_Transfer [ENCRYPTED]",'[MEMORIAL_HASH] Ezekiel 25:17 — "The path of the righteous man..." [STATUS: DECEASED_OVERRIDE]',"[TRISKELION] ALEXANDER_PIERCE :: HELICARRIER_SYNC // INSIGHT_01/02/03","[ZOLA_AI] STEVEN_ROGERS :: THREAT_STATUS=SUPER_SOLDIER // NICK_FURY: COMPROMISED","[SIBERIA_1991] LONGING_RUSTED_SEVENTEEN :: WINTER_SOLDIER // COMPLIANT"],R6="тоска ржавый семнадцать рассвет печь девять добросердечный возвращение на родину один грузовой вагон",P6=["тоска","ржавый","семнадцать","рассвет","печь","девять","добросердечный","возвращение на родину","один","грузовой вагон","longing","rusted","seventeen","daybreak","furnace","nine","benign","homecoming","one","freight car"],I6=["hail hydra","хайль гидра",R6];function bP({hydra:n,onHydra:e}){const[t,i]=z.useState(["[BOOT] RADAR CORE :: public interface ready","[MONITOR] awaiting source cycle"]),[r,s]=z.useState(""),o=z.useRef(null);z.useEffect(()=>{const h=window.setInterval(()=>{const d=n?C6:b6,p=new Date().toLocaleTimeString("ru-RU",{hour12:!1});i(m=>[...m.slice(-7),`${p} ${d[Math.floor(Math.random()*d.length)]}`])},n?1700:3200);return()=>window.clearInterval(h)},[n]),z.useEffect(()=>{var h;(h=o.current)==null||h.scrollTo({top:o.current.scrollHeight,behavior:"smooth"})},[t]);const l=h=>{h.preventDefault();const d=r.trim().toLocaleLowerCase("ru-RU").replace(/[,;.!]/g,"").replace(/\s+/g," "),p=I6.some(v=>d===v.toLocaleLowerCase("ru-RU")),m=P6.some(v=>d===v.toLocaleLowerCase("ru-RU"));if(p||m){e();const v=m?"[ZOLA] WINTER_SOLDIER_PROTOCOL :: CODE_17 CONFIRMED :: ASSET READY":"[ZOLA] activation phrase accepted :: PROJECT INSIGHT";i(y=>[...y,v])}else i(v=>[...v,`> ${r}`,"[CORE] unknown command :: try /status"]);s("")};return I.jsxs("section",{className:"terminal-shell","aria-label":"Живой системный журнал",children:[I.jsxs("div",{className:"terminal-title",children:[I.jsx(nR,{size:15}),I.jsx("span",{children:n?"ZOLA_TERMINAL // SECURE CHANNEL":"RADAR_TERMINAL // LIVE"}),I.jsx("i",{})]}),I.jsx("div",{className:"terminal-output",ref:o,"aria-live":"polite",children:t.map((h,d)=>I.jsx("code",{children:h},`${d}-${h}`))}),I.jsxs("form",{className:"terminal-form",onSubmit:l,children:[I.jsx("label",{htmlFor:"terminal-command",children:"Команда"}),I.jsx("span",{children:"›"}),I.jsx("input",{id:"terminal-command",value:r,onChange:h=>s(h.target.value),placeholder:"/status",autoComplete:"off",spellCheck:!1})]})]})}function uM(n){const[e,t]=z.useState(null),[i,r]=z.useState(""),[s,o]=z.useState(!0),l=z.useCallback(()=>{n&&(o(!0),r(""),fetch(n,{headers:{Accept:"application/json"}}).then(async h=>{const d=await h.json();if(!h.ok)throw new Error(d.message||"Сервис временно недоступен");t(d)}).catch(h=>r(h.message)).finally(()=>o(!1)))},[n]);return z.useEffect(()=>{if(!n){o(!0);return}const h=window.requestAnimationFrame(l);return()=>window.cancelAnimationFrame(h)},[l,n]),{data:e,error:i,loading:s,reload:l}}function wy({loading:n,error:e}){return n?I.jsxs("div",{className:"widget-skeleton",children:[I.jsx("i",{}),I.jsx("i",{}),I.jsx("i",{})]}):e?I.jsx("p",{className:"widget-error",children:e}):null}function L6({data:n,error:e,loading:t,onLocate:i}){return I.jsxs("article",{className:"live-widget location-widget",children:[I.jsxs("header",{children:[I.jsx(XO,{size:18}),I.jsx("h3",{children:"Ваша локация"}),I.jsx("span",{children:"IP"})]}),I.jsx(wy,{loading:t,error:e}),n&&!t&&!e&&I.jsxs("div",{className:"location-result",children:[I.jsx(Vv,{size:25}),I.jsx("strong",{children:n.city}),I.jsx("p",{children:[n.region,n.country].filter(Boolean).join(" · ")}),I.jsx("small",{children:"Приблизительно по IP. Точный адрес не запрашивается."})]}),!t&&e&&I.jsxs("button",{className:"widget-locate",onClick:i,type:"button",children:[I.jsx(Vv,{size:14})," Определить по геолокации"]})]})}function D6({location:n,waiting:e,onLocate:t}){const i=n?`/api/widget/weather?city=${encodeURIComponent(n.city)}&theme=dark&lat=${n.latitude}&lon=${n.longitude}`:e?null:"/api/widget/weather?city=auto&theme=dark",[r,s]=z.useState(i);z.useEffect(()=>s(i),[i]);const{data:o,error:l,loading:h}=uM(r),d=()=>{navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{s(`/api/widget/weather?city=auto&theme=dark&lat=${p.coords.latitude}&lon=${p.coords.longitude}`),t()},()=>s(i),{timeout:7e3})};return I.jsxs("article",{className:"live-widget",children:[I.jsxs("header",{children:[I.jsx(GO,{size:18}),I.jsx("h3",{children:"Погода"}),I.jsx("button",{onClick:d,"aria-label":"Определить погоду по точной геолокации",children:I.jsx(Vv,{size:15})})]}),I.jsx(wy,{loading:h,error:l}),o&&!h&&!l&&I.jsxs(I.Fragment,{children:[I.jsxs("div",{className:"weather-main",children:[I.jsxs("strong",{children:[Math.round(o.temperature),"°"]}),I.jsxs("span",{children:[o.condition,I.jsxs("small",{children:["Ощущается как ",Math.round(o.feels_like),"°"]})]})]}),I.jsxs("div",{className:"weather-meta",children:[I.jsxs("span",{children:["Влажность ",o.humidity,"%"]}),I.jsxs("span",{children:["Ветер ",o.wind_speed," м/с"]}),I.jsxs("span",{children:[o.pressure," гПа"]})]}),I.jsx("div",{className:"forecast-row",children:o.forecast.slice(0,3).map(p=>I.jsxs("span",{children:[p.date,I.jsxs("b",{children:[Math.round(p.temp_max),"° / ",Math.round(p.temp_min),"°"]})]},p.date))})]})]})}function N6(){const{data:n,error:e,loading:t}=uM("/api/widget/news?limit=4&theme=dark");return I.jsxs("article",{className:"live-widget news-widget",children:[I.jsxs("header",{children:[I.jsx(KO,{size:18}),I.jsx("h3",{children:"Последние события"}),I.jsx("span",{children:"LIVE"})]}),I.jsx(wy,{loading:t,error:e}),n&&!t&&!e&&I.jsxs("div",{className:"news-list",children:[n.items.length===0&&I.jsx("p",{className:"widget-empty",children:"Событий пока нет. Радар продолжает проверять источники."}),n.items.map(i=>{const r=I.jsxs(I.Fragment,{children:[I.jsx("time",{children:new Date(i.published_at).toLocaleString("ru-RU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}),I.jsx("strong",{children:i.title}),I.jsx("small",{children:i.source})]});return i.url?I.jsx("a",{href:i.url,target:"_blank",rel:"noreferrer noopener",children:r},i.id):I.jsx("div",{children:r},i.id)})]})]})}function U6({location:n,waiting:e,onLocate:t}){const i=n?`/api/widget/danger?city=${encodeURIComponent(n.city)}&theme=dark&lat=${n.latitude}&lon=${n.longitude}`:e?null:"/api/widget/danger?city=auto&theme=dark",[r,s]=z.useState(i);z.useEffect(()=>s(i),[i]);const{data:o,error:l,loading:h}=uM(r),d=()=>{navigator.geolocation&&navigator.geolocation.getCurrentPosition(m=>{s(`/api/widget/danger?theme=dark&lat=${m.coords.latitude}&lon=${m.coords.longitude}`),t()},()=>s(i),{timeout:7e3})},p=o!=null&&o.started_at?new Date(o.started_at).toLocaleString("ru-RU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):null;return I.jsxs("article",{className:`live-widget danger-widget ${o!=null&&o.active?"danger-active":""}`,children:[I.jsxs("header",{children:[I.jsx(ZO,{size:18}),I.jsx("h3",{children:"Статус опасности"}),I.jsx("button",{onClick:d,"aria-label":"Определить опасность по точной геолокации",children:I.jsx(Vv,{size:15})}),I.jsx("span",{children:"24H"})]}),I.jsx(wy,{loading:h,error:l}),o&&!h&&!l&&I.jsxs("div",{className:"danger-status",children:[I.jsx("i",{}),I.jsx("strong",{children:o.active?o.label||o.message:"Опасность не обнаружена"}),o.active&&o.message?I.jsx("p",{children:o.message}):null,o.active&&p?I.jsx("p",{children:I.jsxs("small",{children:["Последнее событие: ",p,o.area?` · ${o.area}`:""]})}):null,!o.active&&I.jsxs("p",{children:["По данным подключённых источников за последние сутки",n?` · ${n.city}`:"","."]})]})]})}function O6(){const[n,e]=z.useState(null),[t,i]=z.useState(!1),[r,s]=z.useState(""),[o,l]=z.useState(!0),h=z.useCallback(p=>{e(p),s("")},[]);z.useEffect(()=>{let p=!1;return l(!0),s(""),fetch("/api/widget/location",{headers:{Accept:"application/json"}}).then(async m=>{const v=await m.json();if(!m.ok)throw new Error(v.message||"Не удалось определить город по IP");return v}).then(m=>{p||h(m)}).catch(m=>{p||s(m.message)}).finally(()=>{p||l(!1)}),()=>{p=!0}},[h]);const d=z.useCallback(()=>{navigator.geolocation&&(i(!0),navigator.geolocation.getCurrentPosition(async p=>{const m=p.coords.latitude,v=p.coords.longitude;try{const y=await fetch(`/api/widget/reverse?lat=${m}&lon=${v}`,{headers:{Accept:"application/json"}}),M=await y.json();if(!y.ok)throw new Error(M.message||"Не удалось определить город");h(M)}catch{h({ok:!0,city:"по геолокации",region:"",country:"",latitude:m,longitude:v,approximate:!0})}finally{i(!1)}},()=>i(!1),{timeout:7e3}))},[h]);return I.jsxs("section",{className:"live-section",id:"live",children:[I.jsxs("div",{className:"section-heading",children:[I.jsx("h2",{children:"Сейчас в вашем городе"}),I.jsx("p",{children:"Радар определит локацию по IP, а при разрешённой геолокации — по точным координатам, и покажет погоду и статус опасности рядом с вами."})]}),I.jsxs("div",{className:"live-grid",children:[I.jsx(L6,{data:n,error:r,loading:o||t,onLocate:d}),I.jsx(D6,{location:n,waiting:o,onLocate:d}),I.jsx(N6,{}),I.jsx(U6,{location:n,waiting:o,onLocate:d})]})]})}function k6({botUsername:n}){const e=z.useRef(null);return z.useEffect(()=>{const t=e.current;if(!t||!n)return;t.replaceChildren();const i=document.createElement("script");return i.async=!0,i.src="https://telegram.org/js/telegram-widget.js?22",i.dataset.telegramLogin=n,i.dataset.size="large",i.dataset.authUrl="/auth",i.dataset.requestAccess="write",t.appendChild(i),()=>t.replaceChildren()},[n]),n?I.jsx("div",{ref:e,className:"telegram-login","aria-label":"Вход через Telegram"}):I.jsx("p",{className:"login-fallback",children:"Укажите BotFather username и WEB_PUBLIC_URL, затем вход появится здесь."})}const D_={botUsername:"SecretHeroBot",publicUrl:"",description:"",version:"6.0.0",plans:[[30,150],[90,400],[365,1400]]};function hM(){const n=document.getElementById("radar-config");if(!(n!=null&&n.textContent))return D_;try{return{...D_,...JSON.parse(n.textContent)}}catch{return D_}}function mm(n,e){var i;const t=(i=hM().content)==null?void 0:i[n];return t&&typeof t=="object"&&!Array.isArray(t)?t:e}function qo({children:n,className:e=""}){const t=KC();return I.jsx(zv.div,{className:e,initial:t?!1:{opacity:0,transform:"translateY(28px)"},whileInView:{opacity:1,transform:"translateY(0px)"},viewport:{once:!0,amount:.16},transition:{duration:.65,ease:[.23,1,.32,1]},children:n})}function F6(){const n=z.useRef(hM()).current,e=z.useRef(mm("home",{hero_eyebrow:"RADAR / CITY INTELLIGENCE",hero_title:"Город под наблюдением.",hero_accent:"Вы — в курсе.",hero_description:"ИИ связывает городские события с вашими адресами и присылает только важное.",hero_primary:"Запустить бота",hero_secondary:"Смотреть свой город",scroll_cue:"ИССЛЕДОВАТЬ СИСТЕМУ",capabilities_title:"Один контур. Весь город.",capabilities_text:"От открытого источника до конкретного адреса: Радар сам выполняет весь путь и показывает, почему сообщение пришло именно вам.",capabilities:[{title:"Только то, что касается вас",text:"Радар читает открытые каналы МЧС, администраций, ЖКХ и RSS. ИИ выделяет город, улицу, дом и тип события, затем сопоставляет его с вашими адресами.",items:["БПЛА и воздушная тревога","ЧС, пожары и эвакуация","Вода, свет, газ и отопление","Отдельное распознавание отбоя"]},{title:"Город живёт в одном интерфейсе",text:"Несколько локаций, тихие часы, местный часовой пояс, погода и новостные подборки по расписанию. Важные тревоги остаются бесплатными.",items:["Почасовой прогноз и три дня","18 тематик новостных подборок","Неограниченное число адресов","Русский, English, Українська, 中文 и فارسی"]},{title:"Не только оповещения",text:"Проект объединяет повседневные инструменты и средства администрирования, не превращая основной сценарий в набор разрозненных ботов.",items:["ИИ-ассистент с поиском","Проверка ссылок и короткие ссылки","Музыка, медиа и облачное хранилище","Модерация групп и SOS-контакты"]},{title:"Ваши данные — под контролем",text:"Открытый исходный код GPL-3.0, прозрачные настройки и выбор SQLite или PostgreSQL для хранения данных проекта.",items:["Резервные копии и перенос базы","Роли и аудит действий","Метрики, журналы и healthcheck","Обновление из панели управления"]}],resilience_title:"Тревога не зависит от настроения сервера.",resilience_text:"Фоновый цикл наблюдает сторож, незавершённые отправки повторяются, тихие часы хранят очередь в базе, а healthcheck показывает реальное состояние мониторинга.",resilience:[{title:"SQLite ⇄ PostgreSQL",text:"Перенос данных, миграции и резервные копии."},{title:"Отказоустойчивый контур",text:"Кэш ИИ, повторная доставка и наблюдение за источниками."},{title:"Контроль доступа",text:"Четыре роли, инвайты, CSRF-защита и аудит действий."}],utility_title:"Полезно каждый день",utility_text:"Радар остаётся одним проектом, даже когда выходит за рамки городских оповещений.",utilities:[{title:"ИИ и медиа",text:"Ассистент, музыка, загрузка видео, облачное хранилище и плейлисты."},{title:"Безопасность и группы",text:"Проверка ссылок, капча, антиспам, журнал модерации и SOS."},{title:"Приватная инфраструктура",text:"Аренда приватного сервера и управление заказом в боте."},{title:"Несколько платформ",text:"Telegram, ВКонтакте, Discord и MAX с общей базой пользователей."}],pricing_title:"Важное — бесплатно.",pricing_accent:"Дополнительное — честно.",pricing_text:"Оповещения об опасности не требуют оплаты. Одна подписка открывает все новостные тематики и загрузку видео без дневного предела.",trial_label:"Пробный период",trial_days:"7 дней",trial_text:"Один раз на пользователя. Все возможности единой подписки.",trial_button:"Начать в Telegram",pricing_link:"Условия и актуальные тарифы",login_title:"Войти через Telegram",login_text:"Один безопасный вход. Радар сам откроет кабинет или панель согласно вашей роли.",profile_title:"Личный кабинет",profile_text:"Локации, подписка и предложение источников · /profile",panel_title:"Панель управления",panel_text:"Источники, пользователи и настройки · по роли",login_alternative:"Альтернатива: команда /panel в боте → «Код входа». Код действует 5 минут.",telegram_title:"Подтвердите личность",telegram_text:"Telegram передаёт только данные, необходимые для входа. Сессия защищена cookie и проверкой подписи.",footer_description:`Система городского мониторинга
 с открытым исходным кодом.`})).current,t=!!KC(),[i,r]=z.useState(!1),[s,o]=z.useState(A6),[l,h]=z.useState(null),d=z.useRef(0),p=z.useRef(0),m=z.useRef(void 0),v=z.useCallback(()=>{if(l||t||s.length===0)return;d.current+=1;const _=s[d.current%s.length];h({id:d.current,targetId:_.id,startedAt:performance.now()})},[l,s,t]),y=z.useCallback(()=>{r(!0),t||(d.current+=1,h(_=>_||(s.length?{id:d.current,targetId:s[d.current%s.length].id,startedAt:performance.now()}:null)))},[s,t]);z.useEffect(()=>{document.documentElement.dataset.hydra=i?"active":"inactive"},[i]),z.useEffect(()=>{if(t)return;const _=window.setTimeout(v,45e3+Math.random()*15e3);return()=>window.clearTimeout(_)},[v,t]),z.useEffect(()=>{if(!l)return;const _=l,C=window.setTimeout(()=>{o(b=>{const R=b.find(V=>V.id===_.targetId);if(!R)return b;const O={...R,id:`${R.id}-alpha-${_.id}`,name:`${R.name}-ALPHA`,phase:R.phase+.5,size:R.size*.82},k={...R,id:`${R.id}-omega-${_.id}`,name:`${R.name}-OMEGA`,phase:R.phase-.65,size:R.size*.72,speed:-R.speed};return[...b.filter(V=>V.id!==_.targetId),O,k].slice(-8)}),h(null)},8100);return()=>window.clearTimeout(C)},[l]);const M=()=>{if(window.clearTimeout(m.current),p.current+=1,p.current>=3){p.current=0,y();return}m.current=window.setTimeout(()=>{p.current=0},700)},T=`https://t.me/${n.botUsername||"SecretHeroBot"}`,w=e.hero_description||n.description;return I.jsxs("div",{className:`site-shell ${i?"hydra-mode":""}`,children:[I.jsx(T6,{hydra:i,eventActive:!!l,nodeCount:s.length,onLogoClick:M,onWhisper:()=>r(!1)},i?"hydra":"radar"),I.jsxs("main",{children:[I.jsxs("section",{className:"hero-section",children:[I.jsx("div",{className:"scene-layer","aria-label":"Интерактивная орбитальная модель Радара",children:I.jsx(z.Suspense,{fallback:I.jsx("div",{className:"scene-loader",children:"Инициализация ядра…"}),children:I.jsx(E6,{hydra:i,reducedMotion:t,assimilation:l,nodes:s,onAssimilationComplete:()=>{}})})}),I.jsx("div",{className:"hero-vignette"}),I.jsx("div",{className:"hero-copy",children:I.jsxs(zv.div,{initial:t?!1:{opacity:0,transform:"translateY(18px)"},animate:{opacity:1,transform:"translateY(0px)"},transition:{duration:.7,ease:[.23,1,.32,1]},children:[I.jsx("span",{className:"hero-eyebrow",children:i?"ZOLA ALGORITHM // PROJECT INSIGHT // 1972":`${e.hero_eyebrow} / v${n.version}`}),I.jsx("h1",{children:i?I.jsxs(I.Fragment,{children:["HAIL HYDRA.",I.jsx("br",{}),I.jsx("em",{children:"INSIGHT IS INEVITABLE."})]}):I.jsxs(I.Fragment,{children:[e.hero_title,I.jsx("br",{}),I.jsx("em",{children:e.hero_accent})]})}),I.jsx("p",{children:i?"ARNIM ZOLA // ПРОТОКОЛ «ЗИМНИЙ СОЛДАТ» АКТИВЕН. СИСТЕМА ВЫШЛА ИЗ-ПОД КОНТРОЛЯ Щ.И.Т.А. ОРБИТАЛЬНЫЕ УЗЛЫ ПОДЧИНЕНЫ PROJECT INSIGHT.":w}),I.jsxs("div",{className:"hero-actions",children:[I.jsxs("a",{className:"button-primary",href:T,target:"_blank",rel:"noreferrer noopener",children:[I.jsx(ZC,{size:18}),e.hero_primary,I.jsx(vu,{size:16})]}),I.jsx("a",{className:"button-secondary",href:"#live",children:e.hero_secondary})]})]})}),I.jsx("div",{className:"hero-terminal",children:I.jsx(bP,{hydra:i,onHydra:y})}),I.jsxs("a",{className:"scroll-cue",href:"#capabilities","aria-label":"Перейти к возможностям",children:[I.jsx("span",{}),e.scroll_cue]})]}),I.jsxs("section",{className:"capabilities-section",id:"capabilities",children:[I.jsxs(qo,{className:"section-heading",children:[I.jsx("h2",{children:e.capabilities_title}),I.jsx("p",{children:e.capabilities_text})]}),I.jsx("div",{className:"capability-grid",children:e.capabilities.map((_,C)=>I.jsx(qo,{className:`capability-item capability-item-${C+1}`,children:I.jsxs("article",{children:[I.jsx("span",{className:"capability-number",children:String(C+1).padStart(2,"0")}),I.jsx("h3",{children:_.title}),I.jsx("p",{children:_.text}),I.jsx("ul",{children:_.items.map(b=>I.jsxs("li",{children:[I.jsx(JC,{size:14}),b]},b))})]})},_.title))})]}),I.jsx(O6,{}),I.jsxs("section",{className:"resilience-section",children:[I.jsxs(qo,{className:"resilience-statement",children:[I.jsx(d1,{size:30}),I.jsx("h2",{children:e.resilience_title}),I.jsx("p",{children:e.resilience_text})]}),I.jsx("div",{className:"resilience-grid",children:e.resilience.map((_,C)=>{const b=[wE,QC,JO][C]||wE;return I.jsxs(qo,{className:"resilience-cell",children:[I.jsx(b,{}),I.jsx("strong",{children:_.title}),I.jsx("span",{children:_.text})]},_.title)})})]}),I.jsxs("section",{className:"utility-section",children:[I.jsxs(qo,{className:"section-heading",children:[I.jsx("h2",{children:e.utility_title}),I.jsx("p",{children:e.utility_text})]}),I.jsx("div",{className:"utility-list",children:e.utilities.map((_,C)=>{const b=[ME,nR,f1,Au][C]||ME;return I.jsxs("div",{children:[I.jsx(b,{}),I.jsxs("span",{children:[I.jsx("strong",{children:_.title}),_.text]})]},_.title)})})]}),I.jsxs("section",{className:"pricing-section",id:"pricing",children:[I.jsxs(qo,{className:"section-heading",children:[I.jsxs("h2",{children:[e.pricing_title,I.jsx("br",{}),e.pricing_accent]}),I.jsx("p",{children:e.pricing_text})]}),I.jsxs("div",{className:"pricing-layout",children:[I.jsxs(qo,{className:"trial-card",children:[I.jsx("span",{children:e.trial_label}),I.jsx("strong",{children:e.trial_days}),I.jsx("p",{children:e.trial_text}),I.jsxs("a",{href:T,target:"_blank",rel:"noreferrer noopener",children:[e.trial_button,I.jsx(vu,{size:16})]})]}),I.jsx("div",{className:"plan-list",children:n.plans.map(([_,C])=>I.jsxs("div",{className:"plan-row",children:[I.jsxs("span",{children:[_," дней"]}),I.jsxs("strong",{children:[C," ⭐"]}),I.jsx("small",{children:"Telegram Stars"})]},_))})]}),I.jsxs(_r,{className:"text-link",to:"/pricing",children:[e.pricing_link,I.jsx(vu,{size:15})]})]}),I.jsxs("section",{className:"login-section",id:"login",children:[I.jsxs(qo,{className:"section-heading",children:[I.jsx("h2",{children:e.login_title}),I.jsx("p",{children:e.login_text})]}),I.jsxs("div",{className:"login-layout",children:[I.jsxs(qo,{className:"login-options",children:[I.jsxs("a",{href:"/login",children:[I.jsx(iR,{}),I.jsxs("span",{children:[I.jsx("strong",{children:e.profile_title}),I.jsx("small",{children:e.profile_text})]}),I.jsx(vu,{})]}),I.jsxs("a",{href:"/login",children:[I.jsx(tR,{}),I.jsxs("span",{children:[I.jsx("strong",{children:e.panel_title}),I.jsx("small",{children:e.panel_text})]}),I.jsx(vu,{})]}),I.jsx("p",{children:e.login_alternative})]}),I.jsxs(qo,{className:"telegram-card",children:[I.jsx(Au,{size:28}),I.jsx("h3",{children:e.telegram_title}),I.jsx("p",{children:e.telegram_text}),I.jsx(k6,{botUsername:n.botUsername})]})]})]})]}),I.jsxs("footer",{className:"site-footer",children:[I.jsxs("div",{className:"footer-brand",children:[I.jsx(Au,{}),I.jsx("strong",{children:"РАДАР"}),I.jsx("span",{children:e.footer_description.split(`
 `).map((_,C)=>I.jsxs("span",{children:[C>0&&I.jsx("br",{}),_]},C))})]}),I.jsxs("div",{children:[I.jsx("strong",{children:"Проект"}),I.jsx("a",{href:"#capabilities",children:"Возможности"}),I.jsx("a",{href:"#live",children:"Мой город"}),I.jsx("a",{href:"/projects",children:"Наши проекты"}),I.jsx("a",{href:"/downloads",children:"Загрузки"}),I.jsx("a",{href:"https://github.com/Chistovik92/radar",target:"_blank",rel:"noreferrer noopener",children:"GitHub"})]}),I.jsxs("div",{children:[I.jsx("strong",{children:"Документы"}),I.jsx("a",{href:"/privacy",children:"Конфиденциальность"}),I.jsx("a",{href:"/terms",children:"Соглашение"}),I.jsx(_r,{to:"/support",children:"Поддержка"})]}),I.jsxs("div",{children:[I.jsx("strong",{children:"Вход"}),I.jsx("a",{href:"/profile",children:"Личный кабинет"}),I.jsx("a",{href:"/login",children:"Панель управления"}),I.jsx("a",{href:T,target:"_blank",rel:"noreferrer noopener",children:"Telegram-бот"})]}),I.jsxs("div",{className:"footer-bottom",children:[I.jsx("span",{children:"© 2026 SecretHero · GPL-3.0"}),I.jsxs("span",{children:["v",n.version," · CITY INTELLIGENCE · OPEN SOURCE"]})]})]}),I.jsx("span",{className:"mekbuda","aria-hidden":"true",children:"mekbuda"})]})}function Ey({children:n,version:e="6.0.0"}){const[t,i]=z.useState(!1),[r,s]=z.useState(0),[o,l]=z.useState(!1),h=z.useRef(null),d=z.useCallback(()=>{i(!0)},[]),p=z.useCallback(()=>{s(v=>v+1),h.current&&clearTimeout(h.current),h.current=setTimeout(()=>s(0),2e3)},[]);z.useEffect(()=>{r>=3&&(d(),s(0))},[r,d]);const m=z.useCallback(()=>{i(!1)},[]);return z.useEffect(()=>{document.documentElement.dataset.hydra=t?"active":"inactive"},[t]),z.useEffect(()=>{const v=y=>{y.key==="`"&&y.ctrlKey&&(y.preventDefault(),l(M=>!M))};return window.addEventListener("keydown",v),()=>window.removeEventListener("keydown",v)},[]),I.jsxs("div",{className:"page-layout",children:[I.jsx("header",{className:"page-header",children:I.jsxs("nav",{className:"page-nav",children:[I.jsxs(_r,{to:"/",className:"logo-link",children:[I.jsx(Au,{size:24,onClick:p,style:{cursor:"pointer"},"aria-label":"TRISKELION Logo"}),I.jsx("span",{children:"РАДАР"})]}),I.jsxs("div",{className:"nav-links",children:[I.jsx(_r,{to:"/",children:"Лендинг"}),I.jsx(_r,{to:"/downloads",children:"Загрузки"}),I.jsx(_r,{to:"/projects",children:"Проекты"}),I.jsx(_r,{to:"/pricing",children:"Тарифы"}),I.jsx(_r,{to:"/support",children:"Поддержка"}),I.jsx("a",{href:"/privacy",children:"Политика"}),I.jsx("a",{href:"/terms",children:"Соглашение"}),I.jsx("a",{href:"/login",children:"Вход"})]})]})}),I.jsx("main",{className:"page-content",children:n}),I.jsxs("footer",{className:"page-footer",children:[I.jsxs("div",{className:"footer-columns",children:[I.jsxs("div",{children:[I.jsx("strong",{children:"Проект"}),I.jsx("a",{href:"https://github.com/Chistovik92/radar",target:"_blank",rel:"noreferrer noopener",children:"GitHub репозиторий"}),I.jsx("a",{href:"https://github.com/Chistovik92/radar/releases",target:"_blank",rel:"noreferrer noopener",children:"Релизы"})]}),I.jsxs("div",{children:[I.jsx("strong",{children:"Документы"}),I.jsx("a",{href:"/privacy",children:"Политика конфиденциальности"}),I.jsx("a",{href:"/terms",children:"Пользовательское соглашение"}),I.jsx(_r,{to:"/support",children:"Поддержка"}),I.jsx(_r,{to:"/pricing",children:"Тарифы и цены"})]}),I.jsxs("div",{children:[I.jsx("strong",{children:"Приложения"}),I.jsx(_r,{to:"/downloads",children:"Загрузки"}),I.jsx(_r,{to:"/projects",children:"Наши проекты"}),I.jsx("a",{href:"https://github.com/Chistovik92/HydraVPN",target:"_blank",rel:"noreferrer noopener",children:"HydraVPN"}),I.jsx("a",{href:"https://github.com/Chistovik92/HydraVPNforRouters",target:"_blank",rel:"noreferrer noopener",children:"HydraVPN for Routers"})]}),I.jsxs("div",{children:[I.jsx("strong",{children:"Бот и каналы"}),I.jsx("a",{href:"https://t.me/SecretHeroBot",target:"_blank",rel:"noreferrer noopener",children:"@SecretHeroBot"}),I.jsx("a",{href:"https://t.me/SecretHeroSupport",target:"_blank",rel:"noreferrer noopener",children:"Поддержка (@SecretHeroSupport)"})]}),I.jsxs("div",{children:[I.jsx("strong",{children:"Технически"}),I.jsx("p",{children:"Python 3.11+ · aiohttp · aiogram"}),I.jsx("p",{children:"SQLite / PostgreSQL (asyncpg)"}),I.jsx("p",{children:"Docker · Caddy · systemd"}),I.jsx("p",{children:"ARM (RK3318) / x64"})]})]}),I.jsx("div",{className:"footer-bottom",children:I.jsxs("span",{children:["Радар v",e," · ",I.jsx("a",{href:"https://github.com/Chistovik92/radar/blob/main/LICENSE",target:"_blank",rel:"noreferrer noopener",children:"GPL-3.0"})," · Автор: ",I.jsx("a",{href:"https://github.com/Chistovik92",target:"_blank",rel:"noreferrer noopener",children:"SecretHero"})," · mekbuda"]})})]}),t&&I.jsx("button",{className:"whisper-button",onClick:m,"aria-label":"Return control",children:"// WHISPER: ELEVATOR_PROTOCOL"}),o&&I.jsx(bP,{hydra:t,onHydra:d})]})}const OA={icon:"🛡",name:"Оповещения об угрозах",price:"0 ₽",period:"бесплатно навсегда",features:["БПЛА / ракетная опасность / воздушная тревога / отбой","МЧС: ЧС, штормовые предупреждения, эвакуация","ЖКХ: вода, свет, газ, отопление — адресно","Базовая погода (текст): текущая, 8 ч, 3 дня","Проверка ссылок — 200/сутки","ИИ-ассистент — базовый лимит","Без рекламы, без трекинга"],button:"Запустить бота"},kA={icon:"📰",name:"Новостные подборки",price:"",period:"",features:["18 тематик в одной подписке","ИИ-сводки и доставка по расписанию","Погода картинкой","Скачивание видео без дневного лимита подписчика"],button:"Оформить в боте за Stars"},FA={icon:"🔐",name:"Аренда приватного сервера",price:"Тарифы VPN",period:"срок и цена до оплаты",features:["Аренда приватного сервера","Срок, трафик и число устройств зависят от тарифа","Управление заказом в боте"],button:"Тарифы VPN и загрузка"};function B6(){const n=hM(),e=mm("pricing",{updated:"Обновлено: ноябрь 2026",title:"Тарифы и цены",subtitle:"Оповещения бесплатно навсегда. Актуальные тарифы подписки и порядок оформления",intro:"Радар — честные цены, без скрытых платежей. Все оповещения об угрозах — бесплатно навсегда.",payment_intro:"Подписка на подборки оплачивается через Telegram Stars. Способы оплаты аренды приватного сервера и итоговая сумма показываются в боте до подтверждения заказа.",free_card:[OA],digest_card:[kA],vpn_card:[FA],notes_title:"Важные замечания:",notes:["Цены подписки указаны в Telegram Stars (⭐); стоимость аренды сервера показывается в выбранном тарифе.","Приватный сервер предоставляется для законного использования по назначению.","Подписка на подборки оплачивается Stars; доступные способы оплаты аренды зависят от настроек бота.","Возврат средств: заявка в поддержку в течение 14 дней, если сервис не предоставлен.","Сам-хостинг (установка на свой сервер) — полностью бесплатно, код открыт (GPL-3.0)."],comparison_title:"Сравнение: бесплатно vs подписка",comparison_headers:["Функция","Бесплатно","Подписка (Stars)"],comparison:[{cells:["Тревоги БПЛА / МЧС / ЖКХ","✅ Полностью","✅ Полностью"]},{cells:["Погода (текст)","✅ Текущая, 8ч, 3 дня","✅ + картинка, вектор ветра, луна"]},{cells:["Новостные подборки","❌","✅ 18 тем, ИИ-сводки, расписание"]},{cells:["Проверка ссылок","200/сутки","Без лимита"]},{cells:["ИИ-ассистент","Базовый лимит","Расширенный лимит"]},{cells:["Аренда приватного сервера","❌","Отдельно (₽)"]}],pay_title:"Как оплатить",pay_steps:["Откройте бота: @SecretHeroBot","Меню → «Подписки» или «Сервер»","Выберите тариф и один из доступных способов оплаты","Доступ активируется автоматически"],support_question:"Вопросы по оплате?",support_link:"Напишите в поддержку"}),t=`https://t.me/${n.botUsername||"SecretHeroBot"}`,i=(s,o,l)=>I.jsxs("div",{className:`pricing-card ${o==="free"?"free":""}`,children:[I.jsx("div",{className:"card-icon",children:s.icon}),I.jsx("h3",{children:s.name}),I.jsxs("div",{className:"price",children:[I.jsx("span",{className:"amount",children:s.price}),I.jsx("span",{className:"period",children:s.period})]}),I.jsx("ul",{className:"features",children:s.features.map(h=>I.jsxs("li",{children:[I.jsx(JC,{size:16})," ",h]},h))}),l?I.jsx(_r,{to:l,className:"cta-button",children:s.button}):I.jsx("a",{href:t,target:"_blank",rel:"noreferrer noopener",className:"cta-button",children:s.button})]},o),r=e.digest_card[0]||kA;return I.jsx(Ey,{children:I.jsxs("div",{className:"pricing-page",children:[I.jsxs("header",{className:"page-title",children:[I.jsx("p",{className:"update-date",children:e.updated}),I.jsx("h1",{children:e.title}),I.jsx("p",{className:"page-subtitle",children:e.subtitle})]}),I.jsxs("section",{className:"intro-section",children:[I.jsx("p",{children:I.jsx("strong",{children:e.intro})}),I.jsx("p",{children:e.payment_intro})]}),I.jsxs("section",{className:"pricing-grid",children:[i(e.free_card[0]||OA,"free"),n.plans.map(([s,o])=>i({...r,price:`${o} ⭐`,period:`${s} дней`},`digest-${s}`)),i(e.vpn_card[0]||FA,"vpn","/downloads")]}),I.jsxs("section",{className:"notes-section",children:[I.jsx("p",{children:I.jsx("strong",{children:e.notes_title})}),I.jsx("ul",{children:e.notes.map(s=>I.jsx("li",{children:s},s))})]}),I.jsxs("section",{className:"comparison-section",children:[I.jsx("h2",{children:e.comparison_title}),I.jsxs("table",{className:"comparison-table",children:[I.jsx("thead",{children:I.jsx("tr",{children:e.comparison_headers.map(s=>I.jsx("th",{children:s},s))})}),I.jsx("tbody",{children:e.comparison.map((s,o)=>I.jsx("tr",{children:s.cells.map((l,h)=>I.jsx("td",{children:l},h))},o))})]})]}),I.jsxs("section",{className:"how-to-pay",children:[I.jsx("h2",{children:e.pay_title}),I.jsx("ol",{children:e.pay_steps.map(s=>I.jsx("li",{children:s},s))}),I.jsxs("p",{children:[e.support_question," ",I.jsx(_r,{to:"/support",children:e.support_link})]})]})]})})}function z6(){const n=mm("support",{updated:"Обновлено: ноябрь 2026",title:"Поддержка",subtitle:"Тикет-система, контакты, SLA и ответы на частые вопросы",intro:"Радар — бот мониторинга городских угроз и аварий ЖКХ. Мы отвечаем на вопросы по установке, настройке, оплате, багам и предложениям.",channels_title:"Каналы поддержки",channels:[{icon:"🎫",title:"Тикет-бот (рекомендуется)",description:"Создайте тикет — получите номер, статус и ответ в личку. История сохраняется.",button:"Открыть @SecretHeroSupportBot",href:"https://t.me/SecretHeroSupportBot"},{icon:"👤",title:"Прямой контакт автора",description:"Для срочных вопросов, безопасности, партнёрства. Отвечаю в рабочее время.",button:"Написать @SecretHeroSupport",href:"https://t.me/SecretHeroSupport"},{icon:"📧",title:"Email",description:"Для официальных обращений, договоров, претензий, GDPR-запросов.",button:"admin@hydravpsvpn.ru",href:"mailto:admin@hydravpsvpn.ru"}],sla_title:"SLA — время ответа",sla:["Рабочее время: пн–пт 09:00–20:00 (МСК).","Первичный ответ: до 4 часов в рабочее время, до 24 часов — в нерабочее.","Решение типовых вопросов: 1–2 рабочих дня.","Сложные баги / установка: до 5 рабочих дней."],speed_up_title:"Что ускорит помощь",speed_up:["Версия бота/панели (/version в боте или футер панели).","Способ установки: Docker (install.sh) / Docker Compose / ручная.","ОС и архитектура сервера (ARM / x64).","Логи: docker logs radar_container --tail 100 или journalctl -u radar -n 100.","Скриншот ошибки или полный текст traceback.","Что уже пробовали исправить."],faq_title:"Частые вопросы (FAQ)",faq:[{question:"Бот не присылает оповещения",answer:"Проверьте: локации добавлены верно (город/улица/дом)? Включены ли нужные категории в настройках? Не включены ли «тихие часы»? Бот не заблокирован? Источники в городе настроены админом (команда /sources в панели)?"},{question:"Погода не работает / «нет координат»",answer:"Удалите локацию и добавьте заново — координаты определяются при добавлении. Если город не находится — напишите в поддержку, добавим в геокодер."},{question:"Как купить подписку / арендовать сервер",answer:"В боте: Меню → Подписки / Сервер → выбрать тариф → оплатить Stars или через платёжную систему. Доступ придёт автоматически."},{question:"Хочу установить у себя (self-hosted)",answer:"Требования: Docker, Docker Compose, порт 80/443, домен (для HTTPS и TG Login Widget). По вопросам установки и настройки обращайтесь к @SecretHeroSupportBot или admin@hydravpsvpn.ru."}],contact_title:"Как отправить обращение",contact_text:"Откройте тикет-бота @SecretHeroSupportBot и опишите вопрос там — он создаст обращение и покажет его номер. Если бот недоступен, напишите @SecretHeroSupport."});return I.jsx(Ey,{children:I.jsxs("div",{className:"doc-page",children:[I.jsxs("header",{className:"page-title",children:[I.jsx("p",{className:"update-date",children:n.updated}),I.jsx("h1",{children:n.title}),I.jsx("p",{className:"page-subtitle",children:n.subtitle})]}),I.jsx("section",{className:"doc-intro",children:I.jsx("p",{children:n.intro})}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.channels_title}),I.jsx("div",{className:"contact-grid",children:n.channels.map(e=>I.jsxs("article",{className:"contact-card",children:[I.jsx("div",{className:"contact-icon",children:e.icon}),I.jsx("h3",{className:"contact-title",children:e.title}),I.jsx("p",{className:"contact-desc",children:e.description}),I.jsx("a",{href:e.href,target:"_blank",rel:"noreferrer noopener",className:"contact-link",children:e.button})]},e.title))})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.sla_title}),I.jsx("ul",{children:n.sla.map(e=>I.jsx("li",{children:e},e))})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.speed_up_title}),I.jsx("ol",{children:n.speed_up.map(e=>I.jsx("li",{children:e},e))})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.faq_title}),n.faq.map(e=>I.jsxs("div",{children:[I.jsx("h3",{children:e.question}),I.jsx("p",{children:e.answer})]},e.question))]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.contact_title}),I.jsx("p",{children:n.contact_text})]})]})})}const hu={repo:"https://github.com/Chistovik92/HydraVPN",releases:"https://github.com/Chistovik92/HydraVPN/releases",site:"https://gidravpn.ru",telegram:"https://t.me/+WWJFBZVhxBs4ZmNi",appId:"ru.gidravpn.hydra"},N_={repo:"https://github.com/Chistovik92/HydraVPNforRouters",releases:"https://github.com/Chistovik92/HydraVPNforRouters/releases"},V6=[lS,Hv,f1,Hv,lS],H6=[Mv,Mv,Mv],G6={title:"Загрузки приложений",subtitle:"HydraVPN — один VPN для телефона, компьютера и роутера. Скачайте приложение под свою платформу.",client_name:"HydraVPN",client_tagline:"Мультипротокольный VPN-клиент для всех платформ",client_version:"0.8.3",client_description:"Один проект, один аккаунт (бот «Радар» / HydraVPN), одно управление — телефон, компьютер и домашний роутер. Поддерживает sing-box, Xray, AmneziaWG, умную маршрутизацию, раздельное туннелирование и управление роутером.",client_platforms:[{title:"Android 8+",files:"APK (arm64, armv7, x86, x86_64)",note:"Телефоны, планшеты, Android TV / Google TV"},{title:"Windows 10/11 x64",files:".msi / .exe / portable .zip",note:"Windows 7 SP1 и 32-бит — Hydra Classic"},{title:"Linux x64 / arm64",files:".deb, .rpm, .AppImage, .tar.gz",note:"Raspberry Pi OS 32-бит — Hydra Classic (Java 11+)"},{title:"macOS 12+",files:".dmg (Apple Silicon / Intel)",note:""},{title:"iOS 17+",files:".ipa (без подписи)",note:"Ставится через переподпись (AltStore, Sideloadly)"}],download_button:"Скачать",source_button:"Исходный код",update_title:"Обновления приложение скачивает само.",update_text:"Кнопка «Обновить» загружает файл под вашу систему (SHA-256 из релиза проверяется) и запускает установку. Ставьте файлы только из официального релиза на GitHub — SHA-256 указан в каждом релизе.",router_name:"HydraVPN for Routers",router_tagline:"Решение для обхода DPI на роутерах",router_version:"1.3.3",router_description:"Комплексное, не зависящее от платформы решение на базе sing-box, zapret и ByeDPI для роутеров. Единое решение для OpenWRT, KeeneticOS и MikroTik RouterOS с полной функциональной совместимостью.",router_platforms:[{title:"OpenWRT 21.02+",files:"IPK (APK — через install.sh)",note:"Init: procd"},{title:"KeeneticOS 3.7+",files:"IPK (Entware)",note:"Init: ndm/Entware"},{title:"RouterOS 7+",files:"TAR (контейнер)",note:"Init: systemd/container"}],vpn_title:"Тарифы VPN",vpn_intro:"Доступ к VPN выдаётся через бота «Радар»: раздел 🔐 VPN — там же можно оформить и продлить подписку. С 12.08.2026 действует обновлённая тарифная сетка и праздничная акция.",vpn_plans:[{name:"Неделя",price:"0 ₽",period:"пробный ключ — бесплатно",note:""},{name:"Месяц",price:"550 ₽",period:"🔥 Спеццена по акции",note:""},{name:"Три месяца",price:"1 250 ₽",period:"срок: 90 дней",note:""},{name:"Полгода",price:"2 300 ₽",period:"срок: 180 дней",note:""},{name:"Год",price:"4 200 ₽",period:"🔥 Выгодное предложение на длительный период",note:""}],vpn_note:"В «Радаре» встроена продажа VPN: оплата через Crypto Pay или с подтверждением администратора, тарифы настраиваются в разделе «Ключи».",locations_title:"Локации и условия подключения",locations:"Доступные локации: Финляндия 🇫🇮, Россия 🇷🇺, Казахстан 🇰🇿, США 🇺🇸, Франция 🇫🇷, Польша 🇵🇱, Латвия 🇱🇻, Швеция 🇸🇪, Нидерланды 🇳🇱, Германия 🇩🇪, Эстония 🇪🇪, Румыния 🇷🇴.",connection_terms:[{title:"Два ключа на пользователя",text:"К каждому ключу можно подключить от 5 до 10 устройств (минимум 5, максимум 10)."},{title:"Программа лояльности",text:"🔥 АКЦИЯ — за каждого приведённого друга вы получаете 1 полный месяц в подарок (или дополнительные дни/недели по программе лояльности)."}],services_title:"Дополнительные услуги",routers_title:"Роутеры",routers_intro:"Для работы с сервером и раздачи доступа по всей домашней сети.",services:[{name:"Роутер",price:"от 3 500 ₽",period:"гарантия 1 год",note:""},{name:"Прошивка и настройка",price:"1 500 ₽",period:"подарочный доступ на 3 месяца",note:""},{name:"Доставка",price:"от 200 ₽",period:"по РФ и СНГ",note:""},{name:"Удалённый доступ",price:"1 000 ₽",period:"при технической возможности",note:"при подключении белого статического IP у провайдера или дополнительной опции (от 150 ₽ / месяц)"}],support_title:"Техническая поддержка",support_terms:[{title:"В течение полугода",text:"Техническая поддержка включена на первые шесть месяцев."},{title:"Дальше — по обращению или подпиской",text:"Разовое обращение — от 1 000 ₽, подписка на тех-помощь — 150 ₽ / месяц."}],individual_title:"Индивидуальные тарифы",individual_text:"Выбор локаций и от 10 до 25 ключей под ваши задачи. Условия подбираются индивидуально — напишите в поддержку или в бота «Радар».",install_title:"Как установить и настроить приложения",install_steps:[{title:"Скачайте файл под свою платформу",text:"Каждый релиз публикуется сразу со всеми платформами. Выберите версию из таблицы выше."},{title:"Установите и войдите в аккаунт",text:"В боте «Радар» откройте раздел 🔐 VPN → «Подключить приложение» и введите одноразовый код — HydraVPN подхватит ваши подписки. Один аккаунт на телефон, компьютер и роутер."},{title:"Для роутера — разверните пакет",text:"OpenWRT — через install.sh; KeeneticOS — пакет Entware; MikroTik — контейнер TAR. Подробности — в README репозитория."}],resources_title:"Поддержка и ресурсы"};function W6(){const n=mm("downloads",G6),e=i=>{const r=i==="client",s=r?n.client_name:n.router_name,o=r?n.client_version:n.router_version,l=r?n.client_platforms:n.router_platforms,h=r?hu:N_,d=r?V6:H6;return I.jsxs("section",{className:"app-section",children:[I.jsxs("div",{className:"app-header",children:[I.jsxs("div",{children:[I.jsx("h2",{children:s}),I.jsx("p",{children:r?n.client_tagline:n.router_tagline})]}),I.jsxs("div",{className:"app-header-actions",children:[I.jsxs("a",{className:"button-primary",href:h.releases,target:"_blank",rel:"noreferrer noopener",children:[I.jsx(eR,{size:18})," ",n.download_button," ",o]}),I.jsxs("a",{className:"button-secondary",href:h.repo,target:"_blank",rel:"noreferrer noopener",children:[n.source_button," ",I.jsx(vu,{size:15})]})]})]}),I.jsx("p",{className:"app-description",children:r?n.client_description:n.router_description}),I.jsx("div",{className:"platform-grid",children:l.map((p,m)=>{const v=d[m]||Hv;return I.jsxs("article",{className:"platform-card",children:[I.jsx(v,{size:22}),I.jsx("h3",{children:p.title}),I.jsx("span",{className:"platform-files",children:p.files}),p.note&&I.jsx("span",{className:"platform-note",children:p.note})]},p.title)})}),r&&I.jsxs("div",{className:"install-note",children:[I.jsx(d1,{size:20}),I.jsxs("div",{children:[I.jsx("strong",{children:n.update_title}),I.jsx("p",{children:n.update_text})]})]})]})},t=["vpn-plan-trial","vpn-plan-hot","","","vpn-plan-best"];return I.jsx(Ey,{children:I.jsxs("div",{className:"downloads-page",children:[I.jsxs("header",{className:"page-title",children:[I.jsxs("p",{className:"update-date",children:[n.client_name," ",n.client_version," · ",n.router_name," ",n.router_version]}),I.jsx("h1",{children:n.title}),I.jsx("p",{className:"page-subtitle",children:n.subtitle})]}),e("client"),e("router"),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.vpn_title}),I.jsx("p",{children:n.vpn_intro}),I.jsx("div",{className:"vpn-plans vpn-plans--five",children:n.vpn_plans.map((i,r)=>I.jsxs("article",{className:`vpn-plan-card ${t[r]||""}`,children:[I.jsx("h3",{children:i.name}),I.jsx("div",{className:"vpn-plan-price",children:i.price}),I.jsx("span",{className:"vpn-plan-period",children:i.period}),i.note&&I.jsx("span",{className:"vpn-plan-fine",children:i.note})]},i.name))}),I.jsxs("p",{className:"doc-hint",children:[n.vpn_note," ",I.jsx("a",{href:"/pricing",children:n.vpn_title}),"."]})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.locations_title}),I.jsx("p",{className:"doc-hint",children:n.locations}),I.jsx("ul",{className:"howto-list",children:n.connection_terms.map(i=>I.jsxs("li",{children:[I.jsx("strong",{children:i.title}),I.jsx("p",{children:i.text})]},i.title))})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.services_title}),I.jsx("h3",{className:"doc-subtitle",children:n.routers_title}),I.jsx("p",{className:"doc-hint",children:n.routers_intro}),I.jsx("div",{className:"vpn-plans",children:n.services.map(i=>I.jsxs("article",{className:"vpn-plan-card",children:[I.jsx("h3",{children:i.name}),I.jsx("div",{className:"vpn-plan-price",children:i.price}),I.jsx("span",{className:"vpn-plan-period",children:i.period}),i.note&&I.jsx("span",{className:"vpn-plan-fine",children:i.note})]},i.name))}),I.jsx("h3",{className:"doc-subtitle",children:n.support_title}),I.jsx("ul",{className:"howto-list",children:n.support_terms.map(i=>I.jsxs("li",{children:[I.jsx("strong",{children:i.title}),I.jsx("p",{children:i.text})]},i.title))})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.individual_title}),I.jsx("p",{className:"doc-hint",children:n.individual_text})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.install_title}),I.jsx("ol",{className:"howto-list",children:n.install_steps.map(i=>I.jsxs("li",{children:[I.jsx("strong",{children:i.title}),I.jsx("p",{children:i.text})]},i.title))}),I.jsxs("p",{className:"doc-hint",children:[I.jsx("a",{href:hu.telegram,target:"_blank",rel:"noreferrer noopener",children:"Telegram-чат Hydra"})," · ",I.jsx("a",{href:hu.site,target:"_blank",rel:"noreferrer noopener",children:hu.site.replace("https://","")})]})]}),I.jsxs("section",{className:"doc-section",children:[I.jsx("h2",{children:n.resources_title}),I.jsxs("ul",{children:[I.jsxs("li",{children:[I.jsxs("strong",{children:[n.client_name,":"]})," ",I.jsx("a",{href:hu.repo,target:"_blank",rel:"noreferrer noopener",children:"GitHub"})," · ",I.jsx("a",{href:hu.releases,target:"_blank",rel:"noreferrer noopener",children:n.download_button})," · ",I.jsx("code",{children:hu.appId})]}),I.jsxs("li",{children:[I.jsxs("strong",{children:[n.router_name,":"]})," ",I.jsx("a",{href:N_.repo,target:"_blank",rel:"noreferrer noopener",children:"GitHub"})," · ",I.jsx("a",{href:N_.releases,target:"_blank",rel:"noreferrer noopener",children:n.download_button})]})]})]})]})})}const BA=[{icon:Au,name:"Радар",tagline:"Мониторинг городских угроз и аварий ЖКХ",description:"Telegram-бот и веб-панель, которые следят за каналами МЧС, администраций, ЖКХ и RSS-лентами, сопоставляют события с вашими адресами и присылают только то, что касается вас. Открытый исходный код, GPL-3.0.",links:[{label:"Сайт проекта",href:"/"},{label:"GitHub",href:"https://github.com/Chistovik92/radar"},{label:"Бот @SecretHeroBot",href:"https://t.me/SecretHeroBot"}]},{icon:lS,name:"HydraVPN",tagline:"Мультипротокольный VPN-клиент",description:"Один VPN для Android, Windows, Linux, macOS и iOS. Один аккаунт с ботом «Радар», умная маршрутизация, раздельное туннелирование и управление роутером. Скачайте в разделе «Загрузки».",links:[{label:"Загрузки",href:"/downloads"},{label:"GitHub",href:"https://github.com/Chistovik92/HydraVPN"},{label:"Сайт",href:"https://gidravpn.ru"}]},{icon:Mv,name:"HydraVPN for Routers",tagline:"VPN и обход DPI для роутеров",description:"Комплексное решение на базе sing-box, zapret и ByeDPI для OpenWRT, KeeneticOS и MikroTik RouterOS. Единый интерфейс и JSON API на всех платформах. Скачайте в разделе «Загрузки».",links:[{label:"Загрузки",href:"/downloads"},{label:"GitHub",href:"https://github.com/Chistovik92/HydraVPNforRouters"}]},{icon:QC,name:"opendisk",tagline:"Облачные хранилища как локальные диски",description:"Бесплатный клиент для облачных хранилищ на базе rclone: подключение облаков как дисков в Windows и Linux, просмотр файлов на Android. Яндекс.Диск, Облако Mail.ru, Google Drive, Dropbox, S3 и другие сервисы. Kotlin / Compose Multiplatform, MIT.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/opendisk"},{label:"Сайт",href:"https://chistovik92.github.io/opendisk/"}]},{icon:ZC,name:"NeuroCode Android",tagline:"Клиент для LLM на устройстве",description:"Открытый клиент для языковых моделей: запуск как на самом устройстве, так и для удалённого выполнения через консоль. Kotlin.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/NeuroCode-Android"}]},{icon:VO,name:"LocalDoc AI",tagline:"Локальная читалка с нейросетями",description:"Кроссплатформенная читалка книг и веб-страниц (Android + iOS) с озвучкой и полностью локальными нейросетями — без облака и телеметрии. Поддержка EPUB, FB2, PDF, DOCX и десятков форматов, локальный RAG, OCR и синтез речи на устройстве. Kotlin Multiplatform + Compose Multiplatform.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/LocalDoc-AI---KMP"}]},{icon:HO,name:"med-roster",tagline:"Графики смен и табели для поликлиники",description:"Автоматизация составления графиков смен и расчёта табелей учёта рабочего времени (Т-13) для персонала детской и взрослой поликлиники. Импорт реальных графиков из Excel, поиск ошибок, правка в браузере и выгрузка готовых официальных форм. Сборка установщиков — GitHub Actions.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/med-roster"}]},{icon:QO,name:"MeshkitKeen",tagline:"Управление mesh-сетью Keenetic",description:"Форк KeenKit, добавляющий неинтерактивный режим и управление mesh-узлами (ретрансляторами/экстендерами) с головного роутера-контроллера. Статус всех устройств, перезагрузка, Wi-Fi по диапазонам и OTA-обновление прошивки — с одного экрана.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/MeshkitKeen"}]},{icon:f1,name:"torrserver-docker-manager",tagline:"Менеджер TorrServer в Docker",description:"Docker-менеджер для TorrServer с двумя режимами установки — простой запуск и развёртывание торрент-сервера в контейнере с автообновлением.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/torrserver-docker-manager"}]},{icon:Hv,name:"Harness",tagline:"Десктоп-приложение для DeepSeek Harness",description:"Настольное приложение в стиле Claude Code / ChatGPT / Gemini на базе DeepSeek Harness. Объединяет несколько LLM-провайдеров (DeepSeek, OpenAI, Claude, Gemini, Groq и др.) с локальной историей чатов, шифрованием ключей API и запуском локальных моделей Hugging Face. Electron + React.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/Harness"}]},{icon:YO,name:"ZHeroDiZk",tagline:"Удалённый доступ в классе RustDesk",description:"Открытая система удалённого доступа в классе RustDesk и AnyDesk: собственный сервер, кроссплатформенные клиенты, управляемые права доступа и аудит. Rust.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/ZHeroDiZk"}]},{icon:WO,name:"servAI",tagline:"AI-сервер одной командой",description:"Установщик «AI-сервера» для Ubuntu 24.04+ и Debian 12+: одним скриптом ставит официальные консольные ИИ-клиенты (Claude Code, Codex CLI, Gemini CLI, Aider), рабочего пользователя, tmux-раскладку из четырёх агентов и опционально веб-IDE.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/servAI"}]},{icon:qO,name:"zeropentime",tagline:"Децентрализованная альтернатива ZeroTier",description:"Открытая децентрализованная замена ZeroTier на базе AmneziaWG 3: защищённые виртуальные сети, NAT traversal, ретрансляция, fallback VLESS+REALITY, exit-узлы и веб-управление. Go.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/zeropentime"}]},{icon:$O,name:"winOpenCodeMod",tagline:"Провайдеры в настройках OpenCode Desktop",description:"GUI-плагин для OpenCode Desktop, возвращающий форму «Custom provider» (как в v1.19.x) в раздел Settings → Providers. Добавление, правка и удаление собственных OpenAI-совместимых провайдеров без ручной правки opencode.json. TypeScript + Solid.js.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/winOpenCodeMod"}]},{icon:zO,name:"DataOpenCode",tagline:"Перенос настроек OpenCode между компьютерами",description:"Безопасный аддитивный перенос провайдеров, моделей, API-ключей и диалогов OpenCode между Windows-компьютерами: экспорт в zip-архив и развёртывание на другой машине без перезаписи локальных настроек. Поддержка V1 ↔ V2, защита ZIP и резервные копии.",links:[{label:"GitHub",href:"https://github.com/Chistovik92/DataOpenCode"}]}];function j6(){const n=mm("projects",{eyebrow:"Семейство проектов SecretHero",title:"Наши проекты",subtitle:"Открытые инструменты, объединённые одним аккаунтом и одной философией — полезное под контролем пользователя.",projects:BA.map(({icon:e,...t})=>t),future_text:"Больше проектов — в GitHub-профиле SecretHero. Следите за обновлениями в боте «Радар»."});return I.jsx(Ey,{children:I.jsxs("div",{className:"projects-page",children:[I.jsxs("header",{className:"page-title",children:[I.jsx("p",{className:"update-date",children:n.eyebrow}),I.jsx("h1",{children:n.title}),I.jsx("p",{className:"page-subtitle",children:n.subtitle})]}),I.jsx("div",{className:"projects-grid",children:n.projects.map((e,t)=>{var r;const i=((r=BA[t])==null?void 0:r.icon)||Au;return I.jsxs("article",{className:"project-card",children:[I.jsx("div",{className:"project-icon",children:I.jsx(i,{size:26})}),I.jsx("h2",{children:e.name}),I.jsx("p",{className:"project-tagline",children:e.tagline}),I.jsx("p",{className:"project-description",children:e.description}),I.jsx("div",{className:"project-links",children:e.links.map(s=>I.jsxs("a",{href:s.href,target:s.href.startsWith("http")?"_blank":void 0,rel:"noreferrer noopener",children:[s.label," ",s.href.startsWith("http")&&I.jsx(vu,{size:14})]},s.label))})]},e.name)})}),I.jsx("section",{className:"doc-section",children:I.jsxs("div",{className:"project-future",children:[I.jsx(jO,{size:22}),I.jsx("p",{children:n.future_text})]})})]})})}oI.createRoot(document.getElementById("root")).render(I.jsx(bv.StrictMode,{children:I.jsx(PL,{children:I.jsxs(oL,{children:[I.jsx(mf,{path:"/",element:I.jsx(F6,{})}),I.jsx(mf,{path:"/pricing",element:I.jsx(B6,{})}),I.jsx(mf,{path:"/support",element:I.jsx(z6,{})}),I.jsx(mf,{path:"/downloads",element:I.jsx(W6,{})}),I.jsx(mf,{path:"/projects",element:I.jsx(j6,{})})]})})}));
-RADAR_FILE_56
-printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/static/landing/landing.css"
-cat > "radar/web/static/landing/landing.css" <<'RADAR_FILE_57'
-/*! tailwindcss v4.3.5 | MIT License | https://tailwindcss.com */@layer properties{@supports (((-webkit-hyphens:none)) and (not (margin-trim:block))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b)))){*,:before,:after,::backdrop{--tw-rotate-x:initial;--tw-rotate-y:initial;--tw-rotate-z:initial;--tw-skew-x:initial;--tw-skew-y:initial}}}@layer theme{:root,:host{--font-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";--font-mono:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;--ease-out:cubic-bezier(0, 0, .2, 1);--default-transition-duration:.15s;--default-transition-timing-function:cubic-bezier(.4, 0, .2, 1);--default-font-family:var(--font-sans);--default-mono-font-family:var(--font-mono)}}@layer base{*,:after,:before,::backdrop{box-sizing:border-box;border:0 solid;margin:0;padding:0}::file-selector-button{box-sizing:border-box;border:0 solid;margin:0;padding:0}html,:host{-webkit-text-size-adjust:100%;-moz-tab-size:4;tab-size:4;line-height:1.5;font-family:var(--default-font-family,-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji");font-feature-settings:var(--default-font-feature-settings,normal);font-variation-settings:var(--default-font-variation-settings,normal);-webkit-tap-highlight-color:transparent}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;-webkit-text-decoration:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,samp,pre{font-family:var(--default-mono-font-family,ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);font-feature-settings:var(--default-mono-font-feature-settings,normal);font-variation-settings:var(--default-mono-font-variation-settings,normal);font-size:1em}small{font-size:80%}sub,sup{vertical-align:baseline;font-size:75%;line-height:0;position:relative}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}:-moz-focusring:where(:not(iframe)){outline:auto}progress{vertical-align:baseline}summary{display:list-item}ol,ul,menu{list-style:none}img,svg,video,canvas,audio,iframe,embed,object{vertical-align:middle;display:block}img,video{max-width:100%;height:auto}button,input,select,optgroup,textarea{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}::file-selector-button{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}:where(select:is([multiple],[size])) optgroup{font-weight:bolder}:where(select:is([multiple],[size])) optgroup option{padding-inline-start:20px}::file-selector-button{margin-inline-end:4px}::placeholder{opacity:1}@supports (not ((-webkit-appearance:-apple-pay-button))) or (contain-intrinsic-size:1px){::placeholder{color:currentColor}@supports (color:color-mix(in lab,red,red)){::placeholder{color:color-mix(in oklab,currentcolor 50%,transparent)}}}textarea{resize:vertical}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-date-and-time-value{min-height:1lh;text-align:inherit}::-webkit-datetime-edit{display:inline-flex}::-webkit-datetime-edit-fields-wrapper{padding:0}::-webkit-datetime-edit{padding-block:0}::-webkit-datetime-edit-year-field{padding-block:0}::-webkit-datetime-edit-month-field{padding-block:0}::-webkit-datetime-edit-day-field{padding-block:0}::-webkit-datetime-edit-hour-field{padding-block:0}::-webkit-datetime-edit-minute-field{padding-block:0}::-webkit-datetime-edit-second-field{padding-block:0}::-webkit-datetime-edit-millisecond-field{padding-block:0}::-webkit-datetime-edit-meridiem-field{padding-block:0}::-webkit-calendar-picker-indicator{line-height:1}:-moz-ui-invalid{box-shadow:none}button,input:where([type=button],[type=reset],[type=submit]){-webkit-appearance:button;-moz-appearance:button;appearance:button}::file-selector-button{-webkit-appearance:button;-moz-appearance:button;appearance:button}::-webkit-inner-spin-button{height:auto}::-webkit-outer-spin-button{height:auto}[hidden]:where(:not([hidden=until-found])){display:none!important}}@layer components;@layer utilities{.visible{visibility:visible}.container{width:100%}@media(min-width:40rem){.container{max-width:40rem}}@media(min-width:48rem){.container{max-width:48rem}}@media(min-width:64rem){.container{max-width:64rem}}@media(min-width:80rem){.container{max-width:80rem}}@media(min-width:96rem){.container{max-width:96rem}}.grid{display:grid}.shrink{flex-shrink:1}.transform{transform:var(--tw-rotate-x, ) var(--tw-rotate-y, ) var(--tw-rotate-z, ) var(--tw-skew-x, ) var(--tw-skew-y, )}.transition{transition-property:color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to,opacity,box-shadow,transform,translate,scale,rotate,filter,-webkit-backdrop-filter,backdrop-filter,display,content-visibility,overlay,pointer-events;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}}:root{color-scheme:dark;--bg:#05070a;--bg-soft:#090d12;--surface:#0d1218;--surface-raised:#121923;--text:#eef2f5;--muted:#8f9aa7;--line:#b6c6d629;--line-strong:#b6c6d64d;--accent:#f5a623;--accent-soft:#ffd58a;--accent-dark:#211606;--cyan:#63d5df;--danger:#ef4444;--ease-out:cubic-bezier(.23, 1, .32, 1);font-synthesis:none;text-rendering:optimizelegibility;font-family:Segoe UI,Arial Nova,Arial,sans-serif}:root[data-hydra=active]{--accent:#dc2626;--accent-soft:#fca5a5;--accent-dark:#240608;--cyan:#dc2626}*{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}body{background:var(--bg);color:var(--text);min-width:320px;margin:0}button,input{font:inherit}button,a{-webkit-tap-highlight-color:transparent}a{color:inherit;text-decoration:none}button{color:inherit}::selection{color:#05070a;background:var(--accent)}:focus-visible{outline:2px solid var(--accent);outline-offset:4px}.site-shell{background:var(--bg);min-height:100vh;overflow:clip}.site-shell:after{content:"";z-index:70;pointer-events:none;opacity:.022;background-image:repeating-linear-gradient(0deg,#0000 0,#0000 3px,#fff 4px);position:fixed;top:0;right:0;bottom:0;left:0}.topbar{z-index:40;border-bottom:1px solid var(--line);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);background:#05070ac7;align-items:center;gap:34px;height:68px;padding:0 clamp(18px,3.5vw,58px);display:flex;position:fixed;inset:0 0 auto}.brand-button{cursor:pointer;white-space:nowrap;background:0 0;border:0;align-items:center;gap:10px;padding:0;display:flex}.brand-mark{width:34px;height:34px;color:var(--accent);border:1px solid var(--line-strong);border-radius:50%;place-items:center;display:grid}.brand-name{letter-spacing:.18em;font-size:14px;font-weight:750}.brand-core{color:var(--muted);letter-spacing:.14em;border-left:1px solid var(--line);padding-left:10px;font:9px/1.2 Consolas,monospace}.main-nav{align-items:center;gap:26px;margin-left:auto;display:flex}.main-nav a{color:var(--muted);font-size:12px;transition:color .16s}.main-nav a:hover{color:var(--text)}.entry-actions{gap:8px;display:flex}.entry-link{border:1px solid var(--line);color:#d6dde4;white-space:nowrap;border-radius:4px;align-items:center;gap:7px;min-height:36px;padding:0 13px;font-size:11px;transition:border-color .16s,background-color .16s,transform .12s;display:inline-flex}.entry-link:hover{border-color:var(--line-strong);background:#ffffff0a}.entry-link:active{transform:translateY(1px)}.entry-link-accent{color:var(--accent-soft);border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-accent{border-color:color-mix(in srgb,var(--accent) 40%,transparent)}}.entry-link-download{color:var(--accent-soft);border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-download{border-color:color-mix(in srgb,var(--accent) 30%,transparent)}}.entry-link-download:hover{background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-download:hover{background:color-mix(in srgb,var(--accent) 10%,transparent)}}.entry-link-download:hover{border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-download:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}}.hero-section{isolation:isolate;border-bottom:1px solid var(--line);min-height:100dvh;position:relative}.scene-layer{z-index:-3;position:absolute;top:0;right:0;bottom:0;left:0}.radar-canvas{width:100%!important;height:100%!important}.scene-loader{color:var(--muted);letter-spacing:.15em;place-items:center;font:11px Consolas,monospace;display:grid;position:absolute;top:0;right:0;bottom:0;left:0}.hero-vignette{z-index:-2;pointer-events:none;background:linear-gradient(90deg,#05070af5,#05070abd 30%,#05070a0f 62%,#05070a4d),linear-gradient(#0000 70%,#05070ad1);position:absolute;top:0;right:0;bottom:0;left:0}.hero-copy{z-index:2;pointer-events:none;align-items:center;width:min(590px,48vw);min-height:100dvh;padding:94px 0 90px clamp(24px,5vw,82px);display:flex;position:relative}.hero-copy>div{width:100%}.hero-eyebrow{color:var(--accent);letter-spacing:.19em;margin-bottom:24px;font:10px/1.4 Consolas,monospace;display:block}.hero-copy h1{letter-spacing:-.052em;margin:0;font-size:clamp(42px,5vw,73px);font-weight:640;line-height:1.02}.hero-copy h1 em{color:var(--accent-soft);font-style:normal;font-weight:400}.hero-copy p{color:#aab4be;max-width:480px;margin:25px 0 0;font-size:clamp(15px,1.4vw,18px);line-height:1.65}.hero-actions{pointer-events:auto;flex-wrap:wrap;gap:10px;margin-top:30px;display:flex}.button-primary,.button-secondary{white-space:nowrap;border:1px solid #0000;border-radius:4px;justify-content:center;align-items:center;gap:10px;min-height:48px;padding:0 19px;font-size:13px;font-weight:650;transition:transform .14s,background-color .18s,border-color .18s;display:inline-flex}.button-primary{color:#161006;background:var(--accent)}.button-primary:hover{background:var(--accent-soft)}.button-secondary{color:#d8dfe6;border-color:var(--line-strong);background:#05070a75}.button-secondary:hover{border-color:var(--accent)}.button-primary:active,.button-secondary:active{transform:translateY(1px)}.scene-hud{z-index:8;pointer-events:none;color:#7d8995;letter-spacing:.1em;justify-items:end;gap:7px;font:9px/1.4 Consolas,monospace;display:grid;position:fixed;top:91px;right:clamp(20px,3vw,48px)}.hud-line{color:#aab5c0;align-items:center;gap:7px;display:flex}.hud-line svg{color:var(--accent)}.scroll-cue{z-index:3;color:#78838e;letter-spacing:.17em;align-items:center;gap:12px;font:9px Consolas,monospace;display:flex;position:absolute;bottom:28px;left:clamp(24px,5vw,82px)}.scroll-cue span{background:var(--accent);transform-origin:0;width:38px;height:1px;animation:cue-pulse 2.4s var(--ease-out) infinite}@keyframes cue-pulse{0%,to{opacity:.45;transform:scaleX(.4)}50%{opacity:1;transform:scaleX(1)}}.hero-terminal{z-index:5;width:min(420px,36vw);position:absolute;bottom:30px;right:clamp(22px,3vw,48px)}.terminal-shell{border:1px solid var(--line);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);background:#05080cd1;border-radius:5px;overflow:hidden;box-shadow:inset 0 1px #ffffff06}.terminal-title{border-bottom:1px solid var(--line);height:34px;color:var(--muted);letter-spacing:.12em;align-items:center;gap:8px;padding:0 12px;font:9px Consolas,monospace;display:flex}.terminal-title svg{color:var(--accent)}.terminal-title i{background:var(--accent);width:5px;height:5px;box-shadow:0 0 9px var(--accent);border-radius:50%;margin-left:auto}.terminal-output{scrollbar-width:thin;flex-direction:column;gap:5px;height:106px;padding:10px 12px;display:flex;overflow:auto}.terminal-output code{color:#82909d;white-space:nowrap;font:9px/1.45 Consolas,monospace}.terminal-output code:last-child{color:var(--accent-soft)}.terminal-form{border-top:1px solid var(--line);color:var(--accent);align-items:center;gap:8px;padding:8px 12px;font:11px Consolas,monospace;display:flex}.terminal-form label{clip:rect(0,0,0,0);width:1px;height:1px;position:absolute;overflow:hidden}.terminal-form input{color:#c7d1db;background:0 0;border:0;outline:0;flex:1;min-width:0;font:10px Consolas,monospace}.terminal-form input::placeholder{color:#64707c}.orbital-label{pointer-events:none;text-align:center;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);background:#04070ab8;border:1px solid #9caec22e;border-radius:3px;gap:3px;min-width:120px;padding:6px 8px;display:grid}.orbital-label span{color:#d7dfe7;letter-spacing:.08em;white-space:nowrap;font:8px Consolas,monospace}.orbital-label small{color:#85919d;white-space:nowrap;font:8px Segoe UI,sans-serif}.section-heading{max-width:720px;margin-bottom:54px}.section-heading h2,.resilience-statement h2{letter-spacing:-.045em;margin:0;font-size:clamp(34px,4.4vw,58px);font-weight:570;line-height:1.06}.section-heading p,.resilience-statement p{max-width:650px;color:var(--muted);margin:20px 0 0;font-size:16px;line-height:1.7}.capabilities-section,.live-section,.utility-section,.pricing-section,.login-section{width:min(1320px,100%);margin:0 auto;padding:120px clamp(22px,5vw,70px)}.capability-grid{border-top:1px solid var(--line);grid-template-columns:repeat(12,1fr);display:grid}.capability-item{border-bottom:1px solid var(--line);grid-column:span 6}.capability-item:nth-child(odd){border-right:1px solid var(--line)}.capability-item article{height:100%;padding:42px 40px 44px 0;position:relative}.capability-item:nth-child(2n) article{padding-left:40px}.capability-item-2{background:linear-gradient(145deg,#0000,#f5a62309)}.capability-item-3{background:linear-gradient(25deg,#63d5df09,#0000 60%)}.capability-number{color:var(--accent);margin-bottom:34px;font:11px Consolas,monospace;display:block}.capability-item h3{letter-spacing:-.03em;max-width:430px;margin:0;font-size:27px;font-weight:570}.capability-item p{max-width:510px;color:var(--muted);margin:18px 0 25px;font-size:14px;line-height:1.75}.capability-item ul{grid-template-columns:1fr 1fr;gap:11px 18px;margin:0;padding:0;list-style:none;display:grid}.capability-item li{color:#bdc6cf;align-items:flex-start;gap:8px;font-size:12px;line-height:1.5;display:flex}.capability-item li svg{color:var(--accent);flex:none;margin-top:2px}.live-section{background:var(--bg-soft);border-block:1px solid var(--line);width:100%;max-width:none;padding-left:max(22px,50vw - 590px);padding-right:max(22px,50vw - 590px)}.live-grid{grid-template-columns:.85fr 1.05fr 1.5fr .9fr;gap:14px;display:grid}.location-widget{background:linear-gradient(155deg,var(--surface),#63d5df0f)}.location-result{padding-top:32px}.location-result>svg{color:var(--cyan);stroke-width:1.4px;margin-bottom:24px}.location-result strong{overflow-wrap:anywhere;letter-spacing:-.035em;font-size:27px;font-weight:540;display:block}.location-result p{color:#b4c0ca;font-size:12px;line-height:1.6}.location-result small{color:var(--muted);margin-top:28px;font-size:10px;line-height:1.6;display:block}.live-widget{border:1px solid var(--line);background:var(--surface);border-radius:6px;min-height:310px;padding:22px}.live-widget>header{border-bottom:1px solid var(--line);color:var(--accent);align-items:center;gap:9px;padding-bottom:18px;display:flex}.live-widget h3{color:var(--text);margin:0;font-size:13px;font-weight:600}.live-widget header>span{color:var(--muted);letter-spacing:.12em;margin-left:auto;font:9px Consolas,monospace}.live-widget header button{border:1px solid var(--line);cursor:pointer;background:0 0;border-radius:3px;place-items:center;width:30px;height:30px;margin-left:auto;display:grid}.weather-main{align-items:center;gap:22px;padding:24px 0 19px;display:flex}.weather-main>strong{letter-spacing:-.06em;font-size:57px;font-weight:400}.weather-main>span{color:#c7d0d9;font-size:13px}.weather-main small{color:var(--muted);margin-top:6px;font-size:11px;display:block}.weather-meta{color:var(--muted);flex-wrap:wrap;gap:8px 14px;font-size:10px;display:flex}.forecast-row{grid-template-columns:repeat(3,1fr);gap:8px;margin-top:25px;display:grid}.forecast-row span{color:var(--muted);font-size:10px}.forecast-row b{color:#d9e0e6;margin-top:6px;font-size:11px;font-weight:500;display:block}.news-list{display:grid}.news-list>a,.news-list>div{border-bottom:1px solid var(--line);grid-template-columns:75px 1fr;gap:3px 12px;padding:13px 0;display:grid}.news-list time{color:var(--muted);grid-row:span 2;font:9px/1.5 Consolas,monospace}.news-list strong{color:#d3dbe3;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:500;overflow:hidden}.news-list small{color:var(--muted);font-size:9px}.news-list a:hover strong{color:var(--accent-soft)}.danger-widget{background:linear-gradient(155deg,var(--surface),#1446341a)}.danger-widget.danger-active{background:linear-gradient(155deg,var(--surface),#dc26261f)}.danger-status{padding-top:35px}.danger-status i{background:#34d399;border-radius:50%;width:10px;height:10px;margin-bottom:22px;display:block;box-shadow:0 0 20px #34d3998c}.danger-active .danger-status i{background:var(--danger);box-shadow:0 0 20px #ef444499}.danger-status strong{font-size:20px;font-weight:540;line-height:1.35;display:block}.danger-status p,.widget-empty{color:var(--muted);font-size:12px;line-height:1.65}.widget-skeleton{gap:13px;padding-top:25px;display:grid}.widget-skeleton i{background:#18212b;border-radius:3px;height:20px;animation:1.5s ease-in-out infinite skeleton-pulse;display:block}.widget-skeleton i:nth-child(2){width:75%}.widget-skeleton i:nth-child(3){width:45%}@keyframes skeleton-pulse{50%{opacity:.45}}.widget-error{color:#fca5a5;padding:22px 0;font-size:12px;line-height:1.6}.widget-locate{border:1px solid var(--line);color:var(--accent);cursor:pointer;background:0 0;border-radius:4px;align-items:center;gap:7px;margin-top:24px;padding:9px 14px;font-size:12px;display:inline-flex}.widget-locate:hover{border-color:var(--accent-soft);background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.widget-locate:hover{background:color-mix(in srgb,var(--accent) 8%,transparent)}}.resilience-section{background:#080b10;padding:130px max(22px,50vw - 590px)}.resilience-statement{max-width:900px}.resilience-statement>svg{color:var(--accent);margin-bottom:26px}.resilience-grid{background:var(--line);border:1px solid var(--line);grid-template-columns:1fr 1.2fr .8fr;gap:1px;margin-top:70px;display:grid}.resilience-cell{background:#080b10;min-height:210px;padding:30px}.resilience-cell svg{color:var(--accent);stroke-width:1.4px}.resilience-cell strong{margin-top:35px;font-size:16px;font-weight:580;display:block}.resilience-cell span{color:var(--muted);margin-top:12px;font-size:12px;line-height:1.7;display:block}.utility-list{border-top:1px solid var(--line);grid-template-columns:1fr 1fr;display:grid}.utility-list>div{border-bottom:1px solid var(--line);gap:18px;padding:30px 26px 30px 0;display:flex}.utility-list>div:nth-child(odd){border-right:1px solid var(--line)}.utility-list>div:nth-child(2n){padding-left:26px}.utility-list svg{color:var(--accent);stroke-width:1.4px;flex:none}.utility-list span{color:var(--muted);font-size:12px;line-height:1.65}.utility-list strong{color:var(--text);margin-bottom:7px;font-size:15px;font-weight:580;display:block}.pricing-section{max-width:1180px}.pricing-layout{grid-template-columns:1fr 1.35fr;align-items:stretch;gap:50px;display:grid}.trial-card{border:1px solid var(--accent);flex-direction:column;min-height:280px;padding:30px;display:flex}@supports (color:color-mix(in lab,red,red)){.trial-card{border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}}.trial-card{background:var(--accent-dark);border-radius:6px}.trial-card>span{color:var(--accent-soft);letter-spacing:.1em;text-transform:uppercase;font:10px Consolas,monospace}.trial-card>strong{letter-spacing:-.05em;margin-top:20px;font-size:48px;font-weight:500}.trial-card p{color:#b6aa98;font-size:12px;line-height:1.6}.trial-card a{border-top:1px solid var(--accent);justify-content:space-between;align-items:center;margin-top:auto;padding-top:18px;display:flex}@supports (color:color-mix(in lab,red,red)){.trial-card a{border-top:1px solid color-mix(in srgb,var(--accent) 25%,transparent)}}.trial-card a{color:var(--accent-soft);font-size:12px}.plan-list{border-top:1px solid var(--line)}.plan-row{border-bottom:1px solid var(--line);grid-template-columns:1fr auto;align-items:center;padding:25px 0;display:grid}.plan-row>span{font-size:20px}.plan-row>strong{color:var(--accent-soft);font-size:25px;font-weight:500}.plan-row>small{color:var(--muted);text-align:right;grid-column:2;font-size:9px}.text-link{color:var(--accent-soft);align-items:center;gap:7px;margin-top:35px;font-size:12px;display:inline-flex}.login-layout{grid-template-columns:1.1fr .9fr;gap:16px;display:grid}.login-options,.telegram-card{border:1px solid var(--line);background:var(--surface);border-radius:6px}.login-options>a{border-bottom:1px solid var(--line);align-items:center;gap:16px;padding:24px;display:flex}.login-options>a>svg:first-child{color:var(--accent);stroke-width:1.5px}.login-options>a>svg:last-child{color:var(--muted);width:16px;margin-left:auto}.login-options>a span{gap:6px;display:grid}.login-options>a strong{font-size:14px;font-weight:600}.login-options>a small{color:var(--muted);font-size:11px;line-height:1.4}.login-options>p{color:var(--muted);margin:0;padding:20px 24px;font-size:11px;line-height:1.6}.login-options code{color:var(--accent-soft)}.telegram-card{flex-direction:column;justify-content:center;align-items:flex-start;min-height:290px;padding:34px;display:flex}.telegram-card>svg{color:var(--accent)}.telegram-card h3{margin:20px 0 0;font-size:21px;font-weight:570}.telegram-card>p{max-width:380px;color:var(--muted);font-size:12px;line-height:1.65}.telegram-login{min-height:40px;margin-top:14px}.login-fallback{color:var(--muted);font-size:11px}.site-footer{border-top:1px solid var(--line);background:#040608;grid-template-columns:2fr repeat(3,1fr);gap:40px;padding:70px max(22px,50vw - 590px) 30px;display:grid}.footer-brand{grid-template-columns:auto 1fr;align-items:center;gap:8px 10px;display:grid}.footer-brand svg{color:var(--accent)}.footer-brand strong{letter-spacing:.16em;font-size:13px}.footer-brand span{color:var(--muted);grid-column:1/-1;margin-top:14px;font-size:11px;line-height:1.7}.site-footer>div:not(.footer-brand):not(.footer-bottom){flex-direction:column;gap:12px;display:flex}.site-footer>div>strong{margin-bottom:7px;font-size:11px;font-weight:600}.site-footer a{color:var(--muted);font-size:11px}.site-footer a:hover{color:var(--accent-soft)}.footer-bottom{border-top:1px solid var(--line);color:#66717c;letter-spacing:.06em;grid-column:1/-1;justify-content:space-between;margin-top:30px;padding-top:22px;font:9px Consolas,monospace;display:flex}.mekbuda{display:none!important}.hydra-notice,.telemetry-pop{z-index:60;-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);background:#1c0407f0;border:1px solid #dc262680;border-radius:4px;position:fixed;box-shadow:0 14px 50px #50000047}.hydra-notice{width:min(460px,100vw - 32px);padding:22px 42px 22px 22px;top:86px;left:50%;transform:translate(-50%)}.hydra-notice small,.telemetry-pop small{color:#f87171;letter-spacing:.12em;margin-bottom:10px;font:9px Consolas,monospace;display:block}.hydra-notice strong{color:#fecaca;font:13px/1.6 Consolas,monospace}.icon-button{color:#fca5a5;cursor:pointer;background:0 0;border:0;place-items:center;width:28px;height:28px;display:grid;position:absolute;top:9px;right:9px}.telemetry-pop{width:310px;padding:20px;bottom:24px;right:24px}.telemetry-pop-1{bottom:150px;right:48px}.telemetry-pop code{color:#fca5a5;font:10px/1.6 Consolas,monospace}.whisper-button{z-index:55;color:#f87171;cursor:pointer;background:#140305d9;border:1px solid #dc262659;padding:8px 11px;font:9px Consolas,monospace;position:fixed;bottom:18px;left:18px}.hydra-mode .hero-vignette{background:linear-gradient(90deg,#0a0204f5,#0a0204ad 35%,#1400001a 70%)}.hydra-mode .site-shell:after{opacity:.06}@media(max-width:1180px){.brand-core{display:none}.main-nav{gap:18px}.entry-link{padding:0 10px}.hero-terminal{display:none}.hero-copy{width:min(610px,58vw)}.live-grid{grid-template-columns:1fr 1fr}.danger-widget{min-height:230px}}@media(max-width:900px){.topbar{gap:14px}.main-nav{display:none}.entry-actions{margin-left:auto}.scene-hud{display:none}.hero-copy{width:min(590px,75vw)}.hero-vignette{background:linear-gradient(90deg,#05070af0,#05070a85 75%,#05070a4d)}.capability-grid{grid-template-columns:1fr}.capability-item{grid-column:auto}.capability-item:nth-child(odd){border-right:0}.capability-item article,.capability-item:nth-child(2n) article{padding:34px 0}.resilience-grid{grid-template-columns:1fr}.resilience-cell{min-height:180px}.login-layout{grid-template-columns:1fr}}@media(max-width:680px){.topbar{height:62px;padding:0 14px}.brand-name{font-size:12px}.brand-mark{width:31px;height:31px}.entry-link{justify-content:center;width:34px;min-height:34px;padding:0;font-size:0}.entry-actions{gap:6px}.hero-copy{align-items:flex-end;width:100%;min-height:100dvh;padding:96px 22px 98px}.hero-copy h1{font-size:clamp(39px,11vw,55px)}.hero-copy p{max-width:430px;font-size:15px}.hero-actions{align-items:stretch}.button-primary,.button-secondary{min-height:46px;font-size:12px}.hero-vignette{background:linear-gradient(#05070a33 20%,#05070ad6 58%,#05070afa)}.scene-layer{top:-10%;right:-35%;bottom:20%;left:-35%}.scroll-cue{bottom:24px;left:22px}.capabilities-section,.live-section,.utility-section,.pricing-section,.login-section{padding-top:82px;padding-bottom:82px}.section-heading{margin-bottom:38px}.section-heading h2,.resilience-statement h2{font-size:37px}.section-heading p,.resilience-statement p{font-size:14px}.capability-item ul,.live-grid{grid-template-columns:1fr}.danger-widget{grid-column:auto}.live-widget{min-height:280px}.resilience-section{padding-top:85px;padding-bottom:85px}.resilience-grid{margin-top:45px}.utility-list{grid-template-columns:1fr}.utility-list>div:nth-child(odd){border-right:0}.utility-list>div:nth-child(2n){padding-left:0}.pricing-layout{grid-template-columns:1fr;gap:28px}.login-options>a{padding:20px 16px}.login-options>a small{max-width:220px}.telegram-card{padding:26px}.site-footer{grid-template-columns:1fr 1fr;gap:35px 22px}.footer-brand{grid-column:1/-1}.footer-bottom{flex-direction:column;align-items:flex-start;gap:9px}.telemetry-pop{width:calc(100vw - 32px);bottom:16px;right:16px}.telemetry-pop-1{bottom:145px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,:before,:after{transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}.scroll-cue span{transform:scaleX(1)}}.page-layout{background:var(--bg);min-height:100vh;color:var(--text);flex-direction:column;display:flex}.page-header{background:var(--surface-raised);border-bottom:1px solid var(--line);z-index:100;padding:16px 0;position:sticky;top:0}.page-nav{justify-content:space-between;align-items:center;gap:40px;max-width:1200px;margin:0 auto;padding:0 24px;display:flex}.logo-link{color:var(--text);white-space:nowrap;align-items:center;gap:10px;font-size:16px;font-weight:600;text-decoration:none;display:flex}.nav-links{flex:1;justify-content:flex-end;align-items:center;gap:24px;display:flex}.nav-links a{color:var(--muted);font-size:14px;transition:color .2s}.nav-links a:hover{color:var(--accent)}.page-content{flex:1;width:100%;max-width:1200px;margin:0 auto;padding:60px 24px}.page-footer{background:var(--surface);border-top:1px solid var(--line);margin-top:auto;padding:60px 24px}.footer-columns{grid-template-columns:repeat(4,1fr);gap:40px;max-width:1200px;margin:0 auto 40px;font-size:13px;display:grid}.footer-columns>div strong{color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px;font-size:12px;font-weight:600;display:block}.footer-columns a{color:var(--muted);margin-bottom:8px;transition:color .2s;display:block}.footer-columns a:hover{color:var(--accent)}.footer-columns p{color:var(--muted);margin:6px 0;line-height:1.6}.footer-bottom{border-top:1px solid var(--line);color:var(--muted);text-align:center;justify-content:center;align-items:center;gap:6px;padding-top:24px;font-size:12px;display:flex}.footer-bottom a{color:var(--accent);text-decoration:none}.footer-bottom a:hover{text-decoration:underline}.whisper-button{background:var(--danger);position:fixed;bottom:24px;right:24px}@supports (color:color-mix(in lab,red,red)){.whisper-button{background:color-mix(in srgb,var(--danger) 20%,transparent)}}.whisper-button{border:1px solid var(--danger);color:var(--danger);letter-spacing:.1em;text-transform:uppercase;cursor:pointer;z-index:200;border-radius:4px;padding:12px 20px;font-size:11px;font-weight:600;transition:all .2s}.whisper-button:hover{background:var(--danger)}@supports (color:color-mix(in lab,red,red)){.whisper-button:hover{background:color-mix(in srgb,var(--danger) 35%,transparent)}}.whisper-button:hover{border-color:var(--accent-soft)}.page-title{margin-bottom:48px}.update-date{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;font-size:12px}.page-title h1{letter-spacing:-.02em;margin:12px 0 16px;font-size:48px;font-weight:600;line-height:1.2}.page-subtitle{color:var(--muted);margin:0;font-size:18px;line-height:1.6}.doc-page{max-width:900px;margin:0 auto}.doc-intro{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;margin-bottom:48px;padding:24px;font-size:14px;line-height:1.8}.doc-intro p{color:var(--muted);margin:12px 0}.doc-intro strong{color:var(--text)}.doc-intro a{color:var(--accent);text-decoration:none}.doc-intro a:hover{text-decoration:underline}.doc-section{margin-bottom:48px}.doc-section h2{color:var(--text);margin-bottom:16px;font-size:24px;font-weight:600}.doc-section p{color:var(--muted);margin-bottom:12px;font-size:14px;line-height:1.8}.doc-section ul{margin:0;padding:0;list-style:none}.doc-section li{color:var(--muted);margin-bottom:8px;padding-left:24px;font-size:14px;line-height:1.8;position:relative}.doc-section li:before{content:"→";color:var(--accent);position:absolute;left:0}.doc-section code{background:var(--surface-raised);border:1px solid var(--line);color:var(--accent);border-radius:3px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}.doc-section h3{color:var(--text);margin:20px 0 8px;font-size:16px;font-weight:600}.doc-section ol{margin:0;padding-left:20px}.doc-section ol li{color:var(--muted);margin-bottom:8px;padding-left:0;font-size:14px;line-height:1.8}.doc-section ol li:before{content:none}.doc-conclusion{border-top:1px solid var(--line);padding-top:24px}.doc-conclusion p{color:var(--text);font-size:15px;font-weight:500}.contact-grid{grid-template-columns:repeat(3,1fr);gap:14px;display:grid}.contact-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;gap:10px;padding:22px;display:flex}.contact-icon{font-size:26px;line-height:1}.contact-title{color:var(--text);margin:0;font-size:15px;font-weight:600}.contact-desc{color:var(--muted);flex:1;margin:0;font-size:13px;line-height:1.7}.contact-link{color:var(--accent);font-size:13px;text-decoration:none;display:inline-block}.contact-link:hover{text-decoration:underline}@media(max-width:720px){.contact-grid{grid-template-columns:1fr}}.terms-table{border-collapse:collapse;width:100%;margin:24px 0;font-size:14px}.terms-table thead{background:var(--surface-raised);border:1px solid var(--line)}.terms-table th{text-align:left;color:var(--text);border-bottom:1px solid var(--line);padding:16px;font-weight:600}.terms-table td{color:var(--muted);border-bottom:1px solid var(--line);padding:16px}.terms-table tbody tr:hover{background:var(--surface-raised)}.pricing-page{max-width:1000px;margin:0 auto}.intro-section{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;margin-bottom:48px;padding:32px;font-size:15px;line-height:1.8}.intro-section p{color:var(--muted);margin:16px 0}.intro-section strong{color:var(--accent-soft)}.pricing-grid{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;margin-bottom:48px;display:grid}.pricing-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;padding:32px;transition:all .2s;display:flex}.pricing-card:hover{border-color:var(--accent);background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.pricing-card:hover{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 5%)}}.pricing-card.free{border-color:var(--accent);background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.pricing-card.free{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 8%)}}.card-icon{margin-bottom:12px;font-size:32px}.pricing-card h3{color:var(--text);margin:12px 0 20px;font-size:18px;font-weight:600}.price{border-bottom:1px solid var(--line);flex-direction:column;margin-bottom:24px;padding-bottom:24px;display:flex}.price .amount{color:var(--accent-soft);font-size:32px;font-weight:600}.price .period{color:var(--muted);margin-top:4px;font-size:12px}.features{flex:1;margin:0 0 24px;padding:0;list-style:none}.features li{color:var(--muted);align-items:flex-start;gap:12px;margin-bottom:12px;font-size:14px;line-height:1.6;display:flex}.features svg{color:var(--accent);flex-shrink:0;margin-top:2px}.cta-button{background:var(--accent);justify-content:center;align-items:center;padding:12px 20px;display:inline-flex}@supports (color:color-mix(in lab,red,red)){.cta-button{background:color-mix(in srgb,var(--accent) 15%,transparent)}}.cta-button{border:1px solid var(--accent);color:var(--accent-soft);cursor:pointer;border-radius:4px;font-size:13px;font-weight:600;text-decoration:none;transition:all .2s}.cta-button:hover{background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.cta-button:hover{background:color-mix(in srgb,var(--accent) 25%,transparent)}}.cta-button:hover{border-color:var(--accent-soft)}.comparison-section{margin-bottom:48px}.comparison-section h2{color:var(--text);margin-bottom:24px;font-size:24px;font-weight:600}.comparison-table{border-collapse:collapse;background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;width:100%;font-size:14px;overflow:hidden}.comparison-table th{background:var(--surface);text-align:left;color:var(--text);border-bottom:1px solid var(--line);padding:16px;font-weight:600}.comparison-table td{color:var(--muted);border-bottom:1px solid var(--line);padding:14px 16px}.comparison-table tbody tr:hover{background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.comparison-table tbody tr:hover{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 3%)}}.notes-section{background:var(--surface);border:1px solid var(--line-strong);border-radius:6px;margin-bottom:48px;padding:24px}.notes-section p{color:var(--muted);margin:0 0 12px;font-size:14px;font-weight:600}.notes-section ul{margin:0;padding:0;list-style:none}.notes-section li{color:var(--muted);margin-bottom:8px;padding-left:20px;font-size:13px;line-height:1.8;position:relative}.notes-section li:before{content:"•";color:var(--accent);position:absolute;left:0}.how-to-pay{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;padding:32px}.how-to-pay h2{color:var(--text);margin-bottom:20px;font-size:24px;font-weight:600}.how-to-pay ol{margin:0 0 20px;padding-left:24px;list-style:decimal}.how-to-pay li{color:var(--muted);margin-bottom:12px;font-size:14px;line-height:1.8}.how-to-pay a{color:var(--accent);text-decoration:none}.how-to-pay a:hover{text-decoration:underline}.how-to-pay>p{color:var(--muted);margin:0;font-size:14px}.downloads-page{max-width:1000px;margin:0 auto}.app-section{margin-bottom:64px}.app-header{justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:20px;display:flex}.app-header h2{color:var(--text);margin:0 0 6px;font-size:26px;font-weight:600}.app-header p{color:var(--muted);margin:0;font-size:14px}.app-header-actions{flex-wrap:wrap;justify-content:flex-end;gap:12px;display:flex}.app-header-actions .button-primary,.app-header-actions .button-secondary{white-space:nowrap;border-radius:4px;align-items:center;gap:8px;padding:12px 20px;font-size:13px;font-weight:600;text-decoration:none;transition:all .2s;display:inline-flex}.app-header-actions .button-primary{background:var(--accent);color:#05070a;border:1px solid var(--accent)}.app-header-actions .button-primary:hover{background:var(--accent-soft)}.app-header-actions .button-secondary{color:var(--text);border:1px solid var(--line);background:0 0}.app-header-actions .button-secondary:hover{border-color:var(--accent)}.app-description{color:var(--muted);margin:0 0 24px;font-size:15px;line-height:1.8}.platform-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:24px;display:grid}.platform-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;gap:6px;padding:20px;transition:border-color .2s;display:flex}.platform-card:hover{border-color:var(--accent)}.platform-card svg{color:var(--accent);margin-bottom:4px}.platform-card h3{color:var(--text);margin:0;font-size:15px;font-weight:600}.platform-files{color:var(--accent-soft);font-family:Consolas,monospace;font-size:13px}.platform-note{color:var(--muted);font-size:12px}.install-note{background:var(--surface);border:1px solid var(--line-strong);border-radius:6px;gap:14px;margin-bottom:8px;padding:20px;display:flex}.install-note svg{color:var(--accent);flex-shrink:0;margin-top:2px}.install-note strong{color:var(--text);font-size:14px}.install-note p{color:var(--muted);margin:4px 0 0;font-size:13px;line-height:1.7}.howto-list{counter-reset:howto;margin:0 0 16px;padding:0;list-style:none}.howto-list li{counter-increment:howto;margin-bottom:24px;padding-left:44px;position:relative}.howto-list li:before{content:counter(howto);background:var(--accent);width:28px;height:28px;position:absolute;top:0;left:0}@supports (color:color-mix(in lab,red,red)){.howto-list li:before{background:color-mix(in srgb,var(--accent) 18%,transparent)}}.howto-list li:before{border:1px solid var(--accent);color:var(--accent-soft);border-radius:4px;justify-content:center;align-items:center;font-size:13px;font-weight:600;display:flex}.howto-list strong{color:var(--text);font-size:15px}.howto-list p{color:var(--muted);margin:6px 0 0;font-size:14px;line-height:1.8}.howto-list code{background:var(--surface-raised);border:1px solid var(--line);color:var(--accent);border-radius:3px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}.doc-hint{color:var(--muted);font-size:14px}.doc-hint a{color:var(--accent);text-decoration:none}.doc-hint a:hover{text-decoration:underline}.vpn-plans{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:16px;display:grid}.vpn-plans--five{grid-template-columns:repeat(5,1fr)}.vpn-plan-card{background:var(--surface-raised);border:1px solid var(--line);text-align:center;border-radius:6px;flex-direction:column;align-items:center;gap:6px;padding:24px 16px;transition:border-color .2s;display:flex}.vpn-plan-card:hover{border-color:var(--accent)}.vpn-plan-card h3{color:var(--text);margin:0 0 12px;font-size:15px;font-weight:600}.vpn-plan-price{color:var(--accent-soft);margin-bottom:4px;font-size:28px;font-weight:600}.vpn-plan-period{color:var(--muted);font-size:12px}.vpn-plan-hot{border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.vpn-plan-hot{border-color:color-mix(in srgb,var(--accent) 45%,transparent)}}.vpn-plan-best{border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.vpn-plan-best{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}}.vpn-plan-best{background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.vpn-plan-best{background:color-mix(in srgb,var(--accent) 6%,var(--surface-raised))}}.vpn-plan-trial .vpn-plan-price{color:var(--text)}.vpn-plan-note{line-height:1.4}.vpn-plan-fine{color:var(--muted);font-size:11px;line-height:1.45}.doc-subtitle{color:var(--text);margin:24px 0 8px;font-size:17px;font-weight:600}@media(max-width:1080px){.vpn-plans--five{grid-template-columns:repeat(3,1fr)}}@media(max-width:720px){.vpn-plans--five{grid-template-columns:repeat(2,1fr)}}@media(max-width:460px){.vpn-plans--five{grid-template-columns:1fr}}.projects-page{max-width:1000px;margin:0 auto}.projects-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-bottom:48px;display:grid}.project-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;padding:28px;transition:all .2s;display:flex}.project-card:hover{border-color:var(--accent);background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.project-card:hover{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 5%)}}.project-icon{color:var(--accent);margin-bottom:16px}.project-card h2{color:var(--text);margin:0 0 4px;font-size:20px;font-weight:600}.project-tagline{color:var(--accent-soft);margin:0 0 16px;font-size:13px}.project-description{color:var(--muted);flex:1;margin:0 0 20px;font-size:14px;line-height:1.7}.project-links{flex-wrap:wrap;gap:8px;display:flex}.project-links a{color:var(--accent);border:1px solid var(--line);border-radius:4px;align-items:center;gap:4px;padding:6px 12px;font-size:13px;text-decoration:none;transition:all .2s;display:inline-flex}.project-links a:hover{border-color:var(--accent);background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.project-links a:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}}.project-future{background:var(--surface);border:1px solid var(--line);border-radius:6px;align-items:flex-start;gap:14px;padding:24px;display:flex}.project-future svg{color:var(--accent);flex-shrink:0;margin-top:2px}.project-future p{color:var(--muted);margin:0;font-size:14px;line-height:1.7}.project-future a{color:var(--accent);text-decoration:none}.project-future a:hover{text-decoration:underline}@media(max-width:768px){.page-nav{flex-direction:column;align-items:flex-start;gap:16px}.nav-links{flex-direction:column;gap:12px;width:100%}.page-content{padding:40px 16px}.page-title h1{font-size:32px}.pricing-grid,.projects-grid{grid-template-columns:1fr}.app-header{flex-direction:column;align-items:flex-start}.app-header-actions{justify-content:flex-start;width:100%}.vpn-plans{grid-template-columns:1fr}.footer-columns{grid-template-columns:1fr 1fr;gap:28px 20px}.doc-section h2{font-size:20px}.doc-section li{padding-left:20px;font-size:13px}}@property --tw-rotate-x{syntax:"*";inherits:false}@property --tw-rotate-y{syntax:"*";inherits:false}@property --tw-rotate-z{syntax:"*";inherits:false}@property --tw-skew-x{syntax:"*";inherits:false}@property --tw-skew-y{syntax:"*";inherits:false}
 RADAR_FILE_57
+printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/static/landing/landing.css"
+cat > "radar/web/static/landing/landing.css" <<'RADAR_FILE_58'
+/*! tailwindcss v4.3.5 | MIT License | https://tailwindcss.com */@layer properties{@supports (((-webkit-hyphens:none)) and (not (margin-trim:block))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b)))){*,:before,:after,::backdrop{--tw-rotate-x:initial;--tw-rotate-y:initial;--tw-rotate-z:initial;--tw-skew-x:initial;--tw-skew-y:initial}}}@layer theme{:root,:host{--font-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";--font-mono:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;--ease-out:cubic-bezier(0, 0, .2, 1);--default-transition-duration:.15s;--default-transition-timing-function:cubic-bezier(.4, 0, .2, 1);--default-font-family:var(--font-sans);--default-mono-font-family:var(--font-mono)}}@layer base{*,:after,:before,::backdrop{box-sizing:border-box;border:0 solid;margin:0;padding:0}::file-selector-button{box-sizing:border-box;border:0 solid;margin:0;padding:0}html,:host{-webkit-text-size-adjust:100%;-moz-tab-size:4;tab-size:4;line-height:1.5;font-family:var(--default-font-family,-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji");font-feature-settings:var(--default-font-feature-settings,normal);font-variation-settings:var(--default-font-variation-settings,normal);-webkit-tap-highlight-color:transparent}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;-webkit-text-decoration:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,samp,pre{font-family:var(--default-mono-font-family,ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);font-feature-settings:var(--default-mono-font-feature-settings,normal);font-variation-settings:var(--default-mono-font-variation-settings,normal);font-size:1em}small{font-size:80%}sub,sup{vertical-align:baseline;font-size:75%;line-height:0;position:relative}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}:-moz-focusring:where(:not(iframe)){outline:auto}progress{vertical-align:baseline}summary{display:list-item}ol,ul,menu{list-style:none}img,svg,video,canvas,audio,iframe,embed,object{vertical-align:middle;display:block}img,video{max-width:100%;height:auto}button,input,select,optgroup,textarea{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}::file-selector-button{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}:where(select:is([multiple],[size])) optgroup{font-weight:bolder}:where(select:is([multiple],[size])) optgroup option{padding-inline-start:20px}::file-selector-button{margin-inline-end:4px}::placeholder{opacity:1}@supports (not ((-webkit-appearance:-apple-pay-button))) or (contain-intrinsic-size:1px){::placeholder{color:currentColor}@supports (color:color-mix(in lab,red,red)){::placeholder{color:color-mix(in oklab,currentcolor 50%,transparent)}}}textarea{resize:vertical}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-date-and-time-value{min-height:1lh;text-align:inherit}::-webkit-datetime-edit{display:inline-flex}::-webkit-datetime-edit-fields-wrapper{padding:0}::-webkit-datetime-edit{padding-block:0}::-webkit-datetime-edit-year-field{padding-block:0}::-webkit-datetime-edit-month-field{padding-block:0}::-webkit-datetime-edit-day-field{padding-block:0}::-webkit-datetime-edit-hour-field{padding-block:0}::-webkit-datetime-edit-minute-field{padding-block:0}::-webkit-datetime-edit-second-field{padding-block:0}::-webkit-datetime-edit-millisecond-field{padding-block:0}::-webkit-datetime-edit-meridiem-field{padding-block:0}::-webkit-calendar-picker-indicator{line-height:1}:-moz-ui-invalid{box-shadow:none}button,input:where([type=button],[type=reset],[type=submit]){-webkit-appearance:button;-moz-appearance:button;appearance:button}::file-selector-button{-webkit-appearance:button;-moz-appearance:button;appearance:button}::-webkit-inner-spin-button{height:auto}::-webkit-outer-spin-button{height:auto}[hidden]:where(:not([hidden=until-found])){display:none!important}}@layer components;@layer utilities{.visible{visibility:visible}.container{width:100%}@media(min-width:40rem){.container{max-width:40rem}}@media(min-width:48rem){.container{max-width:48rem}}@media(min-width:64rem){.container{max-width:64rem}}@media(min-width:80rem){.container{max-width:80rem}}@media(min-width:96rem){.container{max-width:96rem}}.grid{display:grid}.shrink{flex-shrink:1}.transform{transform:var(--tw-rotate-x, ) var(--tw-rotate-y, ) var(--tw-rotate-z, ) var(--tw-skew-x, ) var(--tw-skew-y, )}.transition{transition-property:color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to,opacity,box-shadow,transform,translate,scale,rotate,filter,-webkit-backdrop-filter,backdrop-filter,display,content-visibility,overlay,pointer-events;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}}:root{color-scheme:dark;--bg:#05070a;--bg-soft:#090d12;--surface:#0d1218;--surface-raised:#121923;--text:#eef2f5;--muted:#8f9aa7;--line:#b6c6d629;--line-strong:#b6c6d64d;--accent:#f5a623;--accent-soft:#ffd58a;--accent-dark:#211606;--cyan:#63d5df;--danger:#ef4444;--ease-out:cubic-bezier(.23, 1, .32, 1);font-synthesis:none;text-rendering:optimizelegibility;font-family:Segoe UI,Arial Nova,Arial,sans-serif}:root[data-hydra=active]{--accent:#dc2626;--accent-soft:#fca5a5;--accent-dark:#240608;--cyan:#dc2626}*{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--bg)}body{background:var(--bg);color:var(--text);min-width:320px;margin:0}button,input{font:inherit}button,a{-webkit-tap-highlight-color:transparent}a{color:inherit;text-decoration:none}button{color:inherit}::selection{color:#05070a;background:var(--accent)}:focus-visible{outline:2px solid var(--accent);outline-offset:4px}.site-shell{background:var(--bg);min-height:100vh;overflow:clip}.site-shell:after{content:"";z-index:70;pointer-events:none;opacity:.022;background-image:repeating-linear-gradient(0deg,#0000 0,#0000 3px,#fff 4px);position:fixed;top:0;right:0;bottom:0;left:0}.topbar{z-index:40;border-bottom:1px solid var(--line);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);background:#05070ac7;align-items:center;gap:34px;height:68px;padding:0 clamp(18px,3.5vw,58px);display:flex;position:fixed;inset:0 0 auto}.brand-button{cursor:pointer;white-space:nowrap;background:0 0;border:0;align-items:center;gap:10px;padding:0;display:flex}.brand-mark{width:34px;height:34px;color:var(--accent);border:1px solid var(--line-strong);border-radius:50%;place-items:center;display:grid}.brand-name{letter-spacing:.18em;font-size:14px;font-weight:750}.brand-core{color:var(--muted);letter-spacing:.14em;border-left:1px solid var(--line);padding-left:10px;font:9px/1.2 Consolas,monospace}.main-nav{align-items:center;gap:26px;margin-left:auto;display:flex}.main-nav a{color:var(--muted);font-size:12px;transition:color .16s}.main-nav a:hover{color:var(--text)}.entry-actions{gap:8px;display:flex}.entry-link{border:1px solid var(--line);color:#d6dde4;white-space:nowrap;border-radius:4px;align-items:center;gap:7px;min-height:36px;padding:0 13px;font-size:11px;transition:border-color .16s,background-color .16s,transform .12s;display:inline-flex}.entry-link:hover{border-color:var(--line-strong);background:#ffffff0a}.entry-link:active{transform:translateY(1px)}.entry-link-accent{color:var(--accent-soft);border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-accent{border-color:color-mix(in srgb,var(--accent) 40%,transparent)}}.entry-link-download{color:var(--accent-soft);border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-download{border-color:color-mix(in srgb,var(--accent) 30%,transparent)}}.entry-link-download:hover{background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-download:hover{background:color-mix(in srgb,var(--accent) 10%,transparent)}}.entry-link-download:hover{border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.entry-link-download:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}}.hero-section{isolation:isolate;border-bottom:1px solid var(--line);min-height:100dvh;position:relative}.scene-layer{z-index:-3;position:absolute;top:0;right:0;bottom:0;left:0}.radar-canvas{width:100%!important;height:100%!important}.scene-loader{color:var(--muted);letter-spacing:.15em;place-items:center;font:11px Consolas,monospace;display:grid;position:absolute;top:0;right:0;bottom:0;left:0}.hero-vignette{z-index:-2;pointer-events:none;background:linear-gradient(90deg,#05070af5,#05070abd 30%,#05070a0f 62%,#05070a4d),linear-gradient(#0000 70%,#05070ad1);position:absolute;top:0;right:0;bottom:0;left:0}.hero-copy{z-index:2;pointer-events:none;align-items:center;width:min(590px,48vw);min-height:100dvh;padding:94px 0 90px clamp(24px,5vw,82px);display:flex;position:relative}.hero-copy>div{width:100%}.hero-eyebrow{color:var(--accent);letter-spacing:.19em;margin-bottom:24px;font:10px/1.4 Consolas,monospace;display:block}.hero-copy h1{letter-spacing:-.052em;margin:0;font-size:clamp(42px,5vw,73px);font-weight:640;line-height:1.02}.hero-copy h1 em{color:var(--accent-soft);font-style:normal;font-weight:400}.hero-copy p{color:#aab4be;max-width:480px;margin:25px 0 0;font-size:clamp(15px,1.4vw,18px);line-height:1.65}.hero-actions{pointer-events:auto;flex-wrap:wrap;gap:10px;margin-top:30px;display:flex}.button-primary,.button-secondary{white-space:nowrap;border:1px solid #0000;border-radius:4px;justify-content:center;align-items:center;gap:10px;min-height:48px;padding:0 19px;font-size:13px;font-weight:650;transition:transform .14s,background-color .18s,border-color .18s;display:inline-flex}.button-primary{color:#161006;background:var(--accent)}.button-primary:hover{background:var(--accent-soft)}.button-secondary{color:#d8dfe6;border-color:var(--line-strong);background:#05070a75}.button-secondary:hover{border-color:var(--accent)}.button-primary:active,.button-secondary:active{transform:translateY(1px)}.scene-hud{z-index:8;pointer-events:none;color:#7d8995;letter-spacing:.1em;justify-items:end;gap:7px;font:9px/1.4 Consolas,monospace;display:grid;position:fixed;top:91px;right:clamp(20px,3vw,48px)}.hud-line{color:#aab5c0;align-items:center;gap:7px;display:flex}.hud-line svg{color:var(--accent)}.scroll-cue{z-index:3;color:#78838e;letter-spacing:.17em;align-items:center;gap:12px;font:9px Consolas,monospace;display:flex;position:absolute;bottom:28px;left:clamp(24px,5vw,82px)}.scroll-cue span{background:var(--accent);transform-origin:0;width:38px;height:1px;animation:cue-pulse 2.4s var(--ease-out) infinite}@keyframes cue-pulse{0%,to{opacity:.45;transform:scaleX(.4)}50%{opacity:1;transform:scaleX(1)}}.hero-terminal{z-index:5;width:min(420px,36vw);position:absolute;bottom:30px;right:clamp(22px,3vw,48px)}.terminal-shell{border:1px solid var(--line);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);background:#05080cd1;border-radius:5px;overflow:hidden;box-shadow:inset 0 1px #ffffff06}.terminal-title{border-bottom:1px solid var(--line);height:34px;color:var(--muted);letter-spacing:.12em;align-items:center;gap:8px;padding:0 12px;font:9px Consolas,monospace;display:flex}.terminal-title svg{color:var(--accent)}.terminal-title i{background:var(--accent);width:5px;height:5px;box-shadow:0 0 9px var(--accent);border-radius:50%;margin-left:auto}.terminal-output{scrollbar-width:thin;flex-direction:column;gap:5px;height:106px;padding:10px 12px;display:flex;overflow:auto}.terminal-output code{color:#82909d;white-space:nowrap;font:9px/1.45 Consolas,monospace}.terminal-output code:last-child{color:var(--accent-soft)}.terminal-form{border-top:1px solid var(--line);color:var(--accent);align-items:center;gap:8px;padding:8px 12px;font:11px Consolas,monospace;display:flex}.terminal-form label{clip:rect(0,0,0,0);width:1px;height:1px;position:absolute;overflow:hidden}.terminal-form input{color:#c7d1db;background:0 0;border:0;outline:0;flex:1;min-width:0;font:10px Consolas,monospace}.terminal-form input::placeholder{color:#64707c}.orbital-label{pointer-events:none;text-align:center;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);background:#04070ab8;border:1px solid #9caec22e;border-radius:3px;gap:3px;min-width:120px;padding:6px 8px;display:grid}.orbital-label span{color:#d7dfe7;letter-spacing:.08em;white-space:nowrap;font:8px Consolas,monospace}.orbital-label small{color:#85919d;white-space:nowrap;font:8px Segoe UI,sans-serif}.section-heading{max-width:720px;margin-bottom:54px}.section-heading h2,.resilience-statement h2{letter-spacing:-.045em;margin:0;font-size:clamp(34px,4.4vw,58px);font-weight:570;line-height:1.06}.section-heading p,.resilience-statement p{max-width:650px;color:var(--muted);margin:20px 0 0;font-size:16px;line-height:1.7}.capabilities-section,.live-section,.utility-section,.pricing-section,.login-section{width:min(1320px,100%);margin:0 auto;padding:120px clamp(22px,5vw,70px)}.capability-grid{border-top:1px solid var(--line);grid-template-columns:repeat(12,1fr);display:grid}.capability-item{border-bottom:1px solid var(--line);grid-column:span 6}.capability-item:nth-child(odd){border-right:1px solid var(--line)}.capability-item article{height:100%;padding:42px 40px 44px 0;position:relative}.capability-item:nth-child(2n) article{padding-left:40px}.capability-item-2{background:linear-gradient(145deg,#0000,#f5a62309)}.capability-item-3{background:linear-gradient(25deg,#63d5df09,#0000 60%)}.capability-number{color:var(--accent);margin-bottom:34px;font:11px Consolas,monospace;display:block}.capability-item h3{letter-spacing:-.03em;max-width:430px;margin:0;font-size:27px;font-weight:570}.capability-item p{max-width:510px;color:var(--muted);margin:18px 0 25px;font-size:14px;line-height:1.75}.capability-item ul{grid-template-columns:1fr 1fr;gap:11px 18px;margin:0;padding:0;list-style:none;display:grid}.capability-item li{color:#bdc6cf;align-items:flex-start;gap:8px;font-size:12px;line-height:1.5;display:flex}.capability-item li svg{color:var(--accent);flex:none;margin-top:2px}.live-section{background:var(--bg-soft);border-block:1px solid var(--line);width:100%;max-width:none;padding-left:max(22px,50vw - 590px);padding-right:max(22px,50vw - 590px)}.live-grid{grid-template-columns:.85fr 1.05fr 1.5fr .9fr;gap:14px;display:grid}.location-widget{background:linear-gradient(155deg,var(--surface),#63d5df0f)}.location-result{padding-top:32px}.location-result>svg{color:var(--cyan);stroke-width:1.4px;margin-bottom:24px}.location-result strong{overflow-wrap:anywhere;letter-spacing:-.035em;font-size:27px;font-weight:540;display:block}.location-result p{color:#b4c0ca;font-size:12px;line-height:1.6}.location-result small{color:var(--muted);margin-top:28px;font-size:10px;line-height:1.6;display:block}.live-widget{border:1px solid var(--line);background:var(--surface);border-radius:6px;min-height:310px;padding:22px}.live-widget>header{border-bottom:1px solid var(--line);color:var(--accent);align-items:center;gap:9px;padding-bottom:18px;display:flex}.live-widget h3{color:var(--text);margin:0;font-size:13px;font-weight:600}.live-widget header>span{color:var(--muted);letter-spacing:.12em;margin-left:auto;font:9px Consolas,monospace}.live-widget header button{border:1px solid var(--line);cursor:pointer;background:0 0;border-radius:3px;place-items:center;width:30px;height:30px;margin-left:auto;display:grid}.weather-main{align-items:center;gap:22px;padding:24px 0 19px;display:flex}.weather-main>strong{letter-spacing:-.06em;font-size:57px;font-weight:400}.weather-main>span{color:#c7d0d9;font-size:13px}.weather-main small{color:var(--muted);margin-top:6px;font-size:11px;display:block}.weather-meta{color:var(--muted);flex-wrap:wrap;gap:8px 14px;font-size:10px;display:flex}.forecast-row{grid-template-columns:repeat(3,1fr);gap:8px;margin-top:25px;display:grid}.forecast-row span{color:var(--muted);font-size:10px}.forecast-row b{color:#d9e0e6;margin-top:6px;font-size:11px;font-weight:500;display:block}.news-list{display:grid}.news-list>a,.news-list>div{border-bottom:1px solid var(--line);grid-template-columns:75px 1fr;gap:3px 12px;padding:13px 0;display:grid}.news-list time{color:var(--muted);grid-row:span 2;font:9px/1.5 Consolas,monospace}.news-list strong{color:#d3dbe3;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:500;overflow:hidden}.news-list small{color:var(--muted);font-size:9px}.news-list a:hover strong{color:var(--accent-soft)}.danger-widget{background:linear-gradient(155deg,var(--surface),#1446341a)}.danger-widget.danger-active{background:linear-gradient(155deg,var(--surface),#dc26261f)}.danger-status{padding-top:35px}.danger-status i{background:#34d399;border-radius:50%;width:10px;height:10px;margin-bottom:22px;display:block;box-shadow:0 0 20px #34d3998c}.danger-active .danger-status i{background:var(--danger);box-shadow:0 0 20px #ef444499}.danger-status strong{font-size:20px;font-weight:540;line-height:1.35;display:block}.danger-status p,.widget-empty{color:var(--muted);font-size:12px;line-height:1.65}.widget-skeleton{gap:13px;padding-top:25px;display:grid}.widget-skeleton i{background:#18212b;border-radius:3px;height:20px;animation:1.5s ease-in-out infinite skeleton-pulse;display:block}.widget-skeleton i:nth-child(2){width:75%}.widget-skeleton i:nth-child(3){width:45%}@keyframes skeleton-pulse{50%{opacity:.45}}.widget-error{color:#fca5a5;padding:22px 0;font-size:12px;line-height:1.6}.widget-locate{border:1px solid var(--line);color:var(--accent);cursor:pointer;background:0 0;border-radius:4px;align-items:center;gap:7px;margin-top:24px;padding:9px 14px;font-size:12px;display:inline-flex}.widget-locate:hover{border-color:var(--accent-soft);background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.widget-locate:hover{background:color-mix(in srgb,var(--accent) 8%,transparent)}}.resilience-section{background:#080b10;padding:130px max(22px,50vw - 590px)}.resilience-statement{max-width:900px}.resilience-statement>svg{color:var(--accent);margin-bottom:26px}.resilience-grid{background:var(--line);border:1px solid var(--line);grid-template-columns:1fr 1.2fr .8fr;gap:1px;margin-top:70px;display:grid}.resilience-cell{background:#080b10;min-height:210px;padding:30px}.resilience-cell svg{color:var(--accent);stroke-width:1.4px}.resilience-cell strong{margin-top:35px;font-size:16px;font-weight:580;display:block}.resilience-cell span{color:var(--muted);margin-top:12px;font-size:12px;line-height:1.7;display:block}.utility-list{border-top:1px solid var(--line);grid-template-columns:1fr 1fr;display:grid}.utility-list>div{border-bottom:1px solid var(--line);gap:18px;padding:30px 26px 30px 0;display:flex}.utility-list>div:nth-child(odd){border-right:1px solid var(--line)}.utility-list>div:nth-child(2n){padding-left:26px}.utility-list svg{color:var(--accent);stroke-width:1.4px;flex:none}.utility-list span{color:var(--muted);font-size:12px;line-height:1.65}.utility-list strong{color:var(--text);margin-bottom:7px;font-size:15px;font-weight:580;display:block}.pricing-section{max-width:1180px}.pricing-layout{grid-template-columns:1fr 1.35fr;align-items:stretch;gap:50px;display:grid}.trial-card{border:1px solid var(--accent);flex-direction:column;min-height:280px;padding:30px;display:flex}@supports (color:color-mix(in lab,red,red)){.trial-card{border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}}.trial-card{background:var(--accent-dark);border-radius:6px}.trial-card>span{color:var(--accent-soft);letter-spacing:.1em;text-transform:uppercase;font:10px Consolas,monospace}.trial-card>strong{letter-spacing:-.05em;margin-top:20px;font-size:48px;font-weight:500}.trial-card p{color:#b6aa98;font-size:12px;line-height:1.6}.trial-card a{border-top:1px solid var(--accent);justify-content:space-between;align-items:center;margin-top:auto;padding-top:18px;display:flex}@supports (color:color-mix(in lab,red,red)){.trial-card a{border-top:1px solid color-mix(in srgb,var(--accent) 25%,transparent)}}.trial-card a{color:var(--accent-soft);font-size:12px}.plan-list{border-top:1px solid var(--line)}.plan-row{border-bottom:1px solid var(--line);grid-template-columns:1fr auto;align-items:center;padding:25px 0;display:grid}.plan-row>span{font-size:20px}.plan-row>strong{color:var(--accent-soft);font-size:25px;font-weight:500}.plan-row>small{color:var(--muted);text-align:right;grid-column:2;font-size:9px}.text-link{color:var(--accent-soft);align-items:center;gap:7px;margin-top:35px;font-size:12px;display:inline-flex}.login-layout{grid-template-columns:1.1fr .9fr;gap:16px;display:grid}.login-options,.telegram-card{border:1px solid var(--line);background:var(--surface);border-radius:6px}.login-options>a{border-bottom:1px solid var(--line);align-items:center;gap:16px;padding:24px;display:flex}.login-options>a>svg:first-child{color:var(--accent);stroke-width:1.5px}.login-options>a>svg:last-child{color:var(--muted);width:16px;margin-left:auto}.login-options>a span{gap:6px;display:grid}.login-options>a strong{font-size:14px;font-weight:600}.login-options>a small{color:var(--muted);font-size:11px;line-height:1.4}.login-options>p{color:var(--muted);margin:0;padding:20px 24px;font-size:11px;line-height:1.6}.login-options code{color:var(--accent-soft)}.telegram-card{flex-direction:column;justify-content:center;align-items:flex-start;min-height:290px;padding:34px;display:flex}.telegram-card>svg{color:var(--accent)}.telegram-card h3{margin:20px 0 0;font-size:21px;font-weight:570}.telegram-card>p{max-width:380px;color:var(--muted);font-size:12px;line-height:1.65}.telegram-login{min-height:40px;margin-top:14px}.login-fallback{color:var(--muted);font-size:11px}.site-footer{border-top:1px solid var(--line);background:#040608;grid-template-columns:2fr repeat(3,1fr);gap:40px;padding:70px max(22px,50vw - 590px) 30px;display:grid}.footer-brand{grid-template-columns:auto 1fr;align-items:center;gap:8px 10px;display:grid}.footer-brand svg{color:var(--accent)}.footer-brand strong{letter-spacing:.16em;font-size:13px}.footer-brand span{color:var(--muted);grid-column:1/-1;margin-top:14px;font-size:11px;line-height:1.7}.site-footer>div:not(.footer-brand):not(.footer-bottom){flex-direction:column;gap:12px;display:flex}.site-footer>div>strong{margin-bottom:7px;font-size:11px;font-weight:600}.site-footer a{color:var(--muted);font-size:11px}.site-footer a:hover{color:var(--accent-soft)}.footer-bottom{border-top:1px solid var(--line);color:#66717c;letter-spacing:.06em;grid-column:1/-1;justify-content:space-between;margin-top:30px;padding-top:22px;font:9px Consolas,monospace;display:flex}.mekbuda{display:none!important}.hydra-notice,.telemetry-pop{z-index:60;-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);background:#1c0407f0;border:1px solid #dc262680;border-radius:4px;position:fixed;box-shadow:0 14px 50px #50000047}.hydra-notice{width:min(460px,100vw - 32px);padding:22px 42px 22px 22px;top:86px;left:50%;transform:translate(-50%)}.hydra-notice small,.telemetry-pop small{color:#f87171;letter-spacing:.12em;margin-bottom:10px;font:9px Consolas,monospace;display:block}.hydra-notice strong{color:#fecaca;font:13px/1.6 Consolas,monospace}.icon-button{color:#fca5a5;cursor:pointer;background:0 0;border:0;place-items:center;width:28px;height:28px;display:grid;position:absolute;top:9px;right:9px}.telemetry-pop{width:310px;padding:20px;bottom:24px;right:24px}.telemetry-pop-1{bottom:150px;right:48px}.telemetry-pop code{color:#fca5a5;font:10px/1.6 Consolas,monospace}.whisper-button{z-index:55;color:#f87171;cursor:pointer;background:#140305d9;border:1px solid #dc262659;padding:8px 11px;font:9px Consolas,monospace;position:fixed;bottom:18px;left:18px}.hydra-mode .hero-vignette{background:linear-gradient(90deg,#0a0204f5,#0a0204ad 35%,#1400001a 70%)}.hydra-mode .site-shell:after{opacity:.06}@media(max-width:1180px){.brand-core{display:none}.main-nav{gap:18px}.entry-link{padding:0 10px}.hero-terminal{display:none}.hero-copy{width:min(610px,58vw)}.live-grid{grid-template-columns:1fr 1fr}.danger-widget{min-height:230px}}@media(max-width:900px){.topbar{gap:14px}.main-nav{display:none}.entry-actions{margin-left:auto}.scene-hud{display:none}.hero-copy{width:min(590px,75vw)}.hero-vignette{background:linear-gradient(90deg,#05070af0,#05070a85 75%,#05070a4d)}.capability-grid{grid-template-columns:1fr}.capability-item{grid-column:auto}.capability-item:nth-child(odd){border-right:0}.capability-item article,.capability-item:nth-child(2n) article{padding:34px 0}.resilience-grid{grid-template-columns:1fr}.resilience-cell{min-height:180px}.login-layout{grid-template-columns:1fr}}@media(max-width:680px){.topbar{height:62px;padding:0 14px}.brand-name{font-size:12px}.brand-mark{width:31px;height:31px}.entry-link{justify-content:center;width:34px;min-height:34px;padding:0;font-size:0}.entry-actions{gap:6px}.hero-copy{align-items:flex-end;width:100%;min-height:100dvh;padding:96px 22px 98px}.hero-copy h1{font-size:clamp(39px,11vw,55px)}.hero-copy p{max-width:430px;font-size:15px}.hero-actions{align-items:stretch}.button-primary,.button-secondary{min-height:46px;font-size:12px}.hero-vignette{background:linear-gradient(#05070a33 20%,#05070ad6 58%,#05070afa)}.scene-layer{top:-10%;right:-35%;bottom:20%;left:-35%}.scroll-cue{bottom:24px;left:22px}.capabilities-section,.live-section,.utility-section,.pricing-section,.login-section{padding-top:82px;padding-bottom:82px}.section-heading{margin-bottom:38px}.section-heading h2,.resilience-statement h2{font-size:37px}.section-heading p,.resilience-statement p{font-size:14px}.capability-item ul,.live-grid{grid-template-columns:1fr}.danger-widget{grid-column:auto}.live-widget{min-height:280px}.resilience-section{padding-top:85px;padding-bottom:85px}.resilience-grid{margin-top:45px}.utility-list{grid-template-columns:1fr}.utility-list>div:nth-child(odd){border-right:0}.utility-list>div:nth-child(2n){padding-left:0}.pricing-layout{grid-template-columns:1fr;gap:28px}.login-options>a{padding:20px 16px}.login-options>a small{max-width:220px}.telegram-card{padding:26px}.site-footer{grid-template-columns:1fr 1fr;gap:35px 22px}.footer-brand{grid-column:1/-1}.footer-bottom{flex-direction:column;align-items:flex-start;gap:9px}.telemetry-pop{width:calc(100vw - 32px);bottom:16px;right:16px}.telemetry-pop-1{bottom:145px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,:before,:after{transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}.scroll-cue span{transform:scaleX(1)}}.page-layout{background:var(--bg);min-height:100vh;color:var(--text);flex-direction:column;display:flex}.page-header{background:var(--surface-raised);border-bottom:1px solid var(--line);z-index:100;padding:16px 0;position:sticky;top:0}.page-nav{justify-content:space-between;align-items:center;gap:40px;max-width:1200px;margin:0 auto;padding:0 24px;display:flex}.logo-link{color:var(--text);white-space:nowrap;align-items:center;gap:10px;font-size:16px;font-weight:600;text-decoration:none;display:flex}.nav-links{flex:1;justify-content:flex-end;align-items:center;gap:24px;display:flex}.nav-links a{color:var(--muted);font-size:14px;transition:color .2s}.nav-links a:hover{color:var(--accent)}.page-content{flex:1;width:100%;max-width:1200px;margin:0 auto;padding:60px 24px}.page-footer{background:var(--surface);border-top:1px solid var(--line);margin-top:auto;padding:60px 24px}.footer-columns{grid-template-columns:repeat(4,1fr);gap:40px;max-width:1200px;margin:0 auto 40px;font-size:13px;display:grid}.footer-columns>div strong{color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px;font-size:12px;font-weight:600;display:block}.footer-columns a{color:var(--muted);margin-bottom:8px;transition:color .2s;display:block}.footer-columns a:hover{color:var(--accent)}.footer-columns p{color:var(--muted);margin:6px 0;line-height:1.6}.footer-bottom{border-top:1px solid var(--line);color:var(--muted);text-align:center;justify-content:center;align-items:center;gap:6px;padding-top:24px;font-size:12px;display:flex}.footer-bottom a{color:var(--accent);text-decoration:none}.footer-bottom a:hover{text-decoration:underline}.whisper-button{background:var(--danger);position:fixed;bottom:24px;right:24px}@supports (color:color-mix(in lab,red,red)){.whisper-button{background:color-mix(in srgb,var(--danger) 20%,transparent)}}.whisper-button{border:1px solid var(--danger);color:var(--danger);letter-spacing:.1em;text-transform:uppercase;cursor:pointer;z-index:200;border-radius:4px;padding:12px 20px;font-size:11px;font-weight:600;transition:all .2s}.whisper-button:hover{background:var(--danger)}@supports (color:color-mix(in lab,red,red)){.whisper-button:hover{background:color-mix(in srgb,var(--danger) 35%,transparent)}}.whisper-button:hover{border-color:var(--accent-soft)}.page-title{margin-bottom:48px}.update-date{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;font-size:12px}.page-title h1{letter-spacing:-.02em;margin:12px 0 16px;font-size:48px;font-weight:600;line-height:1.2}.page-subtitle{color:var(--muted);margin:0;font-size:18px;line-height:1.6}.doc-page{max-width:900px;margin:0 auto}.doc-intro{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;margin-bottom:48px;padding:24px;font-size:14px;line-height:1.8}.doc-intro p{color:var(--muted);margin:12px 0}.doc-intro strong{color:var(--text)}.doc-intro a{color:var(--accent);text-decoration:none}.doc-intro a:hover{text-decoration:underline}.doc-section{margin-bottom:48px}.doc-section h2{color:var(--text);margin-bottom:16px;font-size:24px;font-weight:600}.doc-section p{color:var(--muted);margin-bottom:12px;font-size:14px;line-height:1.8}.doc-section ul{margin:0;padding:0;list-style:none}.doc-section li{color:var(--muted);margin-bottom:8px;padding-left:24px;font-size:14px;line-height:1.8;position:relative}.doc-section li:before{content:"→";color:var(--accent);position:absolute;left:0}.doc-section code{background:var(--surface-raised);border:1px solid var(--line);color:var(--accent);border-radius:3px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}.doc-section h3{color:var(--text);margin:20px 0 8px;font-size:16px;font-weight:600}.doc-section ol{margin:0;padding-left:20px}.doc-section ol li{color:var(--muted);margin-bottom:8px;padding-left:0;font-size:14px;line-height:1.8}.doc-section ol li:before{content:none}.doc-conclusion{border-top:1px solid var(--line);padding-top:24px}.doc-conclusion p{color:var(--text);font-size:15px;font-weight:500}.contact-grid{grid-template-columns:repeat(3,1fr);gap:14px;display:grid}.contact-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;gap:10px;padding:22px;display:flex}.contact-icon{font-size:26px;line-height:1}.contact-title{color:var(--text);margin:0;font-size:15px;font-weight:600}.contact-desc{color:var(--muted);flex:1;margin:0;font-size:13px;line-height:1.7}.contact-link{color:var(--accent);font-size:13px;text-decoration:none;display:inline-block}.contact-link:hover{text-decoration:underline}@media(max-width:720px){.contact-grid{grid-template-columns:1fr}}.terms-table{border-collapse:collapse;width:100%;margin:24px 0;font-size:14px}.terms-table thead{background:var(--surface-raised);border:1px solid var(--line)}.terms-table th{text-align:left;color:var(--text);border-bottom:1px solid var(--line);padding:16px;font-weight:600}.terms-table td{color:var(--muted);border-bottom:1px solid var(--line);padding:16px}.terms-table tbody tr:hover{background:var(--surface-raised)}.pricing-page{max-width:1000px;margin:0 auto}.intro-section{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;margin-bottom:48px;padding:32px;font-size:15px;line-height:1.8}.intro-section p{color:var(--muted);margin:16px 0}.intro-section strong{color:var(--accent-soft)}.pricing-grid{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;margin-bottom:48px;display:grid}.pricing-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;padding:32px;transition:all .2s;display:flex}.pricing-card:hover{border-color:var(--accent);background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.pricing-card:hover{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 5%)}}.pricing-card.free{border-color:var(--accent);background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.pricing-card.free{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 8%)}}.card-icon{margin-bottom:12px;font-size:32px}.pricing-card h3{color:var(--text);margin:12px 0 20px;font-size:18px;font-weight:600}.price{border-bottom:1px solid var(--line);flex-direction:column;margin-bottom:24px;padding-bottom:24px;display:flex}.price .amount{color:var(--accent-soft);font-size:32px;font-weight:600}.price .period{color:var(--muted);margin-top:4px;font-size:12px}.features{flex:1;margin:0 0 24px;padding:0;list-style:none}.features li{color:var(--muted);align-items:flex-start;gap:12px;margin-bottom:12px;font-size:14px;line-height:1.6;display:flex}.features svg{color:var(--accent);flex-shrink:0;margin-top:2px}.cta-button{background:var(--accent);justify-content:center;align-items:center;padding:12px 20px;display:inline-flex}@supports (color:color-mix(in lab,red,red)){.cta-button{background:color-mix(in srgb,var(--accent) 15%,transparent)}}.cta-button{border:1px solid var(--accent);color:var(--accent-soft);cursor:pointer;border-radius:4px;font-size:13px;font-weight:600;text-decoration:none;transition:all .2s}.cta-button:hover{background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.cta-button:hover{background:color-mix(in srgb,var(--accent) 25%,transparent)}}.cta-button:hover{border-color:var(--accent-soft)}.comparison-section{margin-bottom:48px}.comparison-section h2{color:var(--text);margin-bottom:24px;font-size:24px;font-weight:600}.comparison-table{border-collapse:collapse;background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;width:100%;font-size:14px;overflow:hidden}.comparison-table th{background:var(--surface);text-align:left;color:var(--text);border-bottom:1px solid var(--line);padding:16px;font-weight:600}.comparison-table td{color:var(--muted);border-bottom:1px solid var(--line);padding:14px 16px}.comparison-table tbody tr:hover{background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.comparison-table tbody tr:hover{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 3%)}}.notes-section{background:var(--surface);border:1px solid var(--line-strong);border-radius:6px;margin-bottom:48px;padding:24px}.notes-section p{color:var(--muted);margin:0 0 12px;font-size:14px;font-weight:600}.notes-section ul{margin:0;padding:0;list-style:none}.notes-section li{color:var(--muted);margin-bottom:8px;padding-left:20px;font-size:13px;line-height:1.8;position:relative}.notes-section li:before{content:"•";color:var(--accent);position:absolute;left:0}.how-to-pay{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;padding:32px}.how-to-pay h2{color:var(--text);margin-bottom:20px;font-size:24px;font-weight:600}.how-to-pay ol{margin:0 0 20px;padding-left:24px;list-style:decimal}.how-to-pay li{color:var(--muted);margin-bottom:12px;font-size:14px;line-height:1.8}.how-to-pay a{color:var(--accent);text-decoration:none}.how-to-pay a:hover{text-decoration:underline}.how-to-pay>p{color:var(--muted);margin:0;font-size:14px}.downloads-page{max-width:1000px;margin:0 auto}.app-section{margin-bottom:64px}.app-header{justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:20px;display:flex}.app-header h2{color:var(--text);margin:0 0 6px;font-size:26px;font-weight:600}.app-header p{color:var(--muted);margin:0;font-size:14px}.app-header-actions{flex-wrap:wrap;justify-content:flex-end;gap:12px;display:flex}.app-header-actions .button-primary,.app-header-actions .button-secondary{white-space:nowrap;border-radius:4px;align-items:center;gap:8px;padding:12px 20px;font-size:13px;font-weight:600;text-decoration:none;transition:all .2s;display:inline-flex}.app-header-actions .button-primary{background:var(--accent);color:#05070a;border:1px solid var(--accent)}.app-header-actions .button-primary:hover{background:var(--accent-soft)}.app-header-actions .button-secondary{color:var(--text);border:1px solid var(--line);background:0 0}.app-header-actions .button-secondary:hover{border-color:var(--accent)}.app-description{color:var(--muted);margin:0 0 24px;font-size:15px;line-height:1.8}.platform-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:24px;display:grid}.platform-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;gap:6px;padding:20px;transition:border-color .2s;display:flex}.platform-card:hover{border-color:var(--accent)}.platform-card svg{color:var(--accent);margin-bottom:4px}.platform-card h3{color:var(--text);margin:0;font-size:15px;font-weight:600}.platform-files{color:var(--accent-soft);font-family:Consolas,monospace;font-size:13px}.platform-note{color:var(--muted);font-size:12px}.install-note{background:var(--surface);border:1px solid var(--line-strong);border-radius:6px;gap:14px;margin-bottom:8px;padding:20px;display:flex}.install-note svg{color:var(--accent);flex-shrink:0;margin-top:2px}.install-note strong{color:var(--text);font-size:14px}.install-note p{color:var(--muted);margin:4px 0 0;font-size:13px;line-height:1.7}.howto-list{counter-reset:howto;margin:0 0 16px;padding:0;list-style:none}.howto-list li{counter-increment:howto;margin-bottom:24px;padding-left:44px;position:relative}.howto-list li:before{content:counter(howto);background:var(--accent);width:28px;height:28px;position:absolute;top:0;left:0}@supports (color:color-mix(in lab,red,red)){.howto-list li:before{background:color-mix(in srgb,var(--accent) 18%,transparent)}}.howto-list li:before{border:1px solid var(--accent);color:var(--accent-soft);border-radius:4px;justify-content:center;align-items:center;font-size:13px;font-weight:600;display:flex}.howto-list strong{color:var(--text);font-size:15px}.howto-list p{color:var(--muted);margin:6px 0 0;font-size:14px;line-height:1.8}.howto-list code{background:var(--surface-raised);border:1px solid var(--line);color:var(--accent);border-radius:3px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}.doc-hint{color:var(--muted);font-size:14px}.doc-hint a{color:var(--accent);text-decoration:none}.doc-hint a:hover{text-decoration:underline}.vpn-plans{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:16px;display:grid}.vpn-plans--five{grid-template-columns:repeat(5,1fr)}.vpn-plan-card{background:var(--surface-raised);border:1px solid var(--line);text-align:center;border-radius:6px;flex-direction:column;align-items:center;gap:6px;padding:24px 16px;transition:border-color .2s;display:flex}.vpn-plan-card:hover{border-color:var(--accent)}.vpn-plan-card h3{color:var(--text);margin:0 0 12px;font-size:15px;font-weight:600}.vpn-plan-price{color:var(--accent-soft);margin-bottom:4px;font-size:28px;font-weight:600}.vpn-plan-period{color:var(--muted);font-size:12px}.vpn-plan-hot{border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.vpn-plan-hot{border-color:color-mix(in srgb,var(--accent) 45%,transparent)}}.vpn-plan-best{border-color:var(--accent)}@supports (color:color-mix(in lab,red,red)){.vpn-plan-best{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}}.vpn-plan-best{background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.vpn-plan-best{background:color-mix(in srgb,var(--accent) 6%,var(--surface-raised))}}.vpn-plan-trial .vpn-plan-price{color:var(--text)}.vpn-plan-note{line-height:1.4}.vpn-plan-fine{color:var(--muted);font-size:11px;line-height:1.45}.doc-subtitle{color:var(--text);margin:24px 0 8px;font-size:17px;font-weight:600}@media(max-width:1080px){.vpn-plans--five{grid-template-columns:repeat(3,1fr)}}@media(max-width:720px){.vpn-plans--five{grid-template-columns:repeat(2,1fr)}}@media(max-width:460px){.vpn-plans--five{grid-template-columns:1fr}}.projects-page{max-width:1000px;margin:0 auto}.projects-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-bottom:48px;display:grid}.project-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:6px;flex-direction:column;padding:28px;transition:all .2s;display:flex}.project-card:hover{border-color:var(--accent);background:var(--surface-raised)}@supports (color:color-mix(in lab,red,red)){.project-card:hover{background:color-mix(in srgb,var(--surface-raised) 80%,var(--accent) 5%)}}.project-icon{color:var(--accent);margin-bottom:16px}.project-card h2{color:var(--text);margin:0 0 4px;font-size:20px;font-weight:600}.project-tagline{color:var(--accent-soft);margin:0 0 16px;font-size:13px}.project-description{color:var(--muted);flex:1;margin:0 0 20px;font-size:14px;line-height:1.7}.project-links{flex-wrap:wrap;gap:8px;display:flex}.project-links a{color:var(--accent);border:1px solid var(--line);border-radius:4px;align-items:center;gap:4px;padding:6px 12px;font-size:13px;text-decoration:none;transition:all .2s;display:inline-flex}.project-links a:hover{border-color:var(--accent);background:var(--accent)}@supports (color:color-mix(in lab,red,red)){.project-links a:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}}.project-future{background:var(--surface);border:1px solid var(--line);border-radius:6px;align-items:flex-start;gap:14px;padding:24px;display:flex}.project-future svg{color:var(--accent);flex-shrink:0;margin-top:2px}.project-future p{color:var(--muted);margin:0;font-size:14px;line-height:1.7}.project-future a{color:var(--accent);text-decoration:none}.project-future a:hover{text-decoration:underline}@media(max-width:768px){.page-nav{flex-direction:column;align-items:flex-start;gap:16px}.nav-links{flex-direction:column;gap:12px;width:100%}.page-content{padding:40px 16px}.page-title h1{font-size:32px}.pricing-grid,.projects-grid{grid-template-columns:1fr}.app-header{flex-direction:column;align-items:flex-start}.app-header-actions{justify-content:flex-start;width:100%}.vpn-plans{grid-template-columns:1fr}.footer-columns{grid-template-columns:1fr 1fr;gap:28px 20px}.doc-section h2{font-size:20px}.doc-section li{padding-left:20px;font-size:13px}}@property --tw-rotate-x{syntax:"*";inherits:false}@property --tw-rotate-y{syntax:"*";inherits:false}@property --tw-rotate-z{syntax:"*";inherits:false}@property --tw-skew-x{syntax:"*";inherits:false}@property --tw-skew-y{syntax:"*";inherits:false}
+RADAR_FILE_58
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/public_pages.py"
-cat > "radar/web/public_pages.py" <<'RADAR_FILE_58'
+cat > "radar/web/public_pages.py" <<'RADAR_FILE_59'
 """Публичные страницы сервиса: Privacy, Terms, Support, Pricing.
 
 Все страницы рендерятся без авторизации. Контент адаптирован из шаблонов telegra.ph
@@ -31335,9 +31770,9 @@ def render_pricing_page() -> str:
         "Оповещения бесплатно навсегда. Актуальные тарифы подписки и порядок оформления",
         _with_plans(PRICING_CONTENT),
     )
-RADAR_FILE_58
+RADAR_FILE_59
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/web/widgets.py"
-cat > "radar/web/widgets.py" <<'RADAR_FILE_59'
+cat > "radar/web/widgets.py" <<'RADAR_FILE_60'
 """Telegram Mini App widgets API: Weather, News, Danger status.
 
 Provides /api/widget/* endpoints for Telegram Mini App integration.
@@ -32013,9 +32448,9 @@ def routes(web_module):
 
 __all__ = ["routes", "WIDGET_JS", "widget_location", "widget_reverse",
            "widget_weather", "widget_news", "widget_danger"]
-RADAR_FILE_59
+RADAR_FILE_60
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/__init__.py"
-cat > "radar/db/__init__.py" <<'RADAR_FILE_60'
+cat > "radar/db/__init__.py" <<'RADAR_FILE_61'
 """Слой базы данных: модели, подключение, репозиторий."""
 
 # --------------------------------------------------------------------------
@@ -32048,9 +32483,9 @@ __all__ = [
     "create_schema", "dispose", "get_engine", "session", "session_factory",
     "stamp_alembic", "wait_ready",
 ]
-RADAR_FILE_60
+RADAR_FILE_61
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/models.py"
-cat > "radar/db/models.py" <<'RADAR_FILE_61'
+cat > "radar/db/models.py" <<'RADAR_FILE_62'
 """Схема базы данных.
 
 Перенос с JSON-хранилища версий 3.x: структура повторяет прежние сущности,
@@ -32432,9 +32867,9 @@ class ChatWarning(Base):
         DateTime(timezone=True), default=utcnow
     )
 
-RADAR_FILE_61
+RADAR_FILE_62
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/engine.py"
-cat > "radar/db/engine.py" <<'RADAR_FILE_62'
+cat > "radar/db/engine.py" <<'RADAR_FILE_63'
 """Подключение к PostgreSQL: движок, фабрика сессий, ожидание готовности базы.
 
 Функция называется `get_engine`, а не `engine`, намеренно: имя `engine`
@@ -32968,9 +33403,9 @@ async def dispose() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
-RADAR_FILE_62
+RADAR_FILE_63
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/repo.py"
-cat > "radar/db/repo.py" <<'RADAR_FILE_63'
+cat > "radar/db/repo.py" <<'RADAR_FILE_64'
 """Репозиторий: чтение и запись данных в PostgreSQL.
 
 Стратегия
@@ -33999,9 +34434,9 @@ async def warn_reset(chat_id: int, user_id: int) -> None:
         if row is not None:
             row.count = 0
 
-RADAR_FILE_63
+RADAR_FILE_64
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/importer.py"
-cat > "radar/db/importer.py" <<'RADAR_FILE_64'
+cat > "radar/db/importer.py" <<'RADAR_FILE_65'
 """Импорт данных из JSON-хранилища версии 3.x в PostgreSQL.
 
 Запускается автоматически при первом старте 4.x, если база пуста, а файл
@@ -34150,9 +34585,9 @@ async def run(path: str | None = None) -> dict[str, int]:
         "Обновитесь сначала до 4.6.0 — она перенесёт данные, — "
         "и только затем на текущую версию."
     )
-RADAR_FILE_64
+RADAR_FILE_65
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/db/transfer.py"
-cat > "radar/db/transfer.py" <<'RADAR_FILE_65'
+cat > "radar/db/transfer.py" <<'RADAR_FILE_66'
 """Перенос данных между SQLite и PostgreSQL (с 5.9).
 
 До 5.9 смена базы в установщике давала пустую новую базу: старая
@@ -34345,9 +34780,9 @@ async def _reset_sequences(connection: Any) -> None:
                 f"SELECT setval(:sequence, GREATEST(COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 1), 1), COALESCE((SELECT MAX({column.name}) "
                 f"FROM {table.name}), 0) >= 1)"), {"sequence": sequence})
-RADAR_FILE_65
+RADAR_FILE_66
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/doctor.py"
-cat > "radar/doctor.py" <<'RADAR_FILE_66'
+cat > "radar/doctor.py" <<'RADAR_FILE_67'
 #!/usr/bin/env python3
 """Проверка готовности системы до запуска бота.
 
@@ -34879,9 +35314,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_66
+RADAR_FILE_67
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/env.py"
-cat > "migrations/env.py" <<'RADAR_FILE_67'
+cat > "migrations/env.py" <<'RADAR_FILE_68'
 """Окружение Alembic: берёт строку подключения из конфигурации проекта."""
 
 from __future__ import annotations
@@ -34941,9 +35376,9 @@ if context.is_offline_mode():
     run_offline()
 else:
     asyncio.run(run_online_async())
-RADAR_FILE_67
+RADAR_FILE_68
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/script.py.mako"
-cat > "migrations/script.py.mako" <<'RADAR_FILE_68'
+cat > "migrations/script.py.mako" <<'RADAR_FILE_69'
 """${message}
 
 Revision ID: ${up_revision}
@@ -34968,9 +35403,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
-RADAR_FILE_68
+RADAR_FILE_69
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0001_initial.py"
-cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_69'
+cat > "migrations/versions/0001_initial.py" <<'RADAR_FILE_70'
 """Начальная схема версии 4.0
 
 Revision ID: 0001_initial
@@ -35137,9 +35572,9 @@ def downgrade() -> None:
     op.drop_table("sources")
     op.drop_table("locations")
     op.drop_table("users")
-RADAR_FILE_69
+RADAR_FILE_70
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0002_short_links.py"
-cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_70'
+cat > "migrations/versions/0002_short_links.py" <<'RADAR_FILE_71'
 """Короткие ссылки.
 
 Отдельная таблица, а не поле в events: ссылку сокращают и для подборки,
@@ -35179,9 +35614,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("short_links")
-RADAR_FILE_70
+RADAR_FILE_71
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0003_promo_codes.py"
-cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_71'
+cat > "migrations/versions/0003_promo_codes.py" <<'RADAR_FILE_72'
 """Промокоды партнёрских проектов.
 
 Уникальность пары «проект + пользователь» задана в схеме, а не только
@@ -35229,9 +35664,9 @@ def downgrade() -> None:
     op.drop_index("ix_promo_codes_user_key", table_name="promo_codes")
     op.drop_index("ix_promo_codes_project", table_name="promo_codes")
     op.drop_table("promo_codes")
-RADAR_FILE_71
+RADAR_FILE_72
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0004_lang_and_media_quota.py"
-cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_72'
+cat > "migrations/versions/0004_lang_and_media_quota.py" <<'RADAR_FILE_73'
 """Язык интерфейса и квоты загрузки видео.
 
 Поле `lang` пустое у всех, кто уже пользуется ботом, — это и есть признак
@@ -35276,9 +35711,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("media_quota")
     op.drop_column("users", "lang")
-RADAR_FILE_72
+RADAR_FILE_73
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0005_subscription_state.py"
-cat > "migrations/versions/0005_subscription_state.py" <<'RADAR_FILE_73'
+cat > "migrations/versions/0005_subscription_state.py" <<'RADAR_FILE_74'
 """Общая подписка и медиаквота сохраняются в профиле пользователя.
 
 До этой миграции значения жили только в памяти: перезапуск позволял получить
@@ -35317,9 +35752,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("users", "media_quota")
     op.drop_column("users", "sub")
-RADAR_FILE_73
+RADAR_FILE_74
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "migrations/versions/0006_user_music.py"
-cat > "migrations/versions/0006_user_music.py" <<'RADAR_FILE_74'
+cat > "migrations/versions/0006_user_music.py" <<'RADAR_FILE_75'
 """Музыкальное состояние пользователя сохраняется между перезапусками.
 
 Здесь личные файлы, избранное внешнего каталога, история и настройки профиля.
@@ -35348,9 +35783,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_column("users", "music")
-RADAR_FILE_74
+RADAR_FILE_75
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/__init__.py"
-cat > "radar/platforms/__init__.py" <<'RADAR_FILE_75'
+cat > "radar/platforms/__init__.py" <<'RADAR_FILE_76'
 """Адаптеры мессенджеров: единый формат событий поверх разных API."""
 
 # --------------------------------------------------------------------------
@@ -35376,9 +35811,9 @@ __all__ = [
     "Button", "EventKind", "InboundEvent", "Keyboard", "OutboundMessage",
     "Transport", "MaxTransport",
 ]
-RADAR_FILE_75
+RADAR_FILE_76
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/base.py"
-cat > "radar/platforms/base.py" <<'RADAR_FILE_76'
+cat > "radar/platforms/base.py" <<'RADAR_FILE_77'
 """Единый формат событий и ответов, общий для всех мессенджеров.
 
 Ядро системы — разбор новостей, сопоставление с локациями, роли, погода —
@@ -35503,9 +35938,9 @@ class Transport(Protocol):
 
     def render(self, text: str) -> str:
         """Привести общую HTML-разметку к возможностям платформы."""
-RADAR_FILE_76
+RADAR_FILE_77
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/max.py"
-cat > "radar/platforms/max.py" <<'RADAR_FILE_77'
+cat > "radar/platforms/max.py" <<'RADAR_FILE_78'
 """Адаптер мессенджера MAX.
 
 ⚠️ НАПИСАН ПО ДОКУМЕНТАЦИИ, НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН.
@@ -35946,9 +36381,9 @@ class MaxTransport:
         self._running = False
         if self._session is not None and not self._session.closed:
             await self._session.close()
-RADAR_FILE_77
+RADAR_FILE_78
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/maxbot.py"
-cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_78'
+cat > "radar/platforms/maxbot.py" <<'RADAR_FILE_79'
 """Ответчик MAX (4.9.9.4; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ НА ЖИВОМ СЕРВЕРЕ НЕ ПРОВЕРЕН — как и весь адаптер MAX.
@@ -36067,9 +36502,9 @@ def enabled() -> bool:
     from .. import features
 
     return features.enabled("platform_max") and bool(config.MAX_BOT_TOKEN)
-RADAR_FILE_78
+RADAR_FILE_79
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discord.py"
-cat > "radar/platforms/discord.py" <<'RADAR_FILE_79'
+cat > "radar/platforms/discord.py" <<'RADAR_FILE_80'
 """Адаптер Discord (с 5.5): канал сообщества, а не оповещения по адресам.
 
 ⚠️ НАПИСАН ПО ИСХОДНИКАМ discord.py, С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -36640,9 +37075,9 @@ class DiscordTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_79
+RADAR_FILE_80
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/discordbot.py"
-cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_80'
+cat > "radar/platforms/discordbot.py" <<'RADAR_FILE_81'
 """Discord как канал сообщества: сводки и статус системы (с 5.5).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕН.
@@ -37205,9 +37640,9 @@ async def community(transport: Any) -> None:
         except Exception:  # noqa: BLE001
             log.warning("Discord: публикация в канал не удалась", exc_info=True)
         await asyncio.sleep(CHECK_EVERY)
-RADAR_FILE_80
+RADAR_FILE_81
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vk.py"
-cat > "radar/platforms/vk.py" <<'RADAR_FILE_81'
+cat > "radar/platforms/vk.py" <<'RADAR_FILE_82'
 """Адаптер ВКонтакте как мессенджера (с 5.6, раздел 7.0 дорожной карты).
 
 ⚠️ СВЕРЕН С ИСХОДНИКАМИ vkbottle, С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -37469,9 +37904,9 @@ class VkTransport:
         self._stopping = True
         if self.session is not None:
             await self.session.close()
-RADAR_FILE_81
+RADAR_FILE_82
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/vkbot.py"
-cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_82'
+cat > "radar/platforms/vkbot.py" <<'RADAR_FILE_83'
 """Ответчик ВКонтакте (5.6; полноценный вход в общий аккаунт — 5.7).
 
 ⚠️ С ЖИВЫМ СООБЩЕСТВОМ НЕ ПРОВЕРЕН.
@@ -37531,9 +37966,9 @@ async def reply(event: InboundEvent, transport: Any) -> None:
     text = await answer(event)
     if text and not await transport.send(event.chat_id, OutboundMessage(text=text)):
         log.warning("VK: ответ не доставлен")
-RADAR_FILE_82
+RADAR_FILE_83
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/platforms/textbot.py"
-cat > "radar/platforms/textbot.py" <<'RADAR_FILE_83'
+cat > "radar/platforms/textbot.py" <<'RADAR_FILE_84'
 """Общий текстовый ответчик для сетей без Telegram-интерфейса (с 5.7).
 
 ⚠️ С ЖИВЫМИ ВК И MAX НЕ ПРОВЕРЕН.
@@ -37810,9 +38245,9 @@ async def answer(platform: str, external_id: str | int, text: str = "", *,
         return status_text(lang) + "\n\n" + _t("text.disclaimer", lang, DISCLAIMER)
 
     return help_text(lang, bool((user or {}).get("locs")))
-RADAR_FILE_83
+RADAR_FILE_84
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/links.py"
-cat > "radar/links.py" <<'RADAR_FILE_84'
+cat > "radar/links.py" <<'RADAR_FILE_85'
 """Общий аккаунт одного человека в разных сетях (с 5.6, в обе стороны — с 5.7).
 
 Один человек — один профиль: адреса, настройки, роль и подписка. Telegram,
@@ -38329,9 +38764,9 @@ async def handle_text(platform: str, external_id: str | int, text: str,
         return f"❌ {reason}"
     return proposal_text(theirs, lang) + "\n\n" + _t(
         "link.answer", lang, "Ответьте «да» или «нет».")
-RADAR_FILE_84
+RADAR_FILE_85
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/mirror.py"
-cat > "radar/mirror.py" <<'RADAR_FILE_85'
+cat > "radar/mirror.py" <<'RADAR_FILE_86'
 """Доставка в сети кроме Telegram и копии тревог (с 5.6).
 
 Тревога, уже доставленная в Telegram, уходит копией на аккаунты ВК и MAX,
@@ -38441,9 +38876,9 @@ async def drain() -> None:
     """Дождаться отправленных копий — для тестов и корректной остановки."""
     while _tasks:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
-RADAR_FILE_85
+RADAR_FILE_86
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linking.py"
-cat > "radar/handlers/linking.py" <<'RADAR_FILE_86'
+cat > "radar/handlers/linking.py" <<'RADAR_FILE_87'
 """Общий аккаунт в Telegram-боте: привязка других сетей (5.6, в обе стороны — 5.7).
 
 Здесь можно и выдать код (его вводят в ВК, MAX или Discord), и ввести код,
@@ -38585,9 +39020,9 @@ async def decide(call: CallbackQuery, user: dict) -> None:
     await call.answer()
     asyncio.get_running_loop().create_task(links.announce(owner, links.TELEGRAM))
     await safe_edit(call, esc(links.linked_text(lang)), None)
-RADAR_FILE_86
+RADAR_FILE_87
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/storage.py"
-cat > "radar/storage.py" <<'RADAR_FILE_87'
+cat > "radar/storage.py" <<'RADAR_FILE_88'
 """Рабочий набор данных: словари в памяти поверх PostgreSQL.
 
 Обработчики работают с обычными словарями, как в версиях 3.x, — сигнатуры
@@ -38779,9 +39214,9 @@ async def meta_get(key: str, default: Any = None) -> Any:
 
 async def meta_set(key: str, value: Any) -> None:
     await repo.set_meta(key, value)
-RADAR_FILE_87
+RADAR_FILE_88
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/exporting.py"
-cat > "radar/exporting.py" <<'RADAR_FILE_88'
+cat > "radar/exporting.py" <<'RADAR_FILE_89'
 """Обмен списками источников: экспорт в файл и импорт обратно.
 
 Формат намеренно простой и версионированный, чтобы файл, выгруженный сегодня,
@@ -38987,9 +39422,9 @@ def merge(
             added_rss += 1
 
     return added_channels, added_rss
-RADAR_FILE_88
+RADAR_FILE_89
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ai.py"
-cat > "radar/ai.py" <<'RADAR_FILE_89'
+cat > "radar/ai.py" <<'RADAR_FILE_90'
 """Слой Google Gemini: автовыбор модели, совместимость поколений, экономия квоты.
 
 Устойчивость к отключению моделей
@@ -39855,9 +40290,9 @@ async def summarize_topic(title: str, entries: Sequence[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         log.info("Пересказ темы «%s» не получился: %s", title, exc)
         return ""
-RADAR_FILE_89
+RADAR_FILE_90
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/geocode.py"
-cat > "radar/geocode.py" <<'RADAR_FILE_90'
+cat > "radar/geocode.py" <<'RADAR_FILE_91'
 """Обратное геокодирование (Nominatim) с бережным соблюдением лимита 1 запрос/сек."""
 
 # --------------------------------------------------------------------------
@@ -40096,9 +40531,9 @@ async def forward(
     # в Nominatim адреса появляются.
     _FORWARD.put(key, [dict(item) for item in results])
     return results
-RADAR_FILE_90
+RADAR_FILE_91
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/weather.py"
-cat > "radar/weather.py" <<'RADAR_FILE_91'
+cat > "radar/weather.py" <<'RADAR_FILE_92'
 """Погода Open-Meteo: получение данных и оформление сводки.
 
 Разбор ответа и вёрстка разделены: `fetch` ходит в сеть, `render` — чистая
@@ -40564,9 +40999,9 @@ async def deliver(
     except Exception:  # noqa: BLE001
         log.exception("Картинка погоды не ушла, отправляю текстом")
         await send_html(chat_id, render(data, title, lang), markup)
-RADAR_FILE_91
+RADAR_FILE_92
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sources.py"
-cat > "radar/sources.py" <<'RADAR_FILE_92'
+cat > "radar/sources.py" <<'RADAR_FILE_93'
 """Сбор сообщений из источников: публичные Telegram-каналы и RSS-ленты СМИ."""
 
 # --------------------------------------------------------------------------
@@ -40945,9 +41380,9 @@ async def fetch_vk(
         link = f"https://vk.com/wall{owner}_{post_id}" if owner and post_id else ""
         items.append(Item(source=f"vk/{identifier}", text=text, kind="vk", link=link))
     return items
-RADAR_FILE_92
+RADAR_FILE_93
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceedit.py"
-cat > "radar/sourceedit.py" <<'RADAR_FILE_93'
+cat > "radar/sourceedit.py" <<'RADAR_FILE_94'
 #!/usr/bin/env python3
 """Правка списка источников: добавление, удаление, проверка формата.
 
@@ -41091,9 +41526,9 @@ def listing(kind: str) -> list[str]:
 
 def counts() -> dict[str, int]:
     return {kind: len(_bucket(kind) or []) for kind in KINDS}
-RADAR_FILE_93
+RADAR_FILE_94
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/filedrop.py"
-cat > "radar/filedrop.py" <<'RADAR_FILE_94'
+cat > "radar/filedrop.py" <<'RADAR_FILE_95'
 #!/usr/bin/env python3
 """Выдача крупных файлов по ссылке.
 
@@ -41456,9 +41891,9 @@ def summary() -> str:
         lines.append(f"• {item.name} — {item.size_mb:.0f} МБ, "
                      f"осталось {item.hours_left:.0f} ч")
     return "\n".join(lines)
-RADAR_FILE_94
+RADAR_FILE_95
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/agents.py"
-cat > "radar/agents.py" <<'RADAR_FILE_95'
+cat > "radar/agents.py" <<'RADAR_FILE_96'
 #!/usr/bin/env python3
 """Свои агенты ИИ: несколько сервисов вместо одного.
 
@@ -41673,9 +42108,9 @@ def forget(slot: int) -> bool:
         secrets.write(LEGACY_KEY_ENV, "")
     log.info("Свой агент в слоте %s удалён", slot)
     return True
-RADAR_FILE_95
+RADAR_FILE_96
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/redeem.py"
-cat > "radar/redeem.py" <<'RADAR_FILE_96'
+cat > "radar/redeem.py" <<'RADAR_FILE_97'
 #!/usr/bin/env python3
 """Погашение кодов, выданных на стороне.
 
@@ -41836,9 +42271,9 @@ async def summary() -> str:
         return "Кодов пока нет."
     used = sum(1 for item in items if item.get("used_by"))
     return f"Кодов: {len(items)}, погашено: {used}, свободно: {len(items) - used}"
-RADAR_FILE_96
+RADAR_FILE_97
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/tg.py"
-cat > "radar/tg.py" <<'RADAR_FILE_97'
+cat > "radar/tg.py" <<'RADAR_FILE_98'
 """Экземпляр бота и безопасные обёртки отправки сообщений."""
 
 # --------------------------------------------------------------------------
@@ -42018,9 +42453,9 @@ async def safe_edit(
         await send_html(
             call.message.chat.id, chunk, markup if index == len(chunks) - 1 else None
         )
-RADAR_FILE_97
+RADAR_FILE_98
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/timezones.py"
-cat > "radar/timezones.py" <<'RADAR_FILE_98'
+cat > "radar/timezones.py" <<'RADAR_FILE_99'
 #!/usr/bin/env python3
 """Часовой пояс пользователя.
 
@@ -42163,9 +42598,9 @@ def local_now(user: dict[str, Any] | None, now_utc: datetime) -> datetime:
 def user_label(user: dict[str, Any] | None, lang: str = "ru") -> str:
     """Подпись пояса пользователя для кнопок и сводок."""
     return label(offset_of(user), lang)
-RADAR_FILE_98
+RADAR_FILE_99
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/keyboards.py"
-cat > "radar/keyboards.py" <<'RADAR_FILE_99'
+cat > "radar/keyboards.py" <<'RADAR_FILE_100'
 """Инлайн-клавиатуры. Формат callback_data: «раздел:действие:аргумент»."""
 
 # --------------------------------------------------------------------------
@@ -42814,9 +43249,9 @@ def queue_item(lang: str = "ru") -> InlineKeyboardMarkup:
                                   callback_data="menu:mod")],
         ]
     )
-RADAR_FILE_99
+RADAR_FILE_100
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/states.py"
-cat > "radar/states.py" <<'RADAR_FILE_100'
+cat > "radar/states.py" <<'RADAR_FILE_101'
 """Состояния FSM."""
 
 # --------------------------------------------------------------------------
@@ -42854,9 +43289,9 @@ class Form(StatesGroup):
     quiet_hours = State()          # интервал тихих часов
     chat_message = State()         # объявление в группу (суперадминистратор)
     chat_invite = State()          # ссылка приглашения в группу
-RADAR_FILE_100
+RADAR_FILE_101
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/middlewares.py"
-cat > "radar/middlewares.py" <<'RADAR_FILE_101'
+cat > "radar/middlewares.py" <<'RADAR_FILE_102'
 """Middleware доступа: регистрация по инвайту и отсев посторонних."""
 
 # --------------------------------------------------------------------------
@@ -43051,9 +43486,9 @@ class AccessMiddleware(BaseMiddleware):
             pass
         except Exception:  # noqa: BLE001
             log.debug("Не удалось спросить про язык")
-RADAR_FILE_101
+RADAR_FILE_102
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/monitor.py"
-cat > "radar/monitor.py" <<'RADAR_FILE_102'
+cat > "radar/monitor.py" <<'RADAR_FILE_103'
 """Фоновый цикл: сбор источников, разбор через ИИ, группировка и рассылка."""
 
 # --------------------------------------------------------------------------
@@ -44009,9 +44444,9 @@ async def _run_once() -> None:
                     return
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(15.0, config.POLL_INTERVAL - elapsed))
-RADAR_FILE_102
+RADAR_FILE_103
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/health.py"
-cat > "radar/health.py" <<'RADAR_FILE_103'
+cat > "radar/health.py" <<'RADAR_FILE_104'
 """Проверка жизни бота для HEALTHCHECK контейнера.
 
 Запускается снаружи процесса — `python -m radar.health` — и потому смотрит
@@ -44076,9 +44511,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_103
+RADAR_FILE_104
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/netguard.py"
-cat > "radar/netguard.py" <<'RADAR_FILE_104'
+cat > "radar/netguard.py" <<'RADAR_FILE_105'
 """Куда боту можно ходить по ссылке, присланной человеком.
 
 Ссылку в бот присылает кто угодно, а запрос по ней делает бот — изнутри
@@ -44216,9 +44651,9 @@ async def allowed(url: str) -> bool:
     # Достаточно одного внутреннего адреса, чтобы отказать: имя с двумя
     # записями, одна из которых 127.0.0.1, — это и есть обход проверки.
     return all(is_public_ip(item) for item in addresses)
-RADAR_FILE_104
+RADAR_FILE_105
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/dockerapi.py"
-cat > "radar/dockerapi.py" <<'RADAR_FILE_105'
+cat > "radar/dockerapi.py" <<'RADAR_FILE_106'
 """Общий клиент Docker Engine API поверх Unix-сокета.
 
 Вынесено из `radar/updater.py` в 4.9.8.4: `radar/rustdesk.py` управляет
@@ -44398,9 +44833,9 @@ async def list_containers(session_, prefix: str = "radar") -> list[dict]:
         })
     result.sort(key=lambda row: row["name"])
     return result
-RADAR_FILE_105
+RADAR_FILE_106
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/appapi.py"
-cat > "radar/appapi.py" <<'RADAR_FILE_106'
+cat > "radar/appapi.py" <<'RADAR_FILE_107'
 """API для приложений HydraVPN: вход по коду из бота и выдача подписок (5.9.1).
 
 Приложения — HydraVPN для Android и HydraVPN for Routers — не заводят
@@ -44669,9 +45104,9 @@ async def subscriptions(uid: str | int) -> list[dict[str, Any]]:
 
 __all__ = ["enabled", "issue_code", "exchange", "session_of", "devices", "all_devices", "revoke",
            "revoke_token", "profile", "subscriptions", "CODE_TTL", "MAX_DEVICES"]
-RADAR_FILE_106
+RADAR_FILE_107
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/settingsets.py"
-cat > "radar/settingsets.py" <<'RADAR_FILE_107'
+cat > "radar/settingsets.py" <<'RADAR_FILE_108'
 """Настройки, которые раньше правились только в .env (5.9.2.2).
 
 До 5.9.2.2 в панели можно было изменить ключи ИИ и несколько токенов, а всё
@@ -44910,9 +45345,9 @@ def refine(settings: tuple[Any, ...]) -> tuple[Any, ...]:
         changes.update(REFINE.get(item.key, {}))
         result.append(dataclasses.replace(item, **changes) if changes else item)
     return tuple(result)
-RADAR_FILE_107
+RADAR_FILE_108
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/sourceprune.py"
-cat > "radar/sourceprune.py" <<'RADAR_FILE_108'
+cat > "radar/sourceprune.py" <<'RADAR_FILE_109'
 """Удаление молчащих источников (с 5.9.2.1).
 
 `sourcecheck` находит источники, которые умерли или затихли, но убирать их
@@ -45020,9 +45455,9 @@ def apply(candidates: list[Candidate]) -> list[Candidate]:
 
 
 __all__ = ["Candidate", "DEFAULT_DAYS", "silent_days", "select", "suspicious", "apply"]
-RADAR_FILE_108
+RADAR_FILE_109
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnslots.py"
-cat > "radar/vpnslots.py" <<'RADAR_FILE_109'
+cat > "radar/vpnslots.py" <<'RADAR_FILE_110'
 """Добавление, правка и удаление VPN-панелей (слотов) из веб-панели (5.9.2.1).
 
 До 5.9.2.1 панель можно было завести только правкой десяти отдельных
@@ -45215,9 +45650,9 @@ async def check(number: int) -> tuple[bool, str]:
 
 __all__ = ["KindInfo", "FIELDS", "SECRET_FIELDS", "kinds", "numbers", "read", "configured",
            "free_number", "validate", "save", "issued_on", "remove", "check"]
-RADAR_FILE_109
+RADAR_FILE_110
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/updater.py"
-cat > "radar/updater.py" <<'RADAR_FILE_110'
+cat > "radar/updater.py" <<'RADAR_FILE_111'
 """Обновление системы из веб-панели.
 
 Панель живёт внутри контейнера, а `install.sh` — хостовый скрипт: он
@@ -45538,9 +45973,9 @@ def progress(lines: int = 40) -> tuple[str, str]:
         return "", ""
     latest = items[0]
     return latest.name, logs_module.tail(latest, lines)
-RADAR_FILE_110
+RADAR_FILE_111
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/uploads.py"
-cat > "radar/uploads.py" <<'RADAR_FILE_111'
+cat > "radar/uploads.py" <<'RADAR_FILE_112'
 """Приём присланных файлов: один вход для всех разделов бота.
 
 До 5.9.0.1 у каждого раздела был свой обработчик `F.document`, и работал
@@ -45640,9 +46075,9 @@ def reset() -> None:
 
 __all__ = ["COOKIES", "SOURCES", "EXPECT_TTL", "register", "handler_for",
            "expect", "expected", "done", "classify", "looks_like_cookies", "reset"]
-RADAR_FILE_111
+RADAR_FILE_112
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/wipe.py"
-cat > "radar/wipe.py" <<'RADAR_FILE_112'
+cat > "radar/wipe.py" <<'RADAR_FILE_113'
 """Полное удаление системы с сервера, запускаемое из панели.
 
 Зачем отдельный модуль, а не кнопка в updater: обновление и удаление
@@ -45810,9 +46245,9 @@ async def start(actor: str) -> tuple[bool, str]:
 
     log.warning("ЗАПУЩЕНО ПОЛНОЕ УДАЛЕНИЕ СИСТЕМЫ из панели (%s)", actor)
     return True, ""
-RADAR_FILE_112
+RADAR_FILE_113
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/moderation.py"
-cat > "radar/moderation.py" <<'RADAR_FILE_113'
+cat > "radar/moderation.py" <<'RADAR_FILE_114'
 """Правила модерации групп: решение отдельно от Telegram.
 
 Здесь нет ни aiogram, ни сети — только «текст плюс состояние автора
@@ -46004,9 +46439,9 @@ def describe(decision: Decision, settings: Settings) -> str:
     if decision.delete_message:
         return f"🧹 Удалено: {decision.reason}"
     return ""
-RADAR_FILE_113
+RADAR_FILE_114
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatlink.py"
-cat > "radar/chatlink.py" <<'RADAR_FILE_114'
+cat > "radar/chatlink.py" <<'RADAR_FILE_115'
 """Ссылка на группу, где бот работает модератором.
 
 Зачем отдельный модуль: ссылка нужна и боту, и веб-панели, а правило
@@ -46178,9 +46613,9 @@ async def link_for(chat_id: int, bot=None) -> tuple[bool, str]:
         return False, "Telegram не вернул ссылку."
     _cache[chat_id] = link
     return True, link
-RADAR_FILE_114
+RADAR_FILE_115
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cloudstore.py"
-cat > "radar/cloudstore.py" <<'RADAR_FILE_115'
+cat > "radar/cloudstore.py" <<'RADAR_FILE_116'
 """Облачное хранилище музыки по WebDAV (с 4.9.9).
 
 Продолжение внешнего носителя из 4.9.5.4: там каталог музыки выносился
@@ -46443,9 +46878,9 @@ async def check() -> tuple[bool, str]:
     from .music import format_size
 
     return True, f"доступно, свободно {format_size(available)}"
-RADAR_FILE_115
+RADAR_FILE_116
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rclonerc.py"
-cat > "radar/rclonerc.py" <<'RADAR_FILE_116'
+cat > "radar/rclonerc.py" <<'RADAR_FILE_117'
 """Управляющее API rclone: подключение облаков без терминала (с 4.9.9.1).
 
 В 4.9.9 облако подключалось руками на сервере: `rclone config`, потом
@@ -46749,9 +47184,9 @@ async def check() -> tuple[bool, str]:
     if not ok:
         return False, str(body)
     return True, "управляющее API отвечает"
-RADAR_FILE_116
+RADAR_FILE_117
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/metrics.py"
-cat > "radar/metrics.py" <<'RADAR_FILE_117'
+cat > "radar/metrics.py" <<'RADAR_FILE_118'
 """Метрики и здоровье системы в одном месте (с 4.9.9.3).
 
 Закрывает два пункта раздела 4.9 дорожной карты:
@@ -47052,9 +47487,9 @@ def render(data: dict[str, Any]) -> str:
             lines.append(f"{icon} {esc(row['name'])} — {esc(state)}{esc(tail)}")
 
     return "\n".join(lines)
-RADAR_FILE_117
+RADAR_FILE_118
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adfilter.py"
-cat > "radar/adfilter.py" <<'RADAR_FILE_118'
+cat > "radar/adfilter.py" <<'RADAR_FILE_119'
 """Реклама VPN-сервисов в пересылаемых текстах (с 4.9.9.3).
 
 Городские каналы и СМИ всё чаще вставляют в посты рекламу VPN:
@@ -47200,9 +47635,9 @@ def split_entries(entries: Iterable[Item]) -> tuple[list[Item], int]:
         if text.strip():
             clean.append(replace(entry, summary=text.strip()))
     return clean, removed
-RADAR_FILE_118
+RADAR_FILE_119
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicmeta.py"
-cat > "radar/musicmeta.py" <<'RADAR_FILE_119'
+cat > "radar/musicmeta.py" <<'RADAR_FILE_120'
 """Метаданные треков из открытых баз (с 4.9.9.3).
 
 Пункт 3 раздела 4.9.5 дорожной карты: «источники для подбора». Подбор
@@ -47417,9 +47852,9 @@ def apply(track: dict, meta: dict[str, Any]) -> bool:
         track["related"] = related
         changed = True
     return changed
-RADAR_FILE_119
+RADAR_FILE_120
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/chatpost.py"
-cat > "radar/chatpost.py" <<'RADAR_FILE_120'
+cat > "radar/chatpost.py" <<'RADAR_FILE_121'
 """Объявления в группы от имени бота: правила отдельно от отправки.
 
 Суперадминистратор пишет в администрируемую группу прямо из раздела
@@ -47523,9 +47958,9 @@ def preview(draft: Draft) -> str:
         "———\n\n"
         "<i>Отправляется от имени бота и не отзывается. Проверьте текст.</i>"
     )
-RADAR_FILE_120
+RADAR_FILE_121
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/group.py"
-cat > "radar/handlers/group.py" <<'RADAR_FILE_121'
+cat > "radar/handlers/group.py" <<'RADAR_FILE_122'
 """Модерация групп: исполнение решений и команды администраторов.
 
 Разделение намеренное: что делать — решает `radar/moderation.py`, чистый
@@ -48107,9 +48542,9 @@ async def moderate(message: Message) -> None:
     log.info("Модерация %s: %s (%s)", message.chat.id, decision.action,
              decision.reason)
     await _apply(message, decision, settings)
-RADAR_FILE_121
+RADAR_FILE_122
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/chats.py"
-cat > "radar/handlers/chats.py" <<'RADAR_FILE_122'
+cat > "radar/handlers/chats.py" <<'RADAR_FILE_123'
 """Раздел «Чаты» в самой переписке с ботом.
 
 Отсюда видно, где бот модерирует, и отсюда же можно перейти в группу:
@@ -48593,9 +49028,9 @@ async def list_groups(call: CallbackQuery, user: dict) -> None:
             )
         )
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_122
+RADAR_FILE_123
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/adminsock.py"
-cat > "radar/adminsock.py" <<'RADAR_FILE_123'
+cat > "radar/adminsock.py" <<'RADAR_FILE_124'
 """Канал управления в работающий процесс бота (с 5.9.3).
 
 **Поломка, ради которой он нужен.** Командная строка запускается через
@@ -48803,9 +49238,9 @@ def call(argv: list[str]) -> tuple[int, str, str] | None:
         return 1, "", "Связь с ботом прервалась; результат неизвестен — проверьте командой list.\n"
     finally:
         client.close()
-RADAR_FILE_123
+RADAR_FILE_124
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/accounts.py"
-cat > "radar/accounts.py" <<'RADAR_FILE_124'
+cat > "radar/accounts.py" <<'RADAR_FILE_125'
 """Живые и мёртвые аккаунты в Telegram (с 5.9.4).
 
 Три разные задачи, и важно не путать, на что способен Bot API:
@@ -49019,9 +49454,9 @@ async def remove_deleted(bot: Any, chat_id: int, ids: list[int],
     if removed:
         log.info("Чат %s: исключено удалённых аккаунтов — %d", chat_id, removed)
     return removed
-RADAR_FILE_124
+RADAR_FILE_125
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli.py"
-cat > "radar/cli.py" <<'RADAR_FILE_125'
+cat > "radar/cli.py" <<'RADAR_FILE_126'
 """Командная строка: то же, что умеет веб-панель, только из консоли.
 
 Зачем. Панель требует браузера, входа через Telegram и живого домена.
@@ -49861,9 +50296,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_125
+RADAR_FILE_126
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_ops.py"
-cat > "radar/cli_ops.py" <<'RADAR_FILE_126'
+cat > "radar/cli_ops.py" <<'RADAR_FILE_127'
 """Консоль: подписки, VPN-панели и доступы, партнёры, перезапуск (с 5.9.8).
 
 Продолжение `radar.cli`, как и `cli_admin`: подкоманды зовут те же функции,
@@ -50318,9 +50753,9 @@ def register(subparsers, common) -> None:
                                     parents=[common])
     restart_cmd.add_argument("--yes", action="store_true")
     restart_cmd.set_defaults(func=cmd_restart)
-RADAR_FILE_126
+RADAR_FILE_127
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/ops.py"
-cat > "radar/ops.py" <<'RADAR_FILE_127'
+cat > "radar/ops.py" <<'RADAR_FILE_128'
 """Действия администрации, общие для панели и консоли (с 5.9.8).
 
 Раньше правка партнёрских проектов и перезапуск бота жили внутри
@@ -50489,9 +50924,9 @@ async def pin_model(name: str, target: str = "assistant") -> Result:
         return Result(False, "Не удалось закрепить модель")
     return Result(True, f"Модель {'разбора новостей' if role == ai.ANALYSIS else 'ассистента'}: "
                         f"{name}", role)
-RADAR_FILE_127
+RADAR_FILE_128
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordmusic.py"
-cat > "radar/discordmusic.py" <<'RADAR_FILE_128'
+cat > "radar/discordmusic.py" <<'RADAR_FILE_129'
 """Музыка в голосовом канале Discord по ссылке (с 5.9.7).
 
 ⚠️ С ЖИВЫМ DISCORD НЕ ПРОВЕРЕНО.
@@ -51082,9 +51517,9 @@ class DiscordPyHost(VoiceHost):
     def channel_of(self, handle: Any) -> str:
         channel = getattr(handle, "channel", None)
         return str(getattr(channel, "id", "") or "")
-RADAR_FILE_128
+RADAR_FILE_129
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/discordverify.py"
-cat > "radar/discordverify.py" <<'RADAR_FILE_129'
+cat > "radar/discordverify.py" <<'RADAR_FILE_130'
 """Проверка участников Discord-сервера (с 5.9.5): логика без сети.
 
 Честно о том, что тут возможно. У Discord нет капчи для ботов, и надёжно
@@ -51270,9 +51705,9 @@ def evaluate(user_id: int | str, username: str = "", global_name: str = "",
     if suspicious_name(username, global_name):
         return Verdict("kick", "в имени реклама или приглашение")
     return Verdict("allow")
-RADAR_FILE_129
+RADAR_FILE_130
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_admin.py"
-cat > "radar/cli_admin.py" <<'RADAR_FILE_130'
+cat > "radar/cli_admin.py" <<'RADAR_FILE_131'
 """Команды консоли для пользователей, ключей, журналов и статистики (с 5.9.3.1).
 
 Продолжение `radar.cli`: тот же принцип — подкоманды зовут те же функции,
@@ -51735,9 +52170,9 @@ def register(subparsers, common) -> None:
     audit_cmd.add_argument("--limit", type=int, default=50)
     audit_cmd.add_argument("--yes", action="store_true")
     audit_cmd.set_defaults(func=cmd_audit)
-RADAR_FILE_130
+RADAR_FILE_131
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_extra.py"
-cat > "radar/cli_extra.py" <<'RADAR_FILE_131'
+cat > "radar/cli_extra.py" <<'RADAR_FILE_132'
 """Консоль: проверка ссылок, cookies, история, события, облако, музыка,
 чаты (ссылка, объявление, предупреждения) и короткие ссылки (с 5.9.10).
 
@@ -52100,9 +52535,9 @@ def register(subparsers, common) -> None:
     cloud_cmd.add_argument("--set", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ")
     cloud_cmd.add_argument("--yes", action="store_true")
     cloud_cmd.set_defaults(func=cmd_cloud)
-RADAR_FILE_131
+RADAR_FILE_132
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cli_ai.py"
-cat > "radar/cli_ai.py" <<'RADAR_FILE_132'
+cat > "radar/cli_ai.py" <<'RADAR_FILE_133'
 """Консоль: ИИ, метрики, замеры, сеть (с 5.9.9).
 
 Продолжение `radar.cli`. Часть данных живёт только в памяти работающего
@@ -52395,9 +52830,9 @@ def register(subparsers, common) -> None:
                                                   "egress and proxy: status"),
                                     parents=[common])
     net_cmd.set_defaults(func=cmd_net)
-RADAR_FILE_132
+RADAR_FILE_133
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/clitext.py"
-cat > "radar/clitext.py" <<'RADAR_FILE_133'
+cat > "radar/clitext.py" <<'RADAR_FILE_134'
 """Язык командной строки: русский и английский (с 5.9.3.1).
 
 Строки консоли не идут через `radar/i18n.py`: тот словарь — для бота и
@@ -52462,9 +52897,9 @@ def current() -> str:
 def L(ru: str, en: str) -> str:  # noqa: N802 — короткое имя нужно ради читаемости вызовов
     """Строка на языке консоли."""
     return ru if _current == RU else en
-RADAR_FILE_133
+RADAR_FILE_134
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/__main__.py"
-cat > "radar/__main__.py" <<'RADAR_FILE_134'
+cat > "radar/__main__.py" <<'RADAR_FILE_135'
 """Точка входа пакета: `python -m radar` — то же, что `python -m radar.cli`.
 
 Короткая форма существует ради обёртки `tools/radarctl.sh` и ради того,
@@ -52486,9 +52921,9 @@ from .cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
-RADAR_FILE_134
+RADAR_FILE_135
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/uninstall.sh"
-cat > "tools/uninstall.sh" <<'RADAR_FILE_135'
+cat > "tools/uninstall.sh" <<'RADAR_FILE_136'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -52630,9 +53065,9 @@ if [ -n "$final_backup" ]; then
     printf "  Когда она станет не нужна: rm %s\n" "$final_backup"
 fi
 printf "\n"
-RADAR_FILE_135
+RADAR_FILE_136
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/restore.sh"
-cat > "tools/restore.sh" <<'RADAR_FILE_136'
+cat > "tools/restore.sh" <<'RADAR_FILE_137'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -52874,9 +53309,9 @@ else
 fi
 
 printf "\n  Проверьте данные в боте: /stats — пользователи, локации, источники\n\n"
-RADAR_FILE_136
+RADAR_FILE_137
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "tools/radarctl.sh"
-cat > "tools/radarctl.sh" <<'RADAR_FILE_137'
+cat > "tools/radarctl.sh" <<'RADAR_FILE_138'
 #!/usr/bin/env bash
 
 # --------------------------------------------------------------------------
@@ -52982,9 +53417,9 @@ case "$1" in
         exec docker exec -i "$CONTAINER" python -m radar.cli "$@"
         ;;
 esac
-RADAR_FILE_137
+RADAR_FILE_138
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/rustdesk.py"
-cat > "radar/rustdesk.py" <<'RADAR_FILE_138'
+cat > "radar/rustdesk.py" <<'RADAR_FILE_139'
 """Управление RustDesk-сервером (hbbs/hbbr) из бота.
 
 Открытая версия `rustdesk-server` не публикует API: число подключений
@@ -53177,9 +53612,9 @@ async def control(action: str) -> tuple[bool, str]:
     if problems:
         return False, "; ".join(problems)
     return True, ""
-RADAR_FILE_138
+RADAR_FILE_139
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnpanels.py"
-cat > "radar/vpnpanels.py" <<'RADAR_FILE_139'
+cat > "radar/vpnpanels.py" <<'RADAR_FILE_140'
 """Единый слой поверх VPN-панелей (с 5.0, десять видов — с 5.0.1).
 
 Раздел выдачи не знает, какая панель стоит за слотом: он зовёт шесть
@@ -54933,9 +55368,9 @@ def build(kind: str, **options: Any) -> Panel | None:
     """Клиент нужной панели или None, если название незнакомое."""
     cls = KINDS.get(normalize_kind(kind))
     return cls(**options) if cls else None
-RADAR_FILE_139
+RADAR_FILE_140
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpn.py"
-cat > "radar/vpn.py" <<'RADAR_FILE_140'
+cat > "radar/vpn.py" <<'RADAR_FILE_141'
 """Выдача VPN-доступа: несколько панелей, решение — только суперадминистратора.
 
 С 5.0 — выдача уже авторизованным без платежей. С 5.0.1:
@@ -55755,9 +56190,9 @@ def describe(account: Account, lang: str = "ru") -> str:
     if not account.enabled:
         lines.append(i18n.t("vpn.disabled", lang, "⛔ Доступ отключён"))
     return "\n".join(lines)
-RADAR_FILE_140
+RADAR_FILE_141
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/payments.py"
-cat > "radar/payments.py" <<'RADAR_FILE_141'
+cat > "radar/payments.py" <<'RADAR_FILE_142'
 """Платёжный слой со сменным провайдером (с 5.0.2).
 
 Пункт 5 блока 5.0: продажи не должны знать, кто принимает деньги.
@@ -56130,9 +56565,9 @@ def provider() -> Provider:
                                return_url=_setting("PAY_PLATEGA_RETURN_URL"),
                                failed_url=_setting("PAY_PLATEGA_FAILED_URL"))
     return ManualProvider()
-RADAR_FILE_141
+RADAR_FILE_142
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/vpnsales.py"
-cat > "radar/vpnsales.py" <<'RADAR_FILE_142'
+cat > "radar/vpnsales.py" <<'RADAR_FILE_143'
 """Продажа VPN-доступа по тарифам (с 5.0.2).
 
 Пункт 4 блока 5.0. Тариф — срок, предел трафика и число устройств;
@@ -56504,9 +56939,9 @@ STATUS_TITLES = {
     NEW: "ждёт оплаты", PAID: "оплачен, выдаётся", DONE: "выдан",
     FAILED: "оплачен, выдать не удалось", EXPIRED: "истёк", CANCELLED: "отменён",
 }
-RADAR_FILE_142
+RADAR_FILE_143
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/__init__.py"
-cat > "radar/handlers/__init__.py" <<'RADAR_FILE_143'
+cat > "radar/handlers/__init__.py" <<'RADAR_FILE_144'
 """Роутеры обработчиков. Порядок подключения важен: ассистент — последним."""
 
 # --------------------------------------------------------------------------
@@ -56629,9 +57064,9 @@ def setup(dp: Dispatcher) -> None:
 
 
 __all__ = ["setup"]
-RADAR_FILE_143
+RADAR_FILE_144
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/common.py"
-cat > "radar/handlers/common.py" <<'RADAR_FILE_144'
+cat > "radar/handlers/common.py" <<'RADAR_FILE_145'
 """Команды /start, /menu, /help, /id, /cancel и главное меню."""
 
 # --------------------------------------------------------------------------
@@ -57102,9 +57537,9 @@ async def stats_button(call: CallbackQuery, role: str, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, _stats_text(), back_kb("menu:manage", "◀️ Назад"))
-RADAR_FILE_144
+RADAR_FILE_145
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/locations.py"
-cat > "radar/handlers/locations.py" <<'RADAR_FILE_145'
+cat > "radar/handlers/locations.py" <<'RADAR_FILE_146'
 """Локации пользователя: добавление, список, удаление, погода по группам."""
 
 # --------------------------------------------------------------------------
@@ -57270,9 +57705,9 @@ async def show_weather(call: CallbackQuery, user: dict[str, Any]) -> None:
                 markup,
                 user,
             )
-RADAR_FILE_145
+RADAR_FILE_146
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings.py"
-cat > "radar/handlers/settings.py" <<'RADAR_FILE_146'
+cat > "radar/handlers/settings.py" <<'RADAR_FILE_147'
 """Настройки: категории оповещений и режим отправки погоды."""
 
 # --------------------------------------------------------------------------
@@ -57770,9 +58205,9 @@ async def save_quiet(message: Message, state: FSMContext, user: dict[str, Any]) 
         ),
         reply_markup=keyboards.settings_menu(user),
     )
-RADAR_FILE_146
+RADAR_FILE_147
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sources.py"
-cat > "radar/handlers/sources.py" <<'RADAR_FILE_147'
+cat > "radar/handlers/sources.py" <<'RADAR_FILE_148'
 """Источники: предложение пользователем, очередь модерации, ручное добавление."""
 
 # --------------------------------------------------------------------------
@@ -58278,9 +58713,9 @@ async def cmd_check_sources(message: Message, role: str, user: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     await send_html(message.chat.id, sourcecheck.render(report), back_kb("menu:mod", _t(user, "menu.back", "◀️ Назад")))
-RADAR_FILE_147
+RADAR_FILE_148
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/users.py"
-cat > "radar/handlers/users.py" <<'RADAR_FILE_148'
+cat > "radar/handlers/users.py" <<'RADAR_FILE_149'
 """Пользователи: список, карточка, смена роли, удаление, правка локаций и настроек.
 
 Переведено на английский в 4.9.9.3 (ROADMAP, п.20: «модераторские экраны —
@@ -58724,9 +59159,9 @@ async def pick_location(call: CallbackQuery, state: FSMContext, role: str,
                             i18n.language_of(user)),
     )
     await _notify_owner(target, location)
-RADAR_FILE_148
+RADAR_FILE_149
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/features.py"
-cat > "radar/handlers/features.py" <<'RADAR_FILE_149'
+cat > "radar/handlers/features.py" <<'RADAR_FILE_150'
 """Управление возможностями системы. Доступно только суперадминистратору.
 
 Флаги переключаются на живой системе: изменение сразу попадает в память
@@ -58873,9 +59308,9 @@ async def toggle(call: CallbackQuery, role: str) -> None:
     else:
         await call.answer(f"{flag.title}: {'включено' if value else 'выключено'}")
     await safe_edit(call, _group_text(group), _menu(group))
-RADAR_FILE_149
+RADAR_FILE_150
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/logs.py"
-cat > "radar/handlers/logs.py" <<'RADAR_FILE_150'
+cat > "radar/handlers/logs.py" <<'RADAR_FILE_151'
 """Журналы в интерфейсе бота. Доступно только суперадминистратору.
 
 Журналы содержат идентификаторы пользователей, адреса и внутренние ошибки,
@@ -59163,9 +59598,9 @@ async def clear_kind(call: CallbackQuery, role: str) -> None:
     removed, freed = logs.purge({kind})
     await call.answer(f"Удалено файлов: {removed}")
     await safe_edit(call, _overview(), _menu())
-RADAR_FILE_150
+RADAR_FILE_151
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/perf.py"
-cat > "radar/handlers/perf.py" <<'RADAR_FILE_151'
+cat > "radar/handlers/perf.py" <<'RADAR_FILE_152'
 """Отчёт о том, куда уходит время цикла. Только суперадминистратору.
 
 Нужен, чтобы оптимизировать по замерам, а не по догадке. На слабом
@@ -59412,9 +59847,9 @@ async def metrics_show(call: CallbackQuery, role: str) -> None:
     await call.answer()
     await safe_edit(call, metrics.render(await metrics.snapshot()),
                     _metrics_menu())
-RADAR_FILE_151
+RADAR_FILE_152
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/shortlink.py"
-cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_152'
+cat > "radar/handlers/shortlink.py" <<'RADAR_FILE_153'
 """Сокращение ссылок — администрации.
 
 Публичным сервис намеренно не сделан: короткая ссылка, которую может
@@ -59785,9 +60220,9 @@ async def section_clear_ask(call: CallbackQuery, role: str) -> None:
             [InlineKeyboardButton(text="◀️ Отмена", callback_data="short:menu")],
         ]),
     )
-RADAR_FILE_152
+RADAR_FILE_153
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/partners.py"
-cat > "radar/handlers/partners.py" <<'RADAR_FILE_153'
+cat > "radar/handlers/partners.py" <<'RADAR_FILE_154'
 """Раздел «Партнёрские проекты».
 
 Список проектов автора вместо одной кнопки. Просмотр — всем, правка —
@@ -60362,9 +60797,9 @@ async def promo_export(call: CallbackQuery, role: str) -> None:
             "в файле нет и по коду они не восстанавливаются.</i>"
         ),
     )
-RADAR_FILE_153
+RADAR_FILE_154
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/history.py"
-cat > "radar/handlers/history.py" <<'RADAR_FILE_154'
+cat > "radar/handlers/history.py" <<'RADAR_FILE_155'
 """Журнал событий пользователя.
 
 Функция `repo.history()` была написана давно и не вызывалась ниоткуда:
@@ -60465,9 +60900,9 @@ async def menu_history(call: CallbackQuery, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, await _render(call.from_user.id, i18n.language_of(user)), back_kb())
-RADAR_FILE_154
+RADAR_FILE_155
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/language.py"
-cat > "radar/handlers/language.py" <<'RADAR_FILE_155'
+cat > "radar/handlers/language.py" <<'RADAR_FILE_156'
 """Выбор языка интерфейса.
 
 Спрашиваем один раз: при первом запуске у новых, при первом обращении
@@ -60555,9 +60990,9 @@ async def choose(call: CallbackQuery, user: dict, role: str) -> None:
         await call.message.answer(
             greeting, reply_markup=keyboards.main_menu(role, user)
         )
-RADAR_FILE_155
+RADAR_FILE_156
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/sos.py"
-cat > "radar/handlers/sos.py" <<'RADAR_FILE_156'
+cat > "radar/handlers/sos.py" <<'RADAR_FILE_157'
 """Кнопка SOS в интерфейсе бота."""
 
 # --------------------------------------------------------------------------
@@ -60978,9 +61413,9 @@ async def cancel_alert(call: CallbackQuery, user: dict) -> None:
         "✅ <b>Отбой</b>\n\nПовторные сигналы прекращены, контакты уведомлены.",
         back_kb(),
     )
-RADAR_FILE_156
+RADAR_FILE_157
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/media.py"
-cat > "radar/handlers/media.py" <<'RADAR_FILE_157'
+cat > "radar/handlers/media.py" <<'RADAR_FILE_158'
 """Загрузка видео по ссылке в интерфейсе бота.
 
 Роутер подключается перед ассистентом, но после всех остальных: ссылку
@@ -62178,9 +62613,9 @@ async def apply_media_payment(message, user: dict, payload: str,
         "Telegram, снять его подпиской нельзя.",
         reply_markup=back_kb(),
     )
-RADAR_FILE_157
+RADAR_FILE_158
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/settings_admin.py"
-cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_158'
+cat > "radar/handlers/settings_admin.py" <<'RADAR_FILE_159'
 """Настройки системы для суперадминистратора: ключи доступа и проверка ИИ.
 
 Здесь же запускается сравнение провайдеров: раньше это был отдельный скрипт
@@ -62934,9 +63369,9 @@ async def ai_models(call: CallbackQuery, role: str) -> None:
     await send_html(
         call.message.chat.id, "<i>Готово.</i>", keyboards.ai_menu()
     )
-RADAR_FILE_158
+RADAR_FILE_159
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/network.py"
-cat > "radar/handlers/network.py" <<'RADAR_FILE_159'
+cat > "radar/handlers/network.py" <<'RADAR_FILE_160'
 """Выход бота в интернет и выбор провайдера ИИ. Только суперадминистратор."""
 
 # --------------------------------------------------------------------------
@@ -63460,9 +63895,9 @@ async def provider_pick(call: CallbackQuery, role: str) -> None:
     lines.append("\n<i>Действует со следующего разбора новостей.</i>")
 
     await safe_edit(call, "\n".join(lines), _provider_menu())
-RADAR_FILE_159
+RADAR_FILE_160
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/rustdesk.py"
-cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_160'
+cat > "radar/handlers/rustdesk.py" <<'RADAR_FILE_161'
 """Раздел «RustDesk»: адрес и ключ сервера, число подключений, управление.
 
 Три уровня доступа в одном разделе:
@@ -63670,9 +64105,9 @@ async def do_action(call: CallbackQuery, role: str) -> None:
     await safe_edit(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="rd:menu")],
     ]))
-RADAR_FILE_160
+RADAR_FILE_161
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/vpn.py"
-cat > "radar/handlers/vpn.py" <<'RADAR_FILE_161'
+cat > "radar/handlers/vpn.py" <<'RADAR_FILE_162'
 """Раздел «VPN»: заявка, выдача на выбранные панели, ссылки (с 5.0).
 
 Кто что видит (с 5.0.1):
@@ -64659,9 +65094,9 @@ async def list_orders(call: CallbackQuery, role: str) -> None:
     state = "продажи включены" if ok else f"продажи не работают: {esc(reason)}"
     await safe_edit(call, f"🧾 <b>Заказы VPN</b> — {state}\n\n{body}",
                     InlineKeyboardMarkup(inline_keyboard=rows))
-RADAR_FILE_161
+RADAR_FILE_162
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/digest.py"
-cat > "radar/handlers/digest.py" <<'RADAR_FILE_162'
+cat > "radar/handlers/digest.py" <<'RADAR_FILE_163'
 """Новостные подборки в интерфейсе бота и оплата через Telegram Stars."""
 
 # --------------------------------------------------------------------------
@@ -65082,9 +65517,9 @@ async def _apply_plans(message: Message, state: FSMContext, value: str) -> None:
         f"✅ Тарифы обновлены: {esc(plans)}",
         reply_markup=back_kb("sub:admin", "◀️ Назад"),
     )
-RADAR_FILE_162
+RADAR_FILE_163
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/documents.py"
-cat > "radar/handlers/documents.py" <<'RADAR_FILE_163'
+cat > "radar/handlers/documents.py" <<'RADAR_FILE_164'
 """Единая точка приёма документов (с 5.9.0.1).
 
 Раньше `F.document` слушали два раздела сразу — источники и cookies, —
@@ -65125,9 +65560,9 @@ async def route_document(message: Message, role: str, user: dict) -> None:
 
 
 __all__ = ["router"]
-RADAR_FILE_163
+RADAR_FILE_164
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/subscription.py"
-cat > "radar/handlers/subscription.py" <<'RADAR_FILE_164'
+cat > "radar/handlers/subscription.py" <<'RADAR_FILE_165'
 """Подписка одной кнопкой: состояние, пробный период, оплата.
 
 До 4.9 подписка продавалась из двух мест — из раздела подборок и из раздела
@@ -65389,9 +65824,9 @@ async def admin(call: CallbackQuery, role: str) -> None:
         "видео без дневного предела.",
         InlineKeyboardMarkup(inline_keyboard=rows),
     )
-RADAR_FILE_164
+RADAR_FILE_165
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/assistant.py"
-cat > "radar/handlers/assistant.py" <<'RADAR_FILE_165'
+cat > "radar/handlers/assistant.py" <<'RADAR_FILE_166'
 """ИИ-ассистент в диалоге. Доступен начиная с роли «модератор».
 
 Роутер подключается последним: перехватывает любой необработанный текст.
@@ -65541,9 +65976,9 @@ async def free_chat(message: Message, state: FSMContext, role: str, user: dict) 
         return
 
     await run(message, text)
-RADAR_FILE_165
+RADAR_FILE_166
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/linkcheck.py"
-cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_166'
+cat > "radar/handlers/linkcheck.py" <<'RADAR_FILE_167'
 """Проверка ссылок на признаки мошенничества — команда /check.
 
 Функция приехала из отдельного бота linkcheck (с 4.9.4 — часть «Радара»
@@ -66011,9 +66446,9 @@ async def choice_skip(call: CallbackQuery) -> None:
     _pending.pop(call.data.split(":")[2], None)
     await call.answer()
     await _drop_choice(call)
-RADAR_FILE_166
+RADAR_FILE_167
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/cookies.py"
-cat > "radar/cookies.py" <<'RADAR_FILE_167'
+cat > "radar/cookies.py" <<'RADAR_FILE_168'
 """Файл cookies для закрытых площадок — приём и подключение.
 
 Некоторые записи («закрыта настройками приватности», возрастные
@@ -66146,9 +66581,9 @@ def describe() -> str:
     except OSError:
         return "Cookies подключены."
     return f"Cookies подключены, обновлены {stamp}."
-RADAR_FILE_167
+RADAR_FILE_168
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music.py"
-cat > "radar/music.py" <<'RADAR_FILE_168'
+cat > "radar/music.py" <<'RADAR_FILE_169'
 """Музыка и плейлисты (с 4.9.5.2, каркас).
 
 Замысел из дорожной карты (раздел 4.9.5): треки присылаются файлом
@@ -66978,9 +67413,9 @@ def disk_report(paths: list[str]) -> str:
     if worst_percent >= DISK_WARN_PERCENT:
         head += f"\n⚠️ Один из дисков заполнен более чем на {DISK_WARN_PERCENT}% — место кончается."
     return head + "\n" + "\n".join(lines)
-RADAR_FILE_168
+RADAR_FILE_169
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/musicsearch.py"
-cat > "radar/musicsearch.py" <<'RADAR_FILE_169'
+cat > "radar/musicsearch.py" <<'RADAR_FILE_170'
 """Поиск и получение музыки из бесплатного каталога SoundCloud/YouTube.
 
 Движок адаптирован из ``core/app_logic.py`` проекта not_a_music
@@ -68206,9 +68641,9 @@ class MusicSearchClient:
         except _DOWNLOAD_FALLBACK_ERRORS as exc:
             log.info("Прямое скачивание %s не удалось (%s), пробую yt-dlp", track_id, exc)
             return await self._download_with_ytdlp(info, progress_cb)
-RADAR_FILE_169
+RADAR_FILE_170
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/music_social.py"
-cat > "radar/music_social.py" <<'RADAR_FILE_170'
+cat > "radar/music_social.py" <<'RADAR_FILE_171'
 """Социальная механика внешнего музыкального каталога (6.0.0).
 
 Здесь нет Telegram и сети: только записи пользователя и JSON в ``meta``.
@@ -68542,6 +68977,37 @@ async def delete_public_playlist(playlist_id: str, uid: str | int) -> bool:
         return True
 
 
+async def clear_public_playlist(playlist_id: str, uid: str | int) -> bool:
+    """Убрать все треки из плейлиста (только владелец)."""
+    async with _lock:
+        playlists = dict(await storage.meta_get(PLAYLISTS_KEY, {}) or {})
+        raw = playlists.get(playlist_id)
+        if not isinstance(raw, dict) or str(raw.get("founder_id")) != str(uid):
+            return False
+        item = _clean_playlist(raw, playlist_id)
+        item["tracks"] = []
+        playlists[playlist_id] = item
+        await storage.meta_set(PLAYLISTS_KEY, playlists)
+        return True
+
+
+async def reaction_state(track_id: str, uid: str | int) -> dict[str, int]:
+    """Состояние реакций пользователя и просмотров для карточки трека."""
+    uid = str(uid)
+    likes = await storage.meta_get(LIKES_KEY, {})
+    dislikes = await storage.meta_get(DISLIKES_KEY, {})
+    views = await storage.meta_get(VIEWS_KEY, {})
+    liked = uid in _uids((likes or {}).get(track_id))
+    disliked = uid in _uids((dislikes or {}).get(track_id))
+    return {
+        "likes": len(_uids((likes or {}).get(track_id))),
+        "dislikes": len(_uids((dislikes or {}).get(track_id))),
+        "views": max(0, int((views or {}).get(track_id) or 0)),
+        "liked": int(liked),
+        "disliked": int(disliked),
+    }
+
+
 async def share_track(track_id: str) -> dict[str, Any] | None:
     from . import musicsearch
 
@@ -68567,9 +69033,9 @@ async def stats(user: dict, uid: str | int | None = None) -> dict[str, int]:
         "saved": len(music.saved_tracks(user)),
         "playlists": own_playlists,
     }
-RADAR_FILE_170
+RADAR_FILE_171
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music.py"
-cat > "radar/handlers/music.py" <<'RADAR_FILE_171'
+cat > "radar/handlers/music.py" <<'RADAR_FILE_172'
 """Музыка: приём треков, плейлисты, воспроизведение (с 4.9.5.2).
 
 Каркас из дорожной карты 4.9.5: трек присылается файлом, играет
@@ -69188,9 +69654,9 @@ async def smart_build(call) -> None:
     await safe_edit(call, f"✅ Подборка «{esc(result)}» собрана.\n\n"
                           f"{music.describe(user, _role_of(call))}",
                     _menu(user, _role_of(call)))
-RADAR_FILE_171
+RADAR_FILE_172
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music_search.py"
-cat > "radar/handlers/music_search.py" <<'RADAR_FILE_172'
+cat > "radar/handlers/music_search.py" <<'RADAR_FILE_173'
 """Поиск и прослушивание внешнего музыкального каталога (6.0.0).
 
 Постоянно сохраняются только метаданные и Telegram ``file_id``. Байты аудио
@@ -69208,6 +69674,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets as secrets_module
 from typing import Any
 
 from aiogram import F, Router
@@ -69223,7 +69690,7 @@ from aiogram.types import (
     Message,
 )
 
-from .. import features, music, music_social as social, musicsearch, storage
+from .. import features, music, music_social as social, musicsearch, storage, subscription
 from ..states import Form
 from ..textutils import esc
 from ..tg import safe_edit
@@ -69235,17 +69702,37 @@ DOWNLOAD_TIMEOUT = 360
 
 
 def menu_kb() -> InlineKeyboardMarkup:
+    """Статичная главная клавиатура каталога (для возвратов без счётчика)."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Найти трек", callback_data="msc:ask")],
-        [InlineKeyboardButton(text="⭐ Избранное", callback_data="msc:saved"),
-         InlineKeyboardButton(text="🕘 История", callback_data="msc:history")],
-        [InlineKeyboardButton(text="📚 Плейлисты", callback_data="mss:list"),
-         InlineKeyboardButton(text="🏆 Топы", callback_data="mss:tops")],
-        [InlineKeyboardButton(text="🎲 Случайный", callback_data="msc:random"),
-         InlineKeyboardButton(text="👤 Профиль", callback_data="mss:profile")],
-        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="msc:help")],
+        [InlineKeyboardButton(text="🏆 Топ", callback_data="mss:tops"),
+         InlineKeyboardButton(text="⭐ Избранное", callback_data="msc:saved")],
+        [InlineKeyboardButton(text="🔍 Поиск", callback_data="msc:ask")],
+        [InlineKeyboardButton(text="🎵 Плейлисты", callback_data="mss:list")],
+        [InlineKeyboardButton(text="🕘 История", callback_data="msc:history"),
+         InlineKeyboardButton(text="🎲 Случайный", callback_data="msc:random")],
+        [InlineKeyboardButton(text="🏆 Топ плейлистов", callback_data="mss:toppl")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="mss:profile"),
+         InlineKeyboardButton(text="ℹ️ Помощь", callback_data="msc:help")],
         [InlineKeyboardButton(text="◀️ К моей музыке", callback_data="mus:menu")],
     ])
+
+
+async def menu_kb_full(user_id: str | int) -> InlineKeyboardMarkup:
+    """Главная клавиатура со счётчиком плейлистов, как в not_a_music."""
+    playlists = await social.user_playlists(user_id)
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="🏆 Топ", callback_data="mss:tops"),
+         InlineKeyboardButton(text="⭐ Избранное", callback_data="msc:saved")],
+        [InlineKeyboardButton(text="🔍 Поиск", callback_data="msc:ask")],
+        [InlineKeyboardButton(text=f"🎵 Плейлисты ({len(playlists)})", callback_data="mss:list")],
+        [InlineKeyboardButton(text="🕘 История", callback_data="msc:history"),
+         InlineKeyboardButton(text="🎲 Случайный", callback_data="msc:random")],
+        [InlineKeyboardButton(text="🏆 Топ плейлистов", callback_data="mss:toppl")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="mss:profile"),
+         InlineKeyboardButton(text="ℹ️ Помощь", callback_data="msc:help")],
+        [InlineKeyboardButton(text="◀️ К моей музыке", callback_data="mus:menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def menu_text() -> str:
@@ -69266,19 +69753,32 @@ def track_label(track: dict[str, Any]) -> str:
     ) or "Трек"
 
 
-async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu") -> InlineKeyboardMarkup:
-    liked, disliked = await social.reaction_counts(track_id)
+async def track_kb(track_id: str, user: dict, *, back: str = "msc:menu",
+                   next_cb: str | None = None, role: str | None = None,
+                   uid: str | int | None = None) -> InlineKeyboardMarkup:
+    uid_key = str(uid if uid is not None else (user.get("id") or user.get("uid") or ""))
+    state = await social.reaction_state(track_id, uid_key)
     saved = track_id in music.saved_tracks(user)
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="▶️ Слушать", callback_data=f"msc:play:{track_id}")],
-        [InlineKeyboardButton(text=f"👍 {liked}", callback_data=f"mss:like:{track_id}"),
-         InlineKeyboardButton(text=f"👎 {disliked}", callback_data=f"mss:dislike:{track_id}")],
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(
+            text=f"{'❤️' if state['liked'] else '🤍'} {state['likes']}",
+            callback_data=f"mss:like:{track_id}"),
+         InlineKeyboardButton(
+            text=f"{'💔' if state['disliked'] else '👎'} {state['dislikes']}",
+            callback_data=f"mss:dislike:{track_id}"),
+         InlineKeyboardButton(text=f"👁 {state['views']}", callback_data="msc:noop")],
         [InlineKeyboardButton(text="⭐ Убрать" if saved else "⭐ В избранное",
                               callback_data=f"mss:save:{track_id}"),
          InlineKeyboardButton(text="➕ В плейлист", callback_data=f"mss:add:{track_id}")],
-        [InlineKeyboardButton(text="✈️ Поделиться", switch_inline_query=f"track:{track_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data=back)],
-    ])
+    ]
+    if subscription.active(user, role):
+        rows.append([InlineKeyboardButton(text="💾 Сохранить в мои треки",
+                                          callback_data=f"mss:tolocal:{track_id}")])
+    if next_cb:
+        rows.append([InlineKeyboardButton(text="▶️ Слушать следующий", callback_data=next_cb)])
+    rows.append([InlineKeyboardButton(text="✈️ Поделиться", switch_inline_query=f"track:{track_id}")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _tracks_text(tracks: list[dict[str, Any]]) -> str:
@@ -69356,7 +69856,7 @@ async def catalog_menu(call, state) -> None:
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
     await call.answer()
-    await safe_edit(call, menu_text(), menu_kb())
+    await safe_edit(call, menu_text(), await menu_kb_full(call.from_user.id))
 
 
 @router.callback_query(F.data == "msc:noop")
@@ -69365,7 +69865,41 @@ async def noop(call) -> None:
 
 
 @router.callback_query(F.data == "msc:ask")
-async def ask_query(call, state) -> None:
+async def ask_query(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    queries = social.recent_queries(user)
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in queries:
+        rows.append([InlineKeyboardButton(
+            text=f"🔁 {item[:35]}",
+            callback_data=f"msc:q:{item[:80]}")])
+    rows.append([InlineKeyboardButton(text="✏️ Новый запрос", callback_data="msc:typed")])
+    rows.append([InlineKeyboardButton(text="◀️ Каталог", callback_data="msc:cancel")])
+    await call.answer()
+    await safe_edit(call, "🔍 <b>Поиск</b>\n\nНажмите недавний запрос или введите новый.",
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("msc:q:"))
+async def quick_query(call, user: dict, state) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    query = call.data.split(":", 2)[2].strip()
+    if not query:
+        await call.answer("Запрос пуст.", show_alert=True)
+        return
+    social.remember_query(user, query)
+    await state.update_data(music_query=query)
+    await storage.save(call.from_user.id)
+    await call.answer()
+    await _show_search(call, query, edit=True)
+
+
+@router.callback_query(F.data == "msc:typed")
+async def typed_query(call, state) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -69381,7 +69915,7 @@ async def ask_query(call, state) -> None:
 async def cancel(call, state) -> None:
     await state.clear()
     await call.answer()
-    await safe_edit(call, menu_text(), menu_kb())
+    await safe_edit(call, menu_text(), await menu_kb_full(call.from_user.id))
 
 
 @router.message(Form.music_query, F.text)
@@ -69415,7 +69949,7 @@ async def search_page(call, state) -> None:
 
 
 @router.callback_query(F.data.startswith("msc:track:"))
-async def track_card(call, user: dict) -> None:
+async def track_card(call, user: dict, role: str) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -69426,7 +69960,7 @@ async def track_card(call, user: dict) -> None:
         return
     await call.answer()
     await safe_edit(call, f"🎵 <b>{esc(track_label(track))}</b>",
-                    await track_kb(track_id, user))
+                    await track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 async def send_track(call, user: dict, track_id: str) -> None:
@@ -69518,6 +70052,77 @@ async def play(call, user: dict) -> None:
     await send_track(call, user, call.data.split(":", 2)[2])
 
 
+async def _download_track_payload(call, track_id: str):
+    """Скачать трек каталога в буфер; None — недоступен."""
+    client = musicsearch.MusicSearchClient(metadata=musicsearch.catalog_get)
+    try:
+        async with _downloads:
+            buffer = await asyncio.wait_for(
+                client.download_track(track_id), timeout=DOWNLOAD_TIMEOUT
+            )
+        payload = buffer.getvalue()
+        if not payload or len(payload) > musicsearch.MAX_DOWNLOAD_BYTES:
+            return None, "недопустимый размер аудио"
+        ext = str(getattr(buffer, "ext", "") or "").lower().lstrip(".")
+        ext = f".{ext}" if ext else ""
+        if ext not in music.SUPPORTED_EXT:
+            ext = ".mp3"
+        return payload, ext
+    except Exception as exc:  # noqa: BLE001
+        log.info("Трек %s не скачан для сохранения: %s", track_id, exc)
+        return None, "источник недоступен"
+
+
+@router.callback_query(F.data.startswith("mss:tolocal:"))
+async def save_to_local(call, user: dict, role: str) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+
+    if not subscription.active(user, role):
+        await call.answer("Сохранение в личную библиотеку — только по подписке.",
+                          show_alert=True)
+        return
+    if len(music.tracks_of(user)) >= music.track_limit(user, role):
+        await call.answer(f"Хранилище заполнено ({music.track_limit(user, role)} треков).",
+                          show_alert=True)
+        return
+    track_id = call.data.split(":", 2)[2]
+    track = await musicsearch.catalog_get(track_id)
+    if not track:
+        await call.answer("Трек не найден.", show_alert=True)
+        return
+    await call.answer("Сохраняю…")
+    if call.message:
+        try:
+            await call.message.edit_text("⏳ Сохраняю трек в личную библиотеку…")
+        except Exception:  # noqa: BLE001
+            pass
+    payload, ext = await _download_track_payload(call, track_id)
+    if payload is None:
+        if call.message:
+            try:
+                await call.message.edit_text("❌ Не удалось сохранить: источник недоступен.")
+            except Exception:  # noqa: BLE001
+                pass
+        return
+    new_id = secrets_module.token_hex(8)
+    await music.store(new_id, ext, payload)
+    music.add_track(user, new_id, name=str(track.get("title") or "Трек"), ext=ext,
+                    size=len(payload), artist=str(track.get("artist") or ""),
+                    title=str(track.get("title") or ""))
+    await storage.save(call.from_user.id)
+    text = (f"✅ Сохранено в «Мои треки»: <b>{esc(track_label(track))[:80]}</b>\n"
+            + music.describe(user, role))
+    if call.message:
+        try:
+            await call.message.edit_text(text)
+        except Exception:  # noqa: BLE001
+            await call.bot.send_message(call.from_user.id, text)
+    else:
+        await call.bot.send_message(call.from_user.id, text)
+
+
 @router.callback_query(F.data == "msc:saved")
 async def saved(call, user: dict) -> None:
     if not _enabled():
@@ -69528,9 +70133,29 @@ async def saved(call, user: dict) -> None:
         track = await musicsearch.catalog_get(track_id)
         if track:
             tracks.append({**track, "id": track_id})
+    rows = []
+    for track in tracks:
+        label = track_label(track)[:40]
+        rows.append([
+            InlineKeyboardButton(text=f"▶️ {label}", callback_data=f"msc:play:{track['id']}"),
+            InlineKeyboardButton(text="❌", callback_data=f"mss:frem:{track['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ Каталог", callback_data="msc:menu")])
     await call.answer()
     await safe_edit(call, "⭐ <b>Избранное</b>\n\n" + (_tracks_text(tracks) or "Пока пусто."),
-                    _tracks_kb(tracks))
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mss:frem:"))
+async def fav_remove(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    track_id = call.data.split(":", 2)[2]
+    music.toggle_saved(user, track_id)
+    await storage.save(call.from_user.id)
+    await call.answer("Убрано из избранного")
+    await saved(call, user)
 
 
 @router.callback_query(F.data == "msc:history")
@@ -69538,19 +70163,52 @@ async def history(call, user: dict) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
+    items = social.history_of(user)[:50]
     tracks = []
-    for item in social.history_of(user)[:50]:
+    for item in items:
         track = await musicsearch.catalog_get(item["track_id"])
         if track:
             tracks.append({**track, "id": item["track_id"]})
-    await storage.save(call.from_user.id)
+    rows = []
+    for track in tracks:
+        label = track_label(track)[:40]
+        rows.append([
+            InlineKeyboardButton(text=f"▶️ {label}", callback_data=f"msc:play:{track['id']}"),
+            InlineKeyboardButton(text="❌", callback_data=f"mss:hrem:{track['id']}"),
+        ])
+    if items:
+        rows.append([InlineKeyboardButton(text="🗑 Очистить историю", callback_data="mss:hclr")])
+    rows.append([InlineKeyboardButton(text="◀️ Каталог", callback_data="msc:menu")])
     await call.answer()
     await safe_edit(call, "🕘 <b>История за 30 дней</b>\n\n" + (_tracks_text(tracks) or "Пока пусто."),
-                    _tracks_kb(tracks))
+                    InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mss:hrem:"))
+async def hist_remove(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    track_id = call.data.split(":", 2)[2]
+    social.remove_history(user, track_id)
+    await storage.save(call.from_user.id)
+    await call.answer("Убрано из истории")
+    await history(call, user)
+
+
+@router.callback_query(F.data == "mss:hclr")
+async def hist_clear(call, user: dict) -> None:
+    if not _enabled():
+        await call.answer("Поиск музыки отключён.", show_alert=True)
+        return
+    social.clear_history(user)
+    await storage.save(call.from_user.id)
+    await call.answer("История очищена")
+    await history(call, user)
 
 
 @router.callback_query(F.data == "msc:random")
-async def random_track(call, user: dict) -> None:
+async def random_track(call, user: dict, role: str) -> None:
     if not _enabled():
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -69560,7 +70218,7 @@ async def random_track(call, user: dict) -> None:
         await safe_edit(call, "Каталог пока пуст — сначала выполните поиск.", menu_kb())
         return
     await safe_edit(call, f"🎲 <b>{esc(track_label(track))}</b>",
-                    await track_kb(track["id"], user))
+                    await track_kb(track["id"], user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data == "msc:help")
@@ -69664,9 +70322,9 @@ async def inline_search(query: InlineQuery) -> None:
     await musicsearch.catalog_merge(tracks)
     results = [await _inline_track_result(track) for track in tracks[:20]]
     await query.answer(results, cache_time=30, is_personal=True)
-RADAR_FILE_172
+RADAR_FILE_173
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "radar/handlers/music_social.py"
-cat > "radar/handlers/music_social.py" <<'RADAR_FILE_173'
+cat > "radar/handlers/music_social.py" <<'RADAR_FILE_174'
 """Кнопки соцмеханики внешнего музыкального каталога."""
 
 # --------------------------------------------------------------------------
@@ -69723,7 +70381,7 @@ def _back(callback: str = "msc:menu") -> list[InlineKeyboardButton]:
 
 
 @router.callback_query(F.data.startswith("mss:like:"))
-async def like(call, user: dict) -> None:
+async def like(call, user: dict, role: str) -> None:
     if not features.enabled("music_search"):
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -69732,11 +70390,11 @@ async def like(call, user: dict) -> None:
     await call.answer("Лайк поставлен" if active else "Лайк убран")
     track = await musicsearch.catalog_get(track_id)
     await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
-                    await search.track_kb(track_id, user))
+                    await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data.startswith("mss:dislike:"))
-async def dislike(call, user: dict) -> None:
+async def dislike(call, user: dict, role: str) -> None:
     if not features.enabled("music_search"):
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -69745,11 +70403,11 @@ async def dislike(call, user: dict) -> None:
     await call.answer("Дизлайк поставлен" if active else "Дизлайк убран")
     track = await musicsearch.catalog_get(track_id)
     await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
-                    await search.track_kb(track_id, user))
+                    await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data.startswith("mss:save:"))
-async def save(call, user: dict) -> None:
+async def save(call, user: dict, role: str) -> None:
     if not features.enabled("music_search"):
         await call.answer("Поиск музыки отключён.", show_alert=True)
         return
@@ -69762,7 +70420,7 @@ async def save(call, user: dict) -> None:
     await call.answer("Добавлено в избранное" if changed else "Убрано из избранного")
     track = await musicsearch.catalog_get(track_id)
     await _edit_or_send(call, f"🎵 <b>{esc(search.track_label(track))}</b>",
-                    await search.track_kb(track_id, user))
+                    await search.track_kb(track_id, user, role=role, uid=call.from_user.id))
 
 
 @router.callback_query(F.data.startswith("mss:add:"))
@@ -69877,14 +70535,25 @@ async def _render_playlist(call, item: dict) -> None:
             continue
         full = {**track, "id": track_id}
         tracks.append(full)
-        rows.append([InlineKeyboardButton(text=f"🎵 {search.track_label(full)[:50]}",
-                                          callback_data=f"msc:track:{track_id}")])
+        owner = item["founder_id"] == str(call.from_user.id)
+        row = [InlineKeyboardButton(text=f"▶️ {search.track_label(full)[:40]}",
+                                    callback_data=f"msc:play:{track_id}")]
+        if owner:
+            row.append(InlineKeyboardButton(text="🗑",
+                                            callback_data=f"mss:plrem:{playlist_id}:{track_id}"))
+        rows.append(row)
     owner = item["founder_id"] == str(call.from_user.id)
-    rows.append([InlineKeyboardButton(text=f"👍 {item['likes']}",
+    if tracks:
+        rows.append([InlineKeyboardButton(text="▶️ Слушать всё",
+                                          callback_data=f"msc:play:{tracks[0]['id']}")])
+    rows.append([InlineKeyboardButton(text=f"❤️ {item['likes']}",
                                       callback_data=f"mss:pllike:{playlist_id}"),
-                 InlineKeyboardButton(text="✈️ Поделиться",
+                 InlineKeyboardButton(text=f"👁 {item['views']}", callback_data="msc:noop")])
+    rows.append([InlineKeyboardButton(text="✈️ Поделиться",
                                       switch_inline_query=f"playlist:{playlist_id}")])
     if owner:
+        rows.append([InlineKeyboardButton(text="🗑 Очистить плейлист",
+                                          callback_data=f"mss:plclr:{playlist_id}")])
         rows.append([InlineKeyboardButton(text="🗑 Удалить плейлист",
                                           callback_data=f"mss:pldel:{playlist_id}")])
     rows.append(_back("mss:list" if owner else "mss:toppl"))
@@ -69892,6 +70561,31 @@ async def _render_playlist(call, item: dict) -> None:
             f"Треков: {len(item['tracks'])} · 👁 {item['views']} · 👍 {item['likes']}\n\n"
             + (search._tracks_text(tracks) or "Пока нет доступных треков."))
     await _edit_or_send(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mss:plrem:"))
+async def playlist_remove_track(call) -> None:
+    _, _, playlist_id, track_id = call.data.split(":", 3)
+    changed = await social.toggle_public_track(playlist_id, call.from_user.id, track_id)
+    if changed is None:
+        await call.answer("Удалить трек может только владелец.", show_alert=True)
+        return
+    await call.answer("Трек убран из плейлиста")
+    item = await social.public_playlist_view(playlist_id, call.from_user.id, count_view=False)
+    if item:
+        await _render_playlist(call, item)
+
+
+@router.callback_query(F.data.startswith("mss:plclr:"))
+async def playlist_clear(call) -> None:
+    playlist_id = call.data.split(":", 2)[2]
+    if not await social.clear_public_playlist(playlist_id, call.from_user.id):
+        await call.answer("Очистить может только владелец.", show_alert=True)
+        return
+    await call.answer("Плейлист очищен")
+    item = await social.public_playlist_view(playlist_id, call.from_user.id, count_view=False)
+    if item:
+        await _render_playlist(call, item)
 
 
 @router.callback_query(F.data.startswith("mss:pllike:"))
@@ -69977,9 +70671,9 @@ async def take_about(message: Message, user: dict, state) -> None:
     await storage.save(message.from_user.id)
     await state.clear()
     await message.answer("✅ Профиль обновлён.", reply_markup=search.menu_kb())
-RADAR_FILE_173
+RADAR_FILE_174
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/__init__.py"
-cat > "support/__init__.py" <<'RADAR_FILE_174'
+cat > "support/__init__.py" <<'RADAR_FILE_175'
 """Отдельный бот тикет-поддержки «Радара»."""
 
 # --------------------------------------------------------------------------
@@ -69988,9 +70682,9 @@ cat > "support/__init__.py" <<'RADAR_FILE_174'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-RADAR_FILE_174
+RADAR_FILE_175
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/__main__.py"
-cat > "support/__main__.py" <<'RADAR_FILE_175'
+cat > "support/__main__.py" <<'RADAR_FILE_176'
 # --------------------------------------------------------------------------
 # Система «Радар» — мониторинг городских угроз и аварий ЖКХ
 # Автор: SecretHero · https://github.com/Chistovik92/radar
@@ -70000,9 +70694,9 @@ cat > "support/__main__.py" <<'RADAR_FILE_175'
 from .main import main
 
 main()
-RADAR_FILE_175
+RADAR_FILE_176
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/main.py"
-cat > "support/main.py" <<'RADAR_FILE_176'
+cat > "support/main.py" <<'RADAR_FILE_177'
 """Точка входа отдельного aiogram-бота поддержки."""
 
 # --------------------------------------------------------------------------
@@ -70026,9 +70720,36 @@ from .core.config import Settings
 from .db.engine import Database
 from .db.repo import SupportRepository, ticket_number
 from .handlers import client, group, operator
-from .handlers.common import safe
+from .handlers.common import notify_message, safe
 
 log = logging.getLogger("support")
+
+
+async def delivery_worker(repo: SupportRepository, bot: Bot, config: Settings) -> None:
+    """Доводит до автора ответы операторов, записанные веб-панелью напрямую.
+
+    Панель пишет в ``support.db`` мимо бота, поэтому обычный путь доставки
+    (``notify_message`` в обработчике оператора) для неё не срабатывает.
+    Фоновый цикл находит недоставленные сообщения операторов и отправляет
+    их автору, затем помечает доставленными.
+    """
+    while True:
+        try:
+            for ticket, sender, message in await repo.pending_deliveries():
+                try:
+                    await notify_message(
+                        bot, repo, ticket, sender, message,
+                        group_id=config.group_id, mirror_group=False,
+                    )
+                    await repo.mark_delivered(message.id)
+                except Exception as exc:  # noqa: BLE001 — следующая попытка в новом цикле
+                    log.error("Не удалось доставить ответ оператора %s: %s",
+                              message.id, exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — следующий цикл должен состояться
+            log.error("Ошибка фоновой доставки ответов: %s", exc)
+        await asyncio.sleep(config.delivery_check_seconds)
 
 
 async def sla_worker(repo: SupportRepository, bot: Bot, config: Settings) -> None:
@@ -70078,14 +70799,17 @@ async def run() -> None:
             await safe(message.answer("Не удалось выполнить действие. Попробуйте позже."))
 
     worker = asyncio.create_task(sla_worker(repo, bot, config))
+    deliveries = asyncio.create_task(delivery_worker(repo, bot, config))
     try:
         await dispatcher.start_polling(bot)
     finally:
         worker.cancel()
-        try:
-            await worker
-        except asyncio.CancelledError:
-            pass
+        deliveries.cancel()
+        for task in (worker, deliveries):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await bot.session.close()
         await database.close()
 
@@ -70100,9 +70824,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-RADAR_FILE_176
+RADAR_FILE_177
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/i18n.py"
-cat > "support/i18n.py" <<'RADAR_FILE_177'
+cat > "support/i18n.py" <<'RADAR_FILE_178'
 """Небольшой ru/en словарь; русский — язык по умолчанию."""
 
 # --------------------------------------------------------------------------
@@ -70133,23 +70857,23 @@ def t(key: str, lang: str = "ru", **values: object) -> str:
     item = TEXTS.get(key, {})
     text = item.get(lang) or item.get("ru") or key
     return text.format(**values) if values else text
-RADAR_FILE_177
+RADAR_FILE_178
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/requirements.txt"
-cat > "support/requirements.txt" <<'RADAR_FILE_178'
+cat > "support/requirements.txt" <<'RADAR_FILE_179'
 aiogram>=3.13,<4
 aiohttp>=3.9,<4
 SQLAlchemy[asyncio]>=2.0,<3
 aiosqlite>=0.20
 asyncpg>=0.29
 python-dotenv>=1.0
-RADAR_FILE_178
+RADAR_FILE_179
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/requirements-ai.txt"
-cat > "support/requirements-ai.txt" <<'RADAR_FILE_179'
+cat > "support/requirements-ai.txt" <<'RADAR_FILE_180'
 # Опциональный Gemini: устанавливать вместе с requirements.txt только при SUPPORT_AI=1.
 google-genai>=1.0
-RADAR_FILE_179
+RADAR_FILE_180
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/README.md"
-cat > "support/README.md" <<'RADAR_FILE_180'
+cat > "support/README.md" <<'RADAR_FILE_181'
 # Отдельный бот поддержки
 
 Базовая установка не включает Gemini и не выполняет AI-запросы:
@@ -70175,9 +70899,9 @@ docker build --build-arg SUPPORT_AI=1 -f support/Dockerfile .
 ```
 
 Это build arg только для установки пакета; в runtime всё равно нужны `SUPPORT_AI=1` и `GEMINI_API_KEY`.
-RADAR_FILE_180
+RADAR_FILE_181
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/.env.example"
-cat > "support/.env.example" <<'RADAR_FILE_181'
+cat > "support/.env.example" <<'RADAR_FILE_182'
 SUPPORT_BOT_TOKEN=123456:support_token
 SUPPORT_ADMIN_ID=123456789
 SUPPORT_DB_FILE=data/support.db
@@ -70190,9 +70914,9 @@ SUPPORT_EXPORT_DIR=data/exports
 SUPPORT_AI=0
 GEMINI_API_KEY=
 SUPPORT_GEMINI_MODEL=gemini-2.5-flash
-RADAR_FILE_181
+RADAR_FILE_182
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/Dockerfile"
-cat > "support/Dockerfile" <<'RADAR_FILE_182'
+cat > "support/Dockerfile" <<'RADAR_FILE_183'
 FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
@@ -70203,9 +70927,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
 COPY support /app/support
 RUN mkdir -p /app/data/exports
 CMD ["python", "-m", "support"]
-RADAR_FILE_182
+RADAR_FILE_183
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/core/__init__.py"
-cat > "support/core/__init__.py" <<'RADAR_FILE_183'
+cat > "support/core/__init__.py" <<'RADAR_FILE_184'
 """Прикладная логика бота поддержки, независимая от Telegram."""
 
 # --------------------------------------------------------------------------
@@ -70214,9 +70938,9 @@ cat > "support/core/__init__.py" <<'RADAR_FILE_183'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-RADAR_FILE_183
+RADAR_FILE_184
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/core/config.py"
-cat > "support/core/config.py" <<'RADAR_FILE_184'
+cat > "support/core/config.py" <<'RADAR_FILE_185'
 """Конфигурация только из SUPPORT_* переменных окружения."""
 
 # --------------------------------------------------------------------------
@@ -70261,6 +70985,7 @@ class Settings:
     gemini_model: str = "gemini-2.5-flash"
     sla_minutes: int = 60
     sla_check_seconds: int = 60
+    delivery_check_seconds: int = 5
     export_dir: str = "data/exports"
     db_echo: bool = False
 
@@ -70278,6 +71003,7 @@ class Settings:
             gemini_model=(os.getenv("SUPPORT_GEMINI_MODEL") or "gemini-2.5-flash").strip(),
             sla_minutes=_int("SUPPORT_SLA_MINUTES", 60, 1),
             sla_check_seconds=_int("SUPPORT_SLA_CHECK_SECONDS", 60, 5),
+            delivery_check_seconds=_int("SUPPORT_DELIVERY_CHECK_SECONDS", 5, 1),
             export_dir=(os.getenv("SUPPORT_EXPORT_DIR") or "data/exports").strip(),
             db_echo=_bool("SUPPORT_DB_ECHO"),
         )
@@ -70305,9 +71031,9 @@ class Settings:
 def postgres_url(user: str, password: str, host: str, port: int, database: str) -> str:
     """Вспомогательный конструктор для установщика и тестов конфигурации."""
     return f"postgresql+asyncpg://{user}:{quote_plus(password)}@{host}:{port}/{database}"
-RADAR_FILE_184
+RADAR_FILE_185
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/core/roles.py"
-cat > "support/core/roles.py" <<'RADAR_FILE_185'
+cat > "support/core/roles.py" <<'RADAR_FILE_186'
 """Иерархия ролей: user < moderator < admin < superadmin."""
 
 # --------------------------------------------------------------------------
@@ -70354,9 +71080,9 @@ def can_assign(actor_role: str | None, target_role: str | None, new_role: str) -
     if new_role not in assignable_roles(actor_role) or target_role == SUPERADMIN:
         return False
     return actor_role == SUPERADMIN or level(target_role) < level(actor_role)
-RADAR_FILE_185
+RADAR_FILE_186
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/core/classify.py"
-cat > "support/core/classify.py" <<'RADAR_FILE_186'
+cat > "support/core/classify.py" <<'RADAR_FILE_187'
 """Детерминированные FAQ/категории и необязательный Gemini."""
 
 # --------------------------------------------------------------------------
@@ -70481,9 +71207,9 @@ class KnowledgeBase:
         if deterministic is not None or self.ai is None:
             return deterministic
         return await self.ai.ask(text)
-RADAR_FILE_186
+RADAR_FILE_187
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/core/attachments.py"
-cat > "support/core/attachments.py" <<'RADAR_FILE_187'
+cat > "support/core/attachments.py" <<'RADAR_FILE_188'
 """Преобразование вложений Telegram в данные, пригодные для хранения."""
 
 # --------------------------------------------------------------------------
@@ -70533,9 +71259,9 @@ def from_message(message: Any) -> Attachment | None:
 def describe(attachment: Attachment) -> str:
     label = attachment.name or attachment.kind
     return f"[{attachment.kind}: {label}]" + (f" {attachment.caption}" if attachment.caption else "")
-RADAR_FILE_187
+RADAR_FILE_188
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/core/export.py"
-cat > "support/core/export.py" <<'RADAR_FILE_188'
+cat > "support/core/export.py" <<'RADAR_FILE_189'
 """Человекочитаемый TXT-экспорт и файловый архив."""
 
 # --------------------------------------------------------------------------
@@ -70619,9 +71345,9 @@ def save_dialogue(data: dict[str, Any], directory: str) -> str:
         if os.path.exists(temporary):
             os.unlink(temporary)
     return path
-RADAR_FILE_188
+RADAR_FILE_189
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/core/sla.py"
-cat > "support/core/sla.py" <<'RADAR_FILE_189'
+cat > "support/core/sla.py" <<'RADAR_FILE_190'
 """Расчёт SLA первого ответа."""
 
 # --------------------------------------------------------------------------
@@ -70653,9 +71379,9 @@ def is_overdue(sla_due_at: datetime, status: str, first_response_at: datetime | 
 def response_within_sla(created_at: datetime, first_response_at: datetime | None,
                         minutes: int) -> bool:
     return first_response_at is not None and first_response_at <= deadline(created_at, minutes)
-RADAR_FILE_189
+RADAR_FILE_190
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/db/__init__.py"
-cat > "support/db/__init__.py" <<'RADAR_FILE_190'
+cat > "support/db/__init__.py" <<'RADAR_FILE_191'
 """Автономное хранилище обращений на SQLAlchemy."""
 
 # --------------------------------------------------------------------------
@@ -70664,9 +71390,9 @@ cat > "support/db/__init__.py" <<'RADAR_FILE_190'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-RADAR_FILE_190
+RADAR_FILE_191
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/db/models.py"
-cat > "support/db/models.py" <<'RADAR_FILE_191'
+cat > "support/db/models.py" <<'RADAR_FILE_192'
 """Схема SQLite/PostgreSQL для автономного бота поддержки."""
 
 # --------------------------------------------------------------------------
@@ -70755,6 +71481,10 @@ class TicketMessage(Base):
     attachment_type: Mapped[str] = mapped_column(String(32), default="")
     attachment_name: Mapped[str] = mapped_column(String(256), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    # Доставлено ли сообщение оператора автору в Telegram. Заполняется
+    # delivery_worker в support/main.py: ответ из веб-панели пишется в базу
+    # напрямую (минуя бота), и только фоновый цикл доводит его до автора.
+    delivered: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
 class Meta(Base):
@@ -70762,9 +71492,9 @@ class Meta(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-RADAR_FILE_191
+RADAR_FILE_192
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/db/engine.py"
-cat > "support/db/engine.py" <<'RADAR_FILE_192'
+cat > "support/db/engine.py" <<'RADAR_FILE_193'
 """Изолированный async engine; никакого общего состояния с основным ботом."""
 
 # --------------------------------------------------------------------------
@@ -70804,6 +71534,33 @@ class Database:
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+        await self._add_missing_columns()
+
+    async def _add_missing_columns(self) -> None:
+        """Дописывает новые столбцы через ALTER TABLE (для уже существующих баз).
+
+        ``create_all`` создаёт только отсутствующие таблицы, но не столбцы.
+        Колонка ``delivered`` появилась в 6.0.2 — на старой базе её нет, а
+        delivery_worker без неё не различит доставленные ответы.
+        """
+        from sqlalchemy import text
+
+        try:
+            async with self.engine.begin() as connection:
+                columns = await connection.run_sync(
+                    lambda sync_conn: {
+                        row[1] for row in sync_conn.execute(
+                            text("PRAGMA table_info(ticket_messages)")
+                        ).fetchall()
+                    } if self.url.startswith("sqlite") else set()
+                )
+        except Exception:  # noqa: BLE001 — не-SQLite или таблицы ещё нет
+            return
+        if "delivered" not in columns:
+            async with self.engine.begin() as connection:
+                await connection.execute(
+                    text("ALTER TABLE ticket_messages ADD COLUMN delivered BOOLEAN NOT NULL DEFAULT 0")
+                )
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
@@ -70817,9 +71574,9 @@ class Database:
 
     async def close(self) -> None:
         await self.engine.dispose()
-RADAR_FILE_192
+RADAR_FILE_193
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/db/repo.py"
-cat > "support/db/repo.py" <<'RADAR_FILE_193'
+cat > "support/db/repo.py" <<'RADAR_FILE_194'
 """Операции с тикетами; проверка доступа выполняется в каждом публичном методе."""
 
 # --------------------------------------------------------------------------
@@ -71195,6 +71952,36 @@ class SupportRepository:
                 [roles.MODERATOR, roles.ADMIN, roles.SUPERADMIN]
             )))).all())
 
+    async def pending_deliveries(self, limit: int = 50) -> list[tuple[Ticket, User, TicketMessage]]:
+        """Ответы операторов, которые ещё не доставлены автору в Telegram.
+
+        Используется delivery_worker в support/main.py: ответы, записанные
+        веб-панелью напрямую в базу (минуя бота), не доходят до автора, пока
+        фоновый цикл их не отправит.
+        """
+        async with self.db.session() as active:
+            messages = list((await active.scalars(
+                select(TicketMessage).where(
+                    TicketMessage.delivered.is_(False),
+                    TicketMessage.sender_id.isnot(None),
+                ).order_by(TicketMessage.id).limit(max(1, min(limit, 200)))
+            )).all())
+            result: list[tuple[Ticket, User, TicketMessage]] = []
+            for message in messages:
+                sender = await active.get(User, message.sender_id)
+                ticket = await active.get(Ticket, message.ticket_id)
+                if (sender is not None and ticket is not None
+                        and roles.is_moderator(sender.role)
+                        and sender.id != ticket.author_id):
+                    result.append((ticket, sender, message))
+            return result
+
+    async def mark_delivered(self, message_id: int) -> None:
+        async with self.db.session() as active:
+            message = await active.get(TicketMessage, message_id)
+            if message is not None:
+                message.delivered = True
+
     @staticmethod
     def _user_dict(user: User | None) -> dict[str, Any] | None:
         if user is None:
@@ -71286,9 +72073,9 @@ class SupportRepository:
             await active.execute(delete(TicketMessage).where(TicketMessage.ticket_id == ticket.id))
             await active.delete(ticket)
             return True
-RADAR_FILE_193
+RADAR_FILE_194
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/handlers/__init__.py"
-cat > "support/handlers/__init__.py" <<'RADAR_FILE_194'
+cat > "support/handlers/__init__.py" <<'RADAR_FILE_195'
 """Обработчики aiogram для клиентов, операторов и группы."""
 
 # --------------------------------------------------------------------------
@@ -71297,9 +72084,9 @@ cat > "support/handlers/__init__.py" <<'RADAR_FILE_194'
 # Лицензия: GPL-3.0
 # --------------------------------------------------------------------------
 
-RADAR_FILE_194
+RADAR_FILE_195
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/handlers/common.py"
-cat > "support/handlers/common.py" <<'RADAR_FILE_195'
+cat > "support/handlers/common.py" <<'RADAR_FILE_196'
 """Общие Telegram-операции с устойчивостью к сетевым ошибкам."""
 
 # --------------------------------------------------------------------------
@@ -71444,9 +72231,9 @@ async def deliver_export(bot: Bot, repo: SupportRepository, ticket: Ticket,
         chat_id, document, caption=ticket_number(ticket), **kwargs
     ), where="TXT-экспорт")
     return path
-RADAR_FILE_195
+RADAR_FILE_196
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/handlers/client.py"
-cat > "support/handlers/client.py" <<'RADAR_FILE_196'
+cat > "support/handlers/client.py" <<'RADAR_FILE_197'
 """Личный чат: создание, переписка, вложения, закрытие и оценка."""
 
 # --------------------------------------------------------------------------
@@ -71609,9 +72396,9 @@ async def dialogue(message: Message, repo: SupportRepository, config: Settings,
         return
     ticket, stored = result
     await notify_message(message.bot, repo, ticket, user, stored, config.group_id)
-RADAR_FILE_196
+RADAR_FILE_197
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/handlers/operator.py"
-cat > "support/handlers/operator.py" <<'RADAR_FILE_197'
+cat > "support/handlers/operator.py" <<'RADAR_FILE_198'
 """Команды операторов: очередь, ответы, SLA, экспорт, статистика и FAQ."""
 
 # --------------------------------------------------------------------------
@@ -71780,9 +72567,9 @@ async def delete_ticket(message: Message, repo: SupportRepository, config: Setti
     user = await repo.get_or_create_user(message.from_user.id, superadmin_id=config.admin_id)
     changed = await repo.delete_ticket(_argument(message), user.external_id)
     await message.answer("Тикет удалён; номер не будет переиспользован." if changed else "Нужна роль admin и существующий номер.")
-RADAR_FILE_197
+RADAR_FILE_198
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "support/handlers/group.py"
-cat > "support/handlers/group.py" <<'RADAR_FILE_198'
+cat > "support/handlers/group.py" <<'RADAR_FILE_199'
 """Форум-группа: одна тема строго соответствует одному тикету."""
 
 # --------------------------------------------------------------------------
@@ -71885,9 +72672,9 @@ async def topic_dialogue(message: Message, repo: SupportRepository, config: Sett
         await notify_message(
             message.bot, repo, ticket, user, stored, config.group_id, mirror_group=False,
         )
-RADAR_FILE_198
+RADAR_FILE_199
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/__init__.py"
-cat > "multitool/__init__.py" <<'RADAR_FILE_199'
+cat > "multitool/__init__.py" <<'RADAR_FILE_200'
 """Мультитул — отдельные утилиты рядом с «Радаром».
 
 Здесь живут инструменты, не относящиеся к мониторингу городских угроз:
@@ -71913,9 +72700,9 @@ cat > "multitool/__init__.py" <<'RADAR_FILE_199'
 from __future__ import annotations
 
 __all__ = ["linkcheck"]
-RADAR_FILE_199
+RADAR_FILE_200
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/__init__.py"
-cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_200'
+cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_201'
 """Проверка ссылок на признаки мошенничества.
 
 Пакет отвечает на вопрос «что в этой ссылке настораживает», а не
@@ -71948,9 +72735,9 @@ cat > "multitool/linkcheck/__init__.py" <<'RADAR_FILE_200'
 from __future__ import annotations
 
 __all__ = ["analyze", "netcheck", "report"]
-RADAR_FILE_200
+RADAR_FILE_201
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/analyze.py"
-cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_201'
+cat > "multitool/linkcheck/analyze.py" <<'RADAR_FILE_202'
 """Разбор ссылки на признаки мошенничества без обращения к сети.
 
 Результат — список признаков с весом и кратким пояснением.
@@ -72357,9 +73144,9 @@ def levenshtein(a: str, b: str, limit: int = 2) -> int:
         if min(prev) > limit:
             return limit + 1
     return prev[-1]
-RADAR_FILE_201
+RADAR_FILE_202
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/netcheck.py"
-cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_202'
+cat > "multitool/linkcheck/netcheck.py" <<'RADAR_FILE_203'
 """Сетевые проверки: раскрытие редиректов, возраст домена, Safe Browsing.
 
 Все функции асинхронны, каждая возвращает деградированный результат
@@ -72843,9 +73630,9 @@ async def full_check(url: str, api_key: str | None = None) -> "NetResult":
         mixed_content=sec.mixed_content,
         login_form_http=sec.login_form_http,
     )
-RADAR_FILE_202
+RADAR_FILE_203
 printf "  %s·%s %s\n" "$C_DIM" "$C_RESET" "multitool/linkcheck/report.py"
-cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_203'
+cat > "multitool/linkcheck/report.py" <<'RADAR_FILE_204'
 """Формирование отчёта для Telegram в виде HTML-сообщения.
 
 Отчёт содержит перечень найденных признаков и сетевые проверки,
@@ -73085,7 +73872,7 @@ def build_report_plain(v: Verdict) -> str:
         "Всегда проверяйте источник через официальные каналы."
     )
     return "\n".join(lines)
-RADAR_FILE_203
+RADAR_FILE_204
 ok "Развёрнуто файлов: $(printf '%s' "$FILE_COUNT")"
 
 # Сборщик журналов на стороне хоста. Журналы контейнеров Docker боту

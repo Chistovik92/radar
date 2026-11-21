@@ -4,7 +4,7 @@ export const DEFAULT_CONFIG: RadarConfig = {
   botUsername: 'SecretHeroBot',
   publicUrl: '',
   description: '',
-  version: '6.0.1',
+  version: '6.0.2',
   plans: [[30, 150], [90, 400], [365, 1400]],
 };
 

@@ -21,9 +21,36 @@ from .core.config import Settings
 from .db.engine import Database
 from .db.repo import SupportRepository, ticket_number
 from .handlers import client, group, operator
-from .handlers.common import safe
+from .handlers.common import notify_message, safe
 
 log = logging.getLogger("support")
+
+
+async def delivery_worker(repo: SupportRepository, bot: Bot, config: Settings) -> None:
+    """Доводит до автора ответы операторов, записанные веб-панелью напрямую.
+
+    Панель пишет в ``support.db`` мимо бота, поэтому обычный путь доставки
+    (``notify_message`` в обработчике оператора) для неё не срабатывает.
+    Фоновый цикл находит недоставленные сообщения операторов и отправляет
+    их автору, затем помечает доставленными.
+    """
+    while True:
+        try:
+            for ticket, sender, message in await repo.pending_deliveries():
+                try:
+                    await notify_message(
+                        bot, repo, ticket, sender, message,
+                        group_id=config.group_id, mirror_group=False,
+                    )
+                    await repo.mark_delivered(message.id)
+                except Exception as exc:  # noqa: BLE001 — следующая попытка в новом цикле
+                    log.error("Не удалось доставить ответ оператора %s: %s",
+                              message.id, exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — следующий цикл должен состояться
+            log.error("Ошибка фоновой доставки ответов: %s", exc)
+        await asyncio.sleep(config.delivery_check_seconds)
 
 
 async def sla_worker(repo: SupportRepository, bot: Bot, config: Settings) -> None:
@@ -73,14 +100,17 @@ async def run() -> None:
             await safe(message.answer("Не удалось выполнить действие. Попробуйте позже."))
 
     worker = asyncio.create_task(sla_worker(repo, bot, config))
+    deliveries = asyncio.create_task(delivery_worker(repo, bot, config))
     try:
         await dispatcher.start_polling(bot)
     finally:
         worker.cancel()
-        try:
-            await worker
-        except asyncio.CancelledError:
-            pass
+        deliveries.cancel()
+        for task in (worker, deliveries):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await bot.session.close()
         await database.close()
 

@@ -147,6 +147,23 @@ class RepositoryCase(unittest.IsolatedAsyncioTestCase):
         second = await self.repo.create_ticket(100, now=NOW)
         self.assertEqual(second.id, 2)
 
+    async def test_operator_reply_delivery_flow(self):
+        """Ответ оператора (напр. из панели) не доставлен, пока worker не пометит."""
+        ticket = await self.repo.create_ticket(100, now=NOW)
+        _, reply = await self.repo.add_message(
+            ticket.id, 300, "Ответ оператора", now=NOW + timedelta(minutes=2))
+        # Автор тоже что-то написал: его сообщения не считаются «доставкой оператора».
+        await self.repo.add_message(ticket.id, 100, "Спасибо", now=NOW + timedelta(minutes=3))
+        pending = await self.repo.pending_deliveries()
+        self.assertEqual([row[2].id for row in pending], [reply.id])
+        self.assertEqual(pending[0][1].external_id, 300)
+        self.assertEqual(pending[0][0].id, ticket.id)
+        await self.repo.mark_delivered(reply.id)
+        self.assertEqual(await self.repo.pending_deliveries(), [])
+        # Сообщение оператора до автора не считается: автор не модератор.
+        data = await self.repo.export_data(ticket.id, 100)
+        self.assertEqual(data["messages"][-1]["sender"]["external_id"], 100)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

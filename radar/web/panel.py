@@ -103,6 +103,10 @@ nav a.active { color:#fff; font-weight:600;
                box-shadow:0 2px 10px var(--accent-soft); }
 [data-theme="light"] nav a.active { color:#fff; }
 .spacer { margin-left:auto; }
+.site-link { color:var(--link); text-decoration:none; padding:7px 12px;
+             border-radius:999px; font-size:14px; white-space:nowrap;
+             border:1px solid var(--line); transition:background .15s, color .15s; }
+.site-link:hover { color:var(--text); background:var(--surface-2); }
 .who { color:var(--muted); font-size:14px; }
 .who a { color:var(--link-dim); }
 
@@ -176,6 +180,9 @@ td code { font-size:13px; }
 
 .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
 .muted { color:var(--muted); }
+.msg { padding:8px 12px; border-left:3px solid var(--line); margin:8px 0;
+       background:var(--surface-2); border-radius:6px; line-height:1.5; }
+.msg.system { border-left-color:var(--muted); background:var(--surface); }
 .hint { color:var(--muted); font-size:13px; }
 .login { max-width:430px; margin:80px auto; text-align:center; }
 
@@ -683,6 +690,13 @@ def _nav_groups(role: str) -> list[tuple[str, str, str, list[tuple[str, str, str
     if admin:
         overview.append(("/events", "События", "events"))
         overview.append(("/chats", "Чаты", "chats"))
+    # Тикеты бота поддержки доступны модераторам и выше, когда слой
+    # поддержки сконфигурирован (есть SUPPORT_DATABASE_URL или support.db).
+    if moderator:
+        from . import support_tickets
+
+        if support_tickets.available():
+            overview.append(("/support-tickets", "Поддержка", "support_tickets"))
     if owner:
         overview.append(("/maintenance", "Обслуживание", "maintenance"))
         # Раздел виден всегда, даже когда возможность выключена: спрятанный
@@ -1525,6 +1539,7 @@ def _layout(title: str, body: str, active: str = "", role: str = "",
   <span class="brand">Радар</span><span class="version">v{html.escape(config.VERSION)}</span>
   <nav>{nav}</nav>
   <span class="spacer"></span>
+  <a class="site-link" href="/" target="_blank" rel="noopener">Сайт</a>
   <button id="theme" type="button" aria-label="Сменить тему">☀</button>
   <span class="who">{html.escape(role)} · <a href="/logout">выйти</a></span>
 </header>
@@ -1628,6 +1643,71 @@ def _overview_body() -> str:
     )
 
 
+def _profile_music_body(user: dict, role: str | None) -> str:
+    """Раздел «Музыка» личного кабинета: локальная и социальная логика разом.
+
+    Локальная логика — личные файлы (`user["music"]["tracks"]`) и плейлисты,
+    которые человек сам загрузил в бота. Социальная — каталог 6.0.0:
+    избранное, история, публичные плейлисты. Обе показываются рядом, чтобы
+    подписчик видел и своё хранилище, и то, что он набрал в каталоге.
+    """
+    from .. import music, music_social
+
+    if not (features.enabled("music") or features.enabled("music_search")):
+        return ""
+
+    parts: list[str] = []
+
+    # --- локальная логика: личные треки ---
+    local_tracks = music.tracks_of(user)
+    local_pls = music.playlists_of(user)
+    if features.enabled("music"):
+        limit = music.track_limit(user, role)
+        if local_tracks:
+            rows = "".join(
+                "<tr>"
+                f"<td>{html.escape(item.get('artist') or '')} — "
+                f"{html.escape(item.get('title') or item.get('name') or 'Трек')}</td>"
+                f'<td class="muted">{html.escape(str(item.get("ext") or ""))}</td>'
+                "</tr>"
+                for item in local_tracks
+            )
+        else:
+            rows = '<tr><td class="muted">треков нет</td></tr>'
+        parts.append(
+            '<div class="card"><h3>🎵 Мои треки</h3>'
+            f'<p class="muted">Личная библиотека: {len(local_tracks)} из {limit}.</p>'
+            f'<table><tr><th>Трек</th><th>Формат</th></tr>{rows}</table></div>'
+        )
+        if local_pls:
+            pl_rows = "".join(
+                f"<tr><td>{html.escape(item.get('name') or 'Плейлист')}</td>"
+                f'<td class="muted">{len(item.get("tracks") or [])}</td></tr>'
+                for item in local_pls
+            )
+            parts.append(
+                '<div class="card"><h3>📚 Мои плейлисты</h3>'
+                f'<table><tr><th>Плейлист</th><th>Треков</th></tr>{pl_rows}</table></div>'
+            )
+
+    # --- социальная логика: каталог ---
+    if features.enabled("music_search"):
+        saved = music.saved_tracks(user)
+        history = music_social.history_of(user)
+        social_note = (
+            '<p class="muted">Каталог: ищите треки в боте и добавляйте их '
+            'в избранное, плейлисты и историю.</p>'
+        )
+        parts.append(
+            '<div class="card"><h3>🔍 Каталог</h3>'
+            f'<p>⭐ Избранное: <b>{len(saved)}</b> · 🕘 История: <b>{len(history)}</b></p>'
+            + social_note
+            + '</div>'
+        )
+
+    return "".join(parts)
+
+
 def _profile_body(user, session, message: str = "", failed: str = "") -> str:
     """Личный кабинет обычного пользователя.
 
@@ -1687,6 +1767,9 @@ def _profile_body(user, session, message: str = "", failed: str = "") -> str:
     else:
         loc_rows = '<tr><td class="muted">локаций нет</td></tr>'
 
+    # --- музыка: локальные треки и социальный каталог ---
+    music_card = _profile_music_body(user, role)
+
     # --- предложение источника ---
     suggest_form = ""
     if features.enabled("digest_suggestions"):
@@ -1718,6 +1801,7 @@ def _profile_body(user, session, message: str = "", failed: str = "") -> str:
         '<button type="submit">Добавить</button></form>'
         '<p class="muted">Добавление по адресу: бот найдёт координаты '
         'и привяжет оповещения.</p></div>'
+        + music_card
         + '<div class="card"><h3>📢 Предложить источник</h3>'
         '<p class="muted">Подойдут каналы про город, ЖКХ, новости и тематические '
         'каналы. Попадут в очередь модерации.</p>'
@@ -2699,6 +2783,149 @@ async def _events_body() -> str:
     )
 
 
+def _support_status_badge(status: str) -> str:
+    style = {"open": "warn", "answered": "ok", "closed": "muted"}.get(status, "muted")
+    return f'<span class="{style}">{html.escape(status)}</span>'
+
+
+def _support_fmt(value: Any) -> str:
+    """Дата/время в читаемом виде, пусто — прочерк."""
+    if value is None:
+        return "—"
+    try:
+        text = str(value)
+    except Exception:  # noqa: BLE001
+        return "—"
+    return html.escape(text.replace("T", " ")[:16])
+
+
+async def _support_list_body(session) -> str:
+    from . import support_tickets
+
+    try:
+        tickets = await support_tickets.list_tickets(session)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Тикеты поддержки недоступны: %s", exc)
+        return ('<div class="card bad">База поддержки недоступна: '
+                f'{html.escape(str(exc))}</div>')
+    if not tickets:
+        return '<div class="card muted">Очередь поддержки пуста.</div>'
+    rows = []
+    for ticket in tickets:
+        number = html.escape(str(ticket.get("number") or ticket.get("id")))
+        rows.append(
+            "<tr>"
+            f'<td><a href="/support-tickets/{int(ticket["id"])}">{number}</a></td>'
+            f"<td>{html.escape(str(ticket.get('subject') or 'Без темы')[:70])}</td>"
+            f"<td>{_support_status_badge(str(ticket.get('status') or ''))}</td>"
+            f"<td>{html.escape(str(ticket.get('priority') or ''))}</td>"
+            f"<td>{_support_fmt(ticket.get('updated_at'))}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="card"><table>'
+        "<tr><th>№</th><th>Тема</th><th>Статус</th><th>Приоритет</th>"
+        "<th>Обновлён</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
+
+async def _support_detail_body(session, reference: str, message: str = "",
+                               failed: str = "") -> str:
+    from . import support_tickets
+
+    try:
+        data = await support_tickets.ticket_detail(session, reference)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Тикет %s недоступен: %s", reference, exc)
+        return ('<div class="card bad">Тикет недоступен: '
+                f'{html.escape(str(exc))}</div>')
+    if data is None:
+        return ('<div class="card bad">Тикет не найден или недостаточно прав.</div>'
+                '<p><a href="/support-tickets">← К списку</a></p>')
+
+    ticket = data.get("ticket", {})
+    author = data.get("author") or {}
+    assignee = data.get("assignee") or {}
+    token = auth.csrf_token(session)
+    tid = int(ticket["id"])
+
+    header = (
+        '<div class="grid">'
+        f'<div class="card metric"><b>{html.escape(str(ticket.get("number") or ""))}</b>'
+        "<span>тикет</span></div>"
+        f'<div class="card metric"><b>{_support_status_badge(str(ticket.get("status") or ""))}</b>'
+        "<span>статус</span></div>"
+        f'<div class="card metric"><b>{html.escape(str(ticket.get("priority") or ""))}</b>'
+        "<span>приоритет</span></div>"
+        "</div>"
+        f'<div class="card"><h3>{html.escape(str(ticket.get("subject") or "Без темы"))}</h3>'
+        f'<p class="muted">Автор: @{html.escape(str(author.get("username") or author.get("external_id") or "?"))}'
+        f' · Категория: {html.escape(str(ticket.get("category") or "—"))}'
+        f' · Назначен: @{html.escape(str(assignee.get("username") or assignee.get("external_id") or "—"))}'
+        f' · SLA: {_support_fmt(ticket.get("sla_due_at"))}</p></div>'
+    )
+
+    messages = []
+    for row in data.get("messages", []):
+        sender = row.get("sender") or {}
+        name = html.escape(str(sender.get("username") or sender.get("external_id") or "система"))
+        kind = str(row.get("kind") or "text")
+        body = html.escape(str(row.get("body") or ""))
+        if kind == "system":
+            messages.append(
+                f'<div class="msg system"><span class="muted">система · '
+                f'{_support_fmt(row.get("created_at"))}</span><br>{body}</div>'
+            )
+        else:
+            attachment = ""
+            if row.get("attachment_name"):
+                attachment = " · 📎 " + html.escape(str(row.get("attachment_name")))
+            messages.append(
+                f'<div class="msg"><b>{name}</b> <span class="muted">· '
+                f'{_support_fmt(row.get("created_at"))}{attachment}</span>'
+                f"<br>{body}</div>"
+            )
+
+    notice = f'<p class="ok">{html.escape(message)}</p>' if message else ""
+    error = f'<p class="bad">{html.escape(failed)}</p>' if failed else ""
+
+    closed = ticket.get("status") == "closed"
+    reply_form = ""
+    if not closed:
+        reply_form = (
+            '<div class="card"><h3>Ответить</h3>'
+            f'<form method="post" action="/support-tickets/{tid}/reply">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<textarea name="text" rows="4" style="width:100%" required>'
+            "</textarea><br>"
+            '<button type="submit">Отправить ответ</button></form>'
+            f'<form method="post" action="/support-tickets/{tid}/close" '
+            'style="display:inline;margin-top:8px">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<button type="submit" class="danger">Закрыть тикет</button></form>'
+            f'<form method="post" action="/support-tickets/{tid}/priority" '
+            'style="display:inline;margin-top:8px">'
+            f'<input type="hidden" name="csrf" value="{token}">'
+            '<select name="priority">'
+            '<option value="low">low</option>'
+            '<option value="normal" selected>normal</option>'
+            '<option value="high">high</option>'
+            '</select>'
+            '<button type="submit">Приоритет</button></form></div>'
+        )
+
+    return (
+        '<p><a href="/support-tickets">← К списку</a></p>'
+        + header + notice + error
+        + '<div class="card"><h3>Переписка</h3>'
+        + ("".join(messages) if messages else '<p class="muted">Сообщений нет.</p>')
+        + "</div>"
+        + reply_form
+    )
+
+
 def _features_body(session, message: str = "", failed: str = "") -> str:
     """Возможности с переключателями.
 
@@ -3315,6 +3542,72 @@ async def create_app() -> Any:
             text=_layout("События", body, "events", roles.title(session.role), session.role),
             content_type="text/html",
         )
+
+    def support_guard(handler):
+        """Доступ к тикетам: модератор и выше + слой поддержки сконфигурирован."""
+        from . import support_tickets
+
+        async def wrapper(request):
+            session = current_session(request)
+            if session is None:
+                raise web.HTTPFound("/login")
+            if not support_tickets.can_moderate(session) or not support_tickets.available():
+                audit.record(session.user_key, "отказ в доступе", request.path)
+                raise web.HTTPFound("/")
+            return await handler(request, session)
+        return wrapper
+
+    @support_guard
+    async def support_tickets_page(_request, session):
+        body = await _support_list_body(session)
+        return web.Response(
+            text=_layout("Поддержка", body, "support_tickets",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    @support_guard
+    async def support_ticket_page(request, session):
+        reference = request.match_info.get("ticket_id", "")
+        body = await _support_detail_body(
+            session, reference,
+            request.query.get("ok", ""), request.query.get("err", ""))
+        return web.Response(
+            text=_layout("Тикет", body, "support_tickets",
+                         roles.title(session.role), session.role),
+            content_type="text/html",
+        )
+
+    async def support_reply(request):
+        from . import support_tickets
+
+        session, data = await _guarded_form(request, "moderator")
+        reference = request.match_info.get("ticket_id", "")
+        ok, message = await support_tickets.reply(session, reference, str(data.get("text", "")))
+        audit.record(session.user_key, "ответ в тикете", reference)
+        target = f"/support-tickets/{quote(reference)}"
+        raise web.HTTPFound(target + ("?ok=" if ok else "?err=") + quote(message))
+
+    async def support_close(request):
+        from . import support_tickets
+
+        session, data = await _guarded_form(request, "moderator")
+        reference = request.match_info.get("ticket_id", "")
+        ok, message = await support_tickets.close_ticket(session, reference)
+        audit.record(session.user_key, "тикет закрыт", reference)
+        raise web.HTTPFound(f"/support-tickets/{quote(reference)}"
+                            + ("?ok=" if ok else "?err=") + quote(message))
+
+    async def support_priority(request):
+        from . import support_tickets
+
+        session, data = await _guarded_form(request, "moderator")
+        reference = request.match_info.get("ticket_id", "")
+        ok, message = await support_tickets.set_priority(
+            session, reference, str(data.get("priority", "normal")))
+        audit.record(session.user_key, "приоритет тикета", reference)
+        raise web.HTTPFound(f"/support-tickets/{quote(reference)}"
+                            + ("?ok=" if ok else "?err=") + quote(message))
 
     @owner_only
     async def partners_page(request, session):
@@ -4078,6 +4371,11 @@ async def create_app() -> Any:
         web.post("/links/clear", links_clear),
         web.post("/keys/set", keys_set),
         web.get("/events", events_page),
+        web.get("/support-tickets", support_tickets_page),
+        web.get("/support-tickets/{ticket_id}", support_ticket_page),
+        web.post("/support-tickets/{ticket_id}/reply", support_reply),
+        web.post("/support-tickets/{ticket_id}/close", support_close),
+        web.post("/support-tickets/{ticket_id}/priority", support_priority),
         web.get("/features", features_page),
         web.post("/features/toggle", features_toggle),
         web.post("/users/time", user_time),

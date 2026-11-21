@@ -42,6 +42,7 @@ class Settings:
     gemini_model: str = "gemini-2.5-flash"
     sla_minutes: int = 60
     sla_check_seconds: int = 60
+    delivery_check_seconds: int = 5
     export_dir: str = "data/exports"
     db_echo: bool = False
 
@@ -59,6 +60,7 @@ class Settings:
             gemini_model=(os.getenv("SUPPORT_GEMINI_MODEL") or "gemini-2.5-flash").strip(),
             sla_minutes=_int("SUPPORT_SLA_MINUTES", 60, 1),
             sla_check_seconds=_int("SUPPORT_SLA_CHECK_SECONDS", 60, 5),
+            delivery_check_seconds=_int("SUPPORT_DELIVERY_CHECK_SECONDS", 5, 1),
             export_dir=(os.getenv("SUPPORT_EXPORT_DIR") or "data/exports").strip(),
             db_echo=_bool("SUPPORT_DB_ECHO"),
         )

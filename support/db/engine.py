@@ -37,6 +37,33 @@ class Database:
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+        await self._add_missing_columns()
+
+    async def _add_missing_columns(self) -> None:
+        """Дописывает новые столбцы через ALTER TABLE (для уже существующих баз).
+
+        ``create_all`` создаёт только отсутствующие таблицы, но не столбцы.
+        Колонка ``delivered`` появилась в 6.0.2 — на старой базе её нет, а
+        delivery_worker без неё не различит доставленные ответы.
+        """
+        from sqlalchemy import text
+
+        try:
+            async with self.engine.begin() as connection:
+                columns = await connection.run_sync(
+                    lambda sync_conn: {
+                        row[1] for row in sync_conn.execute(
+                            text("PRAGMA table_info(ticket_messages)")
+                        ).fetchall()
+                    } if self.url.startswith("sqlite") else set()
+                )
+        except Exception:  # noqa: BLE001 — не-SQLite или таблицы ещё нет
+            return
+        if "delivered" not in columns:
+            async with self.engine.begin() as connection:
+                await connection.execute(
+                    text("ALTER TABLE ticket_messages ADD COLUMN delivered BOOLEAN NOT NULL DEFAULT 0")
+                )
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:

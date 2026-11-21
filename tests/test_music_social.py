@@ -225,12 +225,16 @@ class Handlers(Base):
                          "msc:play:a")
 
     def test_share_track_keyboard_uses_exact_id_payload(self):
-        async def counts(track_id):
-            return 0, 0
+        async def state(track_id, uid):
+            return {"likes": 0, "dislikes": 0, "views": 0, "liked": 0, "disliked": 0}
 
-        with mock.patch.object(social, "reaction_counts", counts):
+        with (mock.patch.object(social, "reaction_state", state),
+              mock.patch.object(search_handler.music, "saved_tracks", return_value=[]),
+              mock.patch.object(search_handler.subscription, "active", return_value=False)):
             markup = run(search_handler.track_kb("a", {}))
-        self.assertEqual(markup.inline_keyboard[3][0].switch_inline_query, "track:a")
+        # Без подписки и «слушать следующий» раскладка: реакции, [сохранить, в плейлист],
+        # «поделиться», «назад». Кнопка «поделиться» — отдельной строкой.
+        self.assertEqual(markup.inline_keyboard[2][0].switch_inline_query, "track:a")
 
     def test_webm_is_sent_as_document_with_real_extension(self):
         call = mock.Mock(message=None)
@@ -289,7 +293,7 @@ class Handlers(Base):
         edit.assert_not_awaited()
         call.bot.send_message.assert_awaited_once()
         markup = call.bot.send_message.await_args.kwargs["reply_markup"]
-        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "msc:track:a")
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "msc:play:a")
 
     def test_playlist_like_rerenders_track_buttons(self):
         call = mock.Mock(data="mss:pllike:abc")
@@ -313,7 +317,7 @@ class Handlers(Base):
               mock.patch.object(social_handler, "_edit_or_send", render)):
             run(social_handler.playlist_like(call))
         markup = render.await_args.args[2]
-        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "msc:track:a")
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "msc:play:a")
         self.assertIn("Alpha", render.await_args.args[1])
 
 
