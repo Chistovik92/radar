@@ -166,7 +166,9 @@ class FakeProvider(payments.Provider):
     def __init__(self):
         self.invoices = {}
 
-    async def create_invoice(self, amount, currency, description, payload, expires_in=3600):
+    async def create_invoice(self, amount, currency, description, payload, expires_in=3600,
+                             customer_email=""):
+        self.customer_email = customer_email
         invoice_id = str(len(self.invoices) + 1)
         self.invoices[invoice_id] = payments.ACTIVE
         return payments.Invoice(invoice_id, f"https://pay/{invoice_id}", amount, currency)
