@@ -121,29 +121,38 @@ export default function Downloads() {
           </div>
         </section>
 
-        {/* ============ Инструкция ============ */}
+        {/* ============ Тарифы VPN ============ */}
         <section className="doc-section">
           <h2>Тарифы VPN</h2>
           <p>
             Доступ к VPN выдаётся через бота «Радар»: раздел <code>🔐 VPN</code> — там же можно оформить и продлить подписку.
-            Актуальные цены на аренду приватного сервера и сроки показываются в боте до подтверждения заказа.
+            С 12.08.2026 действует обновлённая тарифная сетка и праздничная акция.
           </p>
-          {/* TODO: замените плейсхолдеры на реальные тарифы VPN */}
           <div className="vpn-plans">
-            <article className="vpn-plan-card">
-              <h3>Тариф 1</h3>
-              <div className="vpn-plan-price">— ₽</div>
-              <span className="vpn-plan-period">срок: —</span>
+            <article className="vpn-plan-card vpn-plan-trial">
+              <h3>Неделя</h3>
+              <div className="vpn-plan-price">0 ₽</div>
+              <span className="vpn-plan-period">пробный ключ — бесплатно</span>
+            </article>
+            <article className="vpn-plan-card vpn-plan-hot">
+              <h3>Месяц</h3>
+              <div className="vpn-plan-price">550 ₽</div>
+              <span className="vpn-plan-period">🔥 Спеццена по акции</span>
             </article>
             <article className="vpn-plan-card">
-              <h3>Тариф 2</h3>
-              <div className="vpn-plan-price">— ₽</div>
-              <span className="vpn-plan-period">срок: —</span>
+              <h3>Три месяца</h3>
+              <div className="vpn-plan-price">1 250 ₽</div>
+              <span className="vpn-plan-period">срок: 90 дней</span>
             </article>
             <article className="vpn-plan-card">
-              <h3>Тариф 3</h3>
-              <div className="vpn-plan-price">— ₽</div>
-              <span className="vpn-plan-period">срок: —</span>
+              <h3>Полгода</h3>
+              <div className="vpn-plan-price">1 950 ₽</div>
+              <span className="vpn-plan-period">срок: 180 дней</span>
+            </article>
+            <article className="vpn-plan-card vpn-plan-best">
+              <h3>Год</h3>
+              <div className="vpn-plan-price">4 200 ₽</div>
+              <span className="vpn-plan-period">🔥 Выгодное предложение на длительный период</span>
             </article>
           </div>
           <p className="doc-hint">
@@ -151,6 +160,45 @@ export default function Downloads() {
             тарифы настраиваются в разделе «Ключи». Подробнее — в разделе{' '}
             <a href="/pricing">«Тарифы и цены»</a>.
           </p>
+        </section>
+
+        {/* ============ Локации и условия ============ */}
+        <section className="doc-section">
+          <h2>Локации и условия подключения</h2>
+          <p className="doc-hint">
+            Доступные локации: Финляндия 🇫🇮, Россия 🇷🇺, Казахстан 🇰🇿, США 🇺🇸, Франция 🇫🇷, Польша 🇵🇱,
+            Латвия 🇱🇻, Швеция 🇸🇪, Нидерланды 🇳🇱, Германия 🇩🇪, Эстония 🇪🇪, Румыния 🇷🇴.
+          </p>
+          <ul className="howto-list">
+            <li>
+              <strong>Два ключа на пользователя</strong>
+              <p>К каждому ключу можно подключить от 5 до 10 устройств (минимум 5, максимум 10).</p>
+            </li>
+            <li>
+              <strong>Обход белых списков</strong>
+              <p>В одной из доступных подписок реализован обход белых списков.</p>
+            </li>
+            <li>
+              <strong>Программа лояльности</strong>
+              <p>
+                🔥 АКЦИЯ — за каждого приведённого друга вы получаете 1 полный месяц в подарок
+                (или дополнительные дни/недели по программе лояльности).
+              </p>
+            </li>
+          </ul>
+        </section>
+
+        {/* ============ Дополнительные услуги ============ */}
+        <section className="doc-section">
+          <h2>Дополнительные услуги</h2>
+          <ul>
+            <li><strong>Роутеры</strong> — для работы с сервером и раздачи доступа по всей домашней сети: от 3 500 ₽, гарантия 1 год.</li>
+            <li><strong>Прошивка и настройка</strong> — 1 500 ₽, с подарочным доступом на 3 месяца.</li>
+            <li><strong>Доставка по РФ</strong> — от 200 ₽.</li>
+            <li><strong>Настройка удалённого доступа</strong> к вашим роутерам (при технической возможности).</li>
+            <li><strong>Техническая поддержка</strong> в течение полугода.</li>
+            <li><strong>Индивидуальные тарифы</strong> — выбор локаций и от 10 до 25 ключей под ваши задачи.</li>
+          </ul>
         </section>
 
         <section className="doc-section">

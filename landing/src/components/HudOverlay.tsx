@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Activity, LogIn, Radar, ShieldCheck, UserRound, X } from 'lucide-react';
+import { Activity, Download, LogIn, Radar, ShieldCheck, UserRound, X } from 'lucide-react';
 
 type Props = {
   hydra: boolean;
@@ -29,6 +29,16 @@ export default function HudOverlay({ hydra, eventActive, nodeCount, onLogoClick,
           <a href="#pricing">Тарифы</a>
         </nav>
         <div className="entry-actions">
+          <a
+            className="entry-link entry-link-download"
+            href="https://github.com/Chistovik92/HydraVPN/releases"
+            target="_blank"
+            rel="noreferrer noopener"
+            aria-label="Скачать HydraVPN"
+            title="Скачать HydraVPN"
+          >
+            <Download size={15} />Скачать
+          </a>
           <a className="entry-link" href="/login"><UserRound size={15} />Личный кабинет</a>
           <a className="entry-link entry-link-accent" href="/login"><LogIn size={15} />Панель управления</a>
         </div>

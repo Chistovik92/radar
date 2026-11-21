@@ -74,6 +74,8 @@ button { color: inherit; }
 .entry-link:hover { border-color: var(--line-strong); background: rgba(255,255,255,0.04); }
 .entry-link:active { transform: translateY(1px); }
 .entry-link-accent { color: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.entry-link-download { color: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.entry-link-download:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 
 .hero-section { position: relative; min-height: 100dvh; isolation: isolate; border-bottom: 1px solid var(--line); }
 .scene-layer { position: absolute; inset: 0; z-index: -3; }
@@ -1199,6 +1201,19 @@ button { color: inherit; }
 .vpn-plan-period {
   font-size: 12px;
   color: var(--muted);
+}
+
+.vpn-plan-hot {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.vpn-plan-best {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-raised));
+}
+
+.vpn-plan-trial .vpn-plan-price {
+  color: var(--text);
 }
 
 /* Projects Page */
