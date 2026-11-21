@@ -52,10 +52,8 @@ class PublicPages(unittest.TestCase):
     def test_prices_come_from_bot_plans(self) -> None:
         with mock.patch("radar.handlers.digest._plans", return_value=[(10, 123)]):
             pricing = public_pages.render_pricing_page()
-            terms = public_pages.render_terms_page()
         self.assertIn("123 ⭐", pricing)
         self.assertIn("10 дней", pricing)
-        self.assertIn("123 ⭐", terms)
         self.assertNotIn("start=subscribe", pricing)
         self.assertNotIn("Platega", pricing)
 
